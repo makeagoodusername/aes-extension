@@ -167,6 +167,7 @@ class RouteAssistantPanel {
         }
         this._detachStorageListener()
         this._detachHubShortcuts()
+        if (this._stationStatusStrip) { this._stationStatusStrip.dispose(); this._stationStatusStrip = null }
         this._closeProfitPopover()
         this._closeServicePopover()
         this._closeCarrierPopover()
@@ -712,6 +713,156 @@ class RouteAssistantPanel {
         this._render()
     }
 
+    /**
+     * N2 — Notification center popover. Anchored to the 🔔 button.
+     * Reverse-chronological list of every toast fired this session.
+     * Each entry carries a click handler that re-fires its action when
+     * one was attached (Undo a save from 5 min ago, Retry a failed
+     * sync, View a flagged route). History is in-memory only — closing
+     * the tab clears it.
+     */
+    _openNotificationCenter(anchor) {
+        const existing = document.getElementById("aes-notification-center")
+        if (existing && existing.parentNode) {
+            existing.parentNode.removeChild(existing)
+            return
+        }
+        const popover = document.createElement("div")
+        popover.id = "aes-notification-center"
+        popover.style.cssText = "position:fixed;background:#0f1623;border:1px solid #374151;"
+            + "border-radius:5px;box-shadow:0 6px 20px rgba(0,0,0,0.5);z-index:10001;"
+            + "padding:0;font:12px/1.4 sans-serif;color:#f3f4f6;min-width:340px;max-width:480px;"
+            + "max-height:60vh;display:flex;flex-direction:column;"
+        const r = anchor.getBoundingClientRect()
+        const vw = window.innerWidth, vh = window.innerHeight
+        popover.style.top  = Math.min(vh - 80, r.bottom + 4) + "px"
+        // Right-align under the button.
+        popover.style.left = Math.max(8, Math.min(vw - 350, r.right - 340)) + "px"
+
+        // ---- Header --------------------------------------------------
+        const head = document.createElement("div")
+        head.style.cssText = "padding:8px 12px;border-bottom:1px solid #374151;"
+            + "display:flex;align-items:center;gap:8px;"
+        const title = document.createElement("strong")
+        title.textContent = "🔔 Notification center"
+        title.style.flex = "1"
+        head.append(title)
+
+        const history = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.getHistory()
+            : []
+        const count = document.createElement("span")
+        count.textContent = history.length + (history.length === 1 ? " toast" : " toasts")
+        count.style.cssText = "color:#9ca3af;font-size:11px;"
+        head.append(count)
+
+        const clearBtn = document.createElement("button")
+        clearBtn.textContent = "Clear"
+        clearBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #475569;"
+            + "border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;"
+        clearBtn.title = "Clear in-session history (does not affect saved data)."
+        clearBtn.disabled = !history.length
+        if (clearBtn.disabled) clearBtn.style.opacity = "0.5"
+        clearBtn.addEventListener("click", () => {
+            if (typeof RouteAssistantToast !== "undefined") RouteAssistantToast.clearHistory()
+            close()
+        })
+        head.append(clearBtn)
+        popover.append(head)
+
+        // ---- Body --------------------------------------------------
+        const body = document.createElement("div")
+        body.style.cssText = "overflow-y:auto;padding:4px 0;flex:1;"
+        if (!history.length) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "padding:20px 12px;color:#6b7280;text-align:center;font-size:11px;"
+            empty.textContent = "No toasts yet — confirmations will land here as you work."
+            body.append(empty)
+        } else {
+            // Newest first.
+            for (let i = history.length - 1; i >= 0; i--) {
+                body.append(this._buildNotificationRow(history[i]))
+            }
+        }
+        popover.append(body)
+
+        // ---- Footer hint ------------------------------------------
+        const foot = document.createElement("div")
+        foot.style.cssText = "padding:6px 10px;border-top:1px solid #374151;color:#6b7280;font-size:10px;"
+        foot.textContent = "Click any entry to re-fire its action (when available). History is in-memory — closing the tab clears it."
+        popover.append(foot)
+
+        document.body.appendChild(popover)
+        const close = () => {
+            if (popover.parentNode) popover.parentNode.removeChild(popover)
+            document.removeEventListener("click",   onDocClick, true)
+            document.removeEventListener("keydown", onKey)
+        }
+        const onDocClick = (e) => {
+            if (popover.contains(e.target)) return
+            if (e.target === anchor || (anchor && anchor.contains && anchor.contains(e.target))) return
+            close()
+        }
+        const onKey = (e) => { if (e.key === "Escape") close() }
+        setTimeout(() => {
+            document.addEventListener("click",   onDocClick, true)
+            document.addEventListener("keydown", onKey)
+        }, 0)
+    }
+
+    /** Single row in the notification center. */
+    _buildNotificationRow(entry) {
+        const row = document.createElement("div")
+        row.style.cssText = "display:flex;gap:8px;padding:6px 12px;align-items:flex-start;"
+            + "border-bottom:1px solid rgba(55,65,81,0.5);"
+            + (entry.action ? "cursor:pointer;" : "")
+        const palette = {
+            info:    "#60a5fa", success: "#34d399",
+            warn:    "#fbbf24", error:   "#f87171"
+        }
+        const dot = document.createElement("span")
+        dot.textContent = "●"
+        dot.style.cssText = "color:" + (palette[entry.type] || palette.info) + ";font-size:8px;margin-top:5px;"
+        row.append(dot)
+
+        const main = document.createElement("div")
+        main.style.cssText = "flex:1;display:flex;flex-direction:column;gap:1px;"
+        const msg = document.createElement("div")
+        msg.textContent = entry.message
+        msg.style.cssText = "color:#e5e7eb;font-size:12px;line-height:1.35;"
+        main.append(msg)
+        const meta = document.createElement("div")
+        meta.style.cssText = "color:#6b7280;font-size:10px;display:flex;gap:6px;align-items:center;"
+        const ago = document.createElement("span")
+        ago.textContent = _formatRelativeTime(entry.timestamp)
+        meta.append(ago)
+        if (entry.action) {
+            const actionLabel = document.createElement("span")
+            actionLabel.textContent = "↻ " + entry.action.label
+            actionLabel.style.color = "#fde68a"
+            meta.append(actionLabel)
+        }
+        main.append(meta)
+        row.append(main)
+
+        if (entry.action) {
+            row.title = "Click to re-fire: " + entry.action.label
+            row.addEventListener("mouseenter", () => row.style.background = "#1f2937")
+            row.addEventListener("mouseleave", () => row.style.background = "")
+            row.addEventListener("click", () => {
+                try { entry.action.fn() }
+                catch (e) {
+                    if (typeof RouteAssistantToast !== "undefined") {
+                        RouteAssistantToast.error("Re-fire failed: " + (e && e.message ? e.message : e))
+                    }
+                }
+                const center = document.getElementById("aes-notification-center")
+                if (center && center.parentNode) center.parentNode.removeChild(center)
+            })
+        }
+        return row
+    }
+
     // ---------- Skeleton ----------
 
     _buildSkeleton() {
@@ -867,14 +1018,32 @@ class RouteAssistantPanel {
         // fires first in _renderRows).
         this._orsSandboxBtn = makeBtn("🧪", "ORS Sandbox (toggle pricing simulator)",
             () => this._toggleOrsSandbox())
+        // Bulk-open stations from scraped airports — launches the same
+        // OpenStationsModal the dashboard's Schedule Management uses, but
+        // pre-seeded with the panel's current hub so distances and
+        // watchlist-current-hub-only default sensibly.
+        const openStationsBtn = makeBtn("🛬", "Open stations at scraped airports",
+            () => this._openStationsModal())
+        // Compact live status chip next to the 🛬 button — auto-hides when
+        // the queue is empty and no run is active. Click → opens the dashboard
+        // Station Automation tab in a new browser tab.
+        const stationStatusHost = document.createElement("span")
+        stationStatusHost.style.cssText = "display:inline-flex;align-items:center;margin-left:2px;"
+        this._stationStatusHost = stationStatusHost
+        this._ensureStationStatusStrip()
         const settingsBtn = makeBtn("⚙", "Score weights & filters", () => this._toggleSettings())
+        // N2 notification center — bell opens a dropdown showing every
+        // toast fired this session. Click any past entry to re-execute
+        // its action (e.g. Undo a save from 3 minutes ago).
+        this._notifBtn = makeBtn("🔔", "Notification center — recent toasts + re-runnable actions",
+            (e) => this._openNotificationCenter(e.currentTarget))
         // Config export/import — opens a tiny menu with two items. Persists
         // both routeAssistant + usedAircraftScanner blobs as a single JSON
         // file; import shows a diff modal before committing.
         const configBtn = makeBtn("⇅", "Export / import config (JSON roundtrip)",
             (e) => this._openConfigMenu(e.currentTarget))
         const toggleBtn = makeBtn("_", "Minimise", () => this._toggleCollapse())
-        header.append(title, refreshBtn, this._compactBtn, this._waveBtn, this._orsSandboxBtn, settingsBtn, configBtn, toggleBtn)
+        header.append(title, refreshBtn, this._compactBtn, this._waveBtn, this._orsSandboxBtn, openStationsBtn, stationStatusHost, settingsBtn, this._notifBtn, configBtn, toggleBtn)
 
         this.statusBar = document.createElement("div")
         Object.assign(this.statusBar.style, {
@@ -978,6 +1147,43 @@ class RouteAssistantPanel {
         // top-scoring routes while tweaking settings.
         this.body.style.maxHeight = open ? "25vh" : ""
         if (open) this._renderSettings()
+    }
+
+    _openStationsModal() {
+        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        if (!airlineCode) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Airline not loaded yet — try again in a moment.", {type: "warn"})
+            }
+            return
+        }
+        const modal = new OpenStationsModal({
+            server:      this.server,
+            airlineCode: airlineCode,
+            currentHub:  this.hubIata || null,
+        })
+        modal.open()
+    }
+
+    /**
+     * Idempotent: mounts the compact StationAutomationStatusStrip the first
+     * time `ownSchedule.airline` is available. Called from _buildSkeleton
+     * (no-op until refresh fills ownSchedule) and from refresh() (mounts when
+     * ready). Re-calls are no-ops once the strip is alive.
+     */
+    _ensureStationStatusStrip() {
+        if (this._stationStatusStrip) return
+        if (!this._stationStatusHost) return
+        if (typeof StationAutomationStatusStrip === "undefined") return
+        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        if (!airlineCode) return
+        this._stationStatusStrip = new StationAutomationStatusStrip({
+            server:      this.server,
+            airlineCode: airlineCode,
+            container:   this._stationStatusHost,
+            style:       "compact",
+        })
+        this._stationStatusStrip.mount().catch(err => console.warn("[AES status-strip] mount failed", err))
     }
 
     /**
@@ -1090,6 +1296,7 @@ class RouteAssistantPanel {
         // worth marking ambiguous.
         const airlineCode = this.ownSchedule && this.ownSchedule.airline || null
         this.fleet = await RouteAssistantFleetStore.loadFleet(this.server, airlineCode)
+        this._ensureStationStatusStrip()
         await this._loadCachedTypeSpecs()
         const fleetTypeIds = RouteAssistantFleetStore.typeIdsIn(this.fleet)
         this.fuelBurnOverrides = await RouteAssistantFuelBurn.getOverrides(fleetTypeIds)
@@ -2046,6 +2253,62 @@ class RouteAssistantPanel {
         host.append(wrap)
     }
 
+    /**
+     * Q1 quick-filter chips — pill toggles for the four content-shape
+     * filter fields (watchlistOnly, lossMakers, hasOverride, hasNote)
+     * plus Δ Changed (`onlyChanged`, applied post-decoration in
+     * _renderRows). Always rendered so users discover the affordance.
+     * Lit (filled) when active, outline-only when inactive.
+     */
+    _renderQuickFilterChips(host) {
+        const f = (this.settings && this.settings.filters) || {}
+        const wrap = document.createElement("label")
+        wrap.style.cssText = "display:flex;gap:5px;align-items:center;color:#9ca3af;"
+        wrap.title = "Quick filters — toggle to restrict the visible row set"
+        wrap.append(document.createTextNode("Filters"))
+        const inner = document.createElement("span")
+        inner.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;align-items:center;"
+
+        // Each chip: {field, label, activeColor, tooltip}.
+        const chips = [
+            {field: "watchlistOnly", label: "★ Watch",     activeColor: "#fbbf24",
+             tooltip: "Show only ★-starred routes."},
+            {field: "lossMakers",    label: "💸 Loss",     activeColor: "#f87171",
+             tooltip: "Show only routes where profit/wk is negative."},
+            {field: "hasOverride",   label: "🛠 Override", activeColor: "#a78bfa",
+             tooltip: "Show only routes with a saved LF/yield override."},
+            {field: "hasNote",       label: "📝 Note",     activeColor: "#60a5fa",
+             tooltip: "Show only routes with a saved route note."},
+            {field: "onlyChanged",   label: "Δ Changed",   activeColor: "#34d399",
+             tooltip: "Show only routes whose tracked fields moved since your last visit. Empty before the first baseline lands."}
+        ]
+
+        for (const chip of chips) {
+            const active = !!f[chip.field]
+            const btn = document.createElement("button")
+            btn.type = "button"
+            btn.textContent = chip.label
+            btn.title = chip.tooltip
+            btn.style.cssText = "padding:2px 8px;border-radius:10px;font-size:11px;cursor:pointer;"
+                + "transition:background 120ms ease, border-color 120ms ease, color 120ms ease;"
+                + (active
+                    ? ("background:" + chip.activeColor + ";color:#0f1623;border:1px solid " + chip.activeColor + ";font-weight:600;")
+                    : "background:transparent;color:#cbd5e1;border:1px solid #475569;")
+            btn.addEventListener("click", async () => {
+                this.settings.filters = Object.assign({}, this.settings.filters || {})
+                this.settings.filters[chip.field] = !this.settings.filters[chip.field]
+                try {
+                    await RouteAssistantSettings.save({filters: this.settings.filters})
+                } catch (e) { /* non-fatal */ }
+                this._renderRows()
+                this._renderControls()
+            })
+            inner.append(btn)
+        }
+        wrap.append(inner)
+        host.append(wrap)
+    }
+
     _renderStatusBar() {
         this.statusBar.innerHTML = ""
         const hubText = document.createElement("span")
@@ -2430,6 +2693,12 @@ class RouteAssistantPanel {
         // Q15 — recent-hubs chip strip. Renders nothing when the user has
         // only ever visited one hub, so first-time users don't see clutter.
         this._renderRecentHubsBar(this.controlsHost)
+
+        // Q1 quick-filter chips — fast-path toggles paired with the
+        // content-shape gates pre-staged in settings.filters. Each chip
+        // is a pill button; clicking flips the corresponding settings
+        // field, persists, and re-renders. Active state lights the pill.
+        this._renderQuickFilterChips(this.controlsHost)
 
         const fleetEmpty = !this.fleet || !this.fleet.aircraft || !this.fleet.aircraft.length
         const a = this.settings.aircraft || {}
@@ -3110,8 +3379,7 @@ class RouteAssistantPanel {
                                 && cfg._legacyLastScenario
                                 && String(cfg.lastRouteIata || "").toUpperCase() === String(row.destIata).toUpperCase())
             ? cfg._legacyLastScenario : null
-        const scenario = Object.assign({priceMultiplier: 1.0, frequency: null, comfortDelta: 0},
-                                       savedForRoute || legacyFallback || {})
+        const scenario = RouteAssistantOrsModel._normaliseScenario(savedForRoute || legacyFallback)
         // First render — kick off a synchronous compute so baseline/projected
         // cards are populated before paint.
         this._orsSandboxResult = RouteAssistantOrsModel.project({
@@ -3276,42 +3544,52 @@ class RouteAssistantPanel {
             + "— sliders re-project live</span>"
         card.append(h)
 
-        const observedY = (route.ownPricing && route.ownPricing.prices && route.ownPricing.prices.Y) || null
-
-        // ----- Y price multiplier slider --------------------------------
-        const priceWrap = this._mkOrsSandboxRow("Y price",
-            observedY != null ? "$" + Math.round(observedY) + " baseline" : "no cached fare")
-        const priceSlider = document.createElement("input")
-        priceSlider.type = "range"
-        priceSlider.min = "0.30"
-        priceSlider.max = "3.00"
-        priceSlider.step = "0.01"
-        priceSlider.value = String(scenario.priceMultiplier || 1.0)
-        priceSlider.style.cssText = "width:100%;accent-color:#60a5fa;"
-        priceSlider.disabled = (observedY == null)
-        const priceReadout = document.createElement("span")
-        priceReadout.style.cssText = "color:#cbd5e1;font-variant-numeric:tabular-nums;font-size:11px;min-width:80px;text-align:right;"
-        const updatePriceReadout = () => {
-            const m = Number(priceSlider.value) || 1
-            const newY = observedY != null ? Math.round(observedY * m) : null
-            priceReadout.textContent = (newY != null ? "$" + newY + " " : "")
-                + "(" + m.toFixed(2) + "x)"
+        // ----- Per-class price multiplier sliders -----------------------
+        // Render one slider per cabin class with a cached observed fare.
+        // Routes with only Y cached collapse to a single slider, visually
+        // identical to slice 1.
+        const prices = (route.ownPricing && route.ownPricing.prices) || {}
+        const observedByCls = {Y: prices.Y || null, C: prices.C || null, F: prices.F || null}
+        const sliders = {}
+        const readouts = {}
+        for (const cls of ["Y", "C", "F"]) {
+            const observed = observedByCls[cls]
+            if (observed == null) continue
+            const initial = Number(scenario.priceMultipliers && scenario.priceMultipliers[cls]) || 1
+            const built   = this._buildOrsSandboxPriceSliderRow(cls, observed, initial)
+            sliders[cls]  = built.slider
+            readouts[cls] = built.updateReadout
+            card.append(built.row)
         }
-        updatePriceReadout()
-        priceWrap.append(priceSlider, priceReadout)
-        card.append(priceWrap)
 
-        // C / F preview row (read-only proportional scaling).
-        const observedC = (route.ownPricing && route.ownPricing.prices && route.ownPricing.prices.C) || null
-        const observedF = (route.ownPricing && route.ownPricing.prices && route.ownPricing.prices.F) || null
-        if (observedC != null || observedF != null) {
-            const preview = document.createElement("div")
-            preview.style.cssText = "color:#9ca3af;font-size:10px;margin:2px 0 6px 8px;"
-            const cLabel = observedC != null ? "C: $" + Math.round(observedC) + " → $<span data-cf='C'>" + Math.round(observedC) + "</span>" : ""
-            const fLabel = observedF != null ? "F: $" + Math.round(observedF) + " → $<span data-cf='F'>" + Math.round(observedF) + "</span>" : ""
-            preview.innerHTML = [cLabel, fLabel].filter(Boolean).join("  ·  ")
-            card.append(preview)
-            this._orsSandboxCFPreview = preview
+        // ----- Cargo multiplier slider (slice 2d) -----------------------
+        // Renders only when CARGO connection list is cached. Scales the
+        // cargo yield only — no rating/share shift modelled.
+        const hasCargo = !!(route.orsByClass && route.orsByClass.CARGO
+            && Array.isArray(route.orsByClass.CARGO.connections)
+            && route.orsByClass.CARGO.connections.length)
+        let cargoSlider = null
+        let cargoReadout = null
+        const cargoPool = Number(route.cargoDemandPool)
+        if (hasCargo || (isFinite(cargoPool) && cargoPool > 0)) {
+            const cargoRow = this._mkOrsSandboxRow("Cargo yield",
+                "scales cargo yield only · no rating shift")
+            cargoSlider = document.createElement("input")
+            cargoSlider.type = "range"
+            cargoSlider.min = "0.30"
+            cargoSlider.max = "3.00"
+            cargoSlider.step = "0.01"
+            cargoSlider.value = String(Number(scenario.cargoMultiplier) || 1.0)
+            cargoSlider.style.cssText = "width:100%;accent-color:#10b981;"
+            const cargoOut = document.createElement("span")
+            cargoOut.style.cssText = "color:#cbd5e1;font-variant-numeric:tabular-nums;font-size:11px;min-width:80px;text-align:right;"
+            cargoReadout = () => {
+                const m = Number(cargoSlider.value) || 1
+                cargoOut.textContent = m.toFixed(2) + "x"
+            }
+            cargoReadout()
+            cargoRow.append(cargoSlider, cargoOut)
+            card.append(cargoRow)
         }
 
         // ----- Frequency input ------------------------------------------
@@ -3328,7 +3606,7 @@ class RouteAssistantPanel {
             + "border-radius:3px;padding:2px 4px;font-size:11px;"
         const freqHint = document.createElement("span")
         freqHint.style.cssText = "color:#6b7280;font-size:10px;margin-left:6px;"
-        freqHint.textContent = "/wk · LF effect only (slice 1)"
+        freqHint.textContent = "/wk · synthesises own-connections when above current"
         freqWrap.append(freqInput, freqHint)
         card.append(freqWrap)
 
@@ -3351,12 +3629,26 @@ class RouteAssistantPanel {
         card.append(comfortWrap)
 
         // ----- Live recompute wiring ------------------------------------
-        const onChange = () => this._recomputeOrsSandbox({
-            priceMultiplier: Number(priceSlider.value) || 1,
-            frequency:       Number(freqInput.value),
-            comfortDelta:    Number(comfortSel.value) || 0
-        })
-        priceSlider.addEventListener("input", () => { updatePriceReadout(); this._updateOrsSandboxCFPreview(observedC, observedF, Number(priceSlider.value) || 1); onChange() })
+        const onChange = () => {
+            const pm = {Y: 1, C: 1, F: 1}
+            for (const cls of ["Y", "C", "F"]) {
+                if (sliders[cls]) pm[cls] = Number(sliders[cls].value) || 1
+            }
+            const cargoMult = cargoSlider ? (Number(cargoSlider.value) || 1) : 1
+            this._recomputeOrsSandbox({
+                priceMultipliers: pm,
+                cargoMultiplier:  cargoMult,
+                frequency:        Number(freqInput.value),
+                comfortDelta:     Number(comfortSel.value) || 0
+            })
+        }
+        for (const cls of ["Y", "C", "F"]) {
+            if (!sliders[cls]) continue
+            sliders[cls].addEventListener("input", () => { readouts[cls](); onChange() })
+        }
+        if (cargoSlider) {
+            cargoSlider.addEventListener("input", () => { cargoReadout(); onChange() })
+        }
         freqInput.addEventListener("input",   onChange)
         comfortSel.addEventListener("change", onChange)
 
@@ -3400,12 +3692,32 @@ class RouteAssistantPanel {
         return row
     }
 
-    _updateOrsSandboxCFPreview(observedC, observedF, mult) {
-        if (!this._orsSandboxCFPreview) return
-        const cEl = this._orsSandboxCFPreview.querySelector("[data-cf='C']")
-        const fEl = this._orsSandboxCFPreview.querySelector("[data-cf='F']")
-        if (cEl && observedC != null) cEl.textContent = String(Math.round(observedC * mult))
-        if (fEl && observedF != null) fEl.textContent = String(Math.round(observedF * mult))
+    /**
+     * Build one price-multiplier slider for a cabin class. Returns
+     * `{row, slider, updateReadout}` — caller wires `slider`'s input
+     * event to call `updateReadout()` then trigger a recompute.
+     */
+    _buildOrsSandboxPriceSliderRow(cls, observed, initialValue) {
+        const labels = {Y: "Y price", C: "C price", F: "F price"}
+        const row = this._mkOrsSandboxRow(labels[cls] || (cls + " price"),
+            "$" + Math.round(observed) + " baseline")
+        const slider = document.createElement("input")
+        slider.type = "range"
+        slider.min = "0.30"
+        slider.max = "3.00"
+        slider.step = "0.01"
+        slider.value = String(initialValue || 1.0)
+        slider.style.cssText = "width:100%;accent-color:#60a5fa;"
+        const readout = document.createElement("span")
+        readout.style.cssText = "color:#cbd5e1;font-variant-numeric:tabular-nums;font-size:11px;min-width:80px;text-align:right;"
+        const updateReadout = () => {
+            const m = Number(slider.value) || 1
+            const newPrice = Math.round(observed * m)
+            readout.textContent = "$" + newPrice + " (" + m.toFixed(2) + "x)"
+        }
+        updateReadout()
+        row.append(slider, readout)
+        return {row, slider, updateReadout}
     }
 
     _refreshOrsSandboxTBanner(route) {
@@ -3472,7 +3784,7 @@ class RouteAssistantPanel {
 
         const tbl = document.createElement("table")
         tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:12px;"
-        const renderRow = (label, fmtKey, baseVal, projVal, deltaVal, tooltip) => {
+        const renderRow = (label, fmtKey, baseVal, projVal, deltaVal, tooltip, annotation) => {
             const tr = document.createElement("tr")
             const cells = []
             const lab = document.createElement("td")
@@ -3481,10 +3793,17 @@ class RouteAssistantPanel {
             if (tooltip) lab.title = tooltip
             cells.push(lab)
             const fmt = this._formatOrsSandboxValue.bind(this)
-            for (const v of [baseVal, projVal]) {
+            // Base + Projected cells. Annotation (e.g. clamp marker) attaches to the projected cell.
+            const slots = [{v: baseVal, isProjected: false}, {v: projVal, isProjected: true}]
+            for (const slot of slots) {
                 const td = document.createElement("td")
                 td.style.cssText = "padding:3px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#e5e7eb;"
-                td.textContent = fmt(v, fmtKey)
+                td.textContent = fmt(slot.v, fmtKey)
+                if (slot.isProjected && annotation && annotation.marker) {
+                    td.textContent = td.textContent + annotation.marker
+                    td.style.color = "#fbbf24"
+                    if (annotation.tooltip) td.title = annotation.tooltip
+                }
                 cells.push(td)
             }
             const dtd = document.createElement("td")
@@ -3519,11 +3838,15 @@ class RouteAssistantPanel {
         const projRank = (projected.rank && (projected.rank.nonstop != null ? projected.rank.nonstop : projected.rank.any)) || null
         const rankDelta = (typeof baseRank === "number" && typeof projRank === "number") ? (projRank - baseRank) : null
 
-        tbl.append(renderRow("Rating",     "rating", baseline.rating,        projected.rating,        delta.rating, "Our top per-class rating from the cached connection list. Projection applies a linear-in-percent rating shift then clamps to ±50% of the baseline."))
+        const ratingAnnotation = this._clampedClasses(result)
+        tbl.append(renderRow("Rating",     "rating", baseline.rating,        projected.rating,        delta.rating, "Our top per-class rating from the cached connection list. Projection applies a linear-in-percent rating shift then clamps to ±50% of the baseline.", ratingAnnotation))
         tbl.append(renderRow("Rank",       "rank",   baseRank,               projRank,                rankDelta != null ? -rankDelta : null, "Rank in the ORS connection list for the primary class (nonstop preferred over any). Lower rank position = better, so Δ is sign-flipped here."))
         tbl.append(renderRow("Share",      "share",  baseline.share,         projected.share,         delta.share, "Numeric-stable softmax over connection ratings, summed across our connections. Default temperature T=25; calibrate per-route from the markets-page leaderboard."))
         tbl.append(renderRow("Pax/wk",     "pax",    baseline.paxPerWeek,    projected.paxPerWeek,    delta.paxPerWeek, "Demand pool × projected share. Pool comes from the markets-page historic chart; price-side elasticity (from demand-derivator) shifts the pool proportionally to (newPrice/observedPrice)^elasticity."))
-        tbl.append(renderRow("Revenue/wk", "money",  baseline.revenuePerWeek, projected.revenuePerWeek, delta.revenuePerWeek, "Estimator's revenue × frequency. Override paxLF = projected pax/(seats×freq), override yieldPerKm = newPriceY/distance."))
+        if (baseline.cargoPerWeek != null || projected.cargoPerWeek != null) {
+            tbl.append(renderRow("Cargo/wk", "pax", baseline.cargoPerWeek, projected.cargoPerWeek, delta.cargoPerWeek, "Cargo demand pool × projected cargo share. Cargo multiplier scales yield only — share doesn't shift with price in the current model."))
+        }
+        tbl.append(renderRow("Revenue/wk", "money",  baseline.revenuePerWeek, projected.revenuePerWeek, delta.revenuePerWeek, "Estimator's revenue × frequency. Override paxLF = projected pax/(seats×freq), override yieldPerKm = newPriceY/distance. Cargo revenue folds in via cargoLoadFactor × effectiveCargoYield × distance."))
         tbl.append(renderRow("Profit/wk",  "money",  baseline.profitPerWeek,  projected.profitPerWeek,  delta.profitPerWeek, "Estimator's profit × frequency. Costs unchanged; revenue moves with both price and projected pax."))
 
         card.append(tbl)
@@ -3540,6 +3863,29 @@ class RouteAssistantPanel {
         if (key === "pax")    return sign + Math.round(v)
         if (key === "money")  return sign + "$" + Math.round(v).toLocaleString()
         return sign + String(v)
+    }
+
+    /**
+     * Detect classes whose projected rating clamped at the ±50% guardrail.
+     * Returns `{marker, tooltip}` for the projected rating cell, or null
+     * when no class clamped. Threshold matches RATING_CLAMP_LOW/HIGH = 0.5/1.5.
+     */
+    _clampedClasses(result) {
+        const perClass = result && result.perClass
+        if (!perClass) return null
+        const hits = []
+        for (const cls of ["Y", "C", "F"]) {
+            const pc = perClass[cls]
+            if (!pc || !isFinite(Number(pc.priceRatio))) continue
+            const r = Number(pc.priceRatio)
+            if (r <= -0.5)      hits.push(cls + " (−50% floor)")
+            else if (r >= 0.5)  hits.push(cls + " (+50% ceiling)")
+        }
+        if (!hits.length) return null
+        return {
+            marker:  "*",
+            tooltip: "Rating clamped at ±50% of baseline for: " + hits.join(", ")
+        }
     }
 
     /** Footer notes — every fallback / clamp / data-gap surfaced by the model. */
@@ -3598,6 +3944,7 @@ class RouteAssistantPanel {
             paxDemandPool:      row.paxDemandPool != null ? row.paxDemandPool : null,
             cargoDemandPool:    row.cargoDemandPool != null ? row.cargoDemandPool : null,
             paxElasticity:      row.paxElasticity != null ? row.paxElasticity : null,
+            cargoElasticity:    row.cargoElasticity != null ? row.cargoElasticity : null,
             paxScore:           row.paxScore,
             cargoScore:         row.cargoScore,
             aircraftAge:        spec && spec.aircraftAge,
@@ -3624,7 +3971,7 @@ class RouteAssistantPanel {
         if (route && route.dest) {
             const routeKey = String(this.hubIata || "").toUpperCase() + "-" + String(route.dest).toUpperCase()
             const map = Object.assign({}, cfg.lastScenarioByRoute || {})
-            map[routeKey] = Object.assign({priceMultiplier: 1.0, frequency: null, comfortDelta: 0}, scenario)
+            map[routeKey] = RouteAssistantOrsModel._normaliseScenario(scenario)
             cfg.lastScenarioByRoute = map
         }
         this.settings.orsSandbox = cfg
@@ -4799,17 +5146,29 @@ class RouteAssistantPanel {
         this._priceScrapeRunning = true
         this._renderSettings()  // disable button + flip label
 
+        const progressHandle = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress("Syncing live route data…", {id: "price-bulk-scrape", type: "info"})
+            : null
+        let lastTotal = pairs.length, failed = false
         try {
             await this.priceScraper.bulkScrape(pairs, {
                 concurrency: concurrency,
                 staggerMs:   staggerMs,
                 onProgress:  (done, total) => {
+                    lastTotal = total
                     if (this._priceStatusEl) {
                         this._priceStatusEl.textContent = "Syncing route data: " + done + "/" + total + "…"
+                    }
+                    if (progressHandle) {
+                        progressHandle.update({
+                            progressPct:   total ? (100 * done / total) : 0,
+                            progressLabel: done + " / " + total + " routes"
+                        })
                     }
                 }
             })
         } catch (e) {
+            failed = true
             console.warn("[AES priceScraper] bulk scrape failed", e)
         }
 
@@ -4819,6 +5178,15 @@ class RouteAssistantPanel {
 
         await this._applyCachedPrices()
         this._render()
+
+        if (progressHandle) {
+            progressHandle.complete({
+                type:    failed ? "warn" : "success",
+                message: failed
+                    ? "Route data sync finished with errors · " + lastTotal + " routes"
+                    : "Route data sync complete · " + lastTotal + " routes"
+            })
+        }
     }
 
     // ---------- Yield feedback (Roadmap G) ----------
@@ -5788,18 +6156,30 @@ class RouteAssistantPanel {
         this._carrierScrapeRunning = true
         this._renderSettings()
 
+        const progressHandle = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress("Syncing carriers…", {id: "carriers-bulk-scrape", type: "info"})
+            : null
+        let lastTotal = pairs.length, failed = false
         try {
             await this.carrierScraper.bulkScrape(pairs, {
                 concurrency: concurrency,
                 staggerMs:   staggerMs,
                 onProgress:  (done, total) => {
+                    lastTotal = total
                     if (this._carrierStatusEl) {
                         this._carrierStatusEl.textContent =
                             "Syncing carriers: " + done + "/" + total + "…"
                     }
+                    if (progressHandle) {
+                        progressHandle.update({
+                            progressPct:   total ? (100 * done / total) : 0,
+                            progressLabel: done + " / " + total + " routes"
+                        })
+                    }
                 }
             })
         } catch (e) {
+            failed = true
             console.warn("[AES carriersScraper] bulk scrape failed", e)
         }
 
@@ -5809,6 +6189,15 @@ class RouteAssistantPanel {
 
         await this._applyCachedCarriers()
         this._render()
+
+        if (progressHandle) {
+            progressHandle.complete({
+                type:    failed ? "warn" : "success",
+                message: failed
+                    ? "Carriers sync finished with errors · " + lastTotal + " routes"
+                    : "Carriers sync complete · " + lastTotal + " routes"
+            })
+        }
     }
 
     /**
@@ -5867,18 +6256,30 @@ class RouteAssistantPanel {
         this._enterpriseMetaScrapeRunning = true
         this._renderSettings()
 
+        const progressHandle = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress("Syncing enterprise data…", {id: "enterprise-meta-bulk-scrape", type: "info"})
+            : null
+        let lastTotal = todo.length, failed = false
         try {
             await this.enterpriseMetaScraper.bulkScrape(todo, {
                 concurrency: concurrency,
                 staggerMs:   staggerMs,
                 onProgress:  (done, total) => {
+                    lastTotal = total
                     if (this._carrierStatusEl) {
                         this._carrierStatusEl.textContent =
                             "Syncing enterprise data: " + done + "/" + total + "…"
                     }
+                    if (progressHandle) {
+                        progressHandle.update({
+                            progressPct:   total ? (100 * done / total) : 0,
+                            progressLabel: done + " / " + total + " enterprises"
+                        })
+                    }
                 }
             })
         } catch (e) {
+            failed = true
             console.warn("[AES enterpriseMeta] bulk scrape failed", e)
         }
 
@@ -5888,6 +6289,15 @@ class RouteAssistantPanel {
 
         await this._applyCachedEnterpriseMeta()
         this._render()
+
+        if (progressHandle) {
+            progressHandle.complete({
+                type:    failed ? "warn" : "success",
+                message: failed
+                    ? "Enterprise sync finished with errors · " + lastTotal + " ids"
+                    : "Enterprise sync complete · " + lastTotal + " ids"
+            })
+        }
     }
 
     /**
@@ -5933,17 +6343,36 @@ class RouteAssistantPanel {
         writeStatus("Refreshing " + ids.length + " enterprise(s)… (see DevTools console for per-id progress)")
 
         let scrapeError = null
+        const progressHandle = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress("Refreshing contractual partners…", {id: "partners-bulk-scrape", type: "info"})
+            : null
+        let lastTotal = ids.length
         try {
             await this.contractualPartnersScraper.bulkScrape(ids, {
                 concurrency: cfg.partnersConcurrency || 2,
                 staggerMs:   cfg.partnersStaggerMs   || 400,
                 onProgress:  (done, total) => {
+                    lastTotal = total
                     writeStatus("Refreshing partners: " + done + "/" + total + "…")
+                    if (progressHandle) {
+                        progressHandle.update({
+                            progressPct:   total ? (100 * done / total) : 0,
+                            progressLabel: done + " / " + total + " enterprises"
+                        })
+                    }
                 }
             })
         } catch (e) {
             scrapeError = e
             console.warn("[AES partnersScraper] bulk scrape failed", e)
+        }
+        if (progressHandle) {
+            progressHandle.complete({
+                type:    scrapeError ? "warn" : "success",
+                message: scrapeError
+                    ? "Partners refresh finished with errors · " + lastTotal + " ids"
+                    : "Partners refresh complete · " + lastTotal + " ids"
+            })
         }
 
         this._partnersScrapeRunning = false
@@ -6310,6 +6739,30 @@ class RouteAssistantPanel {
             if (this._demandStatusEl) this._demandStatusEl.textContent = msg
         }
 
+        // N1 progress toast — single rolling indicator across the 3 phases.
+        // Total "work" is 3 × pairs (markets families + historic + inventory);
+        // we map each phase's local done/total onto a slice of the global bar.
+        const totalWork = pairs.length * 3
+        let workDone = 0
+        const progressHandle = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress("Syncing market analysis…", {
+                id:   "markets-bulk-scrape",
+                type: "info"
+              })
+            : null
+        const updateProgress = (phaseLabel, phaseDone, phaseTotal, phaseIdx) => {
+            const phaseStart = phaseIdx * pairs.length
+            workDone = phaseStart + phaseDone
+            if (progressHandle) {
+                progressHandle.update({
+                    message:       phaseLabel,
+                    progressPct:   totalWork ? (100 * workDone / totalWork) : 0,
+                    progressLabel: phaseDone + " / " + phaseTotal + " · phase " + (phaseIdx + 1) + " of 3"
+                })
+            }
+        }
+
+        let phaseFailed = false
         try {
             // Phase 1: markets families (competitors / ownPricing / marketShare)
             await this.marketsScraper.bulkScrape(pairs, {
@@ -6317,9 +6770,11 @@ class RouteAssistantPanel {
                 staggerMs:   staggerMs,
                 onProgress:  (done, total) => {
                     setStatus("Syncing market analysis (families): " + done + "/" + total + "…")
+                    updateProgress("Syncing market analysis…", done, total, 0)
                 }
             })
         } catch (e) {
+            phaseFailed = true
             console.warn("[AES marketsScraper] bulk scrape failed", e)
         }
 
@@ -6332,9 +6787,11 @@ class RouteAssistantPanel {
                 staggerMs:   ddStaggerMs,
                 onProgress:  (done, total) => {
                     setStatus("Fetching demand-depth historic (" + payloadLabel + "): " + done + "/" + total + "…")
+                    updateProgress("Fetching demand-depth historic (" + payloadLabel + ")…", done, total, 1)
                 }
             })
         } catch (e) {
+            phaseFailed = true
             console.warn("[AES marketsScraper] historic bulk scrape failed", e)
         }
 
@@ -6345,10 +6802,21 @@ class RouteAssistantPanel {
                 staggerMs:   ddStaggerMs,
                 onProgress:  (done, total) => {
                     setStatus("Fetching inventory (RM tightness): " + done + "/" + total + "…")
+                    updateProgress("Fetching inventory (RM tightness)…", done, total, 2)
                 }
             })
         } catch (e) {
+            phaseFailed = true
             console.warn("[AES inventoryScraper] bulk scrape failed", e)
+        }
+
+        if (progressHandle) {
+            progressHandle.complete({
+                type:    phaseFailed ? "warn" : "success",
+                message: phaseFailed
+                    ? ("Markets sync finished with errors · " + pairs.length + " routes")
+                    : ("Markets + demand-depth sync complete · " + pairs.length + " routes")
+            })
         }
 
         const now = Date.now()
@@ -6535,27 +7003,39 @@ class RouteAssistantPanel {
 
         const totalSteps = pairs.length * payloads.length + pairs.length
         let stepDone = 0
-        const tickProgress = () => {
+        const progressHandle = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress("Syncing demand depth…", {id: "demand-bulk-scrape", type: "info"})
+            : null
+        const tickProgress = (phaseLabel) => {
             stepDone++
             if (this._demandStatusEl) {
                 this._demandStatusEl.textContent =
                     "Syncing demand depth: " + stepDone + "/" + totalSteps + "…"
             }
+            if (progressHandle) {
+                progressHandle.update({
+                    message:       phaseLabel || "Syncing demand depth…",
+                    progressPct:   totalSteps ? (100 * stepDone / totalSteps) : 0,
+                    progressLabel: stepDone + " / " + totalSteps + " steps"
+                })
+            }
         }
 
+        let failed = false
         try {
             await this.marketsScraper.bulkScrapeHistoric(pairs, {
                 payloads:    payloads,
                 concurrency: concurrency,
                 staggerMs:   staggerMs,
-                onProgress:  () => tickProgress()
+                onProgress:  () => tickProgress("Fetching historic (" + payloads.join(", ") + ")…")
             })
             await this.inventoryScraper.bulkScrape(pairs, {
                 concurrency: concurrency,
                 staggerMs:   staggerMs,
-                onProgress:  () => tickProgress()
+                onProgress:  () => tickProgress("Fetching inventory (RM tightness)…")
             })
         } catch (e) {
+            failed = true
             console.warn("[AES demandDepth] bulk sync failed", e)
         }
 
@@ -6566,6 +7046,15 @@ class RouteAssistantPanel {
         await this._applyCachedDemand()
         RouteAssistantAggregator.applyFleetContext(this.rows, this._fleetContext(), this._serviceContext())
         this._render()
+
+        if (progressHandle) {
+            progressHandle.complete({
+                type:    failed ? "warn" : "success",
+                message: failed
+                    ? "Demand depth sync finished with errors · " + pairs.length + " routes"
+                    : "Demand depth sync complete · " + pairs.length + " routes"
+            })
+        }
     }
 
     /**
@@ -10559,6 +11048,28 @@ function numOrNull(v) {
 
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms))
+}
+
+/**
+ * Compact relative-time formatter for the notification center. Renders
+ * "12s ago" / "3m ago" / "1h ago" / "2d ago". Within 5s it returns
+ * "just now". Beyond 7 days it falls back to a localised date string.
+ */
+function _formatRelativeTime(ts) {
+    const t = Number(ts)
+    if (!isFinite(t)) return ""
+    const diff = Date.now() - t
+    if (diff < 0) return "in the future"
+    if (diff < 5 * 1000) return "just now"
+    const sec = Math.floor(diff / 1000)
+    if (sec < 60) return sec + "s ago"
+    const min = Math.floor(sec / 60)
+    if (min < 60) return min + "m ago"
+    const hr = Math.floor(min / 60)
+    if (hr < 24) return hr + "h ago"
+    const d = Math.floor(hr / 24)
+    if (d < 7) return d + "d ago"
+    return new Date(t).toLocaleDateString()
 }
 
 // `escapeHtml` lives in helpers.js (loaded first in every /app + /action

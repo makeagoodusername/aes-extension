@@ -68,11 +68,17 @@
                 "modules/schedule-management/presets-store.js",
                 "modules/schedule-management/schedule-store.js",
                 "modules/schedule-management/schedule-builder.js",
-                "modules/schedule-management/schedule-panel.js",
                 "modules/flightsfrom/data-store.js",
                 "modules/flightsfrom/scan-controller.js",
                 "modules/route-assistant/settings-store.js",
                 "modules/route-assistant/fleet-store.js",
+                "modules/route-assistant/demand-store.js",
+                "modules/route-assistant/country-resolver.js",
+                "modules/route-assistant/watchlist-store.js",
+                "modules/route-assistant/toast-host.js",
+                "modules/station-automation/status-strip.js",
+                "modules/schedule-management/open-stations-modal.js",
+                "modules/schedule-management/schedule-panel.js",
                 "content_dashboard.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/enterprise/dashboard*"]
@@ -136,6 +142,9 @@
                 "modules/route-assistant/alert-rules-store.js",
                 "modules/route-assistant/alert-evaluator.js",
                 "modules/used-aircraft-scanner/presets-store.js",
+                "modules/station-automation/storage.js",
+                "modules/station-automation/status-strip.js",
+                "modules/schedule-management/open-stations-modal.js",
                 "modules/route-assistant/panel.js",
                 "content_scheduling.js"
             ],

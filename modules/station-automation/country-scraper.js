@@ -77,11 +77,21 @@ class CountryScraper {
     static async resolveStations(entry, server) {
         const airports = await CountryScraper._getAllAirportsForCountry(entry.countryId, server)
         const exceptions = new Set((entry.exceptions || []).map(s => String(s).toUpperCase()))
-        return airports.filter(a =>
-            !exceptions.has(a.iata.toUpperCase()) &&
-            (a.paxScore || 0) >= (entry.paxThreshold || 0) &&
-            (a.cargoScore || 0) >= (entry.cargoThreshold || 0)
-        )
+        // When `airportWhitelist` is set, the entry came from a bulk-target
+        // flow (Schedule panel's "Open stations at scraped airports") that
+        // already chose specific airports — thresholds are bypassed and only
+        // listed IATAs pass. `exceptions` still applies as a defensive
+        // overlap so a single revoke from the bulk list still works.
+        const whitelist = entry.airportWhitelist && entry.airportWhitelist.length
+            ? new Set(entry.airportWhitelist.map(s => String(s).toUpperCase()))
+            : null
+        return airports.filter(a => {
+            const iata = a.iata.toUpperCase()
+            if (exceptions.has(iata)) return false
+            if (whitelist) return whitelist.has(iata)
+            return (a.paxScore || 0) >= (entry.paxThreshold || 0)
+                && (a.cargoScore || 0) >= (entry.cargoThreshold || 0)
+        })
     }
 
     /**

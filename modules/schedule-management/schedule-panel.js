@@ -43,6 +43,7 @@ class SchedulePanel {
         right.append(this._buildEditorColumn())
 
         this.root.append(this._buildBuildBar())
+        this.root.append(this._buildOpenStationsBar())
         this.root.append(this._buildHistorySection())
 
         await this._refreshHistory()
@@ -457,6 +458,56 @@ class SchedulePanel {
             + "The builder runs end-to-end against an empty route set so you can verify preset structure. "
             + "Route ingestion ships in a follow-up."
         bar.append(note)
+
+        return bar
+    }
+
+    _buildOpenStationsBar() {
+        const bar = document.createElement("div")
+        bar.className = "as-panel"
+        bar.style.marginTop = "12px"
+
+        const title = document.createElement("h4")
+        title.innerText = "Open stations from scraped airports"
+        bar.append(title)
+
+        const note = document.createElement("p")
+        note.style.cssText = "color:#888; font-size:90%; margin:4px 0 10px 0;"
+        note.innerText = "Pulls candidates from the demand scraper, FlightsFrom, "
+            + "watchlist, and top-routes. Group by country, confirm, and enqueue "
+            + "for the Station Automation worker."
+        bar.append(note)
+
+        // Live status strip — queue size, active-run progress, last-run summary.
+        // Re-render disposes the previous strip so its storage listener doesn't
+        // leak into the new mount.
+        if (this._statusStrip) { this._statusStrip.dispose(); this._statusStrip = null }
+        const stripHost = document.createElement("div")
+        stripHost.style.marginBottom = "10px"
+        bar.append(stripHost)
+        if (this.context.server && this.context.airlineCode) {
+            this._statusStrip = new StationAutomationStatusStrip({
+                server:      this.context.server,
+                airlineCode: this.context.airlineCode,
+                container:   stripHost,
+                style:       "full",
+            })
+            this._statusStrip.mount().catch(err => console.warn("[AES status-strip] mount failed", err))
+        }
+
+        const btn = document.createElement("button")
+        btn.type = "button"
+        btn.className = "btn btn-primary"
+        btn.innerText = "Open stations at scraped airports…"
+        btn.addEventListener("click", () => {
+            const modal = new OpenStationsModal({
+                server:      this.context.server,
+                airlineCode: this.context.airlineCode,
+                currentHub:  this.context.currentHub || null,
+            })
+            modal.open()
+        })
+        bar.append(btn)
 
         return bar
     }

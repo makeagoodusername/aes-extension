@@ -32,6 +32,14 @@ class RouteAssistantToast {
     static DEFAULT_MS    = 3500
     static CONTAINER_ID  = "aes-toast-host"
 
+    /** N2 — session-scoped history of every toast fired. Capped to keep
+     *  storage bounded; each entry is a slim record with the original
+     *  message, type, action (only the function reference is kept — not
+     *  serialisable, so the history is in-memory only, NOT persisted to
+     *  chrome.storage). */
+    static MAX_HISTORY = 50
+    static _history = []
+
     static _seq = 0
     static _registry = new Map()   // id -> {el, timer}
 
@@ -79,6 +87,23 @@ class RouteAssistantToast {
         el.append(closeBtn)
 
         host.append(el)
+
+        // N2 — push to session history. Stored as a slim record; the
+        // action.fn is kept by reference so the notification center can
+        // re-fire it. History is in-memory only (action functions aren't
+        // serialisable). Cap is applied via shift().
+        RouteAssistantToast._history.push({
+            id:        id,
+            message:   String(message || ""),
+            type:      type,
+            timestamp: Date.now(),
+            action:    (opts.action && typeof opts.action.fn === "function")
+                ? {label: String(opts.action.label || "Action"), fn: opts.action.fn}
+                : null
+        })
+        if (RouteAssistantToast._history.length > RouteAssistantToast.MAX_HISTORY) {
+            RouteAssistantToast._history.shift()
+        }
 
         // Slide-in: start translated off-screen right, then slide to 0.
         el.style.transform = "translateX(40px)"
@@ -130,6 +155,10 @@ class RouteAssistantToast {
     static success(m, o) { return RouteAssistantToast.show(m, Object.assign({}, o, {type: "success"})) }
     static warn   (m, o) { return RouteAssistantToast.show(m, Object.assign({}, o, {type: "warn"})) }
     static error  (m, o) { return RouteAssistantToast.show(m, Object.assign({}, o, {type: "error"})) }
+
+    /** N2 — session toast history accessors. Most-recent-last order. */
+    static getHistory()  { return RouteAssistantToast._history.slice() }
+    static clearHistory() { RouteAssistantToast._history = [] }
 
     /**
      * N1 — Progress toast. Creates a STICKY toast (no auto-dismiss) with

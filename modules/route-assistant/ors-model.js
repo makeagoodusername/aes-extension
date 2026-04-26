@@ -9,12 +9,15 @@
  * Reuses RouteAssistantProfitEstimator for the revenue/cost half so the
  * model stays a thin layer on top of existing plumbing.
  *
- * Slice 1 scope:
- *   - Pax-only. Cargo numbers pass through estimator unchanged.
- *   - Y-anchored multi-class price slider; C/F scale proportionally.
- *   - Frequency dilutes LF only (no synthesised connections).
+ * Scope:
+ *   - Independent per-class price multipliers {Y, C, F} (slice 2b).
+ *   - Frequency lever synthesises additional own-connection rows when
+ *     newFreq > currentFreq (slice 2a); below-current freq dilutes LF.
+ *   - Cargo branch projects share/yield separately from pax (slice 2d).
  *   - Closed-form rating shift + numeric-stable softmax for share.
  *   - Optional per-route T calibration against marketShare leaderboard.
+ *   - Per-route rating-price elasticity NOT yet derived (slice 2c — needs
+ *     accumulated demand-derivator data, deferred).
  *
  * Read-only — never writes to AS or chrome.storage.
  *
@@ -52,6 +55,9 @@ class RouteAssistantOrsModel {
     /** Maps RA panel cabin-class labels to AS payload keys. */
     static CLASS_PAYLOAD = {Y: "ECONOMY", C: "BUSINESS", F: "FIRST"}
 
+    /** Cargo payload key — handled separately from the pax classes. */
+    static CARGO_PAYLOAD = "CARGO"
+
     /**
      * Main entry. Runs the full projection.
      *
@@ -63,7 +69,8 @@ class RouteAssistantOrsModel {
      *    paxScore, cargoScore, aircraftAge, useDistanceFuel?,
      *    fuelPriceASc?, fuelBurnOverrides?, falloffPct?}
      * @param {object} input.scenario
-     *   {priceMultiplier:1.0, frequency:null, comfortDelta:0}
+     *   {priceMultipliers:{Y:1, C:1, F:1}, cargoMultiplier:1, frequency:null, comfortDelta:0}
+     *   Legacy {priceMultiplier:<num>} accepted and migrated via _normaliseScenario.
      * @param {object} input.modelParams
      *   {ratingPriceElasticity, ratingComfortLift, shareTemperature, perRouteT?}
      * @param {object} input.economics — RouteAssistantSettings.economics
@@ -72,8 +79,7 @@ class RouteAssistantOrsModel {
     static project(input) {
         input = input || {}
         const route    = input.route || {}
-        const scenario = Object.assign({priceMultiplier: 1.0, frequency: null, comfortDelta: 0},
-                                       input.scenario || {})
+        const scenario = RouteAssistantOrsModel._normaliseScenario(input.scenario)
         const params   = Object.assign({
             ratingPriceElasticity: RouteAssistantOrsModel.DEFAULT_PRICE_ALPHA,
             ratingComfortLift:     RouteAssistantOrsModel.DEFAULT_COMFORT_ALPHA,
@@ -87,8 +93,20 @@ class RouteAssistantOrsModel {
         const useRealDemand = !!input.useRealDemandForLF
         const notes         = []
 
+        // --- Frequency lever (slice 2a) -------------------------------------
+        // Compute frequency synthesis budget BEFORE the per-class loop so each
+        // class's _projectClass receives a synthesized connection list when
+        // newFreq > currentFreq. Below-current freq keeps the slice 1 LF-only
+        // dilution behaviour.
+        const baseFreq = _safeNumber(route.currentFrequency) || 0
+        const newFreq  = scenario.frequency != null ? Math.max(0, Math.round(scenario.frequency)) : baseFreq
+        const requestedExtras = Math.max(0, newFreq - baseFreq)
+        if (newFreq < baseFreq) {
+            notes.push("frequency below current; LF dilutes only (connection list unchanged)")
+        }
+
         // --- Per-class projection (Y, C, F independently) -------------------
-        const perClass = {Y: null, C: null, F: null}
+        const perClass = {Y: null, C: null, F: null, CARGO: null}
         const byClass  = route.orsByClass || {}
         const observedPrices = (route.ownPricing && route.ownPricing.prices) || {}
         const observedY = _safeNumber(observedPrices.Y)
@@ -107,11 +125,15 @@ class RouteAssistantOrsModel {
                 perClass[cls] = null
                 continue
             }
-            const newPrice = observed != null
-                ? observed * (Number(scenario.priceMultiplier) || 1)
-                : null
+            const classMult = Number(scenario.priceMultipliers && scenario.priceMultipliers[cls])
+            const mult      = isFinite(classMult) && classMult > 0 ? classMult : 1
+            const newPrice  = observed != null ? observed * mult : null
+            // Synthesise additional own-connection rows when requested above current.
+            const synthRec = (requestedExtras > 0)
+                ? RouteAssistantOrsModel._synthesizeOwnConnections(classRec, baseFreq, requestedExtras, notes, cls)
+                : classRec
             perClass[cls] = RouteAssistantOrsModel._projectClass({
-                classRec:      classRec,
+                classRec:      synthRec,
                 observedPrice: observed,
                 newPrice:      newPrice,
                 comfortDelta:  Number(scenario.comfortDelta) || 0,
@@ -121,6 +143,26 @@ class RouteAssistantOrsModel {
                 cls:           cls,
                 topCompetitorRating: _safeNumber(classRec.topCompetitorRating)
             })
+        }
+
+        // --- Cargo branch (slice 2d) ----------------------------------------
+        // Cargo is intentionally kept OUT of the Y/C/F primary-class fallback
+        // so it doesn't pollute the rating/rank/share aggregates above.
+        const cargoRec = byClass[RouteAssistantOrsModel.CARGO_PAYLOAD]
+        const cargoMult = Number(scenario.cargoMultiplier) || 1
+        if (cargoRec && Array.isArray(cargoRec.connections) && cargoRec.connections.length) {
+            perClass.CARGO = RouteAssistantOrsModel._projectCargo({
+                classRec:    cargoRec,
+                params:      params,
+                T:           T,
+                notes:       notes,
+                topCompetitorRating: _safeNumber(cargoRec.topCompetitorRating)
+            })
+        } else if (_safeNumber(route.cargoDemandPool) != null) {
+            notes.push("no CARGO connection list cached — cargo profit unchanged by share")
+        }
+        if (cargoMult !== 1) {
+            notes.push("cargo multiplier scales yield only — no rating shift modelled")
         }
 
         // --- Aggregate (primary class — first non-null among Y, C, F) ------
@@ -134,21 +176,17 @@ class RouteAssistantOrsModel {
         const baseShare  = primary ? primary.baselineShare   : null
         const projShare  = primary ? primary.projectedShare  : null
 
-        // --- Frequency lever — slice 1: dilute LF, don't synthesise connections.
-        const baseFreq = _safeNumber(route.currentFrequency) || 0
-        const newFreq  = scenario.frequency != null ? Math.max(0, Math.round(scenario.frequency)) : baseFreq
-        const freqExceedsCurrent = newFreq > baseFreq
-        if (freqExceedsCurrent && newFreq !== baseFreq) {
-            notes.push("frequency above current; rank/share unchanged in slice 1 (LF affected only)")
-        }
-
         // --- Demand pool — apply price-side elasticity ONCE.
+        // Pool is Y-anchored: demand-derivator's pax series is dominated by ECONOMY
+        // (sole source when only one class is captured; capacity-weighted Y-heavy
+        // when all three are). So pool elasticity reads the Y multiplier only.
+        const yMult    = Number(scenario.priceMultipliers && scenario.priceMultipliers.Y) || 1
         const basePool = _safeNumber(route.paxDemandPool)
         const elast    = _safeNumber(route.paxElasticity)
         let projPool = basePool
-        if (basePool != null && observedY != null && scenario.priceMultiplier !== 1
+        if (basePool != null && observedY != null && yMult !== 1
             && elast != null && elast < 0) {
-            projPool = basePool * Math.pow(scenario.priceMultiplier, elast)
+            projPool = basePool * Math.pow(yMult, elast)
         }
 
         // --- Pax/week = pool × share. Falls back to share-only when pool is null.
@@ -157,7 +195,26 @@ class RouteAssistantOrsModel {
         const projectedPax = (projPool != null && projShare != null)
             ? Math.round(projPool * projShare) : null
 
+        // --- Cargo/week = cargoPool × cargoShare. Tracked separately from pax
+        // so it doesn't pollute the pax aggregates. Revenue/profit numbers
+        // come from the estimator below — this is just the volume signal.
+        // Cargo pool shifts via cargoElasticity when cargoMultiplier scales
+        // yield (yield is effectively the per-kg-km price in AS).
+        const cargoPool   = _safeNumber(route.cargoDemandPool)
+        const cargoElast  = _safeNumber(route.cargoElasticity)
+        let projCargoPool = cargoPool
+        if (cargoPool != null && cargoMult !== 1 && cargoElast != null && cargoElast < 0) {
+            projCargoPool = cargoPool * Math.pow(cargoMult, cargoElast)
+        }
+        const cargoBaseShare = perClass.CARGO ? perClass.CARGO.baselineShare  : null
+        const cargoProjShare = perClass.CARGO ? perClass.CARGO.projectedShare : null
+        const baselineCargoWk = (cargoPool != null && cargoBaseShare != null)
+            ? Math.round(cargoPool * cargoBaseShare) : null
+        const projectedCargoWk = (projCargoPool != null && cargoProjShare != null)
+            ? Math.round(projCargoPool * cargoProjShare) : null
+
         // --- Revenue/profit projection via the existing estimator ----------
+        const baseCargoYield = _safeNumber(economics && economics.cargoYieldPerKgKm)
         const baselineEcon = RouteAssistantOrsModel._estimate({
             route:           route,
             economics:       economics,
@@ -170,7 +227,7 @@ class RouteAssistantOrsModel {
         })
         const baselineRevenueWk = _revenueWeek(baselineEcon, baseFreq)
 
-        const newPriceY = (observedY != null) ? observedY * (Number(scenario.priceMultiplier) || 1) : null
+        const newPriceY = (observedY != null) ? observedY * yMult : null
         const projectedEcon = RouteAssistantOrsModel._estimate({
             route:           route,
             economics:       economics,
@@ -179,7 +236,11 @@ class RouteAssistantOrsModel {
             yieldPerKm:      (newPriceY != null && route.distanceKm > 0)
                 ? newPriceY / route.distanceKm : null,
             paxDemandPool:   projPool,
-            frequency:       newFreq
+            cargoDemandPool: projCargoPool,
+            frequency:       newFreq,
+            // Cargo multiplier scales yield only (rating-shift not modelled).
+            cargoYieldPerKgKm: (cargoMult !== 1 && baseCargoYield != null && baseCargoYield > 0)
+                ? baseCargoYield * cargoMult : null
         })
         const projectedRevenueWk = _revenueWeek(projectedEcon, newFreq)
 
@@ -189,6 +250,7 @@ class RouteAssistantOrsModel {
             rank:            primary ? primary.baselineRanks : null,
             share:           baseShare,
             paxPerWeek:      baselinePax,
+            cargoPerWeek:    baselineCargoWk,
             revenuePerWeek:  baselineRevenueWk,
             profitPerWeek:   baselineEcon ? baselineEcon.profitPerWeek : null,
             profitPerFlight: baselineEcon ? baselineEcon.profitPerFlight : null
@@ -198,22 +260,16 @@ class RouteAssistantOrsModel {
             rank:            primary ? primary.projectedRanks : null,
             share:           projShare,
             paxPerWeek:      projectedPax,
+            cargoPerWeek:    projectedCargoWk,
             revenuePerWeek:  projectedRevenueWk,
             profitPerWeek:   projectedEcon ? projectedEcon.profitPerWeek : null,
             profitPerFlight: projectedEcon ? projectedEcon.profitPerFlight : null
         }
-        // When freq exceeds current, suppress rank/share/rating projections so
-        // the panel can gray those out and only show profit/revenue.
-        if (freqExceedsCurrent && newFreq !== baseFreq) {
-            projected.rating = baseline.rating
-            projected.rank   = baseline.rank
-            projected.share  = baseline.share
-        }
-
         const delta = {
             rating:         _signedDelta(baseline.rating, projected.rating),
             share:          _signedDelta(baseline.share,  projected.share),
             paxPerWeek:     _signedDelta(baseline.paxPerWeek, projected.paxPerWeek),
+            cargoPerWeek:   _signedDelta(baseline.cargoPerWeek, projected.cargoPerWeek),
             revenuePerWeek: _signedDelta(baseline.revenuePerWeek, projected.revenuePerWeek),
             profitPerWeek:  _signedDelta(baseline.profitPerWeek,  projected.profitPerWeek)
         }
@@ -233,15 +289,128 @@ class RouteAssistantOrsModel {
             scenario:      scenario,
             baselineEcon:  baselineEcon,
             projectedEcon: projectedEcon,
-            // Surface the proportionally-scaled C/F prices for the panel preview.
+            // Surface the per-class scaled prices for the panel preview.
             scaledPrices:  {
                 Y: newPriceY,
-                C: _safeNumber(observedPrices.C) != null ? _safeNumber(observedPrices.C) * (Number(scenario.priceMultiplier) || 1) : null,
-                F: _safeNumber(observedPrices.F) != null ? _safeNumber(observedPrices.F) * (Number(scenario.priceMultiplier) || 1) : null
+                C: (_safeNumber(observedPrices.C) != null)
+                    ? _safeNumber(observedPrices.C) * (Number(scenario.priceMultipliers.C) || 1) : null,
+                F: (_safeNumber(observedPrices.F) != null)
+                    ? _safeNumber(observedPrices.F) * (Number(scenario.priceMultipliers.F) || 1) : null
             },
             elasticity: elast,
             adjustedPool: projPool
         }
+    }
+
+    /**
+     * Canonicalise the scenario shape — accepts either the slice 1 shape
+     * (single `priceMultiplier` numeric, Y-anchored) or the slice 2 shape
+     * (`priceMultipliers: {Y, C, F}` independent). Always returns the
+     * slice 2 shape; legacy multiplier maps to all three classes.
+     */
+    static _normaliseScenario(scenario) {
+        const s = scenario || {}
+        let pm = s.priceMultipliers
+        if (!pm || typeof pm !== "object") {
+            const legacy = Number(s.priceMultiplier)
+            const v = isFinite(legacy) && legacy > 0 ? legacy : 1
+            pm = {Y: v, C: v, F: v}
+        } else {
+            pm = {
+                Y: isFinite(Number(pm.Y)) && Number(pm.Y) > 0 ? Number(pm.Y) : 1,
+                C: isFinite(Number(pm.C)) && Number(pm.C) > 0 ? Number(pm.C) : 1,
+                F: isFinite(Number(pm.F)) && Number(pm.F) > 0 ? Number(pm.F) : 1
+            }
+        }
+        const cm = Number(s.cargoMultiplier)
+        return {
+            priceMultipliers: pm,
+            cargoMultiplier:  isFinite(cm) && cm > 0 ? cm : 1,
+            frequency:        s.frequency != null && isFinite(Number(s.frequency)) ? Number(s.frequency) : null,
+            comfortDelta:     isFinite(Number(s.comfortDelta)) ? Number(s.comfortDelta) : 0
+        }
+    }
+
+    /**
+     * Synthesise additional own-connection rows to project a frequency
+     * increase. Returns a shallow-cloned `classRec` whose `connections`
+     * array has up to `extraFlights` synthetic own rows appended (capped
+     * by the saturation guard in `_capSynthesisCount`). Each synthetic
+     * row clones a template (preferring own + nonstop, else highest-rated
+     * own) with a new flightCode and `isOurs` forced true on every leg.
+     *
+     * Connection schemas in cache have NO timestamps (verified against
+     * ors-scraper); the model's rank/softmax never read timestamps, so
+     * the clones don't need synthetic departure times.
+     */
+    static _synthesizeOwnConnections(classRec, baseFreq, requestedExtras, notes, cls) {
+        const conns = (classRec && Array.isArray(classRec.connections)) ? classRec.connections : []
+        if (!conns.length) return classRec
+        // Pick a template: prefer own + nonstop, then any own, else give up.
+        let template = null
+        for (const c of conns) {
+            const legs = (c.legs || []).filter(l => !l.isGround)
+            if (!legs.length) continue
+            if (legs.every(l => !!l.isOurs) && legs.length === 1) { template = c; break }
+        }
+        if (!template) {
+            let best = null
+            for (const c of conns) {
+                const legs = (c.legs || []).filter(l => !l.isGround)
+                if (!legs.length) continue
+                if (!legs.every(l => !!l.isOurs)) continue
+                const r = Number(c.rating) || 0
+                if (!best || r > (Number(best.rating) || 0)) best = c
+            }
+            template = best
+        }
+        if (!template) {
+            notes && notes.push("class " + cls + ": no own connection to clone; frequency synthesis skipped")
+            return classRec
+        }
+        const cap = RouteAssistantOrsModel._capSynthesisCount(baseFreq, requestedExtras, conns.length)
+        if (cap <= 0) {
+            notes && notes.push("class " + cls + ": frequency synthesis skipped (saturation cap)")
+            return classRec
+        }
+        if (cap < requestedExtras) {
+            notes && notes.push("class " + cls + ": frequency synthesis capped at +" + cap
+                + " (50% of current); requested +" + requestedExtras)
+        }
+        const synth = []
+        for (let i = 0; i < cap; i++) {
+            const cloneLegs = (template.legs || []).map(l => Object.assign({}, l, {
+                isOurs:     l.isGround ? !!l.isOurs : true,
+                flightCode: l.isGround ? l.flightCode : "synth-" + cls + "-" + (i + 1),
+                flightId:   l.isGround ? l.flightId   : null
+            }))
+            synth.push({
+                rating:        Number(template.rating) || 0,
+                totalDuration: template.totalDuration,
+                totalPrice:    template.totalPrice,
+                bookable:      true,
+                legs:          cloneLegs,
+                _synthetic:    true
+            })
+        }
+        notes && notes.push("class " + cls + ": synthesised " + cap
+            + " additional own connection" + (cap === 1 ? "" : "s")
+            + " to project +" + cap + "/wk")
+        return Object.assign({}, classRec, {connections: conns.concat(synth)})
+    }
+
+    /**
+     * Cap the synthesised connection count so the softmax doesn't saturate.
+     * Limits: (i) the requested extras, (ii) ceil(0.5 × current freq) — adding
+     * 30 synthetic rows to a 5-row list pushes our share to ~1.0 in a way
+     * the user can't sanity-check, (iii) MAX_FOR_SOFTMAX − existing rows so
+     * the projection stays inside the same softmax window the model uses.
+     */
+    static _capSynthesisCount(baseFreq, requestedExtras, existingTotal) {
+        if (!(requestedExtras > 0)) return 0
+        const halfFreqCap = Math.max(1, Math.ceil(0.5 * (baseFreq || 0)))
+        const headroom    = Math.max(0, RouteAssistantOrsModel.MAX_FOR_SOFTMAX - (existingTotal || 0))
+        return Math.max(0, Math.min(requestedExtras, halfFreqCap, headroom))
     }
 
     /**
@@ -323,6 +492,43 @@ class RouteAssistantOrsModel {
             connectionsCount: tagged.length,
             ownConnectionsCount: ourIdx.length,
             priceRatio:       priceRatio
+        }
+    }
+
+    /**
+     * Cargo per-class projection. Mirrors `_projectClass` but simpler:
+     * no comfort lift (cargo rating in AS doesn't shift with comfort) and
+     * no price-driven rating shift (the cargo multiplier scales yield,
+     * not rating — see `cargoYieldPerKgKm` override on the projected
+     * estimate). The result still surfaces baseline+projected share so
+     * the panel can show share-vs-competitors.
+     */
+    static _projectCargo(arg) {
+        const conns = arg.classRec.connections.slice(0, RouteAssistantOrsModel.MAX_FOR_SOFTMAX)
+        const T = arg.T
+        const tagged = conns.map((c, idx) => {
+            const flightLegs = (c.legs || []).filter(l => !l.isGround)
+            if (!flightLegs.length) return {idx, conn: c, oursAll: false, oursAny: false, isNonstop: false, rating: _safeNumber(c.rating) || 0}
+            const oursAll = flightLegs.every(l => !!l.isOurs)
+            const oursAny = flightLegs.some(l => !!l.isOurs)
+            return {idx, conn: c, oursAll, oursAny, isNonstop: flightLegs.length === 1, rating: _safeNumber(c.rating) || 0}
+        })
+        const ourIdx = []
+        for (let i = 0; i < tagged.length; i++) if (tagged[i].oursAll) ourIdx.push(i)
+        const ratings = tagged.map(t => t.rating)
+        const ranks = RouteAssistantOrsModel._reRank(tagged, ratings)
+        const share = RouteAssistantOrsModel._softmaxShare(ratings, ourIdx, T)
+        const ourRating = _maxOrNull(ourIdx.map(i => ratings[i]))
+        return {
+            baselineRating:   ourRating,
+            projectedRating:  ourRating,
+            baselineShare:    share,
+            projectedShare:   share,
+            baselineRanks:    ranks,
+            projectedRanks:   ranks,
+            connectionsCount: tagged.length,
+            ownConnectionsCount: ourIdx.length,
+            priceRatio:       0
         }
     }
 
@@ -440,9 +646,13 @@ class RouteAssistantOrsModel {
             paxScore:           route.paxScore,
             cargoScore:         route.cargoScore,
             paxDemandPool:      arg.paxDemandPool,
-            cargoDemandPool:    route.cargoDemandPool,
+            cargoDemandPool:    arg.cargoDemandPool != null ? arg.cargoDemandPool : route.cargoDemandPool,
             useRealDemandForLF: !!arg.useRealDemand,
-            override:           {paxLF: paxLF, yieldPerKm: arg.yieldPerKm},
+            override:           {
+                paxLF:              paxLF,
+                yieldPerKm:         arg.yieldPerKm,
+                cargoYieldPerKgKm:  arg.cargoYieldPerKgKm
+            },
             economics:          arg.economics,
             aircraftAge:        route.aircraftAge,
             useDistanceFuel:    !!route.useDistanceFuel,

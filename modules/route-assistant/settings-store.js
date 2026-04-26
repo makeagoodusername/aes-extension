@@ -459,22 +459,25 @@ class RouteAssistantSettings {
             perRouteTemperature:             {},
             perRouteTemperatureCalibratedAt: {}
         }
-        // Validate per-route scenarios — every entry must be an object with
-        // numeric priceMultiplier / numeric-or-null frequency / numeric
-        // comfortDelta. Drop malformed records silently rather than crash.
+        // Validate per-route scenarios — every entry must carry per-class
+        // priceMultipliers (Y/C/F numeric in [0.30, 3.00]) or the legacy
+        // single priceMultiplier (auto-migrated to all three classes).
+        // Drop malformed records silently rather than crash.
         const sbr = b.lastScenarioByRoute
         if (sbr && typeof sbr === "object") {
             for (const k in sbr) {
                 const v = sbr[k]
                 if (!v || typeof v !== "object") continue
-                const pm = Number(v.priceMultiplier)
-                const cd = Number(v.comfortDelta)
-                if (!isFinite(pm) || pm <= 0) continue
+                const pms = RouteAssistantSettings._coerceScenarioMultipliers(v)
+                if (!pms) continue
+                const cd  = Number(v.comfortDelta)
+                const cm  = RouteAssistantSettings._coerceCargoMultiplier(v.cargoMultiplier)
                 out.lastScenarioByRoute[k] = {
-                    priceMultiplier: pm,
-                    frequency:       (v.frequency == null ? null
-                                       : (isFinite(Number(v.frequency)) ? Number(v.frequency) : null)),
-                    comfortDelta:    isFinite(cd) ? cd : 0
+                    priceMultipliers: pms,
+                    cargoMultiplier:  cm,
+                    frequency:        (v.frequency == null ? null
+                                        : (isFinite(Number(v.frequency)) ? Number(v.frequency) : null)),
+                    comfortDelta:     isFinite(cd) ? cd : 0
                 }
             }
         }
@@ -504,6 +507,38 @@ class RouteAssistantSettings {
             out._legacyLastScenario = Object.assign({}, b.lastScenario)
         }
         return out
+    }
+
+    /**
+     * Coerce a saved per-route scenario into the slice 2 shape:
+     *   priceMultipliers: {Y, C, F}, each in [0.30, 3.00].
+     * Accepts the slice 1 shape (single `priceMultiplier` numeric) and
+     * fans the legacy value out to all three classes. Returns null when
+     * neither shape provides a usable Y multiplier (caller drops the
+     * record entirely).
+     */
+    static _coerceScenarioMultipliers(v) {
+        const clamp = (n) => {
+            const x = Number(n)
+            if (!isFinite(x) || x <= 0) return null
+            return Math.max(0.30, Math.min(3.00, x))
+        }
+        const pm = v && v.priceMultipliers
+        if (pm && typeof pm === "object") {
+            const Y = clamp(pm.Y), C = clamp(pm.C), F = clamp(pm.F)
+            if (Y == null && C == null && F == null) return null
+            return {Y: Y != null ? Y : 1, C: C != null ? C : 1, F: F != null ? F : 1}
+        }
+        const legacy = clamp(v && v.priceMultiplier)
+        if (legacy == null) return null
+        return {Y: legacy, C: legacy, F: legacy}
+    }
+
+    /** Coerce a `cargoMultiplier` numeric to [0.30, 3.00]; absent → 1.0. */
+    static _coerceCargoMultiplier(v) {
+        const x = Number(v)
+        if (!isFinite(x) || x <= 0) return 1
+        return Math.max(0.30, Math.min(3.00, x))
     }
 
     /**

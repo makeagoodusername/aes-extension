@@ -9,6 +9,18 @@
  *
  * Splitting per-airport outcomes into their own keys avoids read-modify-write
  * races between concurrent worker tabs finishing at nearly the same time.
+ *
+ * Queue entry shape (one per country in the queue):
+ *   {
+ *     countryId, countryCode, countryName,
+ *     paxThreshold, cargoThreshold,           // 0–10, ignored when airportWhitelist is set
+ *     exceptions: [iata...],                  // skip these IATAs
+ *     airportWhitelist?: [iata...]            // optional — when set, only listed
+ *                                             //   airports are opened; thresholds
+ *                                             //   are bypassed. Used by the bulk
+ *                                             //   Schedule-panel flow to enqueue
+ *                                             //   specific airports per country.
+ *   }
  */
 class StationAutomationStorage {
     static _queueKey(server, airlineId) {
