@@ -1,23 +1,96 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+<head>
+    <meta charset="UTF-8">
+    <title>AES — Data Manager</title>
+    <link rel="stylesheet" href="css/design-tokens.css">
+    <link rel="stylesheet" href="css/components.css">
     <script src="js/jquery-3.4.1.min.js"></script>
-    <title>AirlineSim Enchancement Suite Data Manager</title>
-  </head>
-  <body>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: var(--aes-bone);
+            color: var(--aes-oxide);
+            font-family: var(--aes-font-display);
+            line-height: var(--aes-lh-body);
+            min-height: 100vh;
+        }
+        .aes-page {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: var(--aes-sp-6) var(--aes-sp-4);
+        }
+        .aes-page__masthead {
+            display: flex;
+            align-items: flex-end;
+            gap: var(--aes-sp-3);
+            margin-bottom: var(--aes-sp-1);
+        }
+        .aes-page__h1 {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-h1);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            line-height: var(--aes-lh-tight);
+            color: var(--aes-oxide);
+            margin: 0;
+            flex: 1 1 auto;
+        }
+        .aes-page__subtitle {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-body);
+            color: var(--aes-oxide-2);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            margin: var(--aes-sp-1) 0 var(--aes-sp-4);
+        }
+        .aes-filter-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--aes-sp-3);
+            margin: var(--aes-sp-4) 0;
+        }
+        .aes-filter-cell {
+            display: flex;
+            flex-direction: column;
+            gap: var(--aes-sp-1);
+        }
+        .aes-filter-cell label {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-micro);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            color: var(--aes-slate);
+        }
+        .aes-empty {
+            padding: var(--aes-sp-5);
+            text-align: center;
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-body);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            color: var(--aes-slate);
+            border: var(--aes-bw-1) dashed var(--aes-paper-rule);
+        }
+    </style>
+</head>
+<body>
+    <main class="aes-page" id="display">
+        <div class="aes-page__masthead">
+            <h1 class="aes-page__h1">Data Manager</h1>
+            <span class="aes-stamp" id="aes-version-stamp">v0.0.0</span>
+        </div>
+        <p class="aes-page__subtitle">AirlineSim Enhancement Suite — local snapshot inspector</p>
 
-    <div class="container pt-3" id="display">
-      <h1>AirlineSim Enchancement Suite Data Manager</h1>
-      <p>Page under development...</p>
-      <div class="form-inline" id="aes-div-topSelect">
-      </div>
-      <div id="aes-div-dataDisplay">
-      </div>
+        <hr class="aes-double-rule" style="margin: 0 0 var(--aes-sp-4);">
 
+        <div class="aes-filter-row" id="aes-div-topSelect"></div>
 
-
-    </div>
-  </body>
-  <script src="options.js"></script>
+        <div id="aes-div-dataDisplay"></div>
+    </main>
+    <script src="options.js"></script>
+</body>
 </html>

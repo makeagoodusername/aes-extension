@@ -1,0 +1,136 @@
+/* ===========================================================
+   AES "CONCRETE" — design-tokens.css
+   Late-brutalist neo-raw: bone canvas, oxide structure, rust signal.
+   These 14 colour tokens replace ~118 hardcoded hex values across modules.
+   Discipline: no value outside this file. If it doesn't fit, argue it back.
+   =========================================================== */
+
+:root {
+    /* ---- Bone family (light surfaces) -------------------- */
+    --aes-bone:        #F4F1EA;          /* paper — primary panel bg */
+    --aes-bone-2:      #ECE7DC;          /* sunk regions, table stripes */
+    --aes-bone-3:      #E0DAC8;          /* muted fills, disabled bg */
+    --aes-paper-rule:  #C9C0B0;          /* hairline */
+
+    /* ---- Oxide family (text & structure) ----------------- */
+    --aes-oxide:       #2B2520;          /* primary text & borders */
+    --aes-oxide-2:     #4A413B;          /* secondary text */
+    --aes-slate:       #7A6F66;          /* meta / hint / muted text */
+
+    /* ---- Dark variant (toasts, status overlays) ---------- */
+    --aes-oxide-bg:    #1A1612;          /* dark panel bg */
+    --aes-oxide-bg-2:  #28221C;          /* dark sunk */
+    --aes-bone-fg:     #F4F1EA;          /* dark text (= bone, used as fg on dark) */
+    --aes-oxide-rule:  #4A413B;          /* dark hairline */
+
+    /* ---- Signal accent ----------------------------------- */
+    --aes-rust:        #B8472A;          /* primary accent (CTA, focus, active) */
+    --aes-rust-soft:   rgba(184, 71, 42, 0.12);  /* accent fill */
+    --aes-rust-deep:   #8B3520;          /* pressed / hover deepen */
+    --aes-rust-fg:     #F4F1EA;          /* fg on rust fill */
+
+    /* ---- Status (semantic — never decoration) ------------ */
+    --aes-cobalt:        #3656A8;        /* info */
+    --aes-cobalt-soft:   rgba(54, 86, 168, 0.14);
+    --aes-moss:          #2F5F3F;        /* success / OK / owned */
+    --aes-moss-soft:     rgba(47, 95, 63, 0.14);
+    --aes-amber:         #B8861F;        /* warning / caution */
+    --aes-amber-soft:    rgba(184, 134, 31, 0.14);
+    --aes-crimson:       #8B2727;        /* error / failure */
+    --aes-crimson-soft:  rgba(139, 39, 39, 0.14);
+
+    /* ---- Typography: fonts ------------------------------- */
+    --aes-font-display: 'Inter Tight', 'Helvetica Now Display', 'Helvetica Neue',
+                        system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --aes-font-mono:    'JetBrains Mono', 'IBM Plex Mono', ui-monospace,
+                        SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* ---- Typography: sizes ------------------------------- */
+    --aes-fs-micro:    10px;             /* timestamps, super-meta */
+    --aes-fs-small:    11px;             /* chrome labels, buttons */
+    --aes-fs-body:     12px;             /* default body, table cells */
+    --aes-fs-lead:     14px;             /* section labels */
+    --aes-fs-h3:       18px;             /* subsection headers, modal titles */
+    --aes-fs-h2:       24px;             /* panel titles */
+    --aes-fs-h1:       36px;             /* popup hero, options page H1 */
+    --aes-fs-display:  56px;             /* about-dialog version stamp (rare) */
+
+    /* ---- Typography: weights ----------------------------- */
+    --aes-fw-regular:  400;
+    --aes-fw-medium:   500;
+    --aes-fw-bold:     700;
+    --aes-fw-display:  800;              /* Inter Tight ExtraBold — brutalist signal */
+    --aes-fw-black:    900;
+
+    /* ---- Typography: leading & tracking ------------------ */
+    --aes-lh-tight:    1.15;
+    --aes-lh-body:     1.4;
+    --aes-tracking-caps: 0.08em;         /* UPPERCASE section labels */
+    --aes-tracking-mono: 0.02em;         /* breathe data slightly */
+
+    /* ---- Spacing — strict 4px grid (only allowed scale) -- */
+    --aes-sp-1:  4px;
+    --aes-sp-2:  8px;
+    --aes-sp-3:  12px;
+    --aes-sp-4:  16px;
+    --aes-sp-5:  24px;
+    --aes-sp-6:  32px;
+    --aes-sp-7:  48px;
+
+    /* ---- Geometry ---------------------------------------- */
+    --aes-radius:  0;                    /* sharp corners — non-negotiable */
+    --aes-bw-1:    1px;                  /* hairline rule */
+    --aes-bw-2:    2px;                  /* chunky border — buttons, panels */
+    --aes-bw-3:    3px;                  /* emphasis seam — selected, focus */
+
+    /* ---- Z-index ladder (ceiling at 10001, AS-safe) ------ */
+    --aes-z-base:    1;
+    --aes-z-overlay: 100;
+    --aes-z-panel:   1000;
+    --aes-z-popover: 9000;
+    --aes-z-modal:   10000;
+    --aes-z-toast:   10001;
+
+    /* ---- Transitions (sparse, functional, never decorative) */
+    --aes-tr-fast:    80ms linear;
+    --aes-tr-medium:  140ms linear;
+}
+
+/* ===========================================================
+   Dark-surface variant — applied via [data-aes-theme="dark"]
+   on toast hosts, status strips, and dark dialogs. Re-binds bone↔oxide
+   so the same primitive classes work without forking selectors.
+   =========================================================== */
+[data-aes-theme="dark"] {
+    --aes-bone:       #1A1612;
+    --aes-bone-2:     #28221C;
+    --aes-bone-3:     #2E2823;
+    --aes-paper-rule: #4A413B;
+    --aes-oxide:      #F4F1EA;
+    --aes-oxide-2:    #C9BFB5;
+    --aes-slate:      #8A7F75;
+}
+
+/* ===========================================================
+   Font faces — shipped locally, zero network on AS pages.
+   Paths are relative to this CSS file (resolves to extension origin
+   when injected via content_scripts.css; manifest declares fonts/*
+   in web_accessible_resources for host-page font requests).
+   =========================================================== */
+
+@font-face {
+    font-family: 'Inter Tight';
+    src: url('../fonts/InterTight.woff2') format('woff2-variations'),
+         url('../fonts/InterTight.woff2') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'JetBrains Mono';
+    src: url('../fonts/JetBrainsMono-Regular.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}

@@ -14,6 +14,9 @@
  * Live updates: subscribes to chrome.storage.onChanged and re-renders when
  * either the queue record or any per-airport result blob for the active run
  * changes. Worker tabs writing results trigger an immediate strip refresh.
+ *
+ * Visual styling consumes design-tokens.css + components.css primitives
+ * (.aes-dot, .aes-badge, .aes-progress, .aes-link). Zero hardcoded hex.
  */
 class StationAutomationStatusStrip {
     /**
@@ -101,7 +104,6 @@ class StationAutomationStatusStrip {
         this.container.innerHTML = ""
 
         if (summary.kind === "empty" && this.style === "compact") {
-            // Compact: hide entirely when there's nothing to say.
             this.container.style.display = "none"
             return
         }
@@ -179,95 +181,120 @@ class StationAutomationStatusStrip {
 
     _renderFull(s) {
         const wrap = document.createElement("div")
-        wrap.style.cssText = "display:flex;flex-direction:column;gap:6px;"
-            + "padding:10px 12px;border:1px solid #374151;border-radius:4px;"
-            + "background:#0f1623;color:#d1d5db;font-size:12px;"
+        wrap.className = "aes-status-strip"
+        wrap.style.cssText = [
+            "display:flex",
+            "flex-direction:column",
+            "gap:var(--aes-sp-1)",
+            "padding:var(--aes-sp-2) var(--aes-sp-3)",
+            "border:var(--aes-bw-1) solid var(--aes-paper-rule)",
+            "background:var(--aes-bone-2)",
+            "color:var(--aes-oxide)",
+            "font-family:var(--aes-font-display)",
+            "font-size:var(--aes-fs-body)"
+        ].join(";")
 
         if (s.kind === "empty") {
-            wrap.style.color = "#6b7280"
-            wrap.textContent = "Queue empty. Use the button below to bulk-add airports from scraped data."
+            wrap.style.color = "var(--aes-slate)"
+            wrap.style.fontStyle = "italic"
+            wrap.textContent = "QUEUE EMPTY — USE BUTTON BELOW TO BULK-ADD AIRPORTS."
+            wrap.style.textTransform = "uppercase"
+            wrap.style.letterSpacing = "var(--aes-tracking-caps)"
+            wrap.style.fontSize = "var(--aes-fs-small)"
             return wrap
         }
 
         const head = document.createElement("div")
-        head.style.cssText = "display:flex;align-items:center;gap:8px;"
+        head.style.cssText = "display:flex;align-items:center;gap:var(--aes-sp-2);"
+
         const dot = document.createElement("span")
-        dot.style.cssText = "width:8px;height:8px;border-radius:50%;flex-shrink:0;"
+        dot.className = "aes-dot " + this._dotVariantFor(s)
+
         const label = document.createElement("span")
-        label.style.cssText = "font-weight:600;color:#f3f4f6;"
+        label.style.cssText = [
+            "font-family:var(--aes-font-display)",
+            "font-weight:var(--aes-fw-display)",
+            "text-transform:uppercase",
+            "letter-spacing:var(--aes-tracking-caps)",
+            "font-size:var(--aes-fs-small)",
+            "color:var(--aes-oxide)"
+        ].join(";")
+
+        const detail = document.createElement("span")
+        detail.style.cssText = [
+            "font-family:var(--aes-font-mono)",
+            "font-size:var(--aes-fs-small)",
+            "color:var(--aes-oxide-2)",
+            "letter-spacing:var(--aes-tracking-mono)"
+        ].join(";")
 
         if (s.kind === "queued") {
-            dot.style.background = "#3b82f6"
-            label.textContent = "Queued"
-            const detail = document.createElement("span")
-            detail.style.color = "#9ca3af"
+            label.textContent = "QUEUED"
             const cw = s.airports
                 ? `${s.airports} airport${s.airports === 1 ? "" : "s"} across ${s.countries} ${s.countries === 1 ? "country" : "countries"}`
                 : `${s.countries} ${s.countries === 1 ? "country" : "countries"} (threshold-based)`
-            detail.textContent = "— " + cw
+            detail.textContent = "— " + cw.toUpperCase()
             head.append(dot, label, detail, this._spacer(), this._dashboardLink())
             wrap.append(head)
             return wrap
         }
 
         if (s.kind === "running") {
-            dot.style.background = "#fbbf24"
-            dot.style.animation = "aes-pulse 1s ease-in-out infinite"
-            label.textContent = "Running"
-            const detail = document.createElement("span")
-            detail.style.color = "#9ca3af"
-            detail.textContent = `— ${s.done}/${s.total} processed`
+            label.textContent = "RUNNING"
+            detail.textContent = `— ${s.done}/${s.total} PROCESSED`
             head.append(dot, label, detail, this._spacer(), this._dashboardLink())
             wrap.append(head)
-
-            wrap.append(this._renderProgressBar(s.pct))
+            wrap.append(this._renderProgressBar(s.pct, "amber"))
             wrap.append(this._renderCountChips(s, true))
-            this._ensurePulseKeyframes()
             return wrap
         }
 
         // done
-        dot.style.background = s.failed ? "#f87171" : "#34d399"
-        label.textContent = s.failed ? "Last run (with failures)" : "Last run"
-        const detail = document.createElement("span")
-        detail.style.color = "#9ca3af"
-        detail.textContent = `— ${s.done}/${s.total} processed${s.finishedAt ? " · " + this._relTime(s.finishedAt) : ""}`
-        head.append(dot, label, detail, this._spacer(), this._dashboardLink("Details"))
+        label.textContent = s.failed ? "LAST RUN — FAILURES" : "LAST RUN"
+        detail.textContent = `— ${s.done}/${s.total} PROCESSED${s.finishedAt ? " · " + this._relTime(s.finishedAt) : ""}`
+        head.append(dot, label, detail, this._spacer(), this._dashboardLink("DETAILS"))
         wrap.append(head)
         wrap.append(this._renderCountChips(s, false))
         return wrap
     }
 
-    _renderProgressBar(pct) {
+    _dotVariantFor(s) {
+        if (s.kind === "queued")  return "aes-dot--info"
+        if (s.kind === "running") return "aes-dot--warn"
+        if (s.kind === "done")    return s.failed ? "aes-dot--error" : "aes-dot--success"
+        return ""
+    }
+
+    _renderProgressBar(pct, variantHint) {
         const track = document.createElement("div")
-        track.style.cssText = "height:6px;background:#1f2937;border-radius:3px;overflow:hidden;"
+        const variant = variantHint ? "aes-progress--" + variantHint : ""
+        track.className = ("aes-progress " + variant).trim()
         const fill = document.createElement("div")
-        fill.style.cssText = `height:100%;background:#fbbf24;width:${pct}%;`
-            + `transition:width 0.3s ease-out;`
+        fill.className = "aes-progress__fill"
+        fill.style.width = pct + "%"
         track.append(fill)
         return track
     }
 
     _renderCountChips(s, includePending) {
         const row = document.createElement("div")
-        row.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;font-size:11px;"
-        const chip = (label, value, color) => {
-            if (!value && label !== "Opened") return null
+        row.style.cssText = "display:flex;gap:var(--aes-sp-1);flex-wrap:wrap;"
+        const chip = (label, value, variant) => {
+            if (!value && label !== "OPENED") return null
             const el = document.createElement("span")
-            el.style.cssText = `padding:1px 6px;border-radius:8px;`
-                + `background:${color}22;color:${color};border:1px solid ${color}55;`
+            el.className = "aes-badge" + (variant ? " aes-badge--" + variant : "")
             el.textContent = `${label} ${value}`
             return el
         }
         const items = [
-            chip("Opened",    s.ok,       "#34d399"),
-            chip("Existing",  s.existing, "#9ca3af"),
-            chip("Skipped",   s.skipped,  "#fbbf24"),
-            chip("Failed",    s.failed,   "#f87171"),
+            chip("OPENED",   s.ok,       "moss"),
+            chip("EXISTING", s.existing, ""),
+            chip("SKIPPED",  s.skipped,  "amber"),
+            chip("FAILED",   s.failed,   "crimson"),
         ]
         if (includePending) {
             const pending = Math.max(0, (s.total || 0) - (s.done || 0))
-            if (pending) items.push(chip("Pending", pending, "#60a5fa"))
+            if (pending) items.push(chip("PENDING", pending, "cobalt"))
         }
         for (const c of items) if (c) row.append(c)
         return row
@@ -275,9 +302,18 @@ class StationAutomationStatusStrip {
 
     _dashboardLink(label) {
         const a = document.createElement("a")
-        a.textContent = label || "Open Station Automation"
+        a.textContent = label || "OPEN STATION AUTOMATION"
         a.href = "#"
-        a.style.cssText = "color:#93c5fd;text-decoration:none;font-size:11px;flex-shrink:0;"
+        a.className = "aes-link"
+        a.style.cssText = [
+            "font-family:var(--aes-font-display)",
+            "font-size:var(--aes-fs-micro)",
+            "font-weight:var(--aes-fw-bold)",
+            "text-transform:uppercase",
+            "letter-spacing:var(--aes-tracking-caps)",
+            "flex-shrink:0",
+            "white-space:nowrap"
+        ].join(";")
         a.addEventListener("click", e => {
             e.preventDefault()
             this._navigateToDashboard()
@@ -295,25 +331,25 @@ class StationAutomationStatusStrip {
 
     _renderCompact(s) {
         const span = document.createElement("span")
-        span.style.cssText = "font-size:11px;padding:2px 6px;border-radius:8px;line-height:1.3;"
-            + "display:inline-flex;align-items:center;gap:4px;cursor:pointer;"
+        span.className = "aes-badge"
+        span.style.cssText = "cursor:pointer;display:inline-flex;align-items:center;gap:var(--aes-sp-1);"
 
         if (s.kind === "queued") {
-            span.style.background = "#1e3a8a"
-            span.style.color = "#bfdbfe"
-            span.textContent = `${s.airports || s.countries} queued`
+            span.classList.add("aes-badge--cobalt")
+            span.textContent = `${s.airports || s.countries} QUEUED`
             span.title = `${s.airports || s.countries} airports waiting in the Station Automation queue. Click to open.`
         } else if (s.kind === "running") {
-            span.style.background = "#78350f"
-            span.style.color = "#fde68a"
+            span.classList.add("aes-badge--amber")
             span.textContent = `${s.done}/${s.total} ⏵`
             span.title = `Station Automation running — ${s.done}/${s.total} processed.`
         } else if (s.kind === "done") {
-            span.style.background = s.failed ? "#7f1d1d" : "#064e3b"
-            span.style.color = s.failed ? "#fecaca" : "#a7f3d0"
-            span.textContent = s.failed
-                ? `${s.ok}/${s.total} (${s.failed} failed)`
-                : `${s.ok}/${s.total} ✓`
+            if (s.failed) {
+                span.classList.add("aes-badge--crimson")
+                span.textContent = `${s.ok}/${s.total} (${s.failed} FAILED)`
+            } else {
+                span.classList.add("aes-badge--moss")
+                span.textContent = `${s.ok}/${s.total} ✓`
+            }
             span.title = `Last run: ${s.ok} opened, ${s.existing} existing, ${s.skipped} skipped, ${s.failed} failed.`
         }
         span.addEventListener("click", () => this._navigateToDashboard())
@@ -323,27 +359,17 @@ class StationAutomationStatusStrip {
     // ---------- Helpers ----------
 
     _navigateToDashboard() {
-        // The dashboard URL is the same on every server; preserve the AS host.
         const host = window.location.hostname
         const url = `https://${host}/app/enterprise/dashboard`
-        // Open in a new tab so the user doesn't lose their scheduling-page state.
         window.open(url, "_blank")
     }
 
     _relTime(ms) {
         const diff = Date.now() - ms
-        if (diff < 0) return "just now"
-        if (diff < 60_000) return "just now"
-        if (diff < 3_600_000) return Math.round(diff / 60_000) + "m ago"
-        if (diff < 86_400_000) return Math.round(diff / 3_600_000) + "h ago"
-        return Math.round(diff / 86_400_000) + "d ago"
-    }
-
-    _ensurePulseKeyframes() {
-        if (document.getElementById("aes-status-strip-keyframes")) return
-        const s = document.createElement("style")
-        s.id = "aes-status-strip-keyframes"
-        s.textContent = "@keyframes aes-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }"
-        document.head.append(s)
+        if (diff < 0) return "JUST NOW"
+        if (diff < 60_000) return "JUST NOW"
+        if (diff < 3_600_000) return Math.round(diff / 60_000) + "M AGO"
+        if (diff < 86_400_000) return Math.round(diff / 3_600_000) + "H AGO"
+        return Math.round(diff / 86_400_000) + "D AGO"
     }
 }

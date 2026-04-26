@@ -121,6 +121,16 @@ class RouteAssistantPanel {
         // they open the panel within a day.
         this._alertRules = []
         this._alertFiredThisMount = new Set()
+
+        // U5 multi-select — ephemeral selection state. `_selectedRoutes`
+        // holds destIata strings (uppercased) currently checked; survives
+        // sort + filter changes (intersected against visible rows in
+        // _renderRows). NOT persisted to chrome.storage — selection is
+        // intra-session only. `_selectAnchorDest` is the last clicked row
+        // for shift+click range-select; tracked by destIata not index so
+        // sort changes don't invalidate it.
+        this._selectedRoutes   = new Set()
+        this._selectAnchorDest = null
     }
 
     async mount() {
@@ -689,6 +699,23 @@ class RouteAssistantPanel {
             mkItem("Modify yield / LF…",        () => this._openOverrideEditor(row)),
             mkItem("Open in ORS Sandbox 🧪",   () => this._openInOrsSandbox(row))
         )
+        // U5 multi-select — conditional Add/Remove entry. Only when ≥1
+        // route is already selected (avoids cluttering the menu in the
+        // 0-selected default case). Avoids duplicating "Edit overrides
+        // for N+1" / "Compare with" — those live in the U12 footer.
+        const destU = String(row.destIata || "").toUpperCase()
+        const selSize = this._selectedRoutes ? this._selectedRoutes.size : 0
+        if (selSize > 0) {
+            const inSel = this._selectedRoutes.has(destU)
+            const label = inSel
+                ? "Remove " + destU + " from selection (" + selSize + ")"
+                : "Add " + destU + " to selection (" + selSize + ")"
+            menu.append(mkItem(label, () => {
+                this._toggleRouteSelection(destU)
+                this._selectAnchorDest = destU
+                this._renderRows()
+            }))
+        }
         document.body.appendChild(menu)
         setTimeout(() => {
             document.addEventListener("click",   onDocClick, true)
@@ -868,6 +895,11 @@ class RouteAssistantPanel {
     _buildSkeleton() {
         this.root = document.createElement("div")
         this.root.id = "aes-route-assistant"
+        // Dark variant of the brutalist token system. Re-binds --aes-bone↔oxide
+        // at the root so descendants reading `var(--aes-bone)` get oxide-bg,
+        // and `var(--aes-oxide)` returns bone-fg, etc. Lets the dark RA panel
+        // share the same primitive class names as light surfaces (popup, options).
+        this.root.dataset.aesTheme = "dark"
         // Width is user-resizable via the left-edge drag handle. Persist
         // across sessions in settings.routeAssistant.panelWidth. Default
         // 1100px fits the standard column groups without horizontal
@@ -895,13 +927,13 @@ class RouteAssistantPanel {
             width: initialWidth + "px",
             maxWidth: "calc(100vw - 32px)",
             maxHeight: "95vh",
-            background: "#1f2937",
-            color: "#f3f4f6",
-            border: "1px solid #374151",
-            borderRadius: "6px",
-            boxShadow: "0 4px 20px rgba(0,0,0,.35)",
+            background: "var(--aes-bone)",                    // dark theme: oxide-bg
+            color: "var(--aes-oxide)",                        // dark theme: bone-fg
+            border: "var(--aes-bw-2) solid var(--aes-oxide)", // chunky brutalist border
+            borderRadius: "var(--aes-radius)",                // sharp corners
+            boxShadow: "none",                                // depth via tone, no shadows
             zIndex: "9999",
-            font: "13px/1.4 sans-serif",
+            font: "var(--aes-fs-body)/var(--aes-lh-body) var(--aes-font-display)",
             display: "flex",
             flexDirection: "column",
             overflow: "hidden"
@@ -970,18 +1002,19 @@ class RouteAssistantPanel {
         this.root.append(resizeHandle)
 
         // Link styling — scoped to #aes-route-assistant so the hover rules
-        // don't leak into AS's own UI. The icon row stays muted until the
-        // user hovers a row, then pops to full opacity.
+        // don't leak into AS's own UI. Brutalist treatment: bone-fg default,
+        // rust on hover, mono caps for IATA badges. The icon row stays muted
+        // until the user hovers a row, then pops to full opacity.
         const linkStyle = document.createElement("style")
         linkStyle.textContent = `
-            #aes-route-assistant a.aes-iata { color: #f3f4f6; font-weight: bold; text-decoration: none; }
-            #aes-route-assistant a.aes-iata:hover { color: #93c5fd; text-decoration: underline; }
-            #aes-route-assistant .aes-iata-icons { font-size: 10px; margin-left: 4px; opacity: 0.5; white-space: nowrap; }
-            #aes-route-assistant .aes-iata-icons a { color: #cbd5e1; text-decoration: none; margin-right: 3px; }
-            #aes-route-assistant .aes-iata-icons a:hover { color: #93c5fd; }
+            #aes-route-assistant a.aes-iata { color: var(--aes-oxide); font-family: var(--aes-font-mono); font-weight: var(--aes-fw-bold); text-decoration: none; letter-spacing: var(--aes-tracking-mono); }
+            #aes-route-assistant a.aes-iata:hover { color: var(--aes-rust); text-decoration: underline; }
+            #aes-route-assistant .aes-iata-icons { font-size: var(--aes-fs-micro); margin-left: var(--aes-sp-1); opacity: 0.5; white-space: nowrap; }
+            #aes-route-assistant .aes-iata-icons a { color: var(--aes-slate); text-decoration: none; margin-right: 3px; }
+            #aes-route-assistant .aes-iata-icons a:hover { color: var(--aes-rust); }
             #aes-route-assistant tr:hover .aes-iata-icons { opacity: 1; }
-            #aes-route-assistant a.aes-link { color: #93c5fd; text-decoration: none; }
-            #aes-route-assistant a.aes-link:hover { color: #dbeafe; text-decoration: underline; }
+            #aes-route-assistant a.aes-link { color: var(--aes-rust); text-decoration: none; }
+            #aes-route-assistant a.aes-link:hover { color: var(--aes-rust); text-decoration: underline; }
             #aes-route-assistant a.aes-aircraft-link { color: inherit; text-decoration: none; }
             #aes-route-assistant a.aes-aircraft-link:hover { text-decoration: underline; filter: brightness(1.2); }
         `
@@ -989,16 +1022,28 @@ class RouteAssistantPanel {
 
         const header = document.createElement("div")
         Object.assign(header.style, {
-            padding: "8px 12px",
-            background: "#111827",
-            borderBottom: "1px solid #374151",
+            padding: "var(--aes-sp-2) var(--aes-sp-3)",
+            background: "var(--aes-bone-2)",                  // dark theme: oxide-bg-2
+            // Signature double-rule seam — paper-rule line above an oxide line, 4px gutter
+            borderBottom: "var(--aes-bw-1) solid var(--aes-paper-rule)",
+            boxShadow: "0 var(--aes-sp-1) 0 0 var(--aes-bone), 0 calc(var(--aes-sp-1) + 1px) 0 0 var(--aes-oxide)",
+            marginBottom: "calc(var(--aes-sp-1) + 1px)",
             display: "flex",
             alignItems: "center",
-            gap: "8px"
+            gap: "var(--aes-sp-2)"
         })
         const title = document.createElement("strong")
-        title.textContent = "Route Assistant"
-        title.style.flex = "1"
+        title.textContent = "ROUTE ASSISTANT"
+        Object.assign(title.style, {
+            flex: "1",
+            fontFamily: "var(--aes-font-display)",
+            fontWeight: "var(--aes-fw-display)",
+            textTransform: "uppercase",
+            letterSpacing: "var(--aes-tracking-caps)",
+            fontSize: "var(--aes-fs-lead)",
+            color: "var(--aes-oxide)",                        // dark theme: bone-fg
+            lineHeight: "var(--aes-lh-tight)"
+        })
 
         const refreshBtn = makeBtn("↻", "Refresh from cache", () => this.refresh())
         // Compact toggle — collapses every settings-driven column group
@@ -1047,13 +1092,15 @@ class RouteAssistantPanel {
 
         this.statusBar = document.createElement("div")
         Object.assign(this.statusBar.style, {
-            padding: "6px 12px",
-            background: "#111827",
-            borderBottom: "1px solid #374151",
-            color: "#9ca3af",
-            fontSize: "11px",
+            padding: "var(--aes-sp-1) var(--aes-sp-3)",
+            background: "var(--aes-bone-2)",
+            borderBottom: "var(--aes-bw-1) solid var(--aes-paper-rule)",
+            color: "var(--aes-slate)",
+            fontFamily: "var(--aes-font-mono)",
+            fontSize: "var(--aes-fs-small)",
+            letterSpacing: "var(--aes-tracking-mono)",
             display: "flex",
-            gap: "8px",
+            gap: "var(--aes-sp-2)",
             flexWrap: "wrap",
             alignItems: "center"
         })
@@ -1063,21 +1110,23 @@ class RouteAssistantPanel {
         // empty-fleet case.
         this.controlsHost = document.createElement("div")
         Object.assign(this.controlsHost.style, {
-            padding: "6px 12px",
-            background: "#0f1623",
-            borderBottom: "1px solid #374151",
+            padding: "var(--aes-sp-1) var(--aes-sp-3)",
+            background: "var(--aes-bone)",
+            borderBottom: "var(--aes-bw-1) solid var(--aes-paper-rule)",
             display: "flex",
-            gap: "8px",
+            gap: "var(--aes-sp-2)",
             flexWrap: "wrap",
             alignItems: "center",
-            fontSize: "11px"
+            fontFamily: "var(--aes-font-display)",
+            fontSize: "var(--aes-fs-small)",
+            color: "var(--aes-oxide)"
         })
 
         this.settingsHost = document.createElement("div")
         Object.assign(this.settingsHost.style, {
-            padding: "8px 12px",
-            background: "#0f1623",
-            borderBottom: "1px solid #374151",
+            padding: "var(--aes-sp-2) var(--aes-sp-3)",
+            background: "var(--aes-bone)",
+            borderBottom: "var(--aes-bw-1) solid var(--aes-paper-rule)",
             display: "none",
             // Cap at 50vh so the table below always gets meaningful
             // space — the drawer grew with the pricing / yield /
@@ -1087,12 +1136,14 @@ class RouteAssistantPanel {
             maxHeight: "50vh",
             overflowY: "auto",
             flexShrink: "0",
-            fontSize: "11px"
+            fontFamily: "var(--aes-font-display)",
+            fontSize: "var(--aes-fs-small)",
+            color: "var(--aes-oxide)"
         })
 
         this.body = document.createElement("div")
         Object.assign(this.body.style, {
-            padding: "8px 12px",
+            padding: "var(--aes-sp-2) var(--aes-sp-3)",
             overflowY: "auto",
             // Horizontal scroll within the body when the table is wider
             // than the panel — keeps the panel from blowing past its
@@ -2225,11 +2276,20 @@ class RouteAssistantPanel {
         const others = list.filter(h => !this.hubIata || h !== this.hubIata.toUpperCase())
         if (!others.length) return
         const wrap = document.createElement("label")
-        wrap.style.cssText = "display:flex;gap:5px;align-items:center;color:#9ca3af;"
+        wrap.style.cssText = [
+            "display:flex",
+            "gap:var(--aes-sp-1)",
+            "align-items:center",
+            "color:var(--aes-slate)",
+            "font-family:var(--aes-font-display)",
+            "font-size:var(--aes-fs-micro)",
+            "text-transform:uppercase",
+            "letter-spacing:var(--aes-tracking-caps)"
+        ].join(";")
         wrap.title = "Recent hubs — click or use Alt+1..5 to jump"
-        wrap.append(document.createTextNode("Hubs"))
+        wrap.append(document.createTextNode("HUBS"))
         const inner = document.createElement("span")
-        inner.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;align-items:center;"
+        inner.style.cssText = "display:flex;gap:var(--aes-sp-1);flex-wrap:wrap;align-items:center;"
         for (let i = 0; i < others.length && i < 5; i++) {
             const hub = others[i]
             const altIdx = list.indexOf(hub) + 1
@@ -2237,15 +2297,13 @@ class RouteAssistantPanel {
             btn.type = "button"
             btn.textContent = hub
             btn.title = "Alt+" + altIdx + " — jump to " + hub
-            btn.style.cssText = "padding:2px 7px;border-radius:10px;font-size:11px;cursor:pointer;"
-                + "background:transparent;color:#cbd5e1;border:1px solid #475569;"
-                + "font-family:monospace;letter-spacing:0.5px;"
+            btn.className = "aes-chip"
             btn.addEventListener("click", () => {
                 window.location.assign("/app/com/scheduling/" + encodeURIComponent(hub))
             })
             const idxSup = document.createElement("sub")
             idxSup.textContent = String(altIdx)
-            idxSup.style.cssText = "color:#6b7280;margin-left:3px;font-size:9px;"
+            idxSup.style.cssText = "color:currentColor;opacity:0.6;margin-left:3px;font-size:9px;"
             btn.append(idxSup)
             inner.append(btn)
         }
@@ -2263,23 +2321,34 @@ class RouteAssistantPanel {
     _renderQuickFilterChips(host) {
         const f = (this.settings && this.settings.filters) || {}
         const wrap = document.createElement("label")
-        wrap.style.cssText = "display:flex;gap:5px;align-items:center;color:#9ca3af;"
+        wrap.style.cssText = [
+            "display:flex",
+            "gap:var(--aes-sp-1)",
+            "align-items:center",
+            "color:var(--aes-slate)",
+            "font-family:var(--aes-font-display)",
+            "font-size:var(--aes-fs-micro)",
+            "text-transform:uppercase",
+            "letter-spacing:var(--aes-tracking-caps)"
+        ].join(";")
         wrap.title = "Quick filters — toggle to restrict the visible row set"
-        wrap.append(document.createTextNode("Filters"))
+        wrap.append(document.createTextNode("FILTERS"))
         const inner = document.createElement("span")
-        inner.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;align-items:center;"
+        inner.style.cssText = "display:flex;gap:var(--aes-sp-1);flex-wrap:wrap;align-items:center;"
 
-        // Each chip: {field, label, activeColor, tooltip}.
+        // Each chip: {field, label, tooltip}. Active state uses the rust accent
+        // (single signal colour) instead of per-chip hues — the brutalist
+        // discipline keeps semantics tied to position + label, not colour.
         const chips = [
-            {field: "watchlistOnly", label: "★ Watch",     activeColor: "#fbbf24",
+            {field: "watchlistOnly", label: "★ WATCH",
              tooltip: "Show only ★-starred routes."},
-            {field: "lossMakers",    label: "💸 Loss",     activeColor: "#f87171",
+            {field: "lossMakers",    label: "💸 LOSS",
              tooltip: "Show only routes where profit/wk is negative."},
-            {field: "hasOverride",   label: "🛠 Override", activeColor: "#a78bfa",
+            {field: "hasOverride",   label: "🛠 OVERRIDE",
              tooltip: "Show only routes with a saved LF/yield override."},
-            {field: "hasNote",       label: "📝 Note",     activeColor: "#60a5fa",
+            {field: "hasNote",       label: "📝 NOTE",
              tooltip: "Show only routes with a saved route note."},
-            {field: "onlyChanged",   label: "Δ Changed",   activeColor: "#34d399",
+            {field: "onlyChanged",   label: "Δ CHANGED",
              tooltip: "Show only routes whose tracked fields moved since your last visit. Empty before the first baseline lands."}
         ]
 
@@ -2289,11 +2358,7 @@ class RouteAssistantPanel {
             btn.type = "button"
             btn.textContent = chip.label
             btn.title = chip.tooltip
-            btn.style.cssText = "padding:2px 8px;border-radius:10px;font-size:11px;cursor:pointer;"
-                + "transition:background 120ms ease, border-color 120ms ease, color 120ms ease;"
-                + (active
-                    ? ("background:" + chip.activeColor + ";color:#0f1623;border:1px solid " + chip.activeColor + ";font-weight:600;")
-                    : "background:transparent;color:#cbd5e1;border:1px solid #475569;")
+            btn.className = "aes-chip" + (active ? " aes-chip--active" : "")
             btn.addEventListener("click", async () => {
                 this.settings.filters = Object.assign({}, this.settings.filters || {})
                 this.settings.filters[chip.field] = !this.settings.filters[chip.field]
@@ -2515,6 +2580,165 @@ class RouteAssistantPanel {
      * `restore` can use. This keeps the helper free of store-specific
      * knowledge.
      */
+    /**
+     * U5 multi-select — checkbox click handler. Translates browser
+     * click+shift+meta state into selection-set mutations.
+     *
+     * - Plain click: toggle this row, set anchor.
+     * - Shift+click: range-select from anchor to clicked row in current
+     *   visible (sorted) order. If anchor null, treat as plain click.
+     * - ⌘/Ctrl+click: toggle (functionally identical to plain on
+     *   checkboxes since they're already discrete).
+     */
+    _handleRowSelectClick(row, ev) {
+        const destU = String(row.destIata || "").toUpperCase()
+        const isShift = !!(ev && ev.shiftKey)
+        if (isShift && this._selectAnchorDest && this._selectAnchorDest !== destU) {
+            // Range select from anchor → clicked row in current visible order.
+            const visible = (this.scoredRows || []).map(r => String(r.destIata || "").toUpperCase())
+            const anchorIdx = visible.indexOf(this._selectAnchorDest)
+            const clickIdx  = visible.indexOf(destU)
+            if (anchorIdx >= 0 && clickIdx >= 0) {
+                const lo = Math.min(anchorIdx, clickIdx)
+                const hi = Math.max(anchorIdx, clickIdx)
+                for (let i = lo; i <= hi; i++) this._selectedRoutes.add(visible[i])
+            } else {
+                // Anchor is no longer visible — fall back to plain toggle.
+                this._toggleRouteSelection(destU)
+            }
+        } else {
+            this._toggleRouteSelection(destU)
+            this._selectAnchorDest = destU
+        }
+        this._renderRows()
+    }
+
+    /** Internal — flip a destIata's membership in `_selectedRoutes`. */
+    _toggleRouteSelection(destU) {
+        if (this._selectedRoutes.has(destU)) this._selectedRoutes.delete(destU)
+        else                                  this._selectedRoutes.add(destU)
+    }
+
+    /**
+     * U12 selection footer — count chip + glanceable totals + bulk-action
+     * buttons. Mounted into `tableHost` AFTER `_buildTable` runs.
+     * Sticky-bottom so it pins to the visible edge during long-table
+     * scroll. Skipped entirely when in Wave View / ORS Sandbox modes
+     * (selection state is preserved in memory, footer just doesn't render).
+     */
+    _renderSelectionFooter(visibleRows) {
+        if (!this._selectedRoutes || !this._selectedRoutes.size) return null
+        const wave = this.settings && this.settings.waveView
+        const sb   = this.settings && this.settings.orsSandbox && this.settings.orsSandbox.enabled
+        if (wave || sb) return null
+
+        const visibleSelected = (visibleRows || []).filter(r =>
+            this._selectedRoutes.has(String(r.destIata || "").toUpperCase()))
+        const N = visibleSelected.length
+
+        // Metrics — single reduce over the selected ∩ visible set.
+        let sumProfit = 0, sumScore = 0, sumShare = 0
+        let countProfit = 0, countScore = 0, countShare = 0
+        for (const r of visibleSelected) {
+            if (typeof r.profitPerWeek === "number" && isFinite(r.profitPerWeek)) {
+                sumProfit += r.profitPerWeek
+                countProfit++
+            }
+            if (typeof r.score === "number" && isFinite(r.score)) {
+                sumScore += r.score
+                countScore++
+            }
+            if (typeof r.ourPaxShare === "number" && isFinite(r.ourPaxShare)) {
+                sumShare += r.ourPaxShare
+                countShare++
+            }
+        }
+        const avgScore = countScore > 0 ? Math.round(sumScore / countScore) : null
+        const avgShare = countShare > 0 ? (sumShare / countShare) : null
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "position:sticky;bottom:0;z-index:3;"
+            + "padding:6px 12px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;"
+            + "background:#0f1623;border-top:1px solid #475569;"
+            + "box-shadow:0 -4px 8px rgba(0,0,0,0.25);font-size:12px;color:#e5e7eb;"
+
+        // Count chip.
+        const count = document.createElement("strong")
+        count.textContent = N + " selected"
+        count.style.color = "#a78bfa"
+        wrap.append(count)
+
+        // Σprofit/wk chip — formatted compact AS$ (k/M suffixes).
+        const profitChip = document.createElement("span")
+        profitChip.style.cssText = "color:#cbd5e1;"
+        profitChip.innerHTML = "Σ profit/wk: <strong>"
+            + (countProfit > 0 ? _formatCompactCurrency(sumProfit) : "—")
+            + "</strong>"
+        if (countProfit < N) {
+            profitChip.title = (N - countProfit) + " of " + N + " selected routes don't have profit data yet."
+        }
+        wrap.append(profitChip)
+
+        // Avg score chip.
+        const scoreChip = document.createElement("span")
+        scoreChip.style.cssText = "color:#cbd5e1;"
+        scoreChip.innerHTML = "avg score: <strong>" + (avgScore != null ? avgScore : "—") + "</strong>"
+        wrap.append(scoreChip)
+
+        // Avg ourPaxShare chip.
+        const shareChip = document.createElement("span")
+        shareChip.style.cssText = "color:#cbd5e1;"
+        shareChip.innerHTML = "avg share: <strong>"
+            + (avgShare != null ? (Math.round(avgShare * 10) / 10) + "%" : "—")
+            + "</strong>"
+        wrap.append(shareChip)
+
+        // Spacer pushes action buttons to the right.
+        const spacer = document.createElement("span")
+        spacer.style.flex = "1"
+        wrap.append(spacer)
+
+        // Bulk action buttons.
+        const editBtn = document.createElement("button")
+        editBtn.type = "button"
+        editBtn.textContent = "Edit overrides…"
+        editBtn.style.cssText = "background:#4c1d95;color:#fdf4ff;border:1px solid #7c3aed;"
+            + "border-radius:3px;padding:3px 12px;font-size:11px;cursor:pointer;"
+        editBtn.title = "Apply yield / LF / cargo overrides to all selected routes."
+        editBtn.addEventListener("click", () => this._openBulkOverrideEditor(visibleSelected))
+        wrap.append(editBtn)
+
+        const compareBtn = document.createElement("button")
+        compareBtn.type = "button"
+        compareBtn.textContent = "Compare"
+        compareBtn.disabled = N !== 2
+        compareBtn.style.cssText = "background:" + (N === 2 ? "#1d4ed8" : "#1f2937") + ";"
+            + "color:" + (N === 2 ? "#dbeafe" : "#6b7280") + ";"
+            + "border:1px solid " + (N === 2 ? "#3b82f6" : "#475569") + ";"
+            + "border-radius:3px;padding:3px 12px;font-size:11px;"
+            + "cursor:" + (N === 2 ? "pointer" : "not-allowed") + ";"
+        compareBtn.title = N === 2
+            ? "Open the side-by-side compare modal for these 2 routes."
+            : "Select exactly 2 routes to enable compare. Currently " + N + " selected."
+        if (N === 2) compareBtn.addEventListener("click", () => this._openCompareModal(visibleSelected))
+        wrap.append(compareBtn)
+
+        const clearBtn = document.createElement("button")
+        clearBtn.type = "button"
+        clearBtn.textContent = "Clear"
+        clearBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #475569;"
+            + "border-radius:3px;padding:3px 10px;font-size:11px;cursor:pointer;"
+        clearBtn.title = "Empty the selection."
+        clearBtn.addEventListener("click", () => {
+            this._selectedRoutes.clear()
+            this._selectAnchorDest = null
+            this._renderRows()
+        })
+        wrap.append(clearBtn)
+
+        return wrap
+    }
+
     async _undoableSave(arg) {
         let result
         try {
@@ -2980,6 +3204,29 @@ class RouteAssistantPanel {
 
         const sorted = this._sortRows(this.scoredRows)
 
+        // U5 multi-select — intersect `_selectedRoutes` with the visible
+        // (post-filter, post-sort) destIata set. Routes filtered out are
+        // dropped from selection; fire a brief info toast when ≥1 drops
+        // so the user knows it happened. Wired ONCE here (NOT per
+        // call-site) since every render-path eventually lands here.
+        if (this._selectedRoutes && this._selectedRoutes.size) {
+            const visibleSet = new Set(sorted.map(r => String(r.destIata || "").toUpperCase()))
+            let dropped = 0
+            for (const d of Array.from(this._selectedRoutes)) {
+                if (!visibleSet.has(d)) {
+                    this._selectedRoutes.delete(d)
+                    dropped++
+                }
+            }
+            if (this._selectAnchorDest && !visibleSet.has(this._selectAnchorDest)) {
+                this._selectAnchorDest = null
+            }
+            if (dropped > 0 && typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.info(dropped + " route" + (dropped === 1 ? "" : "s")
+                    + " hidden by filter — selection updated", {duration: 4000, id: "selection-drop"})
+            }
+        }
+
         // H slice 1 — Wave View hands the sorted rows off to the Gantt
         // renderer instead of drawing the table. We branch AFTER scoring
         // + sorting so Wave View honours the same filters, the same view
@@ -3101,6 +3348,12 @@ class RouteAssistantPanel {
             errBox.textContent = "Table render failed:\n" + (e && e.stack ? e.stack : String(e))
             this.tableHost.append(errBox)
         }
+
+        // U12 selection footer — rendered AFTER the table so it sticks to
+        // the visible bottom of tableHost during scroll. No-op when
+        // selection is empty or in a non-table panel mode.
+        const selFooter = this._renderSelectionFooter(visible)
+        if (selFooter) this.tableHost.append(selFooter)
 
         // Publish a slim top-routes snapshot for cross-feature consumers
         // (currently the Used Aircraft Scanner's route-fit metric). Capped
@@ -3868,18 +4121,17 @@ class RouteAssistantPanel {
     /**
      * Detect classes whose projected rating clamped at the ±50% guardrail.
      * Returns `{marker, tooltip}` for the projected rating cell, or null
-     * when no class clamped. Threshold matches RATING_CLAMP_LOW/HIGH = 0.5/1.5.
+     * when no class clamped. Reads the model's emitted notes — they are
+     * the authoritative source (the actual clamp condition depends on
+     * baseRating × α_price × priceRatio, not just priceRatio magnitude).
      */
     _clampedClasses(result) {
-        const perClass = result && result.perClass
-        if (!perClass) return null
+        const notes = result && result.notes
+        if (!Array.isArray(notes)) return null
         const hits = []
-        for (const cls of ["Y", "C", "F"]) {
-            const pc = perClass[cls]
-            if (!pc || !isFinite(Number(pc.priceRatio))) continue
-            const r = Number(pc.priceRatio)
-            if (r <= -0.5)      hits.push(cls + " (−50% floor)")
-            else if (r >= 0.5)  hits.push(cls + " (+50% ceiling)")
+        for (const n of notes) {
+            const m = /^class ([YCF]): projected rating clamped (low|high)/.exec(n)
+            if (m) hits.push(m[1] + " (" + (m[2] === "high" ? "+50% ceiling" : "−50% floor") + ")")
         }
         if (!hits.length) return null
         return {
@@ -4275,6 +4527,18 @@ class RouteAssistantPanel {
         // is opaque, but the row's TOP and BOTTOM edges may show data
         // bleeding through during scroll.
         groupRow.style.background = STICKY_GROUP_BG
+
+        // U5 multi-select — leading empty group-header cell for the
+        // checkbox column. No label; the column-header row below holds
+        // the actual select-all checkbox. Z-index matches other group
+        // header cells.
+        const selGroupTh = document.createElement("th")
+        selGroupTh.dataset.group = "select"
+        selGroupTh.style.cssText = "padding:2px 4px;font-size:10px;border-bottom:1px solid #374151;"
+            + "position:sticky;top:" + STICKY_GROUP_TOP + "px;left:0;z-index:5;"
+            + "background:" + STICKY_GROUP_BG + ";width:24px;"
+        groupRow.append(selGroupTh)
+
         let groupTh = null
         let groupSpan = 0
         let prevGroup = null
@@ -4313,6 +4577,40 @@ class RouteAssistantPanel {
         // Solid row background — same reason as groupRow above. Cell tints
         // still render on top of this via their own `background:` declarations.
         tr.style.background = STICKY_GROUP_BG
+
+        // U5 multi-select — leading select-all checkbox header. Three states:
+        // unchecked (none of visible selected), indeterminate (some selected),
+        // checked (all visible selected). Reads from `_selectedRoutes` ∩ rows.
+        const selHeaderTh = document.createElement("th")
+        selHeaderTh.dataset.group = "select"
+        selHeaderTh.style.cssText = "padding:4px 6px;border-bottom:1px solid #374151;"
+            + "text-align:center;width:24px;"
+            + "position:sticky;top:" + STICKY_HEAD_TOP + "px;left:0;z-index:5;"
+            + "background:" + STICKY_GROUP_BG + ";"
+        const selectAllCb = document.createElement("input")
+        selectAllCb.type = "checkbox"
+        selectAllCb.title = "Select / deselect every visible row"
+        const allDestIatas = rows.map(r => String(r.destIata || "").toUpperCase())
+        const allSelected  = allDestIatas.length > 0 && allDestIatas.every(d => this._selectedRoutes.has(d))
+        const someSelected = allDestIatas.some(d => this._selectedRoutes.has(d))
+        selectAllCb.checked = allSelected
+        selectAllCb.indeterminate = !allSelected && someSelected
+        selectAllCb.addEventListener("click", (e) => {
+            e.stopPropagation()
+            if (allSelected) {
+                // Currently all-selected → unselect every visible row.
+                for (const d of allDestIatas) this._selectedRoutes.delete(d)
+            } else {
+                // Otherwise → select every visible row (covers both unchecked
+                // and indeterminate starting states).
+                for (const d of allDestIatas) this._selectedRoutes.add(d)
+            }
+            this._selectAnchorDest = null
+            this._renderRows()
+        })
+        selHeaderTh.append(selectAllCb)
+        tr.append(selHeaderTh)
+
         for (const col of cols) {
             const th = document.createElement("th")
             th.textContent = col.label + (this.sortField === col.field
@@ -4370,6 +4668,17 @@ class RouteAssistantPanel {
             trow.style.cursor = "context-menu"
             trow.title = (trow.title || "") + (trow.title ? "\n" : "")
                 + "Right-click to override LF / yield for this route."
+
+            // U5 multi-select — purple left-edge band when this row is in
+            // the in-memory selection. 3px is enough to scan from across
+            // the table without competing with per-cell tints from
+            // COLUMN_GROUPS. Falls back to no border (the default) when
+            // not selected.
+            const destU = String(row.destIata || "").toUpperCase()
+            if (this._selectedRoutes.has(destU)) {
+                trow.style.borderLeft = "3px solid #a78bfa"
+            }
+
             trow.addEventListener("contextmenu", (e) => {
                 e.preventDefault()
                 this._openRowContextMenu(row, e.clientX, e.clientY)
@@ -4397,6 +4706,28 @@ class RouteAssistantPanel {
                     this._openRouteNotePopover(row, noteTrig)
                 }
             })
+
+            // U5 multi-select — leading checkbox cell. Click toggles this
+            // row; shift+click ranges from anchor; ⌘/ctrl+click toggles
+            // (same as plain since checkboxes are always discrete).
+            const selTd = document.createElement("td")
+            selTd.dataset.group = "select"
+            selTd.style.cssText = "padding:3px 6px;border-bottom:1px solid #2a3444;"
+                + "text-align:center;width:24px;"
+                + "position:sticky;left:0;z-index:1;background:" + STICKY_GROUP_BG + ";"
+            const rowCb = document.createElement("input")
+            rowCb.type = "checkbox"
+            rowCb.checked = this._selectedRoutes.has(destU)
+            rowCb.title = "Select " + destU
+            rowCb.addEventListener("click", (e) => {
+                // Stop propagation so the row click handler doesn't fire
+                // the override / service / note popover routing.
+                e.stopPropagation()
+                this._handleRowSelectClick(row, e)
+            })
+            selTd.append(rowCb)
+            trow.append(selTd)
+
             for (const col of cols) {
                 const td = document.createElement("td")
                 td.dataset.group = col.group   // U15 — hover-highlight target
@@ -4510,7 +4841,16 @@ class RouteAssistantPanel {
     _renderEmpty(msg) {
         this.tableHost.innerHTML = ""
         const p = document.createElement("p")
-        p.style.cssText = "color:#9ca3af;margin:6px 0;"
+        p.style.cssText = [
+            "color:var(--aes-slate)",
+            "margin:var(--aes-sp-1) 0",
+            "padding:var(--aes-sp-3)",
+            "border:var(--aes-bw-1) dashed var(--aes-paper-rule)",
+            "font-family:var(--aes-font-mono)",
+            "font-size:var(--aes-fs-small)",
+            "letter-spacing:var(--aes-tracking-mono)",
+            "text-align:center"
+        ].join(";")
         p.textContent = msg
         this.tableHost.append(p)
     }
@@ -9766,6 +10106,492 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Q2 bulk override editor — modal that applies one or more override
+     * fields across N selected routes in a single batch. Each input has
+     * an "apply this field" checkbox; only checked fields are written.
+     * For each route we read the previous record, merge the checked fields
+     * with the prev (preserving fields the user didn't touch + the route
+     * note), and save. The whole batch wraps in `_undoableSave` so a
+     * single click of Undo restores the prior records via parallel
+     * Promise.all writes.
+     *
+     * Confirms above N=20 (window.confirm). Above N=50 also opens a
+     * progress toast that updates as parallel saves resolve.
+     */
+    async _openBulkOverrideEditor(selectedRows) {
+        const rows = Array.isArray(selectedRows) ? selectedRows.filter(Boolean) : []
+        if (!rows.length) return
+        // Close any prior bulk modal.
+        const prior = document.getElementById("aes-bulk-override-modal")
+        if (prior && prior.parentNode) prior.parentNode.removeChild(prior)
+
+        // ----- Modal scaffold -----
+        const overlay = document.createElement("div")
+        overlay.id = "aes-bulk-override-modal"
+        overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);"
+            + "z-index:10001;display:flex;align-items:center;justify-content:center;"
+        const card = document.createElement("div")
+        card.style.cssText = "background:#1f2937;color:#f3f4f6;border:1px solid #4c1d95;"
+            + "border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.5);"
+            + "max-width:640px;max-height:80vh;width:90%;display:flex;flex-direction:column;"
+            + "font:12px/1.4 sans-serif;"
+        overlay.append(card)
+
+        const header = document.createElement("div")
+        header.style.cssText = "padding:10px 14px;border-bottom:1px solid #374151;"
+            + "display:flex;align-items:center;gap:10px;"
+        const title = document.createElement("strong")
+        title.textContent = "Edit overrides for " + rows.length + " route" + (rows.length === 1 ? "" : "s")
+        title.style.flex = "1"
+        title.style.color = "#a78bfa"
+        header.append(title)
+        const closeBtn = document.createElement("button")
+        closeBtn.type = "button"
+        closeBtn.textContent = "×"
+        closeBtn.style.cssText = "background:transparent;color:#9ca3af;border:none;cursor:pointer;"
+            + "font-size:18px;line-height:1;padding:0 4px;"
+        const close = () => {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
+            document.removeEventListener("keydown", onKey)
+        }
+        closeBtn.addEventListener("click", close)
+        header.append(closeBtn)
+        card.append(header)
+
+        // ----- Selected-routes chip list -----
+        const body = document.createElement("div")
+        body.style.cssText = "padding:10px 14px;overflow-y:auto;flex:1;display:flex;"
+            + "flex-direction:column;gap:10px;"
+        const chipWrap = document.createElement("div")
+        chipWrap.style.cssText = "display:flex;flex-wrap:wrap;gap:5px;"
+        const renderChips = () => {
+            chipWrap.innerHTML = ""
+            for (const r of rows) {
+                const chip = document.createElement("span")
+                chip.style.cssText = "padding:2px 6px 2px 8px;border-radius:10px;"
+                    + "background:rgba(167, 139, 250, 0.15);border:1px solid rgba(167, 139, 250, 0.4);"
+                    + "color:#e5e7eb;font-family:monospace;font-size:11px;"
+                    + "display:inline-flex;align-items:center;gap:4px;"
+                chip.append(document.createTextNode(String(r.destIata || "").toUpperCase()))
+                const x = document.createElement("button")
+                x.type = "button"
+                x.textContent = "×"
+                x.title = "Remove from selection"
+                x.style.cssText = "background:transparent;border:none;color:#a78bfa;cursor:pointer;"
+                    + "font-size:13px;line-height:1;padding:0;"
+                x.addEventListener("click", () => {
+                    const destU = String(r.destIata || "").toUpperCase()
+                    this._selectedRoutes.delete(destU)
+                    rows.splice(rows.indexOf(r), 1)
+                    if (!rows.length) { close(); this._renderRows(); return }
+                    title.textContent = "Edit overrides for " + rows.length + " route"
+                        + (rows.length === 1 ? "" : "s")
+                    renderChips()
+                    this._renderRows()
+                })
+                chip.append(x)
+                chipWrap.append(chip)
+            }
+        }
+        renderChips()
+        body.append(chipWrap)
+
+        // ----- Input rows -----
+        const fieldsConfig = [
+            {key: "yieldPerKm",        label: "Yield AS$/pax-km",  step: "0.001", min: 0, max: 10},
+            {key: "paxLF",             label: "Pax LF (0..1)",     step: "0.01",  min: 0, max: 1},
+            {key: "cargoYieldPerKgKm", label: "Cargo AS$/kg-km",   step: "0.0001", min: 0, max: 10},
+            {key: "cargoLF",           label: "Cargo LF (0..1)",   step: "0.01",  min: 0, max: 1}
+        ]
+        const inputs = {}
+        // Pre-compute per-field "varies" / single-value placeholder.
+        const placeholderFor = (key) => {
+            const vals = new Set()
+            for (const r of rows) {
+                const v = (r.override && r.override[key] != null) ? Number(r.override[key]) : null
+                vals.add(v == null ? null : Number(v.toFixed(4)))
+            }
+            if (vals.size > 1) return "varies"
+            const only = Array.from(vals)[0]
+            return only == null ? "" : String(only)
+        }
+
+        const fieldsList = document.createElement("div")
+        fieldsList.style.cssText = "display:flex;flex-direction:column;gap:6px;"
+        for (const f of fieldsConfig) {
+            const row = document.createElement("label")
+            row.style.cssText = "display:grid;grid-template-columns:auto 160px 1fr;gap:8px;"
+                + "align-items:center;font-size:12px;"
+            const apply = document.createElement("input")
+            apply.type = "checkbox"
+            apply.title = "Apply this field to every selected route on save"
+            const labelEl = document.createElement("span")
+            labelEl.textContent = f.label
+            labelEl.style.color = "#cbd5e1"
+            const inp = document.createElement("input")
+            inp.type = "number"
+            inp.min = String(f.min)
+            inp.max = String(f.max)
+            inp.step = String(f.step)
+            inp.placeholder = placeholderFor(f.key)
+            inp.disabled = true
+            inp.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #475569;"
+                + "border-radius:3px;padding:2px 6px;font-size:11px;width:120px;opacity:0.55;"
+            apply.addEventListener("change", () => {
+                inp.disabled = !apply.checked
+                inp.style.opacity = apply.checked ? "1" : "0.55"
+                if (apply.checked) inp.focus()
+                updateApplyState()
+            })
+            inp.addEventListener("input", updateApplyState)
+            row.append(apply, labelEl, inp)
+            fieldsList.append(row)
+            inputs[f.key] = {apply, inp}
+        }
+        body.append(fieldsList)
+
+        // Hint footer.
+        const hint = document.createElement("div")
+        hint.style.cssText = "color:#9ca3af;font-size:10px;line-height:1.5;"
+        hint.innerHTML = "Tick a field's checkbox to apply it to every selected route. "
+            + "Untouched fields preserve each route's existing override. "
+            + "Empty placeholder = no current override; \"varies\" = selected routes have different values. "
+            + "Use Undo on the success toast to revert."
+        body.append(hint)
+        card.append(body)
+
+        // ----- Buttons -----
+        const btnRow = document.createElement("div")
+        btnRow.style.cssText = "padding:10px 14px;border-top:1px solid #374151;"
+            + "display:flex;justify-content:flex-end;gap:8px;"
+        const cancelBtn = document.createElement("button")
+        cancelBtn.type = "button"
+        cancelBtn.textContent = "Cancel"
+        cancelBtn.style.cssText = "background:#475569;color:#f3f4f6;border:none;border-radius:3px;"
+            + "padding:5px 14px;font-size:11px;cursor:pointer;"
+        cancelBtn.addEventListener("click", close)
+        btnRow.append(cancelBtn)
+
+        const applyBtn = document.createElement("button")
+        applyBtn.type = "button"
+        applyBtn.textContent = "Apply"
+        applyBtn.disabled = true
+        applyBtn.style.cssText = "background:#7c3aed;color:#fdf4ff;border:none;border-radius:3px;"
+            + "padding:5px 14px;font-size:11px;cursor:pointer;opacity:0.55;"
+        function updateApplyState() {
+            const anyChecked = Object.values(inputs).some(x => x.apply.checked
+                && x.inp.value !== "" && isFinite(Number(x.inp.value)))
+            applyBtn.disabled = !anyChecked || rows.length === 0
+            applyBtn.style.opacity = applyBtn.disabled ? "0.55" : "1"
+        }
+        applyBtn.addEventListener("click", async () => {
+            const fieldsToApply = {}
+            for (const f of fieldsConfig) {
+                const x = inputs[f.key]
+                if (x.apply.checked && x.inp.value !== "" && isFinite(Number(x.inp.value))) {
+                    fieldsToApply[f.key] = Number(x.inp.value)
+                }
+            }
+            if (!Object.keys(fieldsToApply).length || !rows.length) return
+            // Confirm above N=20 to protect against accidental bulk writes.
+            if (rows.length > 20) {
+                const proceed = window.confirm("Apply override changes to " + rows.length
+                    + " routes? This will overwrite existing values for the checked fields. "
+                    + "Click Undo on the success toast to revert.")
+                if (!proceed) return
+            }
+            close()
+            await this._applyBulkOverride(rows, fieldsToApply)
+        })
+        btnRow.append(applyBtn)
+        card.append(btnRow)
+
+        // ----- Lifecycle -----
+        const onKey = (e) => { if (e.key === "Escape") close() }
+        document.addEventListener("keydown", onKey)
+        document.body.append(overlay)
+        // Focus the first apply checkbox so keyboard users can start ticking immediately.
+        const first = Object.values(inputs)[0]
+        if (first) first.apply.focus()
+    }
+
+    /**
+     * Internal — apply the merged-field bulk override. Reads prev records
+     * via the in-memory `overrideMap`, merges with `fieldsToApply`,
+     * Promise.all writes, captures prev for the Undo restore. Wrapped in
+     * `_undoableSave` for the toast + restore wiring.
+     *
+     * Above N=50, opens a progress toast that updates as parallel saves
+     * resolve (counter-driven, since Promise.all doesn't expose progress).
+     */
+    async _applyBulkOverride(selectedRows, fieldsToApply) {
+        const N = selectedRows.length
+        const hubU = String(this.hubIata || "").toUpperCase()
+        // Capture prev records BEFORE the apply so the Undo restore has a
+        // closure over the right state. `overrideMap` is keyed by
+        // "<HUB>-<DEST>" uppercased.
+        const prevByPair = new Map()   // pairKey -> prev record (or null)
+        for (const r of selectedRows) {
+            const destU = String(r.destIata || "").toUpperCase()
+            const pairKey = hubU + "-" + destU
+            const prev = this.overrideMap.get(pairKey) || null
+            prevByPair.set(pairKey, prev ? Object.assign({}, prev) : null)
+        }
+        // Optional progress toast for large batches.
+        let progressHandle = null
+        let completed = 0
+        if (N > 50 && typeof RouteAssistantToast !== "undefined") {
+            progressHandle = RouteAssistantToast.progress(
+                "Saving overrides for " + N + " routes…",
+                {id: "bulk-override-apply", type: "info"}
+            )
+        }
+        // Build the merged record per route. RouteOverridesStore.save is
+        // FULL-REPLACE — fields not in the saved record are intentionally
+        // cleared. So we read prev fields and overlay only the ones the
+        // user opted to apply.
+        const mergeRecord = (prev) => {
+            const merged = {
+                paxLF:             prev && prev.paxLF != null ? prev.paxLF : null,
+                cargoLF:           prev && prev.cargoLF != null ? prev.cargoLF : null,
+                yieldPerKm:        prev && prev.yieldPerKm != null ? prev.yieldPerKm : null,
+                cargoYieldPerKgKm: prev && prev.cargoYieldPerKgKm != null ? prev.cargoYieldPerKgKm : null,
+                note:              prev && prev.note ? prev.note : ""
+            }
+            for (const k of Object.keys(fieldsToApply)) merged[k] = fieldsToApply[k]
+            return merged
+        }
+        await this._undoableSave({
+            label: "Override saved for " + N + " route" + (N === 1 ? "" : "s"),
+            durationMs: 8000,
+            perform: async () => {
+                await Promise.all(selectedRows.map(async (r) => {
+                    const destU = String(r.destIata || "").toUpperCase()
+                    const pairKey = hubU + "-" + destU
+                    const merged = mergeRecord(prevByPair.get(pairKey))
+                    const saved = await RouteAssistantRouteOverridesStore.save(hubU, destU, merged)
+                    if (saved) this.overrideMap.set(pairKey, saved)
+                    // Mirror onto in-memory row.
+                    r.override = saved || null
+                    completed++
+                    if (progressHandle) {
+                        progressHandle.update({
+                            progressPct:   N ? (100 * completed / N) : 0,
+                            progressLabel: completed + " / " + N + " saved"
+                        })
+                    }
+                }))
+                if (progressHandle) {
+                    progressHandle.complete({
+                        type:    "success",
+                        message: "Saved overrides on " + N + " route" + (N === 1 ? "" : "s")
+                    })
+                }
+                if (typeof this._recomputeProfit === "function") this._recomputeProfit()
+                this._renderRows()
+            },
+            restore: async () => {
+                // Restore each route's prev record in parallel. When prev was
+                // null, remove() to clear back to no-override.
+                await Promise.all(selectedRows.map(async (r) => {
+                    const destU = String(r.destIata || "").toUpperCase()
+                    const pairKey = hubU + "-" + destU
+                    const prev = prevByPair.get(pairKey)
+                    if (prev) {
+                        const restored = await RouteAssistantRouteOverridesStore.save(hubU, destU, {
+                            paxLF:             prev.paxLF != null ? prev.paxLF : null,
+                            cargoLF:           prev.cargoLF != null ? prev.cargoLF : null,
+                            yieldPerKm:        prev.yieldPerKm != null ? prev.yieldPerKm : null,
+                            cargoYieldPerKgKm: prev.cargoYieldPerKgKm != null ? prev.cargoYieldPerKgKm : null,
+                            note:              prev.note || ""
+                        })
+                        this.overrideMap.set(pairKey, restored)
+                        r.override = restored
+                    } else {
+                        await RouteAssistantRouteOverridesStore.remove(hubU, destU)
+                        this.overrideMap.delete(pairKey)
+                        r.override = null
+                    }
+                }))
+                if (typeof this._recomputeProfit === "function") this._recomputeProfit()
+                this._renderRows()
+            }
+        })
+    }
+
+    /**
+     * Q5 compare two routes — side-by-side modal triggered when exactly
+     * 2 rows are selected. 3-column table (route A · route B · Δ) for
+     * ~15 key fields. Δ cells colored green/red where the field has a
+     * known direction ("higher"/"lower"); neutral grey when one side is
+     * missing or direction is undefined.
+     */
+    _openCompareModal(selectedRows) {
+        const rows = Array.isArray(selectedRows) ? selectedRows.filter(Boolean) : []
+        if (rows.length !== 2) return
+        const a = rows[0], b = rows[1]
+        const prior = document.getElementById("aes-compare-modal")
+        if (prior && prior.parentNode) prior.parentNode.removeChild(prior)
+
+        const overlay = document.createElement("div")
+        overlay.id = "aes-compare-modal"
+        overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);"
+            + "z-index:10001;display:flex;align-items:center;justify-content:center;"
+        const card = document.createElement("div")
+        card.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #475569;"
+            + "border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.5);"
+            + "max-width:760px;max-height:80vh;width:90%;display:flex;flex-direction:column;"
+            + "font:12px/1.4 sans-serif;"
+        overlay.append(card)
+
+        const hubU = String(this.hubIata || "").toUpperCase()
+        const aDest = String(a.destIata || "").toUpperCase()
+        const bDest = String(b.destIata || "").toUpperCase()
+        const header = document.createElement("div")
+        header.style.cssText = "padding:10px 14px;border-bottom:1px solid #374151;"
+            + "display:flex;align-items:center;gap:10px;"
+        const title = document.createElement("strong")
+        title.innerHTML = hubU + "→" + aDest + "  <span style='color:#9ca3af;font-weight:normal;'>vs</span>  " + hubU + "→" + bDest
+        title.style.flex = "1"
+        title.style.color = "#3b82f6"
+        header.append(title)
+        const closeBtnHdr = document.createElement("button")
+        closeBtnHdr.type = "button"
+        closeBtnHdr.textContent = "×"
+        closeBtnHdr.style.cssText = "background:transparent;color:#9ca3af;border:none;cursor:pointer;"
+            + "font-size:18px;line-height:1;padding:0 4px;"
+        const close = () => {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
+            document.removeEventListener("keydown", onKey)
+        }
+        closeBtnHdr.addEventListener("click", close)
+        header.append(closeBtnHdr)
+        card.append(header)
+
+        const legend = document.createElement("div")
+        legend.style.cssText = "padding:6px 14px;color:#6b7280;font-size:10px;"
+            + "border-bottom:1px solid #374151;"
+        legend.textContent = "— means field unavailable for one or both routes; "
+            + "Δ shaded green/red when one side is meaningfully better (direction-aware)."
+        card.append(legend)
+
+        const body = document.createElement("div")
+        body.style.cssText = "padding:10px 14px;overflow-y:auto;flex:1;"
+
+        // Field catalog. `dir` defines the Δ-coloring direction:
+        //   "higher" — A wins when A > B (green tints the Δ cell)
+        //   "lower"  — A wins when A < B
+        //   null     — neutral grey (no notion of "better")
+        const fieldSpecs = [
+            {label: "Score",                key: "score",              fmt: "int",   dir: "higher"},
+            {label: "Pax demand (0–10)",    key: "paxScore",           fmt: "int",   dir: "higher"},
+            {label: "Cargo demand (0–10)",  key: "cargoScore",         fmt: "int",   dir: "higher"},
+            {label: "Distance (km)",        key: "distanceKm",         fmt: "int",   dir: null},
+            {label: "Weekly flights",       key: "weeklyFlights",      fmt: "int",   dir: "higher"},
+            {label: "Real-world airlines",  key: "airlineCount",       fmt: "int",   dir: "lower"},
+            {label: "AS competitors",       key: "competitorCount",    fmt: "int",   dir: "lower"},
+            {label: "Profit / week",        key: "profitPerWeek",      fmt: "money", dir: "higher"},
+            {label: "Our pax share %",      key: "ourPaxShare",        fmt: "pct1",  dir: "higher"},
+            {label: "ORS rating gap to top", key: "orsRatingGapToTop", fmt: "int",   dir: "higher"},
+            {label: "Pax demand pool",      key: "paxDemandPool",      fmt: "int",   dir: "higher"},
+            {label: "RM tightness",         key: "rmTightness",        fmt: "pct2",  dir: null},
+            {label: "Yield override",       key: "_overrideYield",     fmt: "yield", dir: null,
+             read: r => r.override && r.override.yieldPerKm != null ? r.override.yieldPerKm : null},
+            {label: "Pax LF override",      key: "_overrideLF",        fmt: "pct1",  dir: null,
+             read: r => r.override && r.override.paxLF != null ? r.override.paxLF : null},
+            {label: "Route note",           key: "_routeNote",         fmt: "bool",  dir: null,
+             read: r => r.routeNoteText ? "yes" : "no"}
+        ]
+
+        const tbl = document.createElement("table")
+        tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:12px;"
+        const thead = document.createElement("thead")
+        const headTr = document.createElement("tr")
+        for (const colTitle of ["", aDest, bDest, "Δ"]) {
+            const th = document.createElement("th")
+            th.textContent = colTitle
+            th.style.cssText = "padding:5px 8px;color:#9ca3af;font-weight:600;font-size:11px;"
+                + "text-align:" + (colTitle === "" ? "left" : "right") + ";"
+                + "border-bottom:1px solid #374151;"
+            headTr.append(th)
+        }
+        thead.append(headTr)
+        tbl.append(thead)
+
+        const tbody = document.createElement("tbody")
+        for (const f of fieldSpecs) {
+            const reader = f.read || (r => r[f.key])
+            const va = reader(a)
+            const vb = reader(b)
+            const tr = document.createElement("tr")
+            const labCell = document.createElement("td")
+            labCell.textContent = f.label
+            labCell.style.cssText = "padding:4px 8px;color:#cbd5e1;border-bottom:1px solid #1f2937;"
+            tr.append(labCell)
+            const fmtCell = (v) => {
+                const td = document.createElement("td")
+                td.style.cssText = "padding:4px 8px;text-align:right;color:#e5e7eb;"
+                    + "font-variant-numeric:tabular-nums;border-bottom:1px solid #1f2937;"
+                td.textContent = _formatCompareValue(v, f.fmt)
+                return td
+            }
+            tr.append(fmtCell(va))
+            tr.append(fmtCell(vb))
+            const dTd = document.createElement("td")
+            dTd.style.cssText = "padding:4px 8px;text-align:right;font-variant-numeric:tabular-nums;"
+                + "border-bottom:1px solid #1f2937;"
+            const numA = (typeof va === "number" && isFinite(va)) ? va : null
+            const numB = (typeof vb === "number" && isFinite(vb)) ? vb : null
+            if (numA == null || numB == null) {
+                dTd.textContent = "—"
+                dTd.style.color = "#6b7280"
+            } else {
+                const diff = numA - numB
+                dTd.textContent = (diff > 0 ? "+" : "") + _formatCompareValue(diff, f.fmt)
+                if (diff === 0 || !f.dir) {
+                    dTd.style.color = "#9ca3af"
+                } else if ((f.dir === "higher" && diff > 0) || (f.dir === "lower" && diff < 0)) {
+                    dTd.style.color = "#34d399"
+                    dTd.style.background = "rgba(52,211,153,0.10)"
+                } else {
+                    dTd.style.color = "#f87171"
+                    dTd.style.background = "rgba(248,113,113,0.10)"
+                }
+            }
+            tr.append(dTd)
+            tbody.append(tr)
+        }
+        tbl.append(tbody)
+        body.append(tbl)
+        card.append(body)
+
+        const foot = document.createElement("div")
+        foot.style.cssText = "padding:10px 14px;border-top:1px solid #374151;"
+            + "display:flex;justify-content:flex-end;gap:8px;align-items:center;"
+        const closeFootBtn = document.createElement("button")
+        closeFootBtn.type = "button"
+        closeFootBtn.textContent = "Close"
+        closeFootBtn.style.cssText = "background:#475569;color:#f3f4f6;border:none;border-radius:3px;"
+            + "padding:5px 14px;font-size:11px;cursor:pointer;margin-right:auto;"
+        closeFootBtn.addEventListener("click", close)
+        foot.append(closeFootBtn)
+        for (const dest of [aDest, bDest]) {
+            const link = document.createElement("a")
+            link.textContent = "↗ Open " + dest + " in AS"
+            link.href = "/app/com/scheduling/" + hubU + dest
+            link.target = "_blank"
+            link.style.cssText = "color:#60a5fa;font-size:11px;text-decoration:none;"
+                + "border:1px solid #475569;border-radius:3px;padding:4px 10px;"
+            foot.append(link)
+        }
+        card.append(foot)
+
+        const onKey = (e) => { if (e.key === "Escape") close() }
+        document.addEventListener("keydown", onKey)
+        document.body.append(overlay)
+    }
+
+    /**
      * Open a modal letting the user pin paxLF / cargoLF / yieldPerKm /
      * cargoYieldPerKgKm / a free-text note for this route. Saves to
      * RouteAssistantRouteOverridesStore and updates the in-memory row +
@@ -10962,19 +11788,39 @@ function makeBtn(label, title, onclick) {
     const b = document.createElement("button")
     b.textContent = label
     b.title = title
-    b.style.cssText = "background:none;border:none;color:#f3f4f6;cursor:pointer;font-size:14px;"
+    // Header icon button — transparent bg, oxide text (= bone-fg under dark theme),
+    // rust on hover. No border, no radius, no shadow.
+    b.style.cssText = [
+        "background:transparent",
+        "border:0",
+        "color:var(--aes-oxide)",
+        "cursor:pointer",
+        "font-family:var(--aes-font-display)",
+        "font-size:var(--aes-fs-lead)",
+        "padding:0 var(--aes-sp-1)",
+        "line-height:1",
+        "transition:var(--aes-tr-fast)"
+    ].join(";")
+    b.addEventListener("mouseenter", () => { b.style.color = "var(--aes-rust)" })
+    b.addEventListener("mouseleave", () => { b.style.color = "var(--aes-oxide)" })
     b.addEventListener("click", onclick)
     return b
 }
 
 function smallBtnStyle() {
+    // Brutalist small button — rust fill, UPPERCASE display caps, no radius.
+    // Returns a style object so callers can `Object.assign(btn.style, smallBtnStyle())`.
     return {
-        background: "#2563eb",
-        color: "#fff",
-        border: "none",
-        padding: "3px 8px",
-        borderRadius: "3px",
-        fontSize: "11px",
+        background: "var(--aes-rust)",
+        color: "var(--aes-rust-fg)",
+        border: "var(--aes-bw-2) solid var(--aes-rust)",
+        padding: "2px var(--aes-sp-2)",
+        borderRadius: "var(--aes-radius)",
+        fontFamily: "var(--aes-font-display)",
+        fontSize: "var(--aes-fs-small)",
+        fontWeight: "var(--aes-fw-bold)",
+        textTransform: "uppercase",
+        letterSpacing: "var(--aes-tracking-caps)",
         cursor: "pointer"
     }
 }
@@ -10982,7 +11828,18 @@ function smallBtnStyle() {
 function mkInput(type, value) {
     const i = document.createElement("input")
     i.type = type
-    i.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #374151;border-radius:3px;padding:1px 4px;font-size:11px;"
+    // Hairline border, transparent bg, monospace data entry — works on both
+    // dark (RA panel) and light (popup/options) surfaces via token re-binding.
+    i.style.cssText = [
+        "background:var(--aes-bone)",
+        "color:var(--aes-oxide)",
+        "border:var(--aes-bw-1) solid var(--aes-oxide)",
+        "border-radius:var(--aes-radius)",
+        "padding:1px var(--aes-sp-1)",
+        "font-family:var(--aes-font-mono)",
+        "font-size:var(--aes-fs-small)",
+        "letter-spacing:var(--aes-tracking-mono)"
+    ].join(";")
     if (type === "number" && value !== null && value !== undefined) i.value = value
     return i
 }
@@ -10992,7 +11849,15 @@ function mkInput(type, value) {
  */
 function mkSelect(options, currentValue) {
     const sel = document.createElement("select")
-    sel.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #374151;border-radius:3px;padding:1px 4px;font-size:11px;"
+    sel.style.cssText = [
+        "background:var(--aes-bone)",
+        "color:var(--aes-oxide)",
+        "border:var(--aes-bw-1) solid var(--aes-oxide)",
+        "border-radius:var(--aes-radius)",
+        "padding:1px var(--aes-sp-1)",
+        "font-family:var(--aes-font-display)",
+        "font-size:var(--aes-fs-small)"
+    ].join(";")
     for (const opt of options) {
         const o = document.createElement("option")
         o.value = opt.value
@@ -11055,6 +11920,41 @@ function sleep(ms) {
  * "12s ago" / "3m ago" / "1h ago" / "2d ago". Within 5s it returns
  * "just now". Beyond 7 days it falls back to a localised date string.
  */
+/**
+ * Q5 compare modal — format a value for display by type. Returns "—"
+ * for null/undefined/non-finite. The Δ cell calls this on the raw
+ * difference too, so signed handling is preserved by the caller (we
+ * just format the magnitude here).
+ */
+function _formatCompareValue(v, fmt) {
+    if (v === null || v === undefined) return "—"
+    if (typeof v === "string") return v
+    const n = Number(v)
+    if (!isFinite(n)) return "—"
+    if (fmt === "money") return _formatCompactCurrency(n)
+    if (fmt === "pct1")  return (Math.round(n * 10) / 10) + "%"
+    if (fmt === "pct2")  return (Math.round(n * 100) / 100).toFixed(2)
+    if (fmt === "yield") return n.toFixed(3)
+    if (fmt === "int")   return Math.round(n).toLocaleString()
+    if (fmt === "bool")  return String(v)
+    return String(v)
+}
+
+/**
+ * Compact AS$ formatter — "$1.2M" / "$340k" / "$8,200" / "−$1.5k".
+ * Used by the U12 selection footer's Σprofit/wk chip.
+ */
+function _formatCompactCurrency(v) {
+    const n = Number(v)
+    if (!isFinite(n)) return "—"
+    const sign = n < 0 ? "−" : ""
+    const abs = Math.abs(n)
+    if (abs >= 1e6) return sign + "$" + (Math.round(abs / 1e5) / 10) + "M"
+    if (abs >= 1e4) return sign + "$" + Math.round(abs / 1e3) + "k"
+    if (abs >= 1e3) return sign + "$" + (Math.round(abs / 100) / 10) + "k"
+    return sign + "$" + Math.round(abs).toLocaleString()
+}
+
 function _formatRelativeTime(ts) {
     const t = Number(ts)
     if (!isFinite(t)) return ""

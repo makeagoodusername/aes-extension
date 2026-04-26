@@ -1,9 +1,10 @@
-// Copyright 2018 The Chromium Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+"use strict";
 
+document.addEventListener("DOMContentLoaded", () => {
+    const m = chrome.runtime.getManifest();
+    const stamp = document.getElementById("aes-version-stamp");
+    if (stamp) stamp.textContent = "v" + (m.version_name || m.version);
 
-
-document.getElementById("aes-openOptions-btn").addEventListener('click', function() {
-  chrome.runtime.openOptionsPage()
+    const btn = document.getElementById("aes-openOptions-btn");
+    if (btn) btn.addEventListener("click", () => chrome.runtime.openOptionsPage());
 });

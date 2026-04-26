@@ -16,8 +16,8 @@ class AESMenu {
     }
 
     /**
-     * Creates the menu container
-     * @returns {HTMLElement} container
+     * Creates the menu container — keeps Bootstrap `.dropdown` so AS's
+     * own dropdown JS still toggles the menu open/closed; visuals are ours.
      */
     #createContainer() {
         const container = document.createElement("li")
@@ -26,32 +26,52 @@ class AESMenu {
     }
 
     /**
-     * Creates the menu toggle button
-     * @returns {HTMLElement} button
+     * The trigger anchor in the AS navbar — UPPERCASE display caps, tracked.
+     * This is the very first piece of AES typography a user sees on every page.
      */
     #createButton() {
         const caret = document.createElement("span")
         caret.className = "caret"
+        caret.style.cssText = "margin-left:6px;border-top-color:currentColor;"
+
         const button = document.createElement("a")
         button.setAttribute("role", "button")
         button.setAttribute("tabindex", "0")
         button.dataset.toggle = "dropdown"
-        button.className = "dropdown-toggle"
+        button.className = "dropdown-toggle aes-menu__trigger"
         button.innerText = "AES"
-        button.style = "cursor: pointer"
+        button.style.cssText = [
+            "cursor:pointer",
+            "font-family:var(--aes-font-display)",
+            "font-weight:var(--aes-fw-display)",
+            "text-transform:uppercase",
+            "letter-spacing:var(--aes-tracking-caps)",
+            "font-size:var(--aes-fs-small)"
+        ].join(";")
         button.append(caret)
 
         return button
     }
 
     /**
-     * Creates the menu
-     * @returns {HTMLElement} menu
+     * Creates the dropdown menu — bone bg, 2px oxide border, no radius.
+     * Style overrides applied inline so we beat AS's Bootstrap CSS specificity.
      */
     #createMenu() {
         const menu = document.createElement("ul")
-        menu.className = "dropdown-menu"
-        const menuItems = []
+        menu.className = "dropdown-menu aes-menu__panel"
+        menu.style.cssText = [
+            "background:var(--aes-bone)",
+            "color:var(--aes-oxide)",
+            "border:var(--aes-bw-2) solid var(--aes-oxide)",
+            "border-radius:var(--aes-radius)",
+            "box-shadow:none",
+            "padding:var(--aes-sp-1) 0",
+            "min-width:240px",
+            "font-family:var(--aes-font-display)",
+            "font-size:var(--aes-fs-body)"
+        ].join(";")
+
         const content = [{
             label: "Community",
             isHeader: true
@@ -93,73 +113,117 @@ class AESMenu {
                 target: "#aes-about-dialog"
             }
         }]
+
         for (const item of content) {
-            let menuItem = this.#createMenuItem(item)
-            menuItems.push(menuItem)
-        }
-        for (const item of menuItems) {
-            menu.append(item)
+            menu.append(this.#createMenuItem(item))
         }
 
         return menu
     }
 
     /**
-     * Creates a menu item
-     * @param {object} content - object containing information required to build the item
-     * @returns {HTMLElement} menuItem
+     * Builds a single menu item with brutalist treatment.
+     * Headers: UPPERCASE display tracked, slate colour, hairline below.
+     * Dividers: hairline rule across full width.
+     * Links: bone bg, oxide fg → invert on hover (oxide bg, bone fg).
      */
     #createMenuItem(content) {
         const menuItem = document.createElement("li")
-        let menuItemContent, icon
-        if (content.label) {
-            menuItemContent = content.label
-        }
+
         if (content.isDivider) {
             menuItem.className = "divider"
+            menuItem.style.cssText = [
+                "height:0",
+                "margin:var(--aes-sp-1) 0",
+                "border-top:var(--aes-bw-1) solid var(--aes-paper-rule)",
+                "background:transparent",
+                "list-style:none"
+            ].join(";")
             return menuItem
         }
+
         if (content.isHeader) {
             menuItem.className = "dropdown-header"
+            menuItem.style.cssText = [
+                "padding:var(--aes-sp-1) var(--aes-sp-3) 2px",
+                "font-family:var(--aes-font-display)",
+                "font-size:var(--aes-fs-micro)",
+                "font-weight:var(--aes-fw-display)",
+                "text-transform:uppercase",
+                "letter-spacing:var(--aes-tracking-caps)",
+                "color:var(--aes-slate)",
+                "list-style:none"
+            ].join(";")
+            menuItem.textContent = content.label
+            return menuItem
         }
+
+        const linkStyle = [
+            "display:flex",
+            "align-items:center",
+            "gap:var(--aes-sp-2)",
+            "padding:var(--aes-sp-1) var(--aes-sp-3)",
+            "color:var(--aes-oxide)",
+            "background:transparent",
+            "font-family:var(--aes-font-display)",
+            "font-size:var(--aes-fs-body)",
+            "text-decoration:none",
+            "cursor:pointer",
+            "transition:var(--aes-tr-fast)",
+            "white-space:nowrap"
+        ].join(";")
+
+        let icon
         if (content.icon || content.newWindow) {
             icon = document.createElement("span")
             icon.setAttribute("aria-hidden", "true")
+            icon.style.cssText = "color:var(--aes-oxide-2);width:1em;flex-shrink:0;"
         }
         if (content.icon) {
             icon.className = `fa ${content.icon.className}`
         }
+
+        let inner
         if (content.data?.toggle) {
-            const button = document.createElement("a")
-            button.setAttribute("role", "button")
-            button.setAttribute("tabindex", "0")
-            button.style = "cursor: pointer"
-            if (icon) {
-                button.append(icon)
-            }
-            button.append(content.label)
+            inner = document.createElement("a")
+            inner.setAttribute("role", "button")
+            inner.setAttribute("tabindex", "0")
             for (const attribute in content.data) {
-                button.dataset[attribute] = content.data[attribute]
+                inner.dataset[attribute] = content.data[attribute]
             }
-            menuItemContent = button
-        }
-        if (content.href) {
-            const link = document.createElement("a")
-            link.setAttribute("href", content.href)
+        } else if (content.href) {
+            inner = document.createElement("a")
+            inner.setAttribute("href", content.href)
             if (content.newWindow && !content.icon) {
                 icon.className = "fa fa-external-link"
             }
             if (content.newWindow) {
-                link.setAttribute("target", "_blank")
-                link.setAttribute("rel", "noreferrer noopener")
+                inner.setAttribute("target", "_blank")
+                inner.setAttribute("rel", "noreferrer noopener")
             }
-            if (icon) {
-                link.append(icon)
-            }
-            link.append(content.label)
-            menuItemContent = link
+        } else {
+            inner = document.createElement("a")
         }
-        menuItem.append(menuItemContent)
+
+        inner.style.cssText = linkStyle
+        inner.addEventListener("mouseenter", () => {
+            inner.style.background = "var(--aes-oxide)"
+            inner.style.color = "var(--aes-bone)"
+            if (icon) icon.style.color = "var(--aes-bone)"
+        })
+        inner.addEventListener("mouseleave", () => {
+            inner.style.background = "transparent"
+            inner.style.color = "var(--aes-oxide)"
+            if (icon) icon.style.color = "var(--aes-oxide-2)"
+        })
+
+        if (icon) inner.append(icon)
+        const labelEl = document.createElement("span")
+        labelEl.textContent = content.label
+        inner.append(labelEl)
+
+        menuItem.style.listStyle = "none"
+        menuItem.append(inner)
         return menuItem
     }
 }

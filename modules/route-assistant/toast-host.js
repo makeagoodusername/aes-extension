@@ -9,6 +9,10 @@
  * instead of writing to the console. Future Undo, Alert, and bulk-op
  * completion features all reuse this primitive.
  *
+ * Visual styling lives entirely in css/components.css under .aes-toast-host
+ * and .aes-toast / .aes-toast--{info|success|warn|error}. This module owns
+ * lifecycle (create / dismiss / replace / progress) only — no inline hex.
+ *
  * Public API:
  *   RouteAssistantToast.show(message, opts)
  *     opts = {
@@ -31,6 +35,7 @@ class RouteAssistantToast {
     static MAX_TOASTS    = 6
     static DEFAULT_MS    = 3500
     static CONTAINER_ID  = "aes-toast-host"
+    static VALID_TYPES   = ["info", "success", "warn", "error"]
 
     /** N2 — session-scoped history of every toast fired. Capped to keep
      *  storage bounded; each entry is a slim record with the original
@@ -41,7 +46,7 @@ class RouteAssistantToast {
     static _history = []
 
     static _seq = 0
-    static _registry = new Map()   // id -> {el, timer}
+    static _registry = new Map()   // id -> {el, timer, msgEl, progressFill, progressLabel}
 
     static show(message, opts) {
         opts = opts || {}
@@ -53,36 +58,40 @@ class RouteAssistantToast {
             RouteAssistantToast.dismiss(id)
         }
 
-        const type = (opts.type === "success" || opts.type === "warn"
-                   || opts.type === "error"   || opts.type === "info") ? opts.type : "info"
+        const type = RouteAssistantToast.VALID_TYPES.includes(opts.type) ? opts.type : "info"
         const duration = (opts.duration == null) ? RouteAssistantToast.DEFAULT_MS : Number(opts.duration)
 
         const el = document.createElement("div")
         el.dataset.toastId = id
-        el.style.cssText = RouteAssistantToast._toastStyle(type)
+        el.className = "aes-toast aes-toast--" + type
 
-        const msgSpan = document.createElement("span")
-        msgSpan.textContent = String(message || "")
-        msgSpan.style.cssText = "flex:1;line-height:1.4;"
-        el.append(msgSpan)
+        const body = document.createElement("div")
+        body.className = "aes-toast__body"
+
+        const msgEl = document.createElement("span")
+        msgEl.className = "aes-toast__msg"
+        msgEl.textContent = String(message || "")
+        body.append(msgEl)
 
         if (opts.action && typeof opts.action.fn === "function") {
             const actBtn = document.createElement("button")
+            actBtn.type = "button"
+            actBtn.className = "aes-toast__action"
             actBtn.textContent = String(opts.action.label || "Action")
-            actBtn.style.cssText = "background:transparent;color:#fde68a;border:1px solid rgba(253,230,138,0.5);"
-                + "border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;flex-shrink:0;"
             actBtn.addEventListener("click", () => {
                 try { opts.action.fn() } catch (e) { console.warn("[AES toast] action threw", e) }
                 RouteAssistantToast.dismiss(id)
             })
-            el.append(actBtn)
+            body.append(actBtn)
         }
 
+        el.append(body)
+
         const closeBtn = document.createElement("button")
+        closeBtn.type = "button"
+        closeBtn.className = "aes-toast__close"
         closeBtn.textContent = "×"
         closeBtn.title = "Dismiss"
-        closeBtn.style.cssText = "background:transparent;color:#9ca3af;border:none;font-size:16px;"
-            + "cursor:pointer;padding:0 2px;line-height:1;flex-shrink:0;"
         closeBtn.addEventListener("click", () => RouteAssistantToast.dismiss(id))
         el.append(closeBtn)
 
@@ -106,9 +115,9 @@ class RouteAssistantToast {
         }
 
         // Slide-in: start translated off-screen right, then slide to 0.
+        // Inline because this is per-instance lifecycle state, not a static style.
         el.style.transform = "translateX(40px)"
         el.style.opacity   = "0"
-        // rAF nudge so the transition fires.
         requestAnimationFrame(() => {
             el.style.transform = "translateX(0)"
             el.style.opacity   = "1"
@@ -118,7 +127,7 @@ class RouteAssistantToast {
         if (duration > 0) {
             timer = setTimeout(() => RouteAssistantToast.dismiss(id), duration)
         }
-        RouteAssistantToast._registry.set(id, {el, timer})
+        RouteAssistantToast._registry.set(id, {el, timer, msgEl})
 
         // Trim old toasts if we're over the cap.
         while (RouteAssistantToast._registry.size > RouteAssistantToast.MAX_TOASTS) {
@@ -136,7 +145,6 @@ class RouteAssistantToast {
         if (rec.timer) clearTimeout(rec.timer)
         const el = rec.el
         if (!el || !el.parentNode) return
-        // Slide-out + fade.
         el.style.transform = "translateX(40px)"
         el.style.opacity   = "0"
         setTimeout(() => {
@@ -174,7 +182,6 @@ class RouteAssistantToast {
     static progress(message, opts) {
         opts = opts || {}
         const id = opts.id || ("aes-progress-" + (++RouteAssistantToast._seq))
-        // Render a regular toast first (sticky — duration 0).
         RouteAssistantToast.show(message, Object.assign({}, opts, {
             id:       id,
             duration: 0,
@@ -182,37 +189,32 @@ class RouteAssistantToast {
         }))
         const rec = RouteAssistantToast._registry.get(id)
         if (!rec) return null
-        const el = rec.el
 
-        // Build the progress bar + label inside the toast element. We
-        // append after the existing message span so the bar lives below
-        // the title line.
-        const wrapper = document.createElement("div")
-        wrapper.style.cssText = "flex:1 0 100%;display:flex;flex-direction:column;gap:4px;margin-top:2px;"
+        // Build the progress bar + secondary label inside .aes-toast__body
+        // so the bar sits below the message line.
         const bar = document.createElement("div")
-        bar.style.cssText = "height:4px;background:rgba(100,116,139,0.30);border-radius:3px;overflow:hidden;position:relative;"
+        bar.className = "aes-toast__progress"
         const fill = document.createElement("div")
-        fill.style.cssText = "height:100%;width:0%;background:#60a5fa;transition:width 200ms ease;"
+        fill.className = "aes-toast__progress-fill"
         bar.append(fill)
-        const subLabel = document.createElement("span")
-        subLabel.style.cssText = "color:#9ca3af;font-size:10px;"
-        wrapper.append(bar, subLabel)
-        // Toast layout was `flex` row; add `flex-wrap: wrap` so the
-        // progress block sits below the message line.
-        el.style.flexWrap = "wrap"
-        el.append(wrapper)
 
-        // Stash the elements on the registry record so update() can find them.
+        const subLabel = document.createElement("span")
+        subLabel.className = "aes-toast__progress-label"
+
+        const body = rec.el.querySelector(".aes-toast__body")
+        if (body) {
+            body.append(bar, subLabel)
+        }
+
         rec.progressFill  = fill
         rec.progressLabel = subLabel
 
-        const handle = {
+        return {
             id: id,
             dismiss: () => RouteAssistantToast.dismiss(id),
             update: (patch) => RouteAssistantToast.update(id, patch),
             complete: (patch) => RouteAssistantToast.complete(id, patch)
         }
-        return handle
     }
 
     /**
@@ -224,9 +226,8 @@ class RouteAssistantToast {
     static update(id, patch) {
         const rec = RouteAssistantToast._registry.get(id)
         if (!rec || !patch) return
-        if (patch.message != null) {
-            const span = rec.el.querySelector("span")
-            if (span) span.textContent = String(patch.message)
+        if (patch.message != null && rec.msgEl) {
+            rec.msgEl.textContent = String(patch.message)
         }
         if (patch.progressPct != null && rec.progressFill) {
             const pct = Math.max(0, Math.min(100, Number(patch.progressPct) || 0))
@@ -240,35 +241,24 @@ class RouteAssistantToast {
     /**
      * Convert a progress toast to a regular auto-dismissing toast on
      * completion. Patch may set the final message + a new type
-     * ("success" / "warn" / "error"). Progress bar fills to 100% and
-     * fades out after `duration` (default 2.5s).
+     * ("success" / "warn" / "error"). Progress bar fills to 100% and the
+     * toast auto-dismisses after `duration` (default 3500ms).
      */
     static complete(id, patch) {
         const rec = RouteAssistantToast._registry.get(id)
         if (!rec) return
         patch = patch || {}
-        const finalType = patch.type || "success"
-        // Restyle the toast for the new type. Re-apply the toast palette CSS.
-        const palette = {
-            info:    {bg: "#0f1623", border: "#475569", color: "#e5e7eb"},
-            success: {bg: "#052e1a", border: "#34d399", color: "#d1fae5"},
-            warn:    {bg: "#3a2008", border: "#fbbf24", color: "#fef3c7"},
-            error:   {bg: "#3b0e10", border: "#f87171", color: "#fee2e2"}
-        }
-        const c = palette[finalType] || palette.success
-        rec.el.style.background = c.bg
-        rec.el.style.color      = c.color
-        rec.el.style.borderColor = c.border
+        const finalType = RouteAssistantToast.VALID_TYPES.includes(patch.type) ? patch.type : "success"
+
+        // Re-class the toast so .aes-toast--<type> updates accent stripe + fill colour.
+        rec.el.className = "aes-toast aes-toast--" + finalType
         if (rec.progressFill) {
             rec.progressFill.style.width = "100%"
-            rec.progressFill.style.background = (finalType === "error") ? "#f87171"
-                : (finalType === "warn") ? "#fbbf24" : "#34d399"
         }
-        if (patch.message != null) {
-            const span = rec.el.querySelector("span")
-            if (span) span.textContent = String(patch.message)
+        if (patch.message != null && rec.msgEl) {
+            rec.msgEl.textContent = String(patch.message)
         }
-        // Re-arm the auto-dismiss timer for a final fade-out.
+
         if (rec.timer) clearTimeout(rec.timer)
         const duration = (patch.duration != null) ? Number(patch.duration) : 3500
         rec.timer = setTimeout(() => RouteAssistantToast.dismiss(id), duration)
@@ -280,28 +270,9 @@ class RouteAssistantToast {
         if (host) return host
         host = document.createElement("div")
         host.id = RouteAssistantToast.CONTAINER_ID
-        host.style.cssText = "position:fixed;bottom:18px;right:18px;z-index:10001;"
-            + "display:flex;flex-direction:column;gap:6px;align-items:flex-end;"
-            + "pointer-events:none;font:12px/1.4 sans-serif;max-width:420px;"
+        host.className = "aes-toast-host"
         document.body.appendChild(host)
         return host
-    }
-
-    static _toastStyle(type) {
-        const palette = {
-            info:    {bg: "#0f1623", border: "#475569", color: "#e5e7eb"},
-            success: {bg: "#052e1a", border: "#34d399", color: "#d1fae5"},
-            warn:    {bg: "#3a2008", border: "#fbbf24", color: "#fef3c7"},
-            error:   {bg: "#3b0e10", border: "#f87171", color: "#fee2e2"}
-        }
-        const c = palette[type] || palette.info
-        return "background:" + c.bg + ";color:" + c.color + ";"
-            + "border:1px solid " + c.border + ";border-radius:5px;"
-            + "padding:8px 10px;display:flex;align-items:center;gap:10px;"
-            + "box-shadow:0 4px 12px rgba(0,0,0,0.35);"
-            + "transition:transform 200ms ease, opacity 200ms ease;"
-            + "pointer-events:auto;min-width:240px;max-width:420px;"
-            + "font-size:12px;"
     }
 }
 

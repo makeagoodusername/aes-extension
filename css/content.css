@@ -1,92 +1,81 @@
-/* Tables */
+/* ===========================================================
+   AES — content.css
+   Loaded after design-tokens.css + components.css (per manifest order).
+   Holds project-specific overrides + legacy rules that haven't been
+   migrated to tokens yet. Migrate items out of this file as their
+   call-sites adopt the brutalist primitives.
+   =========================================================== */
+
+
+/* ---- Legacy table helpers (callers depend on width:auto) ----
+   The components.css `.aes-table` defaults to width:100% (data-grid
+   semantics); keep the inline-table behaviour for older AES injections. */
 .aes-table {
     width: auto;
 }
-
 .as-table-well:has(.aes-table) {
     width: fit-content;
 }
 
-/* Helpers */
-.aes-text-right {
-    text-align: right;
-}
 
-.aes-no-text-wrap {
-    white-space: nowrap;
-}
+/* ---- Cell-level helpers ---- */
+.aes-text-right    { text-align: right; }
+.aes-no-text-wrap  { white-space: nowrap; }
 
-/* Specific */
+
+/* ---- Specific cell shapes ---- */
 .aes-aircraftProfit-profit {
     text-align: right;
     white-space: nowrap;
 }
 
-/**
- * About Modal
- */
+
+/* ---- Legacy About modal styling — superseded by Step 3 chassis refactor.
+        Rules kept transiently so the existing Bootstrap about-dialog still
+        renders correctly until about-dialog.js adopts .aes-modal markup. */
 #aes-about-dialog .modal-dialog {
     width: 40em;
     max-width: 90vw;
     margin-right: auto;
     margin-left: auto;
 }
-
-#aes-about-dialog .modal-body {
-    text-align: center;
-}
-
-#aes-about-dialog h2 {
-    color: inherit;
-}
-
+#aes-about-dialog .modal-body { text-align: center; }
+#aes-about-dialog h2 { color: inherit; }
 #aes-about-dialog img {
     width: 64px;
     height: 64px;
-    border-radius: 5px;
+    border-radius: var(--aes-radius);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
 }
-
 #aes-about-dialog button[data-dismiss] {
     position: absolute;
-    top: 10px;
-    right: 10px;
+    top: var(--aes-sp-2);
+    right: var(--aes-sp-2);
 }
 
-/**
- * General UI improvements
- */
 
-/* Align icons and text in menu items */
+/* ---- AS Bootstrap dropdown menu icon alignment ---- */
 .dropdown-menu > li > a:has(.fa) {
     display: grid;
     grid-template-columns: 1em auto;
-    gap: .5em;
+    gap: var(--aes-sp-1);
     align-items: center;
 }
+.dropdown-menu > li > a > .fa { justify-self: center; }
 
-.dropdown-menu > li > a > .fa {
-    justify-self: center;
-}
 
-/* Hide empty aircraft categories */
-.as-fieldset:has(.types):not(:has(li)) {
-    display: none;
-}
+/* ---- Hide empty aircraft category fieldsets ---- */
+.as-fieldset:has(.types):not(:has(li)) { display: none; }
+[class^="layout-col-md"]:has(.types):not(:has(li)) { display: none; }
 
-[class^="layout-col-md"]:has(.types):not(:has(li)) {
-    display: none;
-}
 
-/**
- * Route Assistant — U15 column-band hover highlight. Hovering a group
- * header in the Route Assistant table flashes the corresponding column
- * band so the user sees which columns belong to which group. Inset
- * box-shadow lifts the cell brightness without disturbing the existing
- * tint or sort indicators.
- */
+/* ---- Route Assistant column-band hover highlight (U15) ----
+   Inset box-shadow tints the column band when its group header is hovered.
+   Uses oxide (host-page) at low alpha so it works on both bone and dark
+   backgrounds without inverting hue. */
 #aes-route-assistant td.aes-grp-hover,
 #aes-route-assistant th.aes-grp-hover {
-    box-shadow: inset 0 0 0 999px rgba(255, 255, 255, 0.045);
+    box-shadow: inset 0 0 0 999px rgba(43, 37, 32, 0.06);
 }
 #aes-route-assistant th[data-group-header="1"]:hover {
     cursor: default;

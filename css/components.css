@@ -1,0 +1,667 @@
+/* ===========================================================
+   AES "CONCRETE" — components.css
+   Primitive component classes. All values consume tokens from
+   design-tokens.css. Zero hardcoded hex / px / shadow.
+   Namespace: every class prefixed `aes-` to avoid AS host CSS conflicts.
+   =========================================================== */
+
+
+/* ===========================================================
+   1. UTILITIES — single-purpose helpers
+   =========================================================== */
+
+.aes-mono     { font-family: var(--aes-font-mono); letter-spacing: var(--aes-tracking-mono); }
+.aes-display  { font-family: var(--aes-font-display); }
+.aes-caps     { text-transform: uppercase; letter-spacing: var(--aes-tracking-caps); font-weight: var(--aes-fw-display); }
+.aes-meta     { font-family: var(--aes-font-mono); font-size: var(--aes-fs-micro); color: var(--aes-slate); letter-spacing: var(--aes-tracking-mono); }
+.aes-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+
+/* ===========================================================
+   2. RULES — hairlines, double-rule signature, stamps
+   =========================================================== */
+
+.aes-rule {
+    border: 0;
+    border-top: var(--aes-bw-1) solid var(--aes-paper-rule);
+    margin: var(--aes-sp-2) 0;
+    height: 0;
+}
+
+/* Signature double-seam — two parallel rules with 4px gutter.
+   Used at every major panel header/body separation. */
+.aes-double-rule {
+    border-top: var(--aes-bw-1) solid var(--aes-paper-rule);
+    border-bottom: var(--aes-bw-1) solid var(--aes-oxide);
+    height: var(--aes-sp-1);
+    margin: 0;
+}
+
+/* Mono caps version stamp — e.g. "v0.6.9-BETA" */
+.aes-stamp {
+    display: inline-block;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-oxide);
+    background: var(--aes-bone-2);
+    padding: 2px var(--aes-sp-1);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+
+/* ===========================================================
+   3. BUTTONS
+   Default: oxide text on bone, 2px oxide border, no radius.
+   UPPERCASE display sans, tracked.
+   Hover: invert (oxide bg, bone fg).
+   =========================================================== */
+
+.aes-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--aes-sp-1);
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    line-height: var(--aes-lh-tight);
+    color: var(--aes-oxide);
+    background: var(--aes-bone);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    cursor: pointer;
+    user-select: none;
+    transition: var(--aes-tr-fast);
+    text-decoration: none;
+    box-sizing: border-box;
+}
+.aes-btn:hover     { background: var(--aes-oxide); color: var(--aes-bone); }
+.aes-btn:active    { background: var(--aes-oxide-2); color: var(--aes-bone); }
+.aes-btn:focus-visible {
+    outline: var(--aes-bw-2) solid var(--aes-rust);
+    outline-offset: 2px;
+}
+.aes-btn[disabled],
+.aes-btn[aria-disabled="true"] {
+    background: var(--aes-bone-3);
+    color: var(--aes-slate);
+    border-color: var(--aes-slate);
+    cursor: not-allowed;
+}
+
+/* Primary — rust fill, signal weight */
+.aes-btn--primary {
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+    border-color: var(--aes-rust);
+}
+.aes-btn--primary:hover  { background: var(--aes-rust-deep); border-color: var(--aes-rust-deep); }
+.aes-btn--primary:active { background: var(--aes-oxide); border-color: var(--aes-oxide); }
+
+/* Ghost — borderless transparent, oxide text */
+.aes-btn--ghost {
+    background: transparent;
+    border-color: transparent;
+}
+.aes-btn--ghost:hover { background: var(--aes-oxide); color: var(--aes-bone); border-color: var(--aes-oxide); }
+
+/* Danger — crimson border + text */
+.aes-btn--danger {
+    color: var(--aes-crimson);
+    border-color: var(--aes-crimson);
+}
+.aes-btn--danger:hover { background: var(--aes-crimson); color: var(--aes-bone); }
+
+/* Sizes */
+.aes-btn--sm { font-size: var(--aes-fs-micro); padding: 2px var(--aes-sp-2); }
+.aes-btn--lg { font-size: var(--aes-fs-lead); padding: var(--aes-sp-2) var(--aes-sp-4); }
+
+/* Icon-only square button */
+.aes-btn--icon {
+    width: var(--aes-sp-5);
+    height: var(--aes-sp-5);
+    padding: 0;
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+}
+
+
+/* ===========================================================
+   4. INPUTS
+   Hairline border, transparent bg, monospace by default
+   (data-entry default; .aes-input--display switches to sans).
+   =========================================================== */
+
+.aes-input,
+.aes-select,
+.aes-textarea {
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-block;
+    box-sizing: border-box;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-body);
+    line-height: var(--aes-lh-body);
+    color: var(--aes-oxide);
+    background: var(--aes-bone);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+    margin: 0;
+    outline: 0;
+    transition: var(--aes-tr-fast);
+}
+.aes-input:focus,
+.aes-select:focus,
+.aes-textarea:focus {
+    border-color: var(--aes-rust);
+    border-width: var(--aes-bw-2);
+    padding: 3px 7px;  /* offset to keep position stable */
+    background: var(--aes-bone);
+}
+.aes-input::placeholder,
+.aes-textarea::placeholder { color: var(--aes-slate); font-style: normal; }
+.aes-input[disabled],
+.aes-select[disabled],
+.aes-textarea[disabled] {
+    background: var(--aes-bone-3);
+    color: var(--aes-slate);
+    cursor: not-allowed;
+}
+.aes-input--display { font-family: var(--aes-font-display); }
+
+/* Native select chevron — small triangle drawn via SVG-like content */
+.aes-select {
+    padding-right: var(--aes-sp-5);
+    background-image: linear-gradient(45deg, transparent 50%, var(--aes-oxide) 50%),
+                      linear-gradient(135deg, var(--aes-oxide) 50%, transparent 50%);
+    background-position: calc(100% - 12px) 50%, calc(100% - 7px) 50%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+}
+
+.aes-textarea {
+    resize: vertical;
+    min-height: calc(var(--aes-sp-7) * 1.5);
+    width: 100%;
+}
+
+/* Checkbox / radio — keep native but oxide tint via accent-color */
+.aes-check, .aes-radio {
+    accent-color: var(--aes-rust);
+    margin: 0 var(--aes-sp-1) 0 0;
+    cursor: pointer;
+}
+
+
+/* ===========================================================
+   5. PANELS — bone bg, 2px oxide border, double-rule header seam
+   =========================================================== */
+
+.aes-panel {
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+    line-height: var(--aes-lh-body);
+    box-sizing: border-box;
+}
+
+.aes-panel__header {
+    display: flex;
+    align-items: center;
+    gap: var(--aes-sp-2);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    background: var(--aes-bone-2);
+    /* The signature double-rule — top single hairline, bottom oxide rule with 4px gutter */
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    box-shadow: 0 var(--aes-sp-1) 0 0 var(--aes-bone),
+                0 calc(var(--aes-sp-1) + 1px) 0 0 var(--aes-oxide);
+    margin-bottom: calc(var(--aes-sp-1) + 1px);
+}
+
+.aes-panel__title {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-lead);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+    margin: 0;
+    flex: 1 1 auto;
+    line-height: var(--aes-lh-tight);
+}
+
+.aes-panel__subtitle {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-oxide-2);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+.aes-panel__body {
+    padding: var(--aes-sp-3);
+}
+
+.aes-panel__footer {
+    display: flex;
+    align-items: center;
+    gap: var(--aes-sp-2);
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    border-top: var(--aes-bw-1) solid var(--aes-paper-rule);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    color: var(--aes-slate);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* Section label — UPPERCASE display caps, used inside body */
+.aes-section-label {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+    margin: 0 0 var(--aes-sp-1) 0;
+    padding-bottom: var(--aes-sp-1);
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+}
+
+
+/* ===========================================================
+   6. MODAL + OVERLAY
+   =========================================================== */
+
+.aes-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(26, 22, 18, 0.55);  /* oxide-bg with alpha */
+    z-index: var(--aes-z-modal);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--aes-sp-4);
+}
+
+.aes-modal {
+    /* extends .aes-panel — apply both classes in markup */
+    box-sizing: border-box;
+    max-width: min(880px, 92vw);
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.aes-modal__body {
+    overflow-y: auto;
+    padding: var(--aes-sp-3);
+    flex: 1 1 auto;
+}
+
+.aes-modal__close {
+    margin-left: auto;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-h3);
+    color: var(--aes-oxide);
+    line-height: 1;
+    padding: 0 var(--aes-sp-1);
+}
+.aes-modal__close:hover { color: var(--aes-rust); }
+
+
+/* ===========================================================
+   7. POPOVER — bone bg, 2px oxide border, no shadow
+   =========================================================== */
+
+.aes-popover {
+    position: absolute;
+    z-index: var(--aes-z-popover);
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+    line-height: var(--aes-lh-body);
+    min-width: 200px;
+    max-width: 360px;
+    box-sizing: border-box;
+}
+
+.aes-popover__item {
+    display: flex;
+    align-items: center;
+    gap: var(--aes-sp-1);
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    box-sizing: border-box;
+}
+.aes-popover__item:hover { background: var(--aes-oxide); color: var(--aes-bone); }
+.aes-popover__item:disabled,
+.aes-popover__item[aria-disabled="true"] { color: var(--aes-slate); cursor: not-allowed; background: transparent; }
+
+
+/* ===========================================================
+   8. TOAST — dark oxide-bg by default, bone fg, rust accent stripe
+   =========================================================== */
+
+.aes-toast-host {
+    position: fixed;
+    bottom: var(--aes-sp-4);
+    right: var(--aes-sp-4);
+    z-index: var(--aes-z-toast);
+    display: flex;
+    flex-direction: column;
+    gap: var(--aes-sp-1);
+    align-items: flex-end;
+    pointer-events: none;
+    max-width: 420px;
+}
+
+.aes-toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: stretch;
+    min-width: 280px;
+    max-width: 420px;
+    background: var(--aes-oxide-bg);
+    color: var(--aes-bone-fg);
+    border: var(--aes-bw-1) solid var(--aes-oxide-rule);
+    border-radius: var(--aes-radius);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    line-height: var(--aes-lh-body);
+    transition: transform var(--aes-tr-medium), opacity var(--aes-tr-medium);
+    box-sizing: border-box;
+}
+
+/* Accent stripe — left-edge marker conveys type without colour-coding the whole toast */
+.aes-toast::before {
+    content: "";
+    flex: 0 0 var(--aes-bw-3);
+    background: var(--aes-rust);  /* default accent */
+}
+.aes-toast--info::before    { background: var(--aes-cobalt); }
+.aes-toast--success::before { background: var(--aes-moss); }
+.aes-toast--warn::before    { background: var(--aes-amber); }
+.aes-toast--error::before   { background: var(--aes-crimson); }
+
+.aes-toast__body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--aes-sp-1);
+    padding: var(--aes-sp-2);
+    min-width: 0;
+}
+
+.aes-toast__msg {
+    color: var(--aes-bone-fg);
+    word-wrap: break-word;
+}
+
+.aes-toast__action {
+    background: transparent;
+    border: var(--aes-bw-1) solid var(--aes-bone-fg);
+    color: var(--aes-bone-fg);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-micro);
+    font-weight: var(--aes-fw-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    padding: 2px var(--aes-sp-2);
+    cursor: pointer;
+    align-self: flex-start;
+    margin-top: var(--aes-sp-1);
+    transition: var(--aes-tr-fast);
+}
+.aes-toast__action:hover { background: var(--aes-bone-fg); color: var(--aes-oxide-bg); }
+
+.aes-toast__close {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 0;
+    color: var(--aes-bone-fg);
+    font-size: var(--aes-fs-lead);
+    line-height: 1;
+    padding: var(--aes-sp-2);
+    cursor: pointer;
+    align-self: flex-start;
+    opacity: 0.6;
+    transition: var(--aes-tr-fast);
+}
+.aes-toast__close:hover { opacity: 1; color: var(--aes-rust); }
+
+/* Progress variant — sticky toast with inline bar */
+.aes-toast__progress {
+    height: var(--aes-sp-1);
+    background: var(--aes-oxide-bg-2);
+    overflow: hidden;
+    margin-top: var(--aes-sp-1);
+}
+.aes-toast__progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--aes-rust);
+    transition: width var(--aes-tr-medium);
+}
+.aes-toast--success .aes-toast__progress-fill { background: var(--aes-moss); }
+.aes-toast--warn    .aes-toast__progress-fill { background: var(--aes-amber); }
+.aes-toast--error   .aes-toast__progress-fill { background: var(--aes-crimson); }
+.aes-toast--info    .aes-toast__progress-fill { background: var(--aes-cobalt); }
+
+.aes-toast__progress-label {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    color: var(--aes-slate);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    margin-top: 2px;
+}
+
+
+/* ===========================================================
+   9. CHIP — pill toggle, hairline outline, mono small caps
+   =========================================================== */
+
+.aes-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--aes-sp-1);
+    padding: 2px var(--aes-sp-2);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    font-weight: var(--aes-fw-medium);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    color: var(--aes-oxide-2);
+    background: transparent;
+    border: var(--aes-bw-1) solid var(--aes-oxide-2);
+    border-radius: var(--aes-radius);
+    cursor: pointer;
+    user-select: none;
+    line-height: var(--aes-lh-tight);
+    transition: var(--aes-tr-fast);
+}
+.aes-chip:hover { color: var(--aes-oxide); border-color: var(--aes-oxide); }
+.aes-chip--active {
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+    border-color: var(--aes-rust);
+}
+.aes-chip--active:hover { background: var(--aes-rust-deep); border-color: var(--aes-rust-deep); }
+
+
+/* ===========================================================
+   10. BADGE — non-interactive marker, mono micro
+   =========================================================== */
+
+.aes-badge {
+    display: inline-block;
+    padding: 1px var(--aes-sp-1);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    color: var(--aes-oxide);
+    background: var(--aes-bone-3);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    line-height: var(--aes-lh-tight);
+    white-space: nowrap;
+}
+
+.aes-badge--moss    { color: var(--aes-moss);    border-color: var(--aes-moss);    background: var(--aes-moss-soft); }
+.aes-badge--amber   { color: var(--aes-amber);   border-color: var(--aes-amber);   background: var(--aes-amber-soft); }
+.aes-badge--crimson { color: var(--aes-crimson); border-color: var(--aes-crimson); background: var(--aes-crimson-soft); }
+.aes-badge--cobalt  { color: var(--aes-cobalt);  border-color: var(--aes-cobalt);  background: var(--aes-cobalt-soft); }
+.aes-badge--rust    { color: var(--aes-rust);    border-color: var(--aes-rust);    background: var(--aes-rust-soft); }
+
+
+/* ===========================================================
+   11. TABLE — paper-rule rows, oxide head, bone-2 stripe
+   =========================================================== */
+
+.aes-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-body);
+    color: var(--aes-oxide);
+}
+
+.aes-table th {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-bone);
+    background: var(--aes-oxide);
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+    text-align: left;
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    white-space: nowrap;
+}
+
+.aes-table td {
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    color: var(--aes-oxide);
+    line-height: var(--aes-lh-body);
+}
+
+.aes-table tbody tr:nth-child(even) td { background: var(--aes-bone-2); }
+.aes-table tbody tr:hover td { background: var(--aes-bone-3); }
+.aes-table .aes-text-right { text-align: right; }
+.aes-table .aes-text-center { text-align: center; }
+
+
+/* ===========================================================
+   12. STATUS DOT — circular pulse for queue/run state
+   =========================================================== */
+
+.aes-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;  /* circles are exempt from --aes-radius */
+    flex-shrink: 0;
+    background: var(--aes-slate);
+}
+.aes-dot--info    { background: var(--aes-cobalt); }
+.aes-dot--success { background: var(--aes-moss); }
+.aes-dot--warn    { background: var(--aes-amber); animation: aes-pulse 1s ease-in-out infinite; }
+.aes-dot--error   { background: var(--aes-crimson); }
+.aes-dot--rust    { background: var(--aes-rust); }
+
+
+@keyframes aes-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+}
+
+
+/* ===========================================================
+   13. PROGRESS BAR — non-toast variant for status strips
+   =========================================================== */
+
+.aes-progress {
+    width: 100%;
+    height: var(--aes-sp-1);
+    background: var(--aes-bone-3);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    overflow: hidden;
+}
+.aes-progress__fill {
+    height: 100%;
+    width: 0%;
+    background: var(--aes-oxide);
+    transition: width var(--aes-tr-medium);
+}
+.aes-progress--moss    .aes-progress__fill { background: var(--aes-moss); }
+.aes-progress--amber   .aes-progress__fill { background: var(--aes-amber); }
+.aes-progress--crimson .aes-progress__fill { background: var(--aes-crimson); }
+.aes-progress--rust    .aes-progress__fill { background: var(--aes-rust); }
+
+
+/* ===========================================================
+   14. LINK — oxide default, rust on hover
+   =========================================================== */
+
+.aes-link {
+    color: var(--aes-oxide);
+    text-decoration: underline;
+    text-decoration-thickness: var(--aes-bw-1);
+    text-underline-offset: 2px;
+    transition: var(--aes-tr-fast);
+}
+.aes-link:hover { color: var(--aes-rust); text-decoration-color: var(--aes-rust); }
+
+
+/* ===========================================================
+   15. HOST-PAGE BASELINES — reset what AS's Bootstrap leaks through.
+   Scoped to .aes-panel, .aes-modal, .aes-popover, .aes-toast so AS's
+   own forms/tables stay untouched.
+   =========================================================== */
+
+.aes-panel,
+.aes-modal,
+.aes-popover,
+.aes-toast,
+.aes-toast-host * {
+    box-sizing: border-box;
+}
+
+.aes-panel button,
+.aes-modal button,
+.aes-popover button,
+.aes-toast button {
+    font-family: inherit;
+}
+
+/* When an AES root is in dark mode, ensure default text reads correctly */
+[data-aes-theme="dark"] {
+    color: var(--aes-oxide);  /* re-bound to bone via dark theme */
+    background: var(--aes-bone);  /* re-bound to oxide-bg */
+}

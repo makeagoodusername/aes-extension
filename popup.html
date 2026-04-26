@@ -1,17 +1,70 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+<head>
+    <meta charset="UTF-8">
+    <title>AES</title>
+    <link rel="stylesheet" href="css/design-tokens.css">
+    <link rel="stylesheet" href="css/components.css">
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: var(--aes-bone);
+            color: var(--aes-oxide);
+            font-family: var(--aes-font-display);
+            line-height: var(--aes-lh-body);
+            min-width: 320px;
+        }
+        .aes-popup {
+            padding: var(--aes-sp-5) var(--aes-sp-4) var(--aes-sp-4);
+            border: var(--aes-bw-2) solid var(--aes-oxide);
+            background: var(--aes-bone);
+        }
+        .aes-popup__hero {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-h2);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            line-height: var(--aes-lh-tight);
+            color: var(--aes-oxide);
+            margin: 0 0 var(--aes-sp-2);
+        }
+        .aes-popup__sub {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-small);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            color: var(--aes-oxide-2);
+            margin: 0 0 var(--aes-sp-4);
+        }
+        .aes-popup__row {
+            display: flex;
+            align-items: center;
+            gap: var(--aes-sp-3);
+            margin-top: var(--aes-sp-4);
+        }
+        .aes-popup__cta {
+            flex: 1 1 auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="aes-popup">
+        <h1 class="aes-popup__hero">Airline&shy;Sim<br>Enhancement Suite</h1>
+        <p class="aes-popup__sub">Quality-of-life toolkit for AirlineSim</p>
 
-  </head>
-  <body>
-    <div class="container p-3">
-      <h5 class="text-nowrap">AirlineSim Enchancement Suite</h5>
+        <hr class="aes-double-rule" style="margin: var(--aes-sp-3) 0;">
 
-      <p>Click here for options</p>
-      <button type="button" id="aes-openOptions-btn" class="btn btn-light">Open Options</button>
+        <div class="aes-popup__row">
+            <span class="aes-stamp" id="aes-version-stamp">v0.0.0</span>
+            <button type="button"
+                    id="aes-openOptions-btn"
+                    class="aes-btn aes-btn--primary aes-popup__cta">
+                Open Options &rarr;
+            </button>
+        </div>
     </div>
-
     <script src="popup.js"></script>
-  </body>
+</body>
 </html>

@@ -29,10 +29,15 @@
     },
     "content_scripts": [
         {
-            "css": ["css/content.css"],
+            "css": [
+                "css/design-tokens.css",
+                "css/components.css",
+                "css/content.css"
+            ],
             "js": [
                 "js/jquery-3.4.1.min.js",
                 "helpers.js",
+                "js/design-tokens.js",
                 "modules/aes-menu.js",
                 "modules/about-dialog.js"
             ],
@@ -206,7 +211,7 @@
         "https://www.flightsfrom.com/*"
     ],
     "web_accessible_resources": [{
-        "resources": ["/images/*"],
+        "resources": ["/images/*", "/fonts/*"],
         "matches": ["https://*.airlinesim.aero/*"]
     }]
 }
