@@ -9,3 +9,10 @@ created station after.html
 html - for smaller countries without reigions.html
 station alabama.html
 aircraft.txt
+
+# Browser-saved AS page captures — URL-flattened filenames with the
+# `https-:` protocol prefix (e.g. `https-:free1.airlinesim.aero:app:com:scheduling:JFKATL?2694.html`
+# plus the matching `_files/` companion dirs). Same purpose as the
+# named fixtures above — kept on disk for parser development, never
+# packaged in the .crx.
+https-:*
