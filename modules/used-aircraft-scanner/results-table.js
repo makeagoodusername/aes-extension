@@ -18,9 +18,10 @@ class MarketScanResultsTable {
         this.scoring = null
         this.routeFilter = null
         this.overrides = null   // settings.usedAircraftScanner.typeFamilyOverrides
-        // Cross-feature context for deal-scoring (slice 2 of J).
+        // Cross-feature context for deal-scoring (slice 2 of J + slice 4).
         // Defaults are nulls so the table works without RA loaded.
-        this.context = {fleetByType: null, economics: null, topRoutes: null, topRoutesHub: null}
+        this.context = {fleetByType: null, economics: null, topRoutes: null,
+                        topRoutesHub: null, routeFitConfig: null}
     }
 
     /** Replace the rows and re-render. */
@@ -63,12 +64,14 @@ class MarketScanResultsTable {
      * Provide cross-feature context for deal-scoring metrics ($/seat,
      * break-even days, fleet synergy, route-fit). Shape:
      *   {fleetByType: Map|null, economics: object|null,
-     *    topRoutes: array|null, topRoutesHub: string|null}
+     *    topRoutes: array|null, topRoutesHub: string|null,
+     *    routeFitConfig: {paxSeatsPerScorePoint?} | null}
      * Any field may be null — the corresponding metric will simply
      * fall through to em-dash. Pass null to clear.
      */
     setContext(ctx) {
-        this.context = ctx || {fleetByType: null, economics: null, topRoutes: null, topRoutesHub: null}
+        this.context = ctx || {fleetByType: null, economics: null, topRoutes: null,
+                               topRoutesHub: null, routeFitConfig: null}
         this._draw()
     }
 
@@ -172,6 +175,10 @@ class MarketScanResultsTable {
                     td.innerText = "—"
                 } else {
                     td.innerText = String(value)
+                }
+                if (typeof col.tooltip === "function") {
+                    const tip = col.tooltip(row)
+                    if (tip) td.title = tip
                 }
                 tr.append(td)
             }
@@ -382,6 +389,181 @@ class MarketScanResultsTable {
         })
     }
 
+    /**
+     * Multi-line tooltip explaining the BE (days) value — exposes the daily
+     * revenue, daily cost, and net daily profit alongside the constants
+     * (block hours, panel LF, panel yields, op-cost rates) that produced
+     * them. Empty when the metric was missing.
+     */
+    static _formatBreakEvenTooltip(row) {
+        if (!row || !row.breakEvenBreakdown) {
+            if (row && row.breakEvenDays === null && row.acquisitionPrice === null) return ""
+            return "Break-even unavailable — missing acquisition price, speed, seats, or Route Assistant economics. "
+                + "Open the Route Assistant panel and tune economics to populate."
+        }
+        const b = row.breakEvenBreakdown
+        const fmt = n => (n === null || n === undefined || !isFinite(n)) ? "?" : Math.round(n).toLocaleString()
+        const fmt2 = n => (n === null || n === undefined || !isFinite(n)) ? "?" : Number(n).toFixed(2)
+        const fmt4 = n => (n === null || n === undefined || !isFinite(n)) ? "?" : Number(n).toFixed(4)
+        const lines = []
+        lines.push("BE (days) = price ÷ profit/day = AS$" + fmt(b.price)
+            + " ÷ AS$" + fmt(b.profitPerDay) + "/day = " + b.value + " days")
+        lines.push("")
+        lines.push("Daily envelope: " + b.hours + "h × " + fmt(b.speed) + " km/h = "
+            + fmt(b.dailyKm) + " km/day")
+        lines.push("Pax revenue:    " + fmt(b.dailyKm) + " km × " + b.seats + " seats × LF "
+            + fmt2(b.loadFactor) + " × y AS$" + fmt4(b.yieldPerKm) + "/pax-km = AS$" + fmt(b.paxRev))
+        if (b.cargoRev > 0) {
+            lines.push("Cargo revenue:  " + fmt(b.dailyKm) + " km × " + b.cargo + " kg × LF "
+                + fmt2(b.cargoLoadFactor) + " × y AS$" + fmt4(b.cargoYieldPerKgKm) + "/kg-km = AS$" + fmt(b.cargoRev))
+        }
+        const costParts = []
+        if (b.fuelPerHour)  costParts.push("fuel AS$" + fmt(b.fuelPerHour))
+        if (b.crewPerHour)  costParts.push("crew AS$" + fmt(b.crewPerHour))
+        if (b.maintPerHour) costParts.push("maint AS$" + fmt(b.maintPerHour))
+        lines.push("Op cost:        " + b.hours + "h × ("
+            + (costParts.length ? costParts.join(" + ") : "0")
+            + ")/h = AS$" + fmt(b.opCost))
+        lines.push("Profit/day:     AS$" + fmt(b.paxRev) + " + AS$" + fmt(b.cargoRev)
+            + " − AS$" + fmt(b.opCost) + " = AS$" + fmt(b.profitPerDay))
+        lines.push("")
+        lines.push("Block hours/day are a fixed assumption (DAILY_BLOCK_HOURS = " + b.hours
+            + "). Tuned for 'earliest sensible payback' across mixed fleets.")
+        return lines.join("\n")
+    }
+
+    /**
+     * Tooltip for the Route-fit cell — explains all three sequential gates
+     * (range, per-flight demand, weekly frequency) so users can see why a
+     * regional aircraft scored lower than its range alone would suggest.
+     */
+    static _formatRouteFitTooltip(row) {
+        if (!row || row.routeFitTotal === null || row.routeFitTotal === undefined) return ""
+        if (row.routeFitTotal === 0) {
+            return "No Route Assistant top-routes published yet. Open the RA panel "
+                + "on /app/com/scheduling so it writes a snapshot to "
+                + "routeAssistant:topRoutes."
+        }
+        const fit    = row.routeFitCount === null ? "?" : row.routeFitCount
+        const total  = row.routeFitTotal
+        const range  = row.routeFitRangeOnly === null ? "?" : row.routeFitRangeOnly
+        const demand = row.routeFitDemandLimited || 0
+        const freq   = row.routeFitFrequencyLimited || 0
+        const lines = []
+        lines.push("Route-fit = routes where the aircraft can reach the destination,")
+        lines.push("service the per-flight demand, AND meet the weekly demand at the")
+        lines.push("route's published frequency.")
+        lines.push("")
+        lines.push("Range check passes:    " + range + " / " + total)
+        lines.push("Demand-limited:        " + demand
+            + (demand ? " (range fits but seats × LF below paxScore × scale)" : ""))
+        lines.push("Frequency-limited:     " + freq
+            + (freq ? " (per-flight fits but weeklyFlights × seats × LF below paxScore × weekly scale)" : ""))
+        lines.push("Full fit (final):      " + fit + " / " + total)
+        lines.push("")
+        lines.push("Tune the per-flight threshold via routeFit.paxSeatsPerScorePoint")
+        lines.push("(default 15, so paxScore=10 needs ~150 effective seats per flight).")
+        lines.push("Tune the weekly threshold via routeFit.weeklyDemandPerScorePoint")
+        lines.push("(default 100, so paxScore=10 needs 1000 effective weekly seats).")
+        lines.push("Routes without published weeklyFlights skip the freq gate.")
+        return lines.join("\n")
+    }
+
+    /**
+     * Tooltip for the lifecycle cost ratio. Exposes price ÷ (seats × range
+     * × remaining-life) — the four numbers that drive the metric and the
+     * 25-year MAX_LIFE assumption that turns age into remaining service.
+     */
+    static _formatSeatKmYearTooltip(row) {
+        if (!row || !row.seatKmYearBreakdown) return ""
+        const b = row.seatKmYearBreakdown
+        const fmt = n => (n === null || n === undefined || !isFinite(n)) ? "?" : Math.round(n).toLocaleString()
+        const lines = []
+        lines.push("$/seat·km/yr = price ÷ (seats × range × remaining years)")
+        lines.push("            = AS$" + fmt(b.price)
+            + " ÷ (" + b.seats + " × " + fmt(b.range)
+            + " × " + b.remainingYears + ")")
+        lines.push("            = " + b.value)
+        lines.push("")
+        const ageStr = (b.age === null || b.age === undefined) ? "unknown" : (b.age + " years old")
+        lines.push("Remaining years = max(1, " + b.maxLifeYears + " − age) "
+            + "where age is " + ageStr + ".")
+        lines.push("Lower is better — captures price, capacity, range, and "
+            + "remaining life in one ratio.")
+        return lines.join("\n")
+    }
+
+    /**
+     * Tooltip for the $/seat cell — names which acquisition source was used
+     * (next bid vs. immediate purchase, whichever was cheaper) and reminds
+     * the user that leasing is excluded.
+     */
+    static _formatPricePerSeatTooltip(row) {
+        if (!row || row.pricePerSeat === null || row.pricePerSeat === undefined) return ""
+        const price = MarketScanDealMetrics.acquisitionPrice(row)
+        if (price === null || !row.seats) return ""
+        const hasBid = isFiniteNumber(row.nextBid) && row.nextBid > 0
+        const hasIp  = isFiniteNumber(row.immediatePurchase) && row.immediatePurchase > 0
+        let source
+        if (hasBid && hasIp) {
+            source = price === row.nextBid
+                ? "next bid (cheaper than immediate purchase)"
+                : "immediate purchase (cheaper than next bid)"
+        } else if (hasBid) {
+            source = "next bid (no immediate purchase listed)"
+        } else {
+            source = "immediate purchase (no bid)"
+        }
+        return [
+            "$/seat = acquisition price ÷ seats",
+            "       = AS$" + Math.round(price).toLocaleString() + " ÷ " + row.seats,
+            "       = AS$" + row.pricePerSeat.toLocaleString(),
+            "",
+            "Acquisition source: " + source + ".",
+            "Leasing rate is excluded — it's a recurring cost, not an upfront price."
+        ].join("\n")
+    }
+
+    /**
+     * Tooltip for the Maintenance pill — surfaces the inputs (condition,
+     * age) and the band rules so users can sanity-check why a row landed
+     * on a particular colour.
+     */
+    static _formatMaintTooltip(row) {
+        if (!row || !row.maintLevel) return ""
+        const cond = (row.conditionPct === null || row.conditionPct === undefined) ? "?" : row.conditionPct + "%"
+        const age  = (row.ageYears    === null || row.ageYears    === undefined) ? "?" : row.ageYears + "y"
+        return [
+            "Maint. = " + row.maintLabel + " (" + row.maintLevel + ")",
+            "",
+            "Inputs:  condition " + cond + ",  age " + age,
+            "",
+            "Bands (worst-case rule wins):",
+            "  red    cond < 50%  OR  age ≥ 25y  → Heavy",
+            "  amber  cond < 75%  OR  age ≥ 15y  → Mid-life",
+            "  green  otherwise                  → Fresh"
+        ].join("\n")
+    }
+
+    /**
+     * Tooltip for the Fleet badge — names the typeId match and the
+     * synergy-only-counts-by-typeId rule so users don't expect a soft
+     * "same family" badge.
+     */
+    static _formatFleetTooltip(row) {
+        if (!row || row.fleetOwned === null || row.fleetOwned === undefined) {
+            return "Fleet synergy unavailable — Route Assistant fleet store not loaded yet."
+        }
+        if (!row.fleetOwned) return "Not currently in your fleet."
+        return [
+            "✓ Already in your fleet — " + row.fleetOwnedCount + " of this typeId",
+            "",
+            "Synergy is binary by typeId: same type means no extra crew training,",
+            "shared maintenance, common parts pool. Family-level synergy across",
+            "different types in the same family is intentionally NOT counted."
+        ].join("\n")
+    }
+
     static _renderScoreCell(td, value) {
         if (value === null || value === undefined) {
             td.innerText = "—"
@@ -413,9 +595,6 @@ class MarketScanResultsTable {
         pill.style.color        = "white"
         pill.style.fontSize     = "85%"
         pill.style.fontWeight   = "600"
-        const cond = (row.conditionPct !== null && row.conditionPct !== undefined) ? row.conditionPct + "%" : "?"
-        const age  = (row.ageYears     !== null && row.ageYears     !== undefined) ? row.ageYears     + "y" : "?"
-        pill.title = "Condition: " + cond + " · Age: " + age
         td.append(pill)
     }
 
@@ -438,7 +617,6 @@ class MarketScanResultsTable {
         pill.style.color        = "white"
         pill.style.fontSize     = "85%"
         pill.style.fontWeight   = "600"
-        pill.title = "Already in your fleet — no new training/maintenance footprint"
         td.append(pill)
     }
 
@@ -456,19 +634,25 @@ class MarketScanResultsTable {
             // Slice-2 deal metrics — render between condition and the price
             // columns so "buy / hold / fits" reads left-to-right.
             {field: "pricePerSeat",      label: "$/seat",       align: "right", currency: true,
-                csv: r => r.pricePerSeat},
+                csv: r => r.pricePerSeat,
+                tooltip: r => MarketScanResultsTable._formatPricePerSeatTooltip(r)},
             {field: "seatKmYearCost",    label: "$/seat·km/yr", align: "right", number: true,
-                csv: r => r.seatKmYearCost},
+                csv: r => r.seatKmYearCost,
+                tooltip: r => MarketScanResultsTable._formatSeatKmYearTooltip(r)},
             {field: "breakEvenDays",     label: "BE (days)",    align: "right", number: true,
-                csv: r => r.breakEvenDays},
+                csv: r => r.breakEvenDays,
+                tooltip: r => MarketScanResultsTable._formatBreakEvenTooltip(r)},
             {field: "maintLevel",        label: "Maint.",       sortKey: "maintRank",
                 renderer: "maintPill",
-                csv: r => r.maintLabel},
+                csv: r => r.maintLabel,
+                tooltip: r => MarketScanResultsTable._formatMaintTooltip(r)},
             {field: "fleetLabel",        label: "Fleet",        sortKey: "fleetOwnedCount",
                 renderer: "fleetBadge",
-                csv: r => r.fleetOwned ? ("owned (" + (r.fleetOwnedCount || 0) + ")") : ""},
+                csv: r => r.fleetOwned ? ("owned (" + (r.fleetOwnedCount || 0) + ")") : "",
+                tooltip: r => MarketScanResultsTable._formatFleetTooltip(r)},
             {field: "routeFitLabel",     label: "Route-fit",    align: "right", sortKey: "routeFitCount",
-                csv: r => r.routeFitLabel || ""},
+                csv: r => r.routeFitLabel || "",
+                tooltip: r => MarketScanResultsTable._formatRouteFitTooltip(r)},
             {field: "nextBid",           label: "Next Bid",           align: "right", currency: true},
             {field: "immediatePurchase", label: "Immediate Purchase", align: "right", currency: true},
             {field: "leasingRate",       label: "Leasing Rate",       align: "right", currency: true},

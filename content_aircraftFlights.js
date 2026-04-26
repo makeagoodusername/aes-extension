@@ -204,6 +204,19 @@ function saveData() {
         time: aircraftFlightData.time,
         totalFlights: aircraftFlightData.totalFlights,
         type: aircraftFlightData.type,
+        // Per-FN linkage envelope (G slice 4). Strips the live DOM `row` and
+        // the merged `data` (which lives independently in <server>flightInfo<id>),
+        // keeps just the fields yield-snapshot will need to attribute profit
+        // by FN/route. ~50-100 entries × ~7 fields = single-digit KB per tail.
+        flights: (aircraftFlightData.flights || []).map(f => ({
+            flightId:        f.id,
+            flightNumber:    f.flightNumber       || null,
+            flightNumberId:  typeof f.flightNumberId === "number" ? f.flightNumberId : null,
+            status:          f.status             || null,
+            originIata:      f.originIata         || null,
+            destinationIata: f.destinationIata    || null,
+            depUtc:          f.depUtc             || null
+        }))
     }
 
     chrome.storage.local.set({
@@ -354,6 +367,25 @@ class AircraftFlightsTab {
 
             flight.id = parseInt(url.match(/\d+/)[0])
             flight.flightNumber = flightNumber
+
+            // Per-FN linkage (G slice 4) — preserve the FN→numeric-id map and
+            // the row's origin/destination/dep so yield-snapshot can attribute
+            // profit per route exactly, instead of frequency-weighting a tail's
+            // lifetime average across every route it flies.
+            const fnLink   = row.querySelector("td:nth-child(2) a[href*='/com/numbers/']")
+            const fnIdHit  = fnLink && fnLink.href.match(/\/numbers\/(\d+)/)
+            flight.flightNumberId = fnIdHit ? parseInt(fnIdHit[1]) : null
+            const orig = row.querySelector("td:nth-child(3) span")?.innerText.trim()
+            const dest = row.querySelector("td:nth-child(5) span")?.innerText.trim()
+            flight.originIata      = (orig && /^[A-Z]{3}$/.test(orig)) ? orig : null
+            flight.destinationIata = (dest && /^[A-Z]{3}$/.test(dest)) ? dest : null
+            // Dep-time cell carries a `title` like "27.04. 17:25 UTC / 27.04.
+            // 12:25 HT / 27.04. 09:25 LT" — the first segment is the only one
+            // in UTC, which is what we want for cross-server comparison.
+            const depTitle = row.querySelector("td:nth-child(4) span")?.title || ""
+            const depHit   = depTitle.match(/(\d{2}\.\d{2}\.\s*\d{2}:\d{2})\s*UTC/)
+            flight.depUtc  = depHit ? depHit[1].replace(/\s+/g, " ").trim() : null
+
             flight.status = row.querySelector(".flightStatusPanel")?.innerText.trim()
             flight.isCancellable = Boolean(row.querySelector("td:first-child input"))
             flight.row = row

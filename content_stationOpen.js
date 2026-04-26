@@ -1,180 +1,344 @@
 "use strict";
 
 /**
- * Station-opening worker.
+ * AES Station Automation — per-tab worker.
  *
- * Runs on the AirlineSim "open station" page. If a station-automation run is
- * in progress, this script fills in the station form for the next pending
- * station, submits it, and (on return) advances the queue by navigating to
- * the next station's open URL. When all queued countries have been processed
- * it flips `running` off and returns to the dashboard.
+ * Runs on /app/info/airports/<id> and /app/ops/stations*. A single parent tab
+ * (the AES dashboard) spawns up to N worker tabs via window.open, each with a
+ * URL hash like `#aesStationChunk=<runId>:<chunkIdx>` that identifies a slice
+ * of the run's airport list. Each tab processes its slice sequentially:
  *
- * The AS form selectors and success-detection logic are stubbed — they must
- * be filled in once the live AirlineSim page is inspected. See `TODO` markers.
+ *   airport page → click "Open Station" → success page → write result →
+ *   navigate to next airport in chunk → (repeat) → close tab.
+ *
+ * State lives in sessionStorage so the click-through navigation within one
+ * tab carries the chunk and position forward. Per-airport results are written
+ * to chrome.storage under a runId-keyed prefix so the dashboard can aggregate
+ * live progress without contending with other tabs.
  */
+
+const SESSION_STATE_KEY = "aes-station-worker"
+const ACTION_WAIT_MS = 10000
+const ACTION_POLL_MS = 300
 
 window.addEventListener("load", async () => {
-    const server = AES.getServerName();
-    const airlineCode = AES.getAirlineCode().code;
-    const record = await StationAutomationStorage.load(server, airlineCode);
-    if (!record.running) {
-        return;
+    await workerTick()
+})
+
+async function workerTick() {
+    const server = AES.getServerName()
+    const airlineId = AES.getAirlineIdentity()
+    if (!airlineId) return
+
+    let state = readSessionState()
+    const hashCtx = parseHashContext()
+    if (hashCtx) {
+        // First load of this tab — hydrate state from the run session.
+        const run = await StationAutomationStorage.loadRun(server, airlineId, hashCtx.runId)
+        if (!run || run.status !== "running" || !run.chunks[hashCtx.chunkIdx]) {
+            console.warn("[AES stationAutomation] chunk not found or run not active", hashCtx)
+            window.close()
+            return
+        }
+        state = {
+            runId: hashCtx.runId,
+            chunkIdx: hashCtx.chunkIdx,
+            chunk: run.chunks[hashCtx.chunkIdx],
+            positionIdx: 0,
+            pending: null,
+        }
+        writeSessionState(state)
+        // Drop the hash so future in-tab navigations aren't repeatedly re-hydrated.
+        history.replaceState(null, "", window.location.pathname + window.location.search)
     }
 
-    const iata = getStationIataFromUrl() || record.resolvedStations[record.currentStationIdx];
-    if (!iata) {
-        await finishRun(record, "No station code in URL and queue position invalid.");
-        return;
+    if (!state) return // manual visit, not part of a run
+
+    // If the run was cancelled elsewhere, bail out.
+    const run = await StationAutomationStorage.loadRun(server, airlineId, state.runId)
+    if (!run || run.status !== "running") {
+        window.close()
+        return
     }
 
-    const exceptionsSet = new Set(
-        (record.queue[record.currentEntry]?.exceptions || []).map(c => c.toUpperCase())
-    );
-
-    let outcome;
-    if (exceptionsSet.has(iata.toUpperCase())) {
-        outcome = {status: "skipped", detail: "Listed as an exception."};
-    } else if (alreadyOpenedOnPage()) {
-        outcome = {status: "skipped", detail: "Station already opened."};
-    } else {
-        outcome = await attemptOpenStation(iata);
+    // Reconcile a pending click from the previous page (success-page load).
+    if (state.pending) {
+        const {iata, flatIdx} = state.pending
+        const outcome = detectOutcome(iata)
+        await StationAutomationStorage.writeResult(server, airlineId, state.runId, flatIdx, {
+            iata,
+            status: outcome.status,
+            detail: outcome.detail,
+            finishedAt: Date.now(),
+        })
+        state.pending = null
+        state.positionIdx++
+        writeSessionState(state)
     }
 
-    record.log.push({iata: iata, status: outcome.status, detail: outcome.detail});
-    record.processedStations.push(iata);
-    record.currentStationIdx += 1;
-    await StationAutomationStorage.save(record);
-
-    await advanceQueue(record, server, airlineCode);
-});
-
-/**
- * Extracts the IATA code from the current URL so the worker knows which
- * station this page is for. Relies on the `?code=XXX` parameter set by
- * `buildStationOpenUrl()` in content_dashboard.js.
- */
-function getStationIataFromUrl() {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("code") || params.get("airport") || params.get("iata");
-    return code ? code.toUpperCase() : null;
-}
-
-/**
- * Best-effort check: looks for a signal on the page that the station is
- * already part of the airline's network, to avoid re-submitting the form.
- *
- * TODO: replace with the real selector once the open-station page is known.
- */
-function alreadyOpenedOnPage() {
-    const marker = document.querySelector("[data-aes-station-opened]"); // TODO
-    return Boolean(marker);
-}
-
-/**
- * Fill and submit the "open station" form. Resolves once either:
- *   - the browser has navigated away (successful submit), OR
- *   - a server-side error message is detected on the same page.
- *
- * TODO (AS discovery):
- *   1. Replace the form/input selectors below with the actual ones on the
- *      AS open-station page.
- *   2. Decide on the success/error detection strategy. Most AS forms
- *      trigger a full page navigation, so the simple path is: submit and
- *      let the new page load — the next run of this content script will
- *      advance the queue.
- */
-async function attemptOpenStation(iata) {
-    const form = document.querySelector("form[name='openStation'], form[action*='station']"); // TODO confirm
-    if (!form) {
-        return {status: "failed", detail: "Open-station form not found on page."};
+    if (state.positionIdx >= state.chunk.length) {
+        window.close()
+        return
     }
 
-    const codeInput = form.querySelector("input[name='code'], input[name='airport'], input[name='iata']"); // TODO confirm
-    if (codeInput) {
-        codeInput.value = iata;
-    }
-
-    const submit = form.querySelector("button[type='submit'], input[type='submit']");
-    if (!submit) {
-        return {status: "failed", detail: "Submit button not found."};
-    }
-
-    submit.click();
-    // Navigation unloads this page; the follow-up load runs through `advanceQueue`
-    // on the next station URL rather than from here.
-    return {status: "ok", detail: "Submitted."};
-}
-
-/**
- * Decides which URL to navigate to next, based on current queue progress.
- */
-async function advanceQueue(record, server, airlineCode) {
-    // More stations in the current country?
-    if (record.currentStationIdx < record.resolvedStations.length) {
-        const next = record.resolvedStations[record.currentStationIdx];
-        window.location.assign(buildStationOpenUrl(server, next));
-        return;
-    }
-
-    // Current country done — move to the next in the queue.
-    record.currentEntry += 1;
-    record.currentStationIdx = 0;
-    record.resolvedStations = [];
-    await StationAutomationStorage.save(record);
-
-    if (record.currentEntry >= record.queue.length) {
-        await finishRun(record, null);
-        return;
-    }
-
-    // Resolve the next country's station list.
-    try {
-        record.resolvedStations = await CountryScraper.resolveStations(
-            record.queue[record.currentEntry], server
-        );
-    } catch (error) {
-        record.log.push({
-            iata: "-",
+    const target = state.chunk[state.positionIdx]
+    if (!target.airportId) {
+        await StationAutomationStorage.writeResult(server, airlineId, state.runId, target.flatIdx, {
+            iata: target.iata,
             status: "failed",
-            detail: "Could not resolve stations for " + record.queue[record.currentEntry].country + ": " + error.message
-        });
-        await StationAutomationStorage.save(record);
-        await finishRun(record, null);
-        return;
+            detail: "No airportId resolved from country page.",
+            finishedAt: Date.now(),
+        })
+        state.positionIdx++
+        writeSessionState(state)
+        return workerTick()
     }
 
-    if (!record.resolvedStations.length) {
-        record.log.push({
-            iata: "-",
+    if ((target.exceptions || []).map(s => String(s).toUpperCase()).includes((target.iata || "").toUpperCase())) {
+        await StationAutomationStorage.writeResult(server, airlineId, state.runId, target.flatIdx, {
+            iata: target.iata,
             status: "skipped",
-            detail: "No stations matched filter for " + record.queue[record.currentEntry].country
-        });
-        await StationAutomationStorage.save(record);
-        await advanceQueue(record, server, airlineCode);
-        return;
+            detail: "In exceptions list.",
+            finishedAt: Date.now(),
+        })
+        state.positionIdx++
+        writeSessionState(state)
+        // Same tab but different airport → need to navigate there before continuing.
+        return navigateToTarget(server, state)
     }
 
-    await StationAutomationStorage.save(record);
-    window.location.assign(buildStationOpenUrl(server, record.resolvedStations[0]));
+    const currentAirportId = parseAirportIdFromUrl()
+    if (currentAirportId !== String(target.airportId)) {
+        return navigateToTarget(server, state)
+    }
+
+    if (alreadyOperatingHere(target.iata)) {
+        await StationAutomationStorage.writeResult(server, airlineId, state.runId, target.flatIdx, {
+            iata: target.iata,
+            status: "skipped-existing",
+            detail: "Already in your network.",
+            finishedAt: Date.now(),
+        })
+        state.positionIdx++
+        writeSessionState(state)
+        return navigateToTarget(server, state)
+    }
+
+    const action = await waitForOpenStationAction()
+    if (!action) {
+        await StationAutomationStorage.writeResult(server, airlineId, state.runId, target.flatIdx, {
+            iata: target.iata,
+            status: "failed",
+            detail: "Open-station action not found. Visible: " + listActionableElements(),
+            finishedAt: Date.now(),
+        })
+        state.positionIdx++
+        writeSessionState(state)
+        return navigateToTarget(server, state)
+    }
+
+    state.pending = {iata: target.iata, flatIdx: target.flatIdx}
+    writeSessionState(state)
+
+    try { action.focus() } catch (_) {}
+    action.click()
+
+    const outcome = await waitForClickOutcome(target.iata)
+    if (outcome === "navigating") return // the next page load reconciles
+
+    // No navigation within the timeout — record outcome in place and move on.
+    const inPageFeedback = findAnyFeedbackText()
+    const skippedExisting = inPageFeedback && ALREADY_EXISTS_RE.test(inPageFeedback)
+    await StationAutomationStorage.writeResult(server, airlineId, state.runId, target.flatIdx, {
+        iata: target.iata,
+        status: outcome === "opened" ? "ok" : skippedExisting ? "skipped-existing" : "failed",
+        detail: outcome === "opened" ? "Opened."
+            : skippedExisting ? inPageFeedback
+            : inPageFeedback || (outcome === "error" ? "Server rejected." : "No result after click."),
+        finishedAt: Date.now(),
+    })
+    state.pending = null
+    state.positionIdx++
+    writeSessionState(state)
+    return navigateToTarget(server, state)
 }
 
-async function finishRun(record, failureDetail) {
-    record.running = 0;
-    if (failureDetail) {
-        record.log.push({iata: "-", status: "failed", detail: failureDetail});
+function navigateToTarget(server, state) {
+    if (state.positionIdx >= state.chunk.length) {
+        window.close()
+        return
     }
-    await StationAutomationStorage.save(record);
-    window.location.assign(
-        "https://" + AES.getServerName() + ".airlinesim.aero/app/enterprise/dashboard"
-    );
+    const next = state.chunk[state.positionIdx]
+    if (!next.airportId) {
+        // Skip and continue; avoids a broken navigation.
+        return workerTick()
+    }
+    window.location.assign(airportUrl(server, next.airportId))
 }
+
+function readSessionState() {
+    try {
+        const raw = sessionStorage.getItem(SESSION_STATE_KEY)
+        return raw ? JSON.parse(raw) : null
+    } catch (_) { return null }
+}
+
+function writeSessionState(state) {
+    try { sessionStorage.setItem(SESSION_STATE_KEY, JSON.stringify(state)) } catch (_) {}
+}
+
+function parseHashContext() {
+    const m = window.location.hash.match(/#aesStationChunk=([^:]+):(\d+)/)
+    return m ? {runId: m[1], chunkIdx: parseInt(m[2], 10)} : null
+}
+
+function airportUrl(server, airportId) {
+    return `https://${server}.airlinesim.aero/app/info/airports/${airportId}`
+}
+
+function parseAirportIdFromUrl() {
+    const m = window.location.pathname.match(/\/app\/info\/airports\/(\d+)/)
+    return m ? m[1] : null
+}
+
+const ALREADY_EXISTS_RE = /(already\s+(operate|open|have|has|running|in)|station.*already|exist|in\s+your\s+network)/i
 
 /**
- * Mirror of the helper in content_dashboard.js. Kept local so this script
- * stays independent of the dashboard bundle.
- *
- * TODO (AS discovery): replace with the real station-opening URL template.
+ * After the click navigates to the success page, classify the outcome by
+ * looking for AS's feedbackPanel and/or the Close-Station button. AS replies
+ * with a WARNING-class feedback when the airline already operates at the
+ * target airport — treat that as skipped-existing, not failed.
  */
-function buildStationOpenUrl(server, iata) {
-    return "https://" + server + ".airlinesim.aero/app/network/stations/open?code=" + encodeURIComponent(iata);
+function detectOutcome(iata) {
+    if (successBannerPresent()) return {status: "ok", detail: "Opened."}
+    if (appearsInStationsTable(iata) || alreadyOperatingHere(iata)) return {status: "ok", detail: "Opened."}
+    const feedback = findAnyFeedbackText()
+    if (feedback && ALREADY_EXISTS_RE.test(feedback)) {
+        return {status: "skipped-existing", detail: feedback}
+    }
+    if (feedback) return {status: "failed", detail: feedback}
+    return {status: "failed", detail: "Click completed but no success indicator."}
+}
+
+function successBannerPresent() {
+    return !!document.querySelector(".feedbackPanelSUCCESS, .feedbackPanelINFO")
+}
+
+function findAnyFeedbackText() {
+    for (const el of document.querySelectorAll(".feedbackPanelSUCCESS, .feedbackPanelINFO, .feedbackPanelWARNING, .feedbackPanelERROR, .feedbackPanelFATAL, .alert, .error")) {
+        const t = (el.innerText || "").trim()
+        if (t) return t
+    }
+    return findErrorBannerText()
+}
+
+const OPERATING_ACTION_RE = /close\s*station|shut\s*(down)?\s*station|abandon\s*station/i
+
+/**
+ * True when this page shows a "Close Station" / "Shut down station" action —
+ * reliable only on the station-detail page (/app/ops/stations/<IATA>). On the
+ * airport info page (/app/info/airports/<id>) AS shows a generic "XYZ Station"
+ * link for every airport, so link-based signals would false-positive and
+ * cause the worker to skip airports that aren't actually open. Relies on the
+ * dashboard's pre-filter and the post-click feedback-panel check for the
+ * airport-page side of the "already open" detection.
+ */
+function alreadyOperatingHere(iata) {
+    for (const el of document.querySelectorAll("a, button")) {
+        const t = (el.innerText || el.value || "").trim()
+        if (OPERATING_ACTION_RE.test(t)) return true
+    }
+    return false
+}
+
+function appearsInStationsTable(iata) {
+    const want = iata.toUpperCase()
+    const wantWord = new RegExp(`\\b${want}\\b`)
+    const paren = `(${want})`
+    const tables = Array.from(document.querySelectorAll("table")).filter(t => {
+        const h = (t.querySelector("thead")?.innerText || t.querySelector("tr")?.innerText || "").toLowerCase()
+        return h.includes("iata") || h.includes("code") || h.includes("apt") || h.includes("station")
+    })
+    for (const table of tables) {
+        for (const row of table.querySelectorAll("tbody tr, tr")) {
+            if (row.querySelector("th") && !row.querySelector("td")) continue
+            const txt = (row.innerText || "").toUpperCase()
+            if (!txt) continue
+            if (txt.includes(paren) || wantWord.test(txt)) return true
+        }
+    }
+    return false
+}
+
+const OPEN_ACTION_RE = /(open\s*(new\s*|a\s*)?station|\+\s*station|\+\s*open|^\s*open\s*$|apply\s*to\s*open|request\s*station|found\s*station|establish\s*station|new\s*station|launch\s*station|station\s*here|base\s*here)/i
+
+function findOpenStationAction() {
+    for (const el of document.querySelectorAll("a, button, input[type='submit'], [role='button']")) {
+        if (el.disabled) continue
+        const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("title") || "").trim()
+        if (OPEN_ACTION_RE.test(text)) return el
+        const href = el.getAttribute?.("href") || ""
+        if (/\bopen\b/i.test(href) && /station|airport/i.test(href)) return el
+    }
+    return null
+}
+
+/** Polls briefly for an AJAX-rendered action. */
+async function waitForOpenStationAction(maxMs = 3000, stepMs = 250) {
+    const started = Date.now()
+    while (true) {
+        const action = findOpenStationAction()
+        if (action) return action
+        if (Date.now() - started >= maxMs) return null
+        await new Promise(r => setTimeout(r, stepMs))
+    }
+}
+
+function waitForClickOutcome(iata) {
+    return new Promise(resolve => {
+        const started = Date.now()
+        let done = false
+        const finish = outcome => {
+            if (done) return
+            done = true
+            clearInterval(timer)
+            window.removeEventListener("beforeunload", onUnload)
+            resolve(outcome)
+        }
+        const onUnload = () => finish("navigating")
+        window.addEventListener("beforeunload", onUnload, {once: true})
+        const timer = setInterval(() => {
+            if (successBannerPresent() || appearsInStationsTable(iata) || alreadyOperatingHere(iata)) return finish("opened")
+            if (findErrorBannerText()) return finish("error")
+            if (Date.now() - started >= ACTION_WAIT_MS) return finish("timeout")
+        }, ACTION_POLL_MS)
+    })
+}
+
+const ERROR_BANNER_SELECTORS = [
+    ".feedbackPanelERROR", ".feedbackPanelFATAL", ".feedbackPanelWARNING",
+    ".alert-danger", ".alert-warning",
+    "[class*='error' i]:not(input)", "[class*='danger' i]:not(button)",
+    ".alert", ".error",
+]
+
+function findErrorBannerText() {
+    for (const sel of ERROR_BANNER_SELECTORS) {
+        for (const el of document.querySelectorAll(sel)) {
+            const text = (el.innerText || "").trim()
+            if (text && text.length < 500) return text
+        }
+    }
+    return ""
+}
+
+function listActionableElements() {
+    const items = []
+    for (const el of document.querySelectorAll("a.btn, a[role='button'], button, input[type='submit'], .as-action-bar a, .as-action-bar button")) {
+        const text = (el.innerText || el.value || el.getAttribute("aria-label") || el.getAttribute("title") || "").trim().replace(/\s+/g, " ")
+        if (!text) continue
+        items.push(text.slice(0, 60))
+        if (items.length >= 12) break
+    }
+    return items.length ? items.join(" | ") : "no visible buttons/links"
 }

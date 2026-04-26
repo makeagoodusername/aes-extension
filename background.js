@@ -11,7 +11,8 @@ function setDefaultSettings(){
     invPricing:setDefaultInvPricingSettings(),
     general:setDefaultGeneralSettings(),
     schedule:setDefaultScheduleSettings(),
-    stationAutomation:setDefaultStationAutomationSettings()
+    stationAutomation:setDefaultStationAutomationSettings(),
+    usedAircraftScanner:setDefaultUsedAircraftScannerSettings()
   };
   chrome.storage.local.get(['settings'], function(result) {
     let settings = result.settings;
@@ -43,6 +44,17 @@ function setDefaultStationAutomationSettings(){
     countriesCache: {}
   };
   return stationAutomation;
+}
+function setDefaultUsedAircraftScannerSettings(){
+  // Used Aircraft Scanner — sub-dashboard that walks the AS used aircraft
+  // market across many types in parallel and aggregates the offers.
+  return {
+    presets: [],
+    typeFamilyOverrides: {},
+    concurrency: 6,
+    staggerMs: 2000,
+    lastScanId: null
+  };
 }
 function setDefaultGeneralSettings(){
   //auto settings

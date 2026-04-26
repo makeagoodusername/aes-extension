@@ -30,8 +30,12 @@ function fltmng_getData(){
       registration: $('td:eq(1) > span:eq(0)',this).text(),
       nickname: fltmng_getNickname($('td:eq(1) > div:eq(0)',this).text()),
       equipment:$('td:eq(2) > a:eq(0)',this).text(),
+      typeId:fltmng_getTypeId($('td:eq(2) > a:eq(0)',this).attr('href')),
       age:fltmng_getAge($('td:eq(4) > span:eq(0)',this).text()),
       maintanance:fltmng_getMaintanance($('td:eq(4) > div > span:eq(1)',this).text()),
+      seatsY:fltmng_getInt($('td:eq(5) > span:eq(0)',this).text()),
+      seatsC:fltmng_getInt($('td:eq(5) > span:eq(1)',this).text()),
+      seatsF:fltmng_getInt($('td:eq(5) > span:eq(2)',this).text()),
       aircraftId:fltmng_getAircraftId($('td:eq(6) > div > div:eq(1) > a:eq(0)',this).attr('href')),
       note:fltmng_getNickname($('td:eq(7) > span > span',this).text()),
       fleet:fleet,
@@ -40,6 +44,14 @@ function fltmng_getData(){
     }
     aircraftData.push(data);
   });
+}
+// Equipment column links to /action/enterprise/aircraftsType?id=<typeId>.
+// Returns the integer typeId for use against the aircraft type detail page,
+// or null if the page renders without that anchor (older AS versions).
+function fltmng_getTypeId(href){
+  if(!href) return null;
+  const m = /aircraftsType\?id=(\d+)/.exec(href);
+  return m ? parseInt(m[1],10) : null;
 }
 function fltmng_getNickname(value){
   if(value == '...'){
@@ -59,6 +71,13 @@ function fltmng_getMaintanance(value){
   value = value.replace(',','.');
   value = parseFloat(value);
   return value;
+}
+// Y/C/F seat-count column: each class has its own <span> separated by literal
+// "/" text. Strip non-digits and parse — empty/missing classes return 0.
+function fltmng_getInt(text){
+  if(!text) return 0;
+  const n = parseInt(String(text).replace(/[^\d]/g,''),10);
+  return isFinite(n) ? n : 0;
 }
 function fltmng_getAircraftId(value){
     if (value) {
@@ -120,11 +139,15 @@ function fltmng_updateAircraftFleetStorageData(data){
         aircraftId:newvalue.aircraftId,
         date:newvalue.date,
         equipment:newvalue.equipment,
+        typeId:newvalue.typeId,
         fleet:newvalue.fleet,
         maintanance:newvalue.maintanance,
         nickname:newvalue.nickname,
         note:newvalue.note,
         registration:newvalue.registration,
+        seatsY:newvalue.seatsY,
+        seatsC:newvalue.seatsC,
+        seatsF:newvalue.seatsF,
         time:newvalue.time
       });
     });
@@ -134,6 +157,14 @@ function fltmng_updateAircraftFleetStorageData(data){
       let found = 0;
       newfleet.forEach(function(newValue){
         if(value.aircraftId == newValue.aircraftId){
+          //Preserve typeId on aircraft we re-saw — earlier scrapes (pre-Phase 2)
+          //didn't capture it, so backfill from the live page when available.
+          if(!newValue.typeId && value.typeId) newValue.typeId = value.typeId;
+          //Same backfill for the per-tail seats columns when the live page
+          //didn't render them (e.g. unconfigured aircraft).
+          if(newValue.seatsY == null && value.seatsY != null) newValue.seatsY = value.seatsY;
+          if(newValue.seatsC == null && value.seatsC != null) newValue.seatsC = value.seatsC;
+          if(newValue.seatsF == null && value.seatsF != null) newValue.seatsF = value.seatsF;
           found = 1;
         }
       });

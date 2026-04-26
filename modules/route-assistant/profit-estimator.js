@@ -47,6 +47,14 @@ class RouteAssistantProfitEstimator {
         const cargoScore = numOrNull(input && input.cargoScore)
         const falloffPct = numOrNull(input && input.falloffPct)
         const falloff    = (falloffPct === null || falloffPct < 0) ? 10 : falloffPct
+        // Letter K — opt-in real-demand inputs. When the user enables
+        // `useRealDemandForLF`, these supersede the paxScore-interpolated
+        // LF below. Both fields stay null on routes where the demand-
+        // depth scrape hasn't run, in which case we silently fall back
+        // to the paxScore path so existing behaviour is preserved.
+        const useRealDemand    = !!(input && input.useRealDemandForLF)
+        const paxDemandPool    = numOrNull(input && input.paxDemandPool)
+        const cargoDemandPool  = numOrNull(input && input.cargoDemandPool)
         const overridePaxLF      = override ? numOrNull(override.paxLF)             : null
         const overrideCargoLF    = override ? numOrNull(override.cargoLF)           : null
         const overrideYield      = override ? numOrNull(override.yieldPerKm)        : null
@@ -94,9 +102,20 @@ class RouteAssistantProfitEstimator {
         const paxLfFallback  = clamp(numOrNull(econ.loadFactor),    0, 1, (paxLfMin + paxLfMax) / 2)
 
         let paxLoadFactor, paxLfSource
+        // Weekly aircraft seat capacity = seats × frequency. Used by
+        // the real-demand path to translate "pool size" (estimated
+        // bookings/week) into an LF for THIS aircraft + frequency.
+        const paxWeeklyCap = (seats > 0 && freq > 0) ? (seats * freq) : null
         if (overridePaxLF !== null) {
             paxLoadFactor = clamp(overridePaxLF, 0, 1, paxLfFallback)
             paxLfSource   = "override"
+        } else if (useRealDemand && paxDemandPool !== null && paxWeeklyCap !== null) {
+            // Real demand-pool path (Letter K). LF = demand / capacity,
+            // clamped to [paxLfMin, paxLfMax] so a single noisy week
+            // doesn't push the model to 100% or 0%.
+            const ratio = paxDemandPool / paxWeeklyCap
+            paxLoadFactor = clamp(ratio, paxLfMin, paxLfMax, paxLfFallback)
+            paxLfSource   = "real-demand"
         } else if (paxScore !== null && paxLfMax >= paxLfMin) {
             paxLoadFactor = paxLfMin + Math.max(0, Math.min(1, paxScore / 10)) * (paxLfMax - paxLfMin)
             paxLfSource   = "demand"
@@ -111,9 +130,14 @@ class RouteAssistantProfitEstimator {
         const cargoLfFallback = clamp(numOrNull(econ.cargoLoadFactor),    0, 1, (cargoLfMin + cargoLfMax) / 2)
 
         let cargoLoadFactor, cargoLfSource
+        const cargoWeeklyCap = (cargo > 0 && freq > 0) ? (cargo * freq) : null
         if (overrideCargoLF !== null) {
             cargoLoadFactor = clamp(overrideCargoLF, 0, 1, cargoLfFallback)
             cargoLfSource   = "override"
+        } else if (useRealDemand && cargoDemandPool !== null && cargoWeeklyCap !== null) {
+            const ratio = cargoDemandPool / cargoWeeklyCap
+            cargoLoadFactor = clamp(ratio, cargoLfMin, cargoLfMax, cargoLfFallback)
+            cargoLfSource   = "real-demand"
         } else if (cargoScore !== null && cargoLfMax >= cargoLfMin) {
             cargoLoadFactor = cargoLfMin + Math.max(0, Math.min(1, cargoScore / 10)) * (cargoLfMax - cargoLfMin)
             cargoLfSource   = "demand"

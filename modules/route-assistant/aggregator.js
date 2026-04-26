@@ -244,6 +244,12 @@ class RouteAssistantAggregator {
             frequency:         totalFreq,
             paxScore:          row.paxScore,
             cargoScore:        row.cargoScore,
+            // Letter K — opt-in real-demand inputs. Estimator falls back
+            // to the paxScore-interpolated LF when these are null OR
+            // when `useRealDemandForLF` is false.
+            paxDemandPool:     row.paxDemandPool   != null ? row.paxDemandPool   : null,
+            cargoDemandPool:   row.cargoDemandPool != null ? row.cargoDemandPool : null,
+            useRealDemandForLF: !!fleetCtx.useRealDemandForLF,
             economics:         fleetCtx.economics,
             falloffPct:        fleetCtx.falloffPct,
             override:          row.override || null,

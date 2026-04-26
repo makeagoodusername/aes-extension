@@ -71,6 +71,13 @@ class RouteAssistantPanel {
         // Debounce timer for live Economics input typing — coalesces a
         // multi-keystroke value (e.g. "0.123") into one save + recompute.
         this._economicsDebounceTimer = null
+
+        // Diff-against-last-visit baseline. Loaded once per mount in
+        // refresh() from `routeAssistant:lastSnapshot:<HUB>`; held in memory
+        // so intra-mount re-renders keep showing the same "since last visit"
+        // delta even after _drawTable overwrites the storage record.
+        this._diffPrevSnapshot   = null
+        this._diffBaselineLoaded = false
     }
 
     async mount() {
@@ -180,16 +187,19 @@ class RouteAssistantPanel {
     _buildSkeleton() {
         this.root = document.createElement("div")
         this.root.id = "aes-route-assistant"
+        // Width is user-resizable via the left-edge drag handle. Persist
+        // across sessions in settings.routeAssistant.panelWidth. Default
+        // 1100px fits the standard column groups without horizontal
+        // scroll; expanders with many controls benefit from more.
+        const savedWidth = (this.settings && typeof this.settings.panelWidth === "number"
+            && this.settings.panelWidth >= 600 && this.settings.panelWidth <= 3000)
+            ? this.settings.panelWidth
+            : 1100
         Object.assign(this.root.style, {
             position: "fixed",
             right: "16px",
             bottom: "16px",
-            // Width: comfortable default that fits the column groups
-            // (real / aircraft / pricing / yield / carriers / market
-            // analysis) without horizontal scroll. Caps at viewport
-            // minus 32px so small displays don't push the panel off
-            // the right edge.
-            width: "1100px",
+            width: savedWidth + "px",
             maxWidth: "calc(100vw - 32px)",
             maxHeight: "95vh",
             background: "#1f2937",
@@ -203,6 +213,47 @@ class RouteAssistantPanel {
             flexDirection: "column",
             overflow: "hidden"
         })
+
+        // Left-edge drag handle for resizing. 6px wide invisible strip on
+        // the panel's left side; cursor flips to ew-resize on hover. Mouse-
+        // down captures pointer; mousemove updates `right:` (the panel is
+        // anchored to the bottom-right) so the right edge stays put while
+        // the left edge moves. Persisted to settings on mouseup.
+        const resizeHandle = document.createElement("div")
+        Object.assign(resizeHandle.style, {
+            position:   "absolute",
+            top:        "0",
+            left:       "0",
+            width:      "6px",
+            height:     "100%",
+            cursor:     "ew-resize",
+            zIndex:     "10000",
+            background: "transparent"
+        })
+        resizeHandle.title = "Drag to resize panel width"
+        resizeHandle.addEventListener("mousedown", (e) => {
+            e.preventDefault()
+            const startX = e.clientX
+            const startW = this.root.offsetWidth
+            const onMove = (ev) => {
+                const dx = startX - ev.clientX                          // drag-left = positive = wider
+                const next = Math.max(600, Math.min(window.innerWidth - 32, startW + dx))
+                this.root.style.width = next + "px"
+            }
+            const onUp = async () => {
+                document.removeEventListener("mousemove", onMove)
+                document.removeEventListener("mouseup",   onUp)
+                document.body.style.userSelect = ""
+                const finalW = this.root.offsetWidth
+                if (this.settings) this.settings.panelWidth = finalW
+                try { await RouteAssistantSettings.save({panelWidth: finalW}) }
+                catch (err) { /* non-fatal — width is best-effort */ }
+            }
+            document.body.style.userSelect = "none"
+            document.addEventListener("mousemove", onMove)
+            document.addEventListener("mouseup",   onUp)
+        })
+        this.root.append(resizeHandle)
 
         // Link styling — scoped to #aes-route-assistant so the hover rules
         // don't leak into AS's own UI. The icon row stays muted until the
@@ -236,9 +287,15 @@ class RouteAssistantPanel {
         title.style.flex = "1"
 
         const refreshBtn = makeBtn("↻", "Refresh from cache", () => this.refresh())
+        // Compact toggle — collapses every settings-driven column group
+        // (Live route data, Actuals, Service, Market Analysis, ORS Rank)
+        // in one click so the table fits in narrow viewports. Persists
+        // via settings.routeAssistant.compactView.
+        this._compactBtn = makeBtn("◧", "Compact view (toggle heavy column groups)",
+            () => this._toggleCompactView())
         const settingsBtn = makeBtn("⚙", "Score weights & filters", () => this._toggleSettings())
         const toggleBtn = makeBtn("_", "Minimise", () => this._toggleCollapse())
-        header.append(title, refreshBtn, settingsBtn, toggleBtn)
+        header.append(title, refreshBtn, this._compactBtn, settingsBtn, toggleBtn)
 
         this.statusBar = document.createElement("div")
         Object.assign(this.statusBar.style, {
@@ -289,6 +346,12 @@ class RouteAssistantPanel {
         Object.assign(this.body.style, {
             padding: "8px 12px",
             overflowY: "auto",
+            // Horizontal scroll within the body when the table is wider
+            // than the panel — keeps the panel from blowing past its
+            // user-resized width and lets the rightmost column groups
+            // (Market Analysis, ORS Rank) stay reachable via scroll
+            // without forcing the whole panel to overflow the viewport.
+            overflowX: "auto",
             flex: "1"
         })
 
@@ -333,6 +396,26 @@ class RouteAssistantPanel {
         if (open) this._renderSettings()
     }
 
+    /**
+     * Toggle Compact view — hides the heavy settings-driven column groups
+     * (Live route data, Actuals, Service, Market Analysis, ORS Rank) in
+     * one click so the table fits in narrow panels. Per-group toggles in
+     * each expander still work; this is just a master switch.
+     */
+    async _toggleCompactView() {
+        const next = !(this.settings && this.settings.compactView)
+        if (this.settings) this.settings.compactView = next
+        try { await RouteAssistantSettings.save({compactView: next}) }
+        catch (e) { /* non-fatal */ }
+        if (this._compactBtn) {
+            this._compactBtn.style.opacity = next ? "1" : "0.6"
+            this._compactBtn.title = next
+                ? "Compact view ON — heavy column groups hidden. Click to show all."
+                : "Compact view OFF — all column groups visible. Click to hide heavy groups."
+        }
+        this._render()
+    }
+
     // ---------- Data refresh ----------
 
     /**
@@ -347,6 +430,17 @@ class RouteAssistantPanel {
             return
         }
         this.hubIata = iata
+
+        // Diff-against-last-visit — load the previous snapshot ONCE per
+        // (mount, hub) pair. Subsequent in-mount refreshes (storage events,
+        // settings changes) keep the same baseline so the delta badges
+        // stay anchored to "what the user saw last time they opened this
+        // hub" rather than re-baselining mid-session. Hub change re-loads.
+        if (!this._diffBaselineLoaded || this._diffBaselineHub !== iata) {
+            this._diffPrevSnapshot = await _loadDiffSnapshot(iata)
+            this._diffBaselineLoaded = true
+            this._diffBaselineHub = iata
+        }
 
         this.ffData = await FlightsFromStore.loadAirport(iata)
         this.ownSchedule = await this._loadOwnSchedule()
@@ -403,7 +497,9 @@ class RouteAssistantPanel {
         await this._applyCachedCarriers()
         await this._applyCachedMarkets()
         await this._applyCachedEnterpriseMeta()
+        await this._applyCachedContractualPartners()
         await this._applyCachedOrs()
+        await this._applyCachedDemand()
         RouteAssistantAggregator.applyFleetContext(this.rows, this._fleetContext(), this._serviceContext())
         this._render()
         this._enrichDistancesAsync()
@@ -432,13 +528,19 @@ class RouteAssistantPanel {
         const a = this.settings && this.settings.aircraft
         if (!a || !a.mode) return null
         const common = this._fuelContextFields()
+        // Letter K — pull the demand-depth opt-in toggle into the
+        // context so the aggregator can hand it to the estimator
+        // alongside the per-row demand pool.
+        const dd = (this.settings && this.settings.demandDepth) || {}
+        const useRealDemandForLF = !!dd.useRealDemandForLF
         if (a.mode === "fleet") {
             if (!this.fleetSpecs || !this.fleetSpecs.length) return null
             return Object.assign({
                 selectedSpec: null,
                 fleetSpecs:   this.fleetSpecs,
                 falloffPct:   a.falloffPct,
-                economics:    this._economicsForEstimator()
+                economics:    this._economicsForEstimator(),
+                useRealDemandForLF: useRealDemandForLF
             }, common)
         }
         if (!this.selectedSpec) return null
@@ -446,7 +548,8 @@ class RouteAssistantPanel {
             selectedSpec: this.selectedSpec,
             fleetSpecs:   null,
             falloffPct:   a.falloffPct,
-            economics:    this._economicsForEstimator()
+            economics:    this._economicsForEstimator(),
+            useRealDemandForLF: useRealDemandForLF
         }, common)
     }
 
@@ -752,6 +855,41 @@ class RouteAssistantPanel {
                     e.iata      = meta.iata || null
                     if (!e.name && meta.name) e.name = meta.name
                 }
+            }
+        }
+    }
+
+    /**
+     * F slice 3 — load the user's own enterprise(s) contractual partners
+     * from cache and union the per-id partner lists into a single
+     * `_partnersByEnterpriseId` map. The Cmp popover row builder reads
+     * this at render time to surface a ⇄ glyph next to interlining
+     * partners (and optionally a ✦ for alliance partners).
+     *
+     * Multiple own enterprises (canopy users) contribute their partner
+     * lists into the same map: if ANY of your enterprises has IL with
+     * X, X gets the glyph. Conflicting relations on the same partner
+     * across own enterprises are unioned (worst case both labels win).
+     */
+    async _applyCachedContractualPartners() {
+        const cfg = (this.settings && this.settings.carriers) || {}
+        const ids = (cfg.myEnterpriseIds || []).map(v => String(v).trim()).filter(Boolean)
+        this._partnersByEnterpriseId = new Map()
+        if (!ids.length) return
+        const cache = await RouteAssistantContractualPartnersScraper.bulkLoadCache(
+            ids, {maxAgeDays: cfg.partnersMaxAgeDays}
+        )
+        if (!cache.size) return
+        for (const rec of cache.values()) {
+            if (!rec || !Array.isArray(rec.partners)) continue
+            for (const p of rec.partners) {
+                if (!p || !p.partnerId) continue
+                const key = String(p.partnerId)
+                const existing = this._partnersByEnterpriseId.get(key) || []
+                for (const r of (p.relations || [])) {
+                    if (existing.indexOf(r) === -1) existing.push(r)
+                }
+                this._partnersByEnterpriseId.set(key, existing)
             }
         }
     }
@@ -1372,6 +1510,15 @@ class RouteAssistantPanel {
         RouteAssistantPanel._showCarrierIntensity = !carriers || carriers.showCarrierIntensity !== false
         const ors = this.settings && this.settings.ors
         RouteAssistantPanel._orsPrimaryColumn = (ors && ors.primaryColumn) || "ratingGapToTop"
+        // Reflect Compact-view state on the header button so the user sees
+        // at a glance whether they're in Compact or Full mode.
+        const compact = !!(this.settings && this.settings.compactView)
+        if (this._compactBtn) {
+            this._compactBtn.style.opacity = compact ? "1" : "0.6"
+            this._compactBtn.title = compact
+                ? "Compact view ON — heavy column groups hidden. Click to show all."
+                : "Compact view OFF — all column groups visible. Click to hide heavy groups."
+        }
     }
 
     /**
@@ -1415,6 +1562,11 @@ class RouteAssistantPanel {
             this._renderEmpty("No routes match the current filters.")
             return
         }
+
+        // Decorate each row with `_diff.<field>` scalars from the previous
+        // mount's snapshot. No-op when there's no baseline (first ever
+        // mount on this hub) — render closures fall through silently.
+        _decorateRowsWithDiffs(this.scoredRows, this._diffPrevSnapshot)
 
         const sorted = this._sortRows(this.scoredRows)
         this._drawTable(sorted)
@@ -1472,6 +1624,13 @@ class RouteAssistantPanel {
         // (currently the Used Aircraft Scanner's route-fit metric). Capped
         // at 50 to keep storage write small; the scanner doesn't need more.
         this._publishTopRoutes(visible)
+
+        // Diff-against-last-visit — overwrite `routeAssistant:lastSnapshot:<HUB>`
+        // with the full scored set so the next mount can compute deltas.
+        // The in-memory `this._diffPrevSnapshot` is unaffected, so the
+        // current mount keeps showing "since last visit" against its own
+        // baseline even though storage now holds the new state.
+        _writeDiffSnapshot(this.hubIata, this.server, this.scoredRows)
     }
 
     /**
@@ -1486,13 +1645,16 @@ class RouteAssistantPanel {
         if (!this.hubIata) return
         const fin = v => typeof v === "number" && isFinite(v)
         const slim = (visible || []).slice(0, 50).map(r => ({
-            destIata:    r.destIata,
-            destName:    r.destName,
-            distanceKm:  fin(r.distanceKm) ? r.distanceKm : null,
-            score:       fin(r.score)      ? r.score      : null,
-            status:      r.status || null,
-            paxScore:    fin(r.paxScore)   ? r.paxScore   : null,
-            cargoScore:  fin(r.cargoScore) ? r.cargoScore : null
+            destIata:      r.destIata,
+            destName:      r.destName,
+            distanceKm:    fin(r.distanceKm)    ? r.distanceKm    : null,
+            score:         fin(r.score)         ? r.score         : null,
+            status:        r.status || null,
+            paxScore:      fin(r.paxScore)      ? r.paxScore      : null,
+            cargoScore:    fin(r.cargoScore)    ? r.cargoScore    : null,
+            weeklyFlights: fin(r.weeklyFlights) ? r.weeklyFlights : null  // real-world wfl,
+                                                                          // consumed by Used Aircraft Scanner
+                                                                          // route-fit (J slice 4)
         }))
         const blob = {
             hub:       this.hubIata,
@@ -1689,21 +1851,27 @@ class RouteAssistantPanel {
      */
     _activeColumns() {
         const showAircraft = this._fleetContext() !== null
-        const showPricing  = !this.settings || !this.settings.pricing
+        const compact = !!(this.settings && this.settings.compactView)
+        // Compact view forces all heavy expander-driven groups OFF in one
+        // click. Per-group settings still apply when compact is OFF.
+        const showPricing  = !compact && (!this.settings || !this.settings.pricing
             ? true
-            : this.settings.pricing.showPricingColumns !== false
-        const showActuals  = !this.settings || !this.settings.yieldFeedback
+            : this.settings.pricing.showPricingColumns !== false)
+        const showActuals  = !compact && (!this.settings || !this.settings.yieldFeedback
             ? true
-            : this.settings.yieldFeedback.showColumns !== false
-        const showMarkets  = !this.settings || !this.settings.marketAnalysis
+            : this.settings.yieldFeedback.showColumns !== false)
+        const showMarkets  = !compact && (!this.settings || !this.settings.marketAnalysis
             ? true
-            : this.settings.marketAnalysis.showColumns !== false
-        const showOrs      = !this.settings || !this.settings.ors
+            : this.settings.marketAnalysis.showColumns !== false)
+        const showOrs      = !compact && (!this.settings || !this.settings.ors
             ? true
-            : this.settings.ors.showColumns !== false
-        const showService  = !this.settings || !this.settings.serviceProfiles
+            : this.settings.ors.showColumns !== false)
+        const showService  = !compact && (!this.settings || !this.settings.serviceProfiles
             ? true
-            : this.settings.serviceProfiles.showServiceColumns !== false
+            : this.settings.serviceProfiles.showServiceColumns !== false)
+        const showDemand   = !compact && (!this.settings || !this.settings.demandDepth
+            ? true
+            : this.settings.demandDepth.showDemandColumns !== false)
         const viewMode = this._currentViewMode()
         return RouteAssistantPanel.COLUMNS.filter(c => {
             if (c.group === "aircraft"    && !showAircraft) return false
@@ -1713,6 +1881,7 @@ class RouteAssistantPanel {
             if (c.group === "competition" && !showMarkets)  return false
             if (c.group === "markets"     && !showMarkets)  return false
             if (c.group === "ors"         && !showOrs)      return false
+            if (c.group === "demand"      && !showDemand)   return false
             // Tabbed view filter — derive `modes` via _columnModes so
             // we don't have to tag every entry in the large COLUMNS
             // array. Only paxScore / cargoScore are mode-specific
@@ -1974,6 +2143,12 @@ class RouteAssistantPanel {
         // own pricing, market shares, and historic capacity/price charts.
         // Stored split across 4 chrome.storage.local key families.
         this._renderMarketAnalysisSection()
+
+        // ----- Demand depth (Letter K — per-class historic + RM buckets)
+        // Heavy fan-out scrape that derives real per-route demand pool +
+        // price elasticity + RM tightness, replacing the 0–10 station
+        // badge as the score-blend's demand signal.
+        this._renderDemandDepthSection()
 
         // ----- ORS Rank (Tier 2b — Online Reservation System scraper)
         // Submits /app/info/ors per route and walks all result pages,
@@ -2587,9 +2762,14 @@ class RouteAssistantPanel {
             const v = row.actualVariancePct
             if (v === null || v === undefined) continue
             if (Math.abs(v) < warn) continue
-            const target = derivedYieldFromActuals(row)
-            if (target === null) continue
-            out.push({row: row, target: target, variance: v})
+            const result = derivedYieldFromActuals(row)
+            if (result === null) continue
+            out.push({
+                row:      row,
+                primary:  {side: result.side, value: result.value},
+                alt:      result.alt,
+                variance: v
+            })
         }
         return out
     }
@@ -2624,47 +2804,91 @@ class RouteAssistantPanel {
         sub.style.cssText = "color:#9ca3af;font-size:11px;margin-bottom:10px;line-height:1.5;"
         sub.innerHTML = "Each row shows the existing yield (or default), the calibrated value that "
             + "would make the estimator match the latest snapshot at the current LF / spec, and the "
-            + "Δ% that drove the flag. Untick any row you don't want to write. Saving creates or "
-            + "extends a per-route override (other override fields are preserved)."
+            + "Δ% that drove the flag. The Side column auto-picks pax (P) or cargo (C) based on the "
+            + "route's dominant revenue share — flip per row to calibrate the other side instead. "
+            + "Untick any row you don't want to write. Saving creates or extends a per-route override "
+            + "(other override fields are preserved)."
         card.append(title, sub)
 
+        const econ = (this.settings && this.settings.economics) || {}
         const tbl = document.createElement("table")
         tbl.style.cssText = "width:100%;font-size:11px;border-collapse:collapse;"
         const head = document.createElement("tr")
         head.innerHTML = "<th></th>"
             + "<th style='text-align:left;padding:4px 6px;color:#94a3b8;'>Route</th>"
+            + "<th style='text-align:center;padding:4px 6px;color:#94a3b8;'>Side</th>"
             + "<th style='text-align:right;padding:4px 6px;color:#94a3b8;'>Δ%</th>"
             + "<th style='text-align:right;padding:4px 6px;color:#94a3b8;'>Old yield</th>"
             + "<th style='text-align:right;padding:4px 6px;color:#94a3b8;'>New yield</th>"
         tbl.append(head)
         const checks = []
+        const oldYieldFor = (f, side) => {
+            const ex = f.row.override || {}
+            if (side === "cargo") {
+                if (typeof ex.cargoYieldPerKgKm === "number") return ex.cargoYieldPerKgKm
+                return typeof econ.cargoYieldPerKgKm === "number" ? econ.cargoYieldPerKgKm : null
+            }
+            if (typeof ex.yieldPerKm === "number") return ex.yieldPerKm
+            return typeof econ.yieldPerKm === "number" ? econ.yieldPerKm : null
+        }
+        const solutionFor = (f, side) => {
+            if (f.primary && f.primary.side === side) return f.primary
+            if (f.alt && f.alt.side === side) return f.alt
+            return null
+        }
         for (const f of flagged) {
             const tr = document.createElement("tr")
             tr.style.borderTop = "1px solid #1f2937"
             const cb = document.createElement("input")
             cb.type = "checkbox"
             cb.checked = true
-            checks.push({entry: f, cb: cb})
             const td = (txt, align) => {
                 const c = document.createElement("td")
                 c.style.cssText = "padding:4px 6px;text-align:" + (align || "left") + ";"
                 c.textContent = txt
                 return c
             }
-            const oldYield = (f.row.override && typeof f.row.override.yieldPerKm === "number")
-                ? f.row.override.yieldPerKm
-                : (this.settings && this.settings.economics && this.settings.economics.yieldPerKm)
-                    ? this.settings.economics.yieldPerKm
-                    : null
             const cbCell = document.createElement("td")
             cbCell.style.padding = "4px 6px"
             cbCell.append(cb)
+
+            // Side dropdown — disabled when only one side is solvable.
+            const sideSel = document.createElement("select")
+            sideSel.style.cssText = "background:#0f172a;color:#e5e7eb;border:1px solid #334155;"
+                + "border-radius:3px;padding:1px 4px;font-size:11px;"
+            const optP = document.createElement("option")
+            optP.value = "pax"; optP.textContent = "P"
+            const optC = document.createElement("option")
+            optC.value = "cargo"; optC.textContent = "C"
+            sideSel.append(optP, optC)
+            const hasPax   = !!solutionFor(f, "pax")
+            const hasCargo = !!solutionFor(f, "cargo")
+            optP.disabled = !hasPax
+            optC.disabled = !hasCargo
+            sideSel.value = f.primary.side
+            sideSel.disabled = !(hasPax && hasCargo)
+            const sideCell = document.createElement("td")
+            sideCell.style.cssText = "padding:4px 6px;text-align:center;"
+            sideCell.append(sideSel)
+
             const v = f.variance
             const vCell = td((v > 0 ? "+" : "") + v + "%", "right")
             vCell.style.color = v > 0 ? "#86efac" : "#fca5a5"
-            tr.append(cbCell, td(f.row.destIata, "left"), vCell,
-                td(oldYield != null ? oldYield.toFixed(4) : "—", "right"),
-                td(f.target.toFixed(4), "right"))
+
+            const oldCell = td("", "right")
+            const newCell = td("", "right")
+            const refresh = () => {
+                const side = sideSel.value
+                const sol  = solutionFor(f, side)
+                const old  = oldYieldFor(f, side)
+                oldCell.textContent = old != null ? old.toFixed(4) : "—"
+                newCell.textContent = sol ? sol.value.toFixed(4) : "—"
+            }
+            refresh()
+            sideSel.addEventListener("change", refresh)
+            checks.push({entry: f, cb: cb, sideSel: sideSel})
+
+            tr.append(cbCell, td(f.row.destIata, "left"), sideCell, vCell, oldCell, newCell)
             tbl.append(tr)
         }
         card.append(tbl)
@@ -2684,16 +2908,26 @@ class RouteAssistantPanel {
             saveBtn.disabled = true
             saveBtn.textContent = "Saving…"
             const hubU = String(this.hubIata || "").toUpperCase()
-            const noteStr = "calibrated " + new Date().toISOString().slice(0, 10)
+            const dateStr = new Date().toISOString().slice(0, 10)
             let written = 0
             for (const c of checks) {
                 if (!c.cb.checked) continue
+                const side = c.sideSel.value
+                const sol  = (c.entry.primary.side === side) ? c.entry.primary
+                           : (c.entry.alt && c.entry.alt.side === side) ? c.entry.alt
+                           : null
+                if (!sol) continue
                 const ex = c.entry.row.override || {}
+                const noteStr = "calibrated " + dateStr + " (" + side + ")"
                 const fields = {
                     paxLF:             typeof ex.paxLF === "number" ? ex.paxLF : null,
                     cargoLF:           typeof ex.cargoLF === "number" ? ex.cargoLF : null,
-                    yieldPerKm:        c.entry.target,
-                    cargoYieldPerKgKm: typeof ex.cargoYieldPerKgKm === "number" ? ex.cargoYieldPerKgKm : null,
+                    yieldPerKm:        side === "pax"
+                                           ? sol.value
+                                           : (typeof ex.yieldPerKm === "number" ? ex.yieldPerKm : null),
+                    cargoYieldPerKgKm: side === "cargo"
+                                           ? sol.value
+                                           : (typeof ex.cargoYieldPerKgKm === "number" ? ex.cargoYieldPerKgKm : null),
                     note:              ex.note ? (ex.note + " · " + noteStr) : noteStr
                 }
                 const destU = String(c.entry.row.destIata || "").toUpperCase()
@@ -3113,6 +3347,105 @@ class RouteAssistantPanel {
         wrap.append(note)
 
         this.settingsHost.append(wrap)
+
+        // F slice 3 — Contractual partners sub-panel. Visually distinct
+        // (purple) from the green carriers panel above so the user
+        // doesn't conflate "what flightsfrom says about competition"
+        // with "what AS says about my own agreements".
+        const partnersWrap = document.createElement("div")
+        partnersWrap.style.cssText = "margin-top:6px;padding:6px 8px;"
+            + "background:rgba(124, 58, 237, 0.06);border:1px solid rgba(124, 58, 237, 0.25);"
+            + "border-radius:4px;"
+
+        const partnersHeader = document.createElement("div")
+        partnersHeader.style.cssText = "color:#c4b5fd;font-size:11px;margin-bottom:4px;"
+        partnersHeader.innerHTML = "<strong>Contractual partners</strong> "
+            + "<span style='color:#9ca3af;font-weight:normal;'>— Reads your own enterprise's "
+            + "<em>Contractual partners</em> tab to mark interlining (⇄) and alliance (✦) partners "
+            + "in the Cmp popover.</span>"
+        partnersWrap.append(partnersHeader)
+
+        const lastPartnersTs = cfg.lastPartnersSyncAt
+            ? new Date(cfg.lastPartnersSyncAt).toLocaleString()
+            : "never"
+        const partnersStatus = document.createElement("div")
+        partnersStatus.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;"
+        partnersStatus.textContent = "Configured: " + ((cfg.myEnterpriseIds || []).length)
+            + " enterprise id(s) · last sync: " + lastPartnersTs
+        partnersWrap.append(partnersStatus)
+
+        const inputRow = document.createElement("div")
+        inputRow.style.cssText = "display:flex;gap:6px;align-items:center;font-size:11px;margin-bottom:6px;flex-wrap:wrap;"
+        const idsLabel = document.createElement("span")
+        idsLabel.textContent = "Own enterprise IDs:"
+        idsLabel.style.cssText = "color:#c4b5fd;flex-shrink:0;"
+        inputRow.append(idsLabel)
+
+        const idsInput = document.createElement("input")
+        idsInput.type = "text"
+        idsInput.placeholder = "e.g. 785 or 785, 872"
+        idsInput.value = (cfg.myEnterpriseIds || []).join(", ")
+        idsInput.style.cssText = "flex:1;min-width:140px;background:#0f1623;border:1px solid #374151;color:#e5e7eb;padding:3px 6px;border-radius:3px;font-size:11px;font-family:monospace;"
+        const persistIds = async () => {
+            const parsed = idsInput.value.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean)
+            this.settings.carriers.myEnterpriseIds = parsed
+            await RouteAssistantSettings.save({carriers: this.settings.carriers})
+            await this._applyCachedContractualPartners()
+            this._render()
+        }
+        idsInput.addEventListener("change", persistIds)
+        idsInput.addEventListener("blur",   persistIds)
+        inputRow.append(idsInput)
+
+        const refreshBtn = document.createElement("button")
+        refreshBtn.textContent = this._partnersScrapeRunning
+            ? "Refreshing…"
+            : "Refresh contractual partners"
+        Object.assign(refreshBtn.style, smallBtnStyle())
+        refreshBtn.style.background = "#7c3aed"
+        refreshBtn.disabled = !!this._partnersScrapeRunning
+            || !(cfg.myEnterpriseIds && cfg.myEnterpriseIds.length)
+        refreshBtn.addEventListener("click", () => this._runRefreshContractualPartners())
+        inputRow.append(refreshBtn)
+        partnersWrap.append(inputRow)
+
+        const togglesRow = document.createElement("div")
+        togglesRow.style.cssText = "display:flex;gap:14px;align-items:center;font-size:11px;flex-wrap:wrap;"
+
+        const ilCb = mkInput("checkbox", null)
+        ilCb.checked = cfg.showInterliningGlyph !== false
+        const ilLbl = document.createElement("label")
+        ilLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#c4b5fd;cursor:pointer;"
+        ilLbl.append(ilCb, document.createTextNode("Show ⇄ for interlining partners"))
+        ilCb.addEventListener("change", async () => {
+            this.settings.carriers.showInterliningGlyph = ilCb.checked
+            await RouteAssistantSettings.save({carriers: this.settings.carriers})
+            this._render()
+        })
+        togglesRow.append(ilLbl)
+
+        const alCb = mkInput("checkbox", null)
+        alCb.checked = !!cfg.showAllianceGlyph
+        const alLbl = document.createElement("label")
+        alLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#c4b5fd;cursor:pointer;"
+        alLbl.append(alCb, document.createTextNode("Show ✦ for alliance partners"))
+        alCb.addEventListener("change", async () => {
+            this.settings.carriers.showAllianceGlyph = alCb.checked
+            await RouteAssistantSettings.save({carriers: this.settings.carriers})
+            this._render()
+        })
+        togglesRow.append(alLbl)
+        partnersWrap.append(togglesRow)
+
+        const partnersHint = document.createElement("div")
+        partnersHint.style.cssText = "color:#6b7280;font-size:10px;margin-top:6px;line-height:1.4;"
+        partnersHint.innerHTML = "Find your enterprise ID in the AS URL when you open your own profile — e.g. "
+            + "<code style='color:#a78bfa;'>/app/info/enterprises/<strong>785</strong>?tab=1</code>. "
+            + "Multiple IDs (canopy users): comma-separate them. "
+            + "Default cache TTL: " + (cfg.partnersMaxAgeDays || 30) + "d."
+        partnersWrap.append(partnersHint)
+
+        this.settingsHost.append(partnersWrap)
     }
 
     /**
@@ -3236,6 +3569,62 @@ class RouteAssistantPanel {
         await RouteAssistantSettings.save({carriers: this.settings.carriers})
 
         await this._applyCachedEnterpriseMeta()
+        this._render()
+    }
+
+    /**
+     * F slice 3 — fetch the user's own enterprise(s) "Contractual
+     * partners" tab and persist the results. Driven by
+     * `settings.carriers.myEnterpriseIds` (small list, typically 1-2
+     * for a single-airline user, more for canopy-style multi-airline
+     * setups).
+     *
+     * Always re-fetches every id when the user clicks (no
+     * already-fresh skip). The user only triggers this manually after
+     * they sign new agreements, so deferring the cache is the wrong
+     * default — fresh data is what they pressed the button for.
+     */
+    async _runRefreshContractualPartners() {
+        if (this._partnersScrapeRunning) return
+        const cfg = this.settings.carriers || {}
+        const ids = (cfg.myEnterpriseIds || []).map(v => String(v).trim()).filter(Boolean)
+        if (!ids.length) {
+            if (this._carrierStatusEl) {
+                this._carrierStatusEl.textContent =
+                    "Enter at least one of your own enterprise IDs first (Carriers expander)."
+            }
+            return
+        }
+
+        if (!this.contractualPartnersScraper) {
+            this.contractualPartnersScraper = new RouteAssistantContractualPartnersScraper(this.server, {
+                maxAgeDays: cfg.partnersMaxAgeDays
+            })
+        }
+
+        this._partnersScrapeRunning = true
+        this._renderSettings()
+
+        try {
+            await this.contractualPartnersScraper.bulkScrape(ids, {
+                concurrency: cfg.partnersConcurrency || 2,
+                staggerMs:   cfg.partnersStaggerMs   || 400,
+                onProgress:  (done, total) => {
+                    if (this._carrierStatusEl) {
+                        this._carrierStatusEl.textContent =
+                            "Refreshing contractual partners: " + done + "/" + total + "…"
+                    }
+                }
+            })
+        } catch (e) {
+            console.warn("[AES partnersScraper] bulk scrape failed", e)
+        }
+
+        this._partnersScrapeRunning = false
+        this.settings.carriers.lastPartnersSyncAt = Date.now()
+        await RouteAssistantSettings.save({carriers: this.settings.carriers})
+
+        await this._applyCachedContractualPartners()
         this._render()
     }
 
@@ -3385,10 +3774,31 @@ class RouteAssistantPanel {
             if (bucket.competitors) {
                 const all = bucket.competitors.competitors || []
                 const competitorYs = []
+                // Distinct competitor airline prefixes derived from the
+                // route's flight list. Used to BACKFILL competitorEntries
+                // when the markets page didn't render a market-share
+                // section (new routes / no completed bookings yet).
+                // Without this, the rich popover had nothing to show on
+                // the majority of routes even though we knew exactly who
+                // was flying them.
+                const flightPrefixes = new Map()  // prefix → {prefix, flights, sampleType}
                 for (const c of all) {
                     if (c.isOurs) continue
                     if (c.serviceClass === "Y" && typeof c.price === "number" && c.price > 0) {
                         competitorYs.push(c.price)
+                    }
+                    if (c.flightCode) {
+                        const m = /^([A-Z0-9]+)/.exec(c.flightCode.trim().toUpperCase())
+                        if (m) {
+                            const p = m[1]
+                            let slot = flightPrefixes.get(p)
+                            if (!slot) {
+                                slot = {prefix: p, flights: 0, sampleType: c.typeCode || null}
+                                flightPrefixes.set(p, slot)
+                            }
+                            slot.flights += 1
+                            if (!slot.sampleType && c.typeCode) slot.sampleType = c.typeCode
+                        }
                     }
                 }
                 if (competitorYs.length) {
@@ -3399,6 +3809,35 @@ class RouteAssistantPanel {
                         : Math.round((competitorYs[mid - 1] + competitorYs[mid]) / 2)
                 } else {
                     r.competitorMedianPriceY = null
+                }
+                // Stash the raw prefix → flight-count map; the popover
+                // can render this when the leaderboard is empty.
+                r.competitorFlightPrefixes = Array.from(flightPrefixes.values())
+
+                // Backfill competitorEntries from flight prefixes when the
+                // leaderboard parse produced nothing. Each entry uses the
+                // prefix as its display name (no enterprise ID — the
+                // markets page doesn't link enterprises from the inventory
+                // table). Marked `fromFlightList: true` so the popover can
+                // render a hint that this is derived intel.
+                if (!Array.isArray(r.competitorEntries) || r.competitorEntries.length === 0) {
+                    if (flightPrefixes.size) {
+                        r.competitorEntries = Array.from(flightPrefixes.values()).map(slot => ({
+                            enterpriseId:    null,
+                            name:            slot.prefix + "  ·  " + slot.flights + " flight"
+                                                + (slot.flights === 1 ? "" : "s"),
+                            paxShare:        null,
+                            cargoShare:      null,
+                            paxRank:         null,
+                            cargoRank:       null,
+                            paxChange:       null,
+                            cargoChange:     null,
+                            sampleType:      slot.sampleType,
+                            flightsOnRoute:  slot.flights,
+                            fromFlightList:  true
+                        }))
+                        if (r.competitorCount == null) r.competitorCount = flightPrefixes.size
+                    }
                 }
             }
 
@@ -3534,6 +3973,220 @@ class RouteAssistantPanel {
         this._render()
     }
 
+    // ---------- Demand depth (Letter K — markets historic + inventory + derivator) ----------
+
+    /**
+     * Letter K — load every cached input the demand-derivator needs
+     * (markets historic by-payload + inventory) and compute per-row
+     * pool / elasticity / RM tightness scalars. Idempotent; pure
+     * read of caches written by the demand-depth bulk sync.
+     */
+    async _applyCachedDemand() {
+        if (!this.rows || !this.rows.length || !this.hubIata) return
+        const cfg = (this.settings && this.settings.demandDepth) || {}
+        const pairs = this.rows.map(r => ({hub: this.hubIata, dest: r.destIata}))
+
+        const histMap = await RouteAssistantMarketsPageScraper.bulkLoadCache(pairs, {
+            families: ["historic", "ownPricing"],
+            maxAge:   {historic: cfg.historicMaxAgeDays}
+        })
+        const invMap = await RouteAssistantInventoryPageScraper.bulkLoadCache(pairs, {
+            maxAgeDays: cfg.inventoryMaxAgeDays
+        })
+
+        const window = cfg.historicWindowPeriods || 12
+        for (const r of this.rows) {
+            const key = RouteAssistantMarketsPageScraper._pairKey(this.hubIata, r.destIata)
+            const bucket = histMap.get(key)
+            const historic   = (bucket && bucket.historic)   || null
+            const ownPricing = (bucket && bucket.ownPricing) || null
+            const inventory  = invMap.get(RouteAssistantInventoryPageScraper._pairKey(this.hubIata, r.destIata)) || null
+
+            const derived = RouteAssistantDemandDerivator.derive(historic, inventory, ownPricing, {window: window})
+            r.paxDemandPool   = derived.paxDemandPool
+            r.cargoDemandPool = derived.cargoDemandPool
+            r.paxAvgPrice     = derived.paxAvgPrice
+            r.cargoAvgPrice   = derived.cargoAvgPrice
+            r.paxElasticity   = derived.paxElasticity
+            r.cargoElasticity = derived.cargoElasticity
+            r.rmTightness     = derived.rmTightness
+            r.demandDerivedAt = derived.scrapedAt
+            r.demandNotes     = derived.derivationNotes
+        }
+    }
+
+    /**
+     * Letter K — bulk-fan-out per-class historic + inventory fetches
+     * across visible routes. Concurrency 3 / stagger 1200ms by default
+     * to stay friendly to a parallel ORS bulk sync.
+     */
+    async _runBulkDemandSync() {
+        if (this._demandScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
+        const cfg = this.settings.demandDepth || {}
+        const concurrency = cfg.concurrency || 3
+        const staggerMs   = cfg.staggerMs   || 1200
+        const coverage    = cfg.classCoverage || "summary"
+        const payloads    = (coverage === "full")
+            ? RouteAssistantMarketsPageScraper.HISTORIC_PAYLOADS
+            : ["PAX", "CARGO"]
+
+        if (!this.marketsScraper) {
+            this.marketsScraper = new RouteAssistantMarketsPageScraper(this.server, {})
+        }
+        if (!this.inventoryScraper) {
+            this.inventoryScraper = new RouteAssistantInventoryPageScraper(this.server, {
+                maxAgeDays: cfg.inventoryMaxAgeDays
+            })
+        }
+
+        const pairs = this.rows.map(r => ({hub: this.hubIata, dest: r.destIata}))
+        this._demandScrapeRunning = true
+        this._renderSettings()
+
+        const totalSteps = pairs.length * payloads.length + pairs.length
+        let stepDone = 0
+        const tickProgress = () => {
+            stepDone++
+            if (this._demandStatusEl) {
+                this._demandStatusEl.textContent =
+                    "Syncing demand depth: " + stepDone + "/" + totalSteps + "…"
+            }
+        }
+
+        try {
+            await this.marketsScraper.bulkScrapeHistoric(pairs, {
+                payloads:    payloads,
+                concurrency: concurrency,
+                staggerMs:   staggerMs,
+                onProgress:  () => tickProgress()
+            })
+            await this.inventoryScraper.bulkScrape(pairs, {
+                concurrency: concurrency,
+                staggerMs:   staggerMs,
+                onProgress:  () => tickProgress()
+            })
+        } catch (e) {
+            console.warn("[AES demandDepth] bulk sync failed", e)
+        }
+
+        this._demandScrapeRunning = false
+        this.settings.demandDepth.lastBulkScrapeAt = Date.now()
+        await RouteAssistantSettings.save({demandDepth: this.settings.demandDepth})
+
+        await this._applyCachedDemand()
+        RouteAssistantAggregator.applyFleetContext(this.rows, this._fleetContext(), this._serviceContext())
+        this._render()
+    }
+
+    /**
+     * Settings-drawer expander for demand-depth. Slate-tinted; sits
+     * below Market Analysis. The `useRealDemandForLF` toggle prompts
+     * a confirm the first time it's flipped on because it shifts
+     * every existing profit number.
+     */
+    _renderDemandDepthSection() {
+        const cfg = this.settings.demandDepth = Object.assign(
+            {showDemandColumns: true, classCoverage: "summary", useRealDemandForLF: false,
+             concurrency: 3, staggerMs: 1200, historicWindowPeriods: 12,
+             lastBulkScrapeAt: null, historicMaxAgeDays: null, inventoryMaxAgeDays: 3},
+            this.settings.demandDepth || {}
+        )
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:10px;padding:6px 8px;"
+            + "background:rgba(100, 116, 139, 0.08);border:1px solid rgba(100, 116, 139, 0.35);"
+            + "border-radius:4px;"
+
+        const header = document.createElement("div")
+        header.style.cssText = "color:#cbd5e1;font-size:11px;margin-bottom:4px;"
+        header.innerHTML = "<strong>Demand depth</strong> "
+            + "<span style='color:#9ca3af;font-weight:normal;'>— Per-class historic + inventory RM buckets. "
+            + "Derives per-route demand pool, price elasticity, and RM tightness so the score blend can use real "
+            + "AS demand instead of the 0–10 station badge.</span>"
+        wrap.append(header)
+
+        const status = document.createElement("div")
+        status.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;"
+        const totalRows = (this.rows || []).length
+        const dataRows  = (this.rows || []).filter(r => r.paxDemandPool != null || r.cargoDemandPool != null).length
+        const lastSync  = cfg.lastBulkScrapeAt
+            ? new Date(cfg.lastBulkScrapeAt).toLocaleString()
+            : "never"
+        status.textContent = "Synced: " + dataRows + "/" + totalRows
+            + " routes · last bulk sync: " + lastSync
+            + " · class coverage: " + cfg.classCoverage
+        wrap.append(status)
+        this._demandStatusEl = status
+
+        const ctrlRow = document.createElement("div")
+        ctrlRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:11px;"
+
+        const showCb = mkInput("checkbox", null)
+        showCb.checked = cfg.showDemandColumns !== false
+        const showLbl = document.createElement("label")
+        showLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#cbd5e1;"
+        showLbl.append(showCb, document.createTextNode("Show demand columns"))
+        showCb.addEventListener("change", async () => {
+            this.settings.demandDepth.showDemandColumns = showCb.checked
+            await RouteAssistantSettings.save({demandDepth: this.settings.demandDepth})
+            this._render()
+        })
+        ctrlRow.append(showLbl)
+
+        const coverageSel = mkSelect([
+            {value: "summary", label: "Coverage: Summary (PAX + CARGO)"},
+            {value: "full",    label: "Coverage: Full (Y / C / F / PAX / CARGO)"}
+        ], cfg.classCoverage || "summary")
+        coverageSel.addEventListener("change", async () => {
+            this.settings.demandDepth.classCoverage = coverageSel.value
+            await RouteAssistantSettings.save({demandDepth: this.settings.demandDepth})
+            this._renderSettings()
+        })
+        ctrlRow.append(coverageSel)
+
+        const realCb = mkInput("checkbox", null)
+        realCb.checked = !!cfg.useRealDemandForLF
+        const realLbl = document.createElement("label")
+        realLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#fde68a;"
+        realLbl.title = "Advanced — when on, the profit estimator uses pool / weeklySeats for LF instead of the 0–10 paxScore interpolation. Routes with no pool yet keep the paxScore path."
+        realLbl.append(realCb, document.createTextNode("Use real demand for LF (advanced)"))
+        realCb.addEventListener("change", async () => {
+            if (realCb.checked && !cfg.useRealDemandForLF) {
+                if (!confirm("Switch profit-estimator load factor to real demand pool?\n\nThis will shift every $/flt and $/wk number on routes that have demand-depth data. Routes without pool data keep the existing paxScore path.")) {
+                    realCb.checked = false
+                    return
+                }
+            }
+            this.settings.demandDepth.useRealDemandForLF = realCb.checked
+            await RouteAssistantSettings.save({demandDepth: this.settings.demandDepth})
+            RouteAssistantAggregator.applyFleetContext(this.rows, this._fleetContext(), this._serviceContext())
+            this._render()
+        })
+        ctrlRow.append(realLbl)
+
+        const scanBtn = document.createElement("button")
+        scanBtn.textContent = this._demandScrapeRunning
+            ? "Syncing demand…"
+            : "Sync demand depth"
+        Object.assign(scanBtn.style, smallBtnStyle())
+        scanBtn.style.background = "#475569"
+        scanBtn.disabled = !!this._demandScrapeRunning || !this.hubIata || !(this.rows && this.rows.length)
+        scanBtn.addEventListener("click", () => this._runBulkDemandSync())
+        ctrlRow.append(scanBtn)
+
+        wrap.append(ctrlRow)
+
+        const note = document.createElement("div")
+        note.style.cssText = "color:#6b7280;font-size:10px;margin-top:6px;line-height:1.4;"
+        note.innerHTML = "Heavy scrape — " + (cfg.classCoverage === "full" ? "5" : "2")
+            + " markets fetches × every visible route + 1 inventory fetch each. "
+            + cfg.concurrency + " concurrent / " + cfg.staggerMs + "ms stagger. "
+            + "Friendly to a parallel ORS sync (different endpoint)."
+        wrap.append(note)
+
+        this.settingsHost.append(wrap)
+    }
+
     // ---------- ORS Rank (Tier 2b — Online Reservation System scraper) ----------
 
     /**
@@ -3637,28 +4290,46 @@ class RouteAssistantPanel {
             wrap.append(banner)
         }
 
-        // Status line.
+        // ----- Top action row — Sync button is FIRST so it's reachable
+        // without scrolling no matter how tall the expander grows. Status
+        // text rides alongside it so the user sees progress in the same eye-line.
+        const topRow = document.createElement("div")
+        topRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
+            + "font-size:11px;margin-bottom:6px;"
+
+        const scanBtn = document.createElement("button")
+        scanBtn.textContent = this._orsScrapeRunning
+            ? "Syncing ORS…"
+            : "Sync ORS rank for all visible routes"
+        Object.assign(scanBtn.style, smallBtnStyle())
+        scanBtn.style.background = "#b45309"
+        scanBtn.disabled = !!this._orsScrapeRunning || !this.hubIata
+            || !(this.rows && this.rows.length) || tripped
+        scanBtn.addEventListener("click", () => this._runBulkOrsScrape())
+        topRow.append(scanBtn)
+
         const status = document.createElement("div")
-        status.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;"
+        status.style.cssText = "color:#9ca3af;font-size:10px;flex:1;min-width:0;"
         const totalRows = (this.rows || []).length
         const dataRows  = (this.rows || []).filter(r => r.orsRankAny != null).length
         const lastScrape = cfg.lastBulkScrapeAt
             ? new Date(cfg.lastBulkScrapeAt).toLocaleString()
             : "never"
-        status.textContent = "Captured: " + dataRows + "/" + totalRows
-            + " routes · last bulk sync: " + lastScrape
-        wrap.append(status)
+        status.textContent = dataRows + "/" + totalRows + " routes · last sync: " + lastScrape
+        topRow.append(status)
         this._orsStatusEl = status
 
-        // ----- Param controls row 1 — payload, window combo, ground -----
+        wrap.append(topRow)
+
+        // ----- Essential controls — payload / window / ground / show-cols -----
         const paramRow = document.createElement("div")
         paramRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
             + "font-size:11px;margin-bottom:4px;"
 
         const payloadSel = mkSelect([
-            {value: "ECONOMY",  label: "Y (Economy)"},
-            {value: "BUSINESS", label: "C (Business)"},
-            {value: "FIRST",    label: "F (First)"},
+            {value: "ECONOMY",  label: "Y"},
+            {value: "BUSINESS", label: "C"},
+            {value: "FIRST",    label: "F"},
             {value: "CARGO",    label: "Cargo"}
         ])
         payloadSel.value = cfg.defaultPayload
@@ -3673,9 +4344,9 @@ class RouteAssistantPanel {
         paramRow.append(payloadLbl)
 
         const windowSel = mkSelect([
-            {value: "tight",    label: "Tight (0–24h)"},
-            {value: "standard", label: "Standard (0–48h)"},
-            {value: "wide",     label: "Wide (0–72h)"}
+            {value: "tight",    label: "Tight 0–24h"},
+            {value: "standard", label: "Std 0–48h"},
+            {value: "wide",     label: "Wide 0–72h"}
         ])
         windowSel.style.fontSize = "11px"
         const currentWindow = (cfg.defaultDepartureH === 0 && cfg.defaultArrivalH === 24) ? "tight"
@@ -3698,29 +4369,22 @@ class RouteAssistantPanel {
         groundCb.checked = cfg.defaultUseGround !== false
         const groundLbl = document.createElement("label")
         groundLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
-        groundLbl.append(groundCb, document.createTextNode("Use ground network"))
+        groundLbl.append(groundCb, document.createTextNode("Ground"))
         groundCb.addEventListener("change", async () => {
             this.settings.ors.defaultUseGround = groundCb.checked
             await RouteAssistantSettings.save({ors: this.settings.ors})
         })
         paramRow.append(groundLbl)
 
-        wrap.append(paramRow)
-
-        // ----- Display controls row — primary col, per-col toggles, threshold, prefix override -----
-        const displayRow = document.createElement("div")
-        displayRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
-            + "font-size:11px;margin-bottom:4px;"
-
         const primarySel = mkSelect([
-            {value: "ratingGapToTop",       label: "Rating gap (us − top competitor)"},
-            {value: "rankAny",              label: "Rank — any leg ours"},
+            {value: "ratingGapToTop",       label: "Rating gap"},
+            {value: "rankAny",              label: "Rank — any ours"},
             {value: "rankFirstLegOurs",     label: "Rank — first leg ours"},
-            {value: "rankAllOurs",          label: "Rank — all flight legs ours"},
-            {value: "rankNonstop",          label: "Rank — own nonstop"},
-            {value: "rankBookable",         label: "Rank — first own bookable"},
+            {value: "rankAllOurs",          label: "Rank — all ours"},
+            {value: "rankNonstop",          label: "Rank — nonstop"},
+            {value: "rankBookable",         label: "Rank — bookable"},
             {value: "ourTopRating",         label: "Our top rating"},
-            {value: "ourBestNonstopRating", label: "Our best nonstop rating"}
+            {value: "ourBestNonstopRating", label: "Our nonstop rating"}
         ])
         primarySel.value = cfg.primaryColumn
         primarySel.style.fontSize = "11px"
@@ -3732,24 +4396,46 @@ class RouteAssistantPanel {
         })
         const primaryLbl = document.createElement("label")
         primaryLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#fcd34d;"
-        primaryLbl.append(document.createTextNode("Primary column:"), primarySel)
-        displayRow.append(primaryLbl)
+        primaryLbl.append(document.createTextNode("Primary:"), primarySel)
+        paramRow.append(primaryLbl)
 
         const showCb = mkInput("checkbox", null)
         showCb.checked = cfg.showColumns !== false
         const showLbl = document.createElement("label")
         showLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#fcd34d;"
-        showLbl.append(showCb, document.createTextNode("Show ORS columns"))
+        showLbl.append(showCb, document.createTextNode("Show columns"))
         showCb.addEventListener("change", async () => {
             this.settings.ors.showColumns = showCb.checked
             await RouteAssistantSettings.save({ors: this.settings.ors})
             this._render()
         })
-        displayRow.append(showLbl)
+        paramRow.append(showLbl)
 
-        wrap.append(displayRow)
+        wrap.append(paramRow)
 
-        // ----- Per-column visibility row -----
+        // ----- Advanced disclosure (collapsed by default) — per-column
+        // visibility toggles + carrier prefix override + display threshold.
+        // Tucked away because most users tune these once and never again,
+        // but they need to stay reachable for power users.
+        const advToggle = document.createElement("div")
+        advToggle.style.cssText = "color:#9ca3af;font-size:10px;cursor:pointer;"
+            + "user-select:none;margin-top:4px;"
+        const advBody = document.createElement("div")
+        advBody.style.cssText = "display:none;margin-top:4px;padding:4px 6px;"
+            + "background:rgba(0,0,0,0.15);border-radius:3px;"
+
+        // Persist open/closed across renders for power users.
+        const advKey = "_orsAdvOpen"
+        const setAdvState = (open) => {
+            this[advKey] = open
+            advBody.style.display = open ? "block" : "none"
+            advToggle.textContent = (open ? "▾ " : "▸ ") + "More options (per-column toggles, prefix override, threshold)"
+        }
+        setAdvState(!!this[advKey])
+        advToggle.addEventListener("click", () => setAdvState(!this[advKey]))
+        wrap.append(advToggle)
+
+        // Per-column visibility row.
         const colsRow = document.createElement("div")
         colsRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
             + "font-size:10px;color:#9ca3af;margin-bottom:4px;"
@@ -3766,24 +4452,24 @@ class RouteAssistantPanel {
             })
             return lbl
         }
-        colsRow.append(document.createTextNode("Show:"))
-        colsRow.append(mkColToggle("Rank-any",       "showRankAnyColumn"))
-        colsRow.append(mkColToggle("Rank-nonstop",   "showRankNonstopColumn"))
-        colsRow.append(mkColToggle("Rating gap",     "showRatingGapColumn"))
-        colsRow.append(mkColToggle("Competitor #",   "showCompetitorCountColumn"))
-        wrap.append(colsRow)
+        colsRow.append(document.createTextNode("Columns:"))
+        colsRow.append(mkColToggle("Rank-any",     "showRankAnyColumn"))
+        colsRow.append(mkColToggle("Rank-nonstop", "showRankNonstopColumn"))
+        colsRow.append(mkColToggle("Rating gap",   "showRatingGapColumn"))
+        colsRow.append(mkColToggle("Competitor #", "showCompetitorCountColumn"))
+        advBody.append(colsRow)
 
-        // ----- Override row — carrier prefix + display threshold -----
+        // Override row — prefix + threshold.
         const overrideRow = document.createElement("div")
         overrideRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
-            + "font-size:10px;color:#9ca3af;margin-bottom:4px;"
+            + "font-size:10px;color:#9ca3af;"
 
         const prefixInput = document.createElement("input")
         prefixInput.type = "text"
-        prefixInput.placeholder = "auto-detect (e.g., FGM,NYO)"
+        prefixInput.placeholder = "auto-detect (e.g. FN,NY)"
         prefixInput.value = cfg.airlineCarrierPrefixOverride || ""
         prefixInput.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #374151;"
-            + "border-radius:3px;padding:2px 6px;font-size:10px;width:140px;"
+            + "border-radius:3px;padding:2px 6px;font-size:10px;width:120px;"
         prefixInput.addEventListener("change", async () => {
             const v = prefixInput.value.trim()
             this.settings.ors.airlineCarrierPrefixOverride = v || null
@@ -3791,7 +4477,7 @@ class RouteAssistantPanel {
         })
         const prefixLbl = document.createElement("label")
         prefixLbl.style.cssText = "display:flex;gap:4px;align-items:center;"
-        prefixLbl.append(document.createTextNode("Carrier prefix:"), prefixInput)
+        prefixLbl.append(document.createTextNode("Prefix:"), prefixInput)
         overrideRow.append(prefixLbl)
 
         const thInput = mkNumberInput(cfg.minRatingThresholdDisplay, {min: 0, max: 100, step: 1, width: "55px"})
@@ -3807,31 +4493,13 @@ class RouteAssistantPanel {
         thLbl.append(document.createTextNode("Hide rows below rating"), thInput)
         overrideRow.append(thLbl)
 
-        wrap.append(overrideRow)
-
-        // ----- Sync button -----
-        const ctrlRow = document.createElement("div")
-        ctrlRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:11px;"
-
-        const scanBtn = document.createElement("button")
-        scanBtn.textContent = this._orsScrapeRunning
-            ? "Syncing ORS…"
-            : "Sync ORS rank for all visible routes"
-        Object.assign(scanBtn.style, smallBtnStyle())
-        scanBtn.style.background = "#b45309"
-        scanBtn.disabled = !!this._orsScrapeRunning || !this.hubIata
-            || !(this.rows && this.rows.length) || tripped
-        scanBtn.addEventListener("click", () => this._runBulkOrsScrape())
-        ctrlRow.append(scanBtn)
-
-        wrap.append(ctrlRow)
+        advBody.append(overrideRow)
+        wrap.append(advBody)
 
         const note = document.createElement("div")
         note.style.cssText = "color:#6b7280;font-size:10px;margin-top:6px;line-height:1.4;"
-        note.innerHTML = "Pace: ~30 routes/min (concurrency 2, stagger 1.5s) — ORS runs an actual "
-            + "routing solver per query. Per-route GET → POST handshake is required because "
-            + "Wicket invalidates page-version IDs after one POST. Circuit breaker trips on 3× "
-            + "consecutive 429/503 and disables this button for 10 minutes."
+        note.innerHTML = "Pace: ~30 routes/min — ORS runs a routing solver. Per-route Wicket "
+            + "GET → POST. Circuit breaker on 3× consecutive 429/503 disables this for 10 min."
         wrap.append(note)
 
         this.settingsHost.append(wrap)
@@ -4416,14 +5084,34 @@ class RouteAssistantPanel {
     _openCarrierPopover(row, anchorEl, opts) {
         opts = opts || {}
         if (!row || !anchorEl) return null
-        // Prefer the merged pax+cargo entries computed in
-        // `_applyCachedMarkets` so cargo-only competitors don't go
-        // missing from the popover. Fall back to pax-only for older
-        // cache rows that predate this merge.
+        // Source priority for the popover content:
+        //   1. competitorEntries — merged AS pax+cargo leaderboard, with
+        //      flight-prefix backfill for routes without a leaderboard.
+        //   2. marketSharePax — raw pax leaderboard (older cache shape).
+        //   3. row.carriers — flightsfrom.com per-carrier list (Letter F).
+        //   4. Empty popover with a "no data yet" message — at least the
+        //      hover registers and the user knows what to do next.
         const fromMerged = Array.isArray(row.competitorEntries) ? row.competitorEntries.slice() : null
         const fromPaxOnly = Array.isArray(row.marketSharePax) ? row.marketSharePax.slice() : []
-        const shares = (fromMerged && fromMerged.length) ? fromMerged : fromPaxOnly
-        if (!shares.length) return null
+        let shares = (fromMerged && fromMerged.length) ? fromMerged : fromPaxOnly
+        let usingFlightsFromFallback = false
+        if (!shares.length && Array.isArray(row.carriers) && row.carriers.length) {
+            usingFlightsFromFallback = true
+            shares = row.carriers.map(c => ({
+                enterpriseId:    null,
+                name:            (c.name || c.code || "?")
+                                  + (c.weeklyFlights ? "  ·  " + c.weeklyFlights + "/wk" : ""),
+                paxShare:        null,
+                cargoShare:      null,
+                paxRank:         null,
+                cargoRank:       null,
+                fromFlightsFrom: true
+            }))
+        }
+        // Render an EMPTY popover with a clear "no data" message rather than
+        // returning silently — fixes the user-reported "hover doesn't register"
+        // bug where the rich popover bailed but the native title fallback also
+        // had nothing useful to show.
         // Rank by max share across pax + cargo so dominant operators
         // float to the top regardless of which leaderboard they lead.
         shares.sort((a, b) => {
@@ -4456,7 +5144,7 @@ class RouteAssistantPanel {
         header.style.cssText = "color:#86efac;font-size:11px;margin-bottom:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;"
         const intensity = row.competitiveIntensity
             || (typeof RouteAssistantCarriersScraper !== "undefined"
-                ? RouteAssistantCarriersScraper.intensity(shares.length)
+                ? RouteAssistantCarriersScraper.intensity(shares.length || row.airlineCount)
                 : null)
         const intensityColor = (typeof RouteAssistantCarriersScraper !== "undefined")
             ? RouteAssistantCarriersScraper.intensityColor(intensity)
@@ -4466,15 +5154,20 @@ class RouteAssistantPanel {
         intensityPill.style.cssText = "padding:1px 6px;border-radius:8px;font-size:9px;font-weight:600;color:#0f172a;background:" + intensityColor + ";"
         const headTitle = document.createElement("strong")
         // Decompose the count: how many compete on pax, how many on
-        // cargo. The bare total can be misleading on freight-heavy
-        // routes where pax shares look small but cargo competition is
-        // fierce (or vice versa).
+        // cargo. Bare total is misleading on freight-heavy routes.
         const paxN   = shares.filter(e => (e.paxShare   != null) || (e.sharePct != null && e.cargoShare == null)).length
         const cargoN = shares.filter(e => e.cargoShare != null).length
-        let label = shares.length + " AS competitor" + (shares.length === 1 ? "" : "s")
-        if (paxN && cargoN) label += " · " + paxN + " pax / " + cargoN + " cargo"
-        else if (cargoN)    label += " · cargo only"
-        else if (paxN)      label += " · pax only"
+        let label
+        if (!shares.length) {
+            label = "No detail data yet"
+        } else if (usingFlightsFromFallback) {
+            label = shares.length + " real-world carrier" + (shares.length === 1 ? "" : "s")
+        } else {
+            label = shares.length + " AS competitor" + (shares.length === 1 ? "" : "s")
+            if (paxN && cargoN) label += " · " + paxN + " pax / " + cargoN + " cargo"
+            else if (cargoN)    label += " · cargo only"
+            else if (paxN)      label += " · pax only"
+        }
         headTitle.textContent = label
         const period = document.createElement("span")
         period.textContent = row.marketSharePeriod ? "· " + row.marketSharePeriod : ""
@@ -4482,10 +5175,31 @@ class RouteAssistantPanel {
         header.append(headTitle, intensityPill, period)
         pop.append(header)
 
-        const list = document.createElement("div")
-        list.style.cssText = "display:flex;flex-direction:column;gap:4px;"
-        for (const e of shares) list.append(this._buildCarrierRow(e))
-        pop.append(list)
+        if (shares.length) {
+            const list = document.createElement("div")
+            list.style.cssText = "display:flex;flex-direction:column;gap:4px;"
+            for (const e of shares) list.append(this._buildCarrierRow(e))
+            pop.append(list)
+            if (usingFlightsFromFallback) {
+                const note = document.createElement("div")
+                note.style.cssText = "color:#fbbf24;font-size:10px;margin-top:6px;font-style:italic;"
+                note.textContent = "↑ flightsfrom.com real-world carriers (no AS in-game market data scraped yet)."
+                pop.append(note)
+            }
+        } else {
+            // No data at all — show a clear "fetch this" message instead of
+            // returning silently. The user-reported "doesn't register" bug
+            // came from silent returns leaving the user thinking the panel
+            // was broken; now the popover always opens with an action hint.
+            const empty = document.createElement("div")
+            empty.style.cssText = "color:#9ca3af;font-size:11px;line-height:1.5;padding:6px 0;"
+            empty.innerHTML = "No competitor detail captured for this route yet.<br><br>"
+                + "<strong style='color:#86efac;'>To populate:</strong><br>"
+                + "1. Open <em>Settings → Market Analysis</em> and click <em>Sync market analysis</em>, or<br>"
+                + "2. Open <em>Settings → Carriers</em> and click <em>Sync carriers</em> for real-world data, or<br>"
+                + "3. Visit <code>/app/com/markets/" + escapeHtml(this.hubIata || "?") + escapeHtml(row.destIata || "?") + "</code> directly."
+            pop.append(empty)
+        }
 
         const footer = document.createElement("div")
         footer.style.cssText = "color:#6b7280;font-size:10px;margin-top:8px;border-top:1px solid #374151;padding-top:6px;"
@@ -4609,15 +5323,43 @@ class RouteAssistantPanel {
 
         const middle = document.createElement("div")
         middle.style.cssText = "flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;"
+        const nameRow = document.createElement("div")
+        nameRow.style.cssText = "display:flex;align-items:center;gap:4px;min-width:0;"
         const nameLink = document.createElement("a")
         nameLink.href = "/app/info/enterprises/" + encodeURIComponent(entry.enterpriseId || "")
         nameLink.target = "_blank"
         nameLink.rel = "noreferrer noopener"
         nameLink.textContent = entry.name || "(unknown)"
-        nameLink.style.cssText = "color:#93c5fd;text-decoration:none;font-weight:600;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+        nameLink.style.cssText = "color:#93c5fd;text-decoration:none;font-weight:600;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;"
         nameLink.addEventListener("mouseenter", () => { nameLink.style.textDecoration = "underline" })
         nameLink.addEventListener("mouseleave", () => { nameLink.style.textDecoration = "none" })
-        middle.append(nameLink)
+        nameRow.append(nameLink)
+
+        // F slice 3 — partner glyphs sourced from the user's own
+        // enterprise(s) contractual partners table. Inline next to the
+        // name so a quick scan of the popover surfaces who you can
+        // codeshare with at a glance.
+        const cfgC = (this.settings && this.settings.carriers) || {}
+        const partnersMap = this._partnersByEnterpriseId
+        const partnerKey = entry.enterpriseId != null ? String(entry.enterpriseId) : null
+        const relations = (partnersMap && partnerKey) ? partnersMap.get(partnerKey) : null
+        if (relations && relations.length) {
+            if (relations.indexOf("INTERLINING") !== -1 && cfgC.showInterliningGlyph !== false) {
+                const il = document.createElement("span")
+                il.textContent = "⇄"
+                il.title = "Interlining partner"
+                il.style.cssText = "color:#16a34a;font-size:11px;font-weight:700;flex-shrink:0;"
+                nameRow.append(il)
+            }
+            if (relations.indexOf("ALLIANCE") !== -1 && cfgC.showAllianceGlyph) {
+                const al = document.createElement("span")
+                al.textContent = "✦"
+                al.title = "Alliance partner"
+                al.style.cssText = "color:#a78bfa;font-size:11px;font-weight:700;flex-shrink:0;"
+                nameRow.append(al)
+            }
+        }
+        middle.append(nameRow)
 
         if (entry.bannerUrl) {
             const banner = document.createElement("img")
@@ -5092,26 +5834,43 @@ class RouteAssistantPanel {
         })
 
         const calibBtn = document.createElement("button")
-        calibBtn.textContent = "Calibrate from actuals"
         Object.assign(calibBtn.style, smallBtnStyle())
         calibBtn.style.background = "#7c3aed"
         const calibTarget = derivedYieldFromActuals(row)
+        const calibSide = calibTarget && calibTarget.side
         calibBtn.disabled = !calibTarget
+        calibBtn.textContent = calibSide === "cargo"
+            ? "Calibrate cargo from actuals"
+            : "Calibrate from actuals"
         if (!calibTarget) {
             calibBtn.style.opacity = "0.5"
             calibBtn.title = "Take a snapshot first — derives the base yield needed to reproduce the actuals at the current LF / aircraft."
         } else {
-            calibBtn.title = "Pre-fills Yield AS$/pax-km with " + calibTarget.toFixed(4)
-                + " — the value that would make the estimator match the latest snapshot at the current LF / spec.\n"
-                + "Review and Save to pin it as a route override."
+            const fieldLabel = calibSide === "cargo" ? "Cargo AS$/kg-km" : "Yield AS$/pax-km"
+            const altNote = calibTarget.alt
+                ? "\nThe other side (" + (calibTarget.alt.side === "cargo" ? "cargo" : "pax")
+                  + ") would calibrate to " + calibTarget.alt.value.toFixed(4)
+                  + " — paste manually if you'd rather pin that side."
+                : ""
+            calibBtn.title = "Pre-fills " + fieldLabel + " with " + calibTarget.value.toFixed(4)
+                + " — the value that would make the estimator match the latest snapshot "
+                + "at the current LF / spec.\nReview and Save to pin it as a route override."
+                + altNote
         }
         calibBtn.addEventListener("click", () => {
             const v = derivedYieldFromActuals(row)
             if (!v) return
-            yldInput.value = v.toFixed(4)
-            yldInput.focus()
-            yldInput.select()
-            sub.textContent = "Pre-filled yield from snapshot — edit if you want, then Save."
+            const targetInput = v.side === "cargo" ? cyldInput : yldInput
+            targetInput.value = v.value.toFixed(4)
+            targetInput.focus()
+            targetInput.select()
+            const sideLabel = v.side === "cargo" ? "cargo yield" : "yield"
+            const altLabel = v.alt
+                ? "  (" + (v.alt.side === "cargo" ? "cargo" : "pax")
+                  + " alt: " + v.alt.value.toFixed(4) + ")"
+                : ""
+            sub.textContent = "Pre-filled " + sideLabel + " from snapshot — edit if you want, then Save."
+                + altLabel
             sub.style.color = "#a78bfa"
         })
 
@@ -5221,7 +5980,26 @@ RouteAssistantPanel.SCORING_FIELDS = [
      suggestedValues: [0, 1]},
     {field: "actualProfitPerWeek", label: "Actual $/week",  group: "actuals",  direction: "higher",
      modes: ["all", "pax", "cargo"],
-     suggestedValues: [10000, 50000, 100000, 250000, 500000, 1000000]}
+     suggestedValues: [10000, 50000, 100000, 250000, 500000, 1000000]},
+    // Letter K — derived demand-depth fields. Pool sizes are
+    // higher-is-better; elasticity slopes are negative numbers
+    // (price up → quantity down) where less-negative = less
+    // price-sensitive market = better. RM tightness 0–1 (sold/total).
+    {field: "paxDemandPool",   label: "Pax pool",     group: "demand", direction: "higher",
+     modes: ["all", "pax"],
+     suggestedValues: [100, 500, 1000, 5000, 10000]},
+    {field: "cargoDemandPool", label: "Cargo pool",   group: "demand", direction: "higher",
+     modes: ["all", "cargo"],
+     suggestedValues: [1000, 5000, 25000, 100000]},
+    {field: "paxElasticity",   label: "Pax elast.",   group: "demand", direction: "higher",
+     modes: ["all", "pax"],
+     suggestedValues: [-2.0, -1.5, -1.0, -0.5, -0.25]},
+    {field: "cargoElasticity", label: "Cargo elast.", group: "demand", direction: "higher",
+     modes: ["all", "cargo"],
+     suggestedValues: [-2.0, -1.5, -1.0, -0.5]},
+    {field: "rmTightness",     label: "Inv. tight.",  group: "demand", direction: "higher",
+     modes: ["all", "pax", "cargo"],
+     suggestedValues: [0.5, 0.7, 0.85, 0.95]}
 ]
 
 // Quick-apply sets of weights. Click one and every variable's weight
@@ -5251,6 +6029,7 @@ RouteAssistantPanel.COLUMNS = [
         td.style.color = "#fff"
         td.style.fontWeight = "bold"
         td.textContent = row.score
+        _appendDiffBadge(td, "score", row)
     }},
     {field: "destIata", label: "Dest", group: "computed",
      title: "Click IATA → market analysis (per-route ORS, competitors). Small icons jump to scheduling / inventory / airport info. Right-click any row to override LF / yield.",
@@ -5311,11 +6090,13 @@ RouteAssistantPanel.COLUMNS = [
      title: "AS in-game pax demand for the destination (0–10) — from /action/info/country",
      render(td, row) {
         td.textContent = row.paxScore === null ? "—" : row.paxScore
+        if (row.paxScore !== null) _appendDiffBadge(td, "paxScore", row)
     }},
     {field: "cargoScore", label: "Crg", group: "as", align: "right",
      title: "AS in-game cargo demand for the destination (0–10) — from /action/info/country",
      render(td, row) {
         td.textContent = row.cargoScore === null ? "—" : row.cargoScore
+        if (row.cargoScore !== null) _appendDiffBadge(td, "cargoScore", row)
     }},
     {field: "ownTotalFreq", label: "Own", group: "as", align: "right",
      title: "Your weekly frequency on this route — from your last extracted AS schedule",
@@ -5332,6 +6113,7 @@ RouteAssistantPanel.COLUMNS = [
      title: "Real-world weekly flights on this route — from flightsfrom.com",
      render(td, row) {
         td.textContent = row.weeklyFlights === null ? "—" : row.weeklyFlights
+        if (row.weeklyFlights !== null) _appendDiffBadge(td, "weeklyFlights", row)
     }},
     {field: "airlineCount", label: "Cmp", group: "real", align: "right",
      title: "Distinct competitors on this route. Source priority: "
@@ -5339,13 +6121,7 @@ RouteAssistantPanel.COLUMNS = [
         + "else flightsfrom.com (real-world airlines). "
         + "Hover for the carrier list; click to pin.",
      render(td, row) {
-        const carriers = Array.isArray(row.carriers) ? row.carriers : []
         const merged = Array.isArray(row.competitorEntries) ? row.competitorEntries : null
-        const hasASShares = (merged && merged.length > 0)
-            || (Array.isArray(row.marketSharePax) && row.marketSharePax.length > 0)
-        // Prefer AS competitor count when available — it matches what
-        // the popover renders and excludes ourself, so the user sees a
-        // single consistent number across pill + tooltip.
         const asCount = (typeof row.competitorCount === "number" && row.competitorCount >= 0)
             ? row.competitorCount
             : (merged ? merged.length : null)
@@ -5371,40 +6147,43 @@ RouteAssistantPanel.COLUMNS = [
             pill.style.fontWeight   = "600"
             pill.style.fontSize     = "10px"
             pill.style.textAlign    = "center"
-            pill.style.cursor       = hasASShares ? "pointer" : "default"
-            // Subtle outline when the count is from AS-side data so
-            // the user can see at a glance which routes are using
-            // ground-truth vs. flightsfrom estimates.
+            pill.style.cursor       = "pointer"
             if (asCount != null) pill.style.boxShadow = "inset 0 0 0 1px rgba(15,23,42,0.4)"
         }
         td.append(pill)
+        // Diff badge — prefer competitorCount (AS-side count) when set,
+        // else fall back to airlineCount so the badge tracks whichever
+        // source the cell rendered.
+        _appendDiffBadge(td,
+            asCount != null ? ["competitorCount", "airlineCount"] : ["airlineCount", "competitorCount"],
+            row)
 
-        // F slice 2 — open the rich popover on hover when AS market-share
-        // data is available; otherwise fall back to the plain-text tooltip.
-        if (hasASShares) {
-            let openTimer = null
-            const open = (pinned) => {
-                if (openTimer) { clearTimeout(openTimer); openTimer = null }
-                const inst = RouteAssistantPanel._currentInstance
-                if (!inst) return
-                inst._openCarrierPopover(row, pill, {pinned: !!pinned})
-            }
-            pill.addEventListener("mouseenter", () => {
-                if (openTimer) clearTimeout(openTimer)
-                openTimer = setTimeout(() => open(false), 200)
-            })
-            pill.addEventListener("mouseleave", () => {
-                if (openTimer) { clearTimeout(openTimer); openTimer = null }
-            })
-            pill.addEventListener("click", (e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                open(true)
-            })
-        } else {
-            // No AS data — keep native text tooltip with flightsfrom carriers.
-            pill.title = formatCarriersTooltip(row, carriers, intensity)
+        // ALWAYS wire the rich popover. _openCarrierPopover gracefully
+        // handles every empty-data case (AS leaderboard → flight-prefix
+        // backfill → flightsfrom carriers → "no data, here's how to fetch"
+        // message). Previously we fell back to a native title="" tooltip
+        // when AS data was missing — which produced an empty/unhelpful
+        // tooltip on most rows and felt like the hover was broken. The
+        // rich popover always shows SOMETHING actionable now.
+        let openTimer = null
+        const open = (pinned) => {
+            if (openTimer) { clearTimeout(openTimer); openTimer = null }
+            const inst = RouteAssistantPanel._currentInstance
+            if (!inst) return
+            inst._openCarrierPopover(row, pill, {pinned: !!pinned})
         }
+        pill.addEventListener("mouseenter", () => {
+            if (openTimer) clearTimeout(openTimer)
+            openTimer = setTimeout(() => open(false), 200)
+        })
+        pill.addEventListener("mouseleave", () => {
+            if (openTimer) { clearTimeout(openTimer); openTimer = null }
+        })
+        pill.addEventListener("click", (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            open(true)
+        })
     }},
 
     // ----- Competition (in-game) — its own little detached group sitting
@@ -5413,48 +6192,47 @@ RouteAssistantPanel.COLUMNS = [
     // Cmp pill does, so all in-game competition intel — your share AND the
     // full leaderboard — is one hover away from this column too.
     {field: "ourPaxShare", label: "Mkt%", group: "competition", align: "right", defaultDir: -1,
-     title: "Your pax market share on this route — from /app/com/markets/<HUB><DEST>'s Market Shares section. Hover to see the full leaderboard with all in-game competitors. Color rail: ≥40% green, 20–40% amber, <20% red.",
+     title: "Your pax market share on this route — from /app/com/markets/<HUB><DEST>'s Market Shares section. Hover ANY row (even '—') to see who's on the route. Color rail: ≥40% green, 20–40% amber, <20% red.",
      render(td, row) {
-        if (row.ourPaxShare == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
-        const v = row.ourPaxShare
+        // Always wire the rich popover. The popover handles empty-data
+        // cases gracefully (AS leaderboard → flight-prefix backfill →
+        // flightsfrom carriers → "no data, here's how to fetch" message).
+        // No more silent-no-op hovers.
         const cell = document.createElement("span")
-        cell.textContent = v.toFixed(1) + "%"
-        cell.style.fontWeight = "bold"
-        cell.style.cursor = "pointer"
-        if      (v >= 40) cell.style.color = "#86efac"
-        else if (v >= 20) cell.style.color = "#fde68a"
-        else              cell.style.color = "#fca5a5"
-        td.append(cell)
-        // Wire to the same rich popover the Real-World Cmp pill uses, so
-        // the user sees the FULL leaderboard with all in-game competitors,
-        // not just a top-5 truncation.
-        const hasAS = (Array.isArray(row.competitorEntries) && row.competitorEntries.length > 0)
-            || (Array.isArray(row.marketSharePax) && row.marketSharePax.length > 0)
-        if (hasAS) {
-            let openTimer = null
-            const open = (pinned) => {
-                if (openTimer) { clearTimeout(openTimer); openTimer = null }
-                const inst = RouteAssistantPanel._currentInstance
-                if (!inst) return
-                inst._openCarrierPopover(row, cell, {pinned: !!pinned})
-            }
-            cell.addEventListener("mouseenter", () => {
-                if (openTimer) clearTimeout(openTimer)
-                openTimer = setTimeout(() => open(false), 200)
-            })
-            cell.addEventListener("mouseleave", () => {
-                if (openTimer) { clearTimeout(openTimer); openTimer = null }
-            })
-            cell.addEventListener("click", (e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                open(true)
-            })
+        const v = row.ourPaxShare
+        if (v != null) {
+            cell.textContent = v.toFixed(1) + "%"
+            cell.style.fontWeight = "bold"
+            if      (v >= 40) cell.style.color = "#86efac"
+            else if (v >= 20) cell.style.color = "#fde68a"
+            else              cell.style.color = "#fca5a5"
         } else {
-            const period = row.marketSharePeriod ? " (week " + row.marketSharePeriod + ")" : ""
-            cell.title = "Pax market share" + period
-                + (row.marketsScrapedAt ? "\nLast scraped: " + new Date(row.marketsScrapedAt).toLocaleString() : "")
+            cell.textContent = "—"
+            cell.style.color = "#6b7280"
         }
+        cell.style.cursor = "pointer"
+        td.append(cell)
+        if (v != null) _appendDiffBadge(td, "ourPaxShare", row)
+
+        let openTimer = null
+        const open = (pinned) => {
+            if (openTimer) { clearTimeout(openTimer); openTimer = null }
+            const inst = RouteAssistantPanel._currentInstance
+            if (!inst) return
+            inst._openCarrierPopover(row, cell, {pinned: !!pinned})
+        }
+        cell.addEventListener("mouseenter", () => {
+            if (openTimer) clearTimeout(openTimer)
+            openTimer = setTimeout(() => open(false), 200)
+        })
+        cell.addEventListener("mouseleave", () => {
+            if (openTimer) { clearTimeout(openTimer); openTimer = null }
+        })
+        cell.addEventListener("click", (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            open(true)
+        })
     }},
 
     {field: "aircraftFit", label: "Fit", group: "aircraft",
@@ -5761,6 +6539,7 @@ RouteAssistantPanel.COLUMNS = [
         td.textContent = (v > 0 ? "+" : "") + v
         td.style.color = v > 0 ? "#86efac" : (v < 0 ? "#fca5a5" : "#fcd34d")
         td.style.fontWeight = "bold"
+        _appendDiffBadge(td, "orsRatingGapToTop", row)
     }},
     {field: "orsCompetitorCount", label: "OrsC#", group: "ors", align: "right", defaultDir: 1,
      title: "Distinct first-leg carriers (other than you) appearing in the cached ORS connection list. Lower = less direct competition in ORS results.",
@@ -5779,6 +6558,53 @@ RouteAssistantPanel.COLUMNS = [
         }
         td.textContent = String(carriers.size)
         td.style.color = "#fcd34d"
+    }},
+
+    // ----- Demand depth (Letter K — markets-historic + inventory derivation) -----
+    {field: "paxDemandPool", label: "Pool", group: "demand", align: "right", defaultDir: -1,
+     title: "Estimated pax bookings/week — average over the last N periods of the markets historic chart (PAX or summed Y+C+F).",
+     render(td, row) {
+        if (row.paxDemandPool == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+        td.textContent = row.paxDemandPool.toLocaleString()
+        td.style.color = "#bae6fd"
+        _appendDiffBadge(td, "paxDemandPool", row)
+    }},
+    {field: "cargoDemandPool", label: "C-Pool", group: "demand", align: "right", defaultDir: -1,
+     title: "Estimated cargo demand/week (kg) — average over the last N periods of the CARGO historic chart.",
+     render(td, row) {
+        if (row.cargoDemandPool == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+        td.textContent = row.cargoDemandPool.toLocaleString()
+        td.style.color = "#bae6fd"
+        _appendDiffBadge(td, "cargoDemandPool", row)
+    }},
+    {field: "paxElasticity", label: "Elast", group: "demand", align: "right",
+     title: "Pax price elasticity — log-log regression slope of quantity~price across the historic window. Negative numbers (price up → quantity down). Closer to 0 = less price-sensitive (premium / monopoly). Below -2 = highly elastic (volatile route).",
+     render(td, row) {
+        if (row.paxElasticity == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+        td.textContent = row.paxElasticity.toFixed(2)
+        td.style.color = row.paxElasticity > -1 ? "#86efac" : "#fcd34d"
+    }},
+    {field: "cargoElasticity", label: "C-Elast", group: "demand", align: "right",
+     title: "Cargo price elasticity — same regression as Elast but on the CARGO historic series.",
+     render(td, row) {
+        if (row.cargoElasticity == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+        td.textContent = row.cargoElasticity.toFixed(2)
+        td.style.color = row.cargoElasticity > -1 ? "#86efac" : "#fcd34d"
+    }},
+    {field: "paxAvgPrice", label: "Avg$", group: "demand", align: "right", defaultDir: -1,
+     title: "Mean Y-class fare across the historic window. Useful sanity check on what the route has historically commanded.",
+     render(td, row) {
+        if (row.paxAvgPrice == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+        td.textContent = "AS$" + row.paxAvgPrice.toLocaleString()
+        td.style.color = "#a7f3d0"
+    }},
+    {field: "rmTightness", label: "RM%", group: "demand", align: "right", defaultDir: -1,
+     title: "Revenue-management tightness — sold/total seats averaged across forward departures (or per-class summary). 0.85+ = nearly full; <0.5 = lots of inventory left.",
+     render(td, row) {
+        if (row.rmTightness == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+        td.textContent = (row.rmTightness * 100).toFixed(0) + "%"
+        td.style.color = row.rmTightness >= 0.85 ? "#86efac" : (row.rmTightness >= 0.5 ? "#fde68a" : "#fca5a5")
+        _appendDiffBadge(td, "rmTightness", row)
     }}
 ]
 // Updated in `_render` from settings.routeAssistant.yieldFeedback.varianceWarnPct;
@@ -5805,6 +6631,12 @@ RouteAssistantPanel._columnModes = function(col) {
     const f = col && col.field
     if (f === "paxScore")   return ["all", "pax"]
     if (f === "cargoScore") return ["all", "cargo"]
+    // Letter K — demand-depth columns are mode-prefixed by field name.
+    // pax* / cargo* / c-elast etc. land in the right tab automatically.
+    if (typeof f === "string") {
+        if (/^pax[A-Z]/.test(f)) return ["all", "pax"]
+        if (/^cargo[A-Z]/.test(f)) return ["all", "cargo"]
+    }
     return ["all", "pax", "cargo"]
 }
 // Set in _applyCachedOrs from settings.routeAssistant.ors.primaryColumn so the
@@ -5957,6 +6789,149 @@ function escapeHtml(s) {
     return String(s == null ? "" : s)
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
+}
+
+// ---------- Diff against last visit ----------
+// Per-mount delta badges for daily-driver QoL. The render closures for the
+// listed numeric columns append a small grey ▲/▼ badge whenever the row
+// carries a `_diff.<field>` scalar. The baseline lives at
+// `routeAssistant:lastSnapshot:<HUB>`, written at the end of _drawTable on
+// every render and read once per mount in refresh().
+//
+// Tracked field → display formatter for the badge's number portion. The
+// `field` here is the row property name (matches the COLUMNS render
+// closures), not the SCORING_FIELDS spec name — so the diff stores
+// `orsRatingGapToTop` rather than the spec's `ratingGapToTop`.
+const RA_DIFF_TRACKED = [
+    {field: "score",             fmt: "int"},
+    {field: "paxScore",          fmt: "int"},
+    {field: "cargoScore",        fmt: "int"},
+    {field: "weeklyFlights",     fmt: "int"},
+    {field: "airlineCount",      fmt: "int"},
+    {field: "competitorCount",   fmt: "int"},
+    {field: "paxDemandPool",     fmt: "compact"},
+    {field: "cargoDemandPool",   fmt: "compact"},
+    {field: "ourPaxShare",       fmt: "pct1"},
+    {field: "orsRatingGapToTop", fmt: "intSigned"},
+    {field: "rmTightness",       fmt: "pctTight"}
+]
+const RA_DIFF_FMT_BY_FIELD = (() => {
+    const m = {}
+    for (const e of RA_DIFF_TRACKED) m[e.field] = e.fmt
+    return m
+})()
+
+async function _loadDiffSnapshot(hub) {
+    if (!hub) return null
+    try {
+        const key = "routeAssistant:lastSnapshot:" + hub
+        const got = await chrome.storage.local.get(key)
+        const rec = got[key]
+        if (!rec || !Array.isArray(rec.rows)) return null
+        return rec
+    } catch (e) {
+        console.warn("[AES routeAssistant] diff baseline load failed:", e)
+        return null
+    }
+}
+
+function _writeDiffSnapshot(hub, server, rows) {
+    if (!hub || !rows || !rows.length) return
+    const key = "routeAssistant:lastSnapshot:" + hub
+    const num = v => (typeof v === "number" && isFinite(v)) ? v : null
+    const slim = []
+    for (const r of rows) {
+        if (!r || !r.destIata) continue
+        const o = {destIata: r.destIata}
+        for (const e of RA_DIFF_TRACKED) o[e.field] = num(r[e.field])
+        slim.push(o)
+    }
+    const blob = {hub, server: server || "", scrapedAt: Date.now(), rows: slim}
+    try {
+        chrome.storage.local.set({[key]: blob})
+    } catch (e) {
+        console.warn("[AES routeAssistant] lastSnapshot write failed:", e)
+    }
+}
+
+function _decorateRowsWithDiffs(rows, prev) {
+    if (!rows || !rows.length) return
+    if (!prev || !Array.isArray(prev.rows) || !prev.rows.length) return
+    const prevByIata = new Map()
+    for (const p of prev.rows) {
+        if (p && p.destIata) prevByIata.set(p.destIata, p)
+    }
+    if (!prevByIata.size) return
+    for (const r of rows) {
+        if (!r || !r.destIata) continue
+        const before = prevByIata.get(r.destIata)
+        if (!before) { r._diff = null; continue }
+        const diff = {}
+        let any = false
+        for (const e of RA_DIFF_TRACKED) {
+            const cur = r[e.field]
+            const old = before[e.field]
+            if (typeof cur !== "number" || !isFinite(cur)) continue
+            if (typeof old !== "number" || !isFinite(old)) continue
+            const d = cur - old
+            if (d === 0) continue
+            diff[e.field] = d
+            any = true
+        }
+        r._diff = any ? diff : null
+        r._diffSnapshotAt = prev.scrapedAt || null
+    }
+}
+
+function _formatDiffNumber(field, abs) {
+    const fmt = RA_DIFF_FMT_BY_FIELD[field] || "int"
+    if (fmt === "compact") {
+        if (abs >= 1000) return Math.round(abs / 100) / 10 + "k"
+        return Math.round(abs).toLocaleString()
+    }
+    if (fmt === "pct1")     return abs.toFixed(1) + "pp"
+    if (fmt === "pctTight") return Math.round(abs * 100) + "pp"
+    if (fmt === "intSigned") return String(Math.round(abs))
+    // "int" — round to nearest, but keep one decimal when |abs| < 1 so
+    // small score moves still render rather than collapsing to "0".
+    if (abs < 1 && abs > 0) return abs.toFixed(2).replace(/\.?0+$/, "") || "0"
+    return String(Math.round(abs))
+}
+
+/**
+ * Append a small grey ▲/▼ delta badge to `td` showing the change in
+ * `row[field]` since the previous mount. `field` may be a single string or
+ * an array of fallback field names (the first one with a non-zero diff
+ * wins — used by the Cmp column which displays competitorCount with an
+ * airlineCount fallback).
+ */
+function _appendDiffBadge(td, field, row) {
+    if (!td || !row || !row._diff) return
+    const fields = Array.isArray(field) ? field : [field]
+    let pick = null, fname = null
+    for (const f of fields) {
+        const d = row._diff[f]
+        if (typeof d === "number" && isFinite(d) && d !== 0) {
+            pick = d
+            fname = f
+            break
+        }
+    }
+    if (pick === null) return
+    const arrow = pick > 0 ? "▲" : "▼"
+    const txt = _formatDiffNumber(fname, Math.abs(pick))
+    if (!txt) return
+    const span = document.createElement("span")
+    span.textContent = " " + arrow + txt
+    span.style.cssText = "margin-left:3px;font-size:9px;color:#9ca3af;"
+        + "font-weight:normal;opacity:0.85;"
+    const stamp = row._diffSnapshotAt
+        ? new Date(row._diffSnapshotAt).toLocaleString()
+        : "previous panel mount"
+    span.title = "Δ " + fname + " since last visit: "
+        + (pick > 0 ? "+" : "−") + Math.abs(pick).toLocaleString()
+        + "\n(baseline: " + stamp + ")"
+    td.append(span)
 }
 
 /**
@@ -6234,23 +7209,75 @@ function formatServiceBreakdown(row) {
     return lines.join("\n")
 }
 
+/**
+ * Solve for the base yield (pax AS$/pax-km OR cargo AS$/kg-km) that would
+ * make the rough estimator's predicted profit match the latest snapshot's
+ * actual $/flt at the row's current LF / aircraft / cost mix.
+ *
+ *   paxRevenue   = seats   × paxLF   × effPaxYield   × distRT × yieldMult
+ *   cargoRevenue = cargoCap × cargoLF × effCargoYield × distRT × yieldMult
+ *   actualProfit + totalCost = paxRevenue + cargoRevenue          (target)
+ *
+ * Each side's variant holds the OTHER side at its current revenue
+ * contribution and solves the subtracted equation.
+ *
+ * Returns {side, value, alt}:
+ *   side  — "pax" | "cargo", auto-selected primary side.
+ *   value — base yield ready to pin as a route override.
+ *   alt   — {side, value} when the other side also solves cleanly (mixed
+ *           routes), null otherwise.
+ * Returns null when neither side is solvable (no breakdown, zero LF /
+ * distance, or resulting yield non-finite / negative).
+ *
+ * Auto-selection rule: pick the side currently producing the larger share
+ * of revenue. The Calibrate-flagged modal lets the user flip per-row
+ * without recomputing — `alt` is the cached counterpart.
+ */
 function derivedYieldFromActuals(row) {
     if (!row) return null
     const actual = numOrNull(row.actualProfitPerFlight)
     if (actual === null) return null
     const b = row.profitBreakdown
-    if (!b || !b.seats || b.seats <= 0) return null
-    if (!b.distanceRoundTripKm || b.distanceRoundTripKm <= 0) return null
-    const lf = numOrNull(b.paxLoadFactor)
-    if (lf === null || lf <= 0) return null
+    if (!b) return null
+    const distRT = numOrNull(b.distanceRoundTripKm)
+    if (!distRT || distRT <= 0) return null
     const yMult = numOrNull(b.yieldMultiplier) || 1
-    const yDemand = numOrNull(b.yieldDemandMultiplier) || 1
-    const denom = b.seats * lf * b.distanceRoundTripKm * yMult
-    if (denom <= 0) return null
-    const targetEff = (actual + (b.totalCost || 0)) / denom
-    const base = targetEff / (yDemand || 1)
-    if (!isFinite(base) || base < 0) return null
-    return base
+    const targetRevenue = actual + (numOrNull(b.totalCost) || 0)
+    const paxRev   = numOrNull(b.paxRevenue)   || 0
+    const cargoRev = numOrNull(b.cargoRevenue) || 0
+
+    let paxResult = null
+    const seats = numOrNull(b.seats)
+    const paxLF = numOrNull(b.paxLoadFactor)
+    if (seats && seats > 0 && paxLF && paxLF > 0) {
+        const denom = seats * paxLF * distRT * yMult
+        if (denom > 0) {
+            const yDemand = numOrNull(b.yieldDemandMultiplier) || 1
+            const eff = (targetRevenue - cargoRev) / denom
+            const base = eff / (yDemand || 1)
+            if (isFinite(base) && base >= 0) paxResult = {side: "pax", value: base}
+        }
+    }
+
+    let cargoResult = null
+    const cargoCap = numOrNull(b.cargoCapacityKg)
+    const cargoLF  = numOrNull(b.cargoLoadFactor)
+    if (cargoCap && cargoCap > 0 && cargoLF && cargoLF > 0) {
+        const denom = cargoCap * cargoLF * distRT * yMult
+        if (denom > 0) {
+            const yDemand = numOrNull(b.cargoYieldDemandMultiplier) || 1
+            const eff = (targetRevenue - paxRev) / denom
+            const base = eff / (yDemand || 1)
+            if (isFinite(base) && base >= 0) cargoResult = {side: "cargo", value: base}
+        }
+    }
+
+    if (!paxResult && !cargoResult) return null
+    if (paxResult && !cargoResult) return Object.assign({}, paxResult, {alt: null})
+    if (!paxResult && cargoResult) return Object.assign({}, cargoResult, {alt: null})
+    const primary = (paxRev >= cargoRev) ? paxResult : cargoResult
+    const alt     = (primary === paxResult) ? cargoResult : paxResult
+    return Object.assign({}, primary, {alt: alt})
 }
 
 /**

@@ -8,11 +8,30 @@ class AES {
         const factsTable = document.querySelector(".facts table")
         const nameElement = factsTable.querySelector("tr:nth-child(1) td:last-child")
         const codeElement = factsTable.querySelector("tr:nth-child(2) td:last-child")
-        
+
         return {
             name: nameElement.innerText,
             code: codeElement.innerText
         }
+    }
+
+    /**
+     * Returns a stable per-airline identifier that works on every /app/* page.
+     * The top-nav airline name is present on all pages (dashboard, airport,
+     * stations, etc), so we prefer it over .facts — which only exists on the
+     * enterprise dashboard — to keep storage keys consistent across pages.
+     * @returns {string}
+     */
+    static getAirlineIdentity() {
+        const navName = document.querySelector(".as-navbar-main a.name span:not(.caret)")
+        if (navName?.innerText) return navName.innerText.trim()
+        for (const el of document.querySelectorAll("a.name")) {
+            const text = (el.innerText || "").trim()
+            if (text) return text
+        }
+        const factsCell = document.querySelector(".facts table tr:nth-child(2) td:last-child")
+        if (factsCell?.innerText) return factsCell.innerText.trim()
+        return ""
     }
     
     /**

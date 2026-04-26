@@ -21,6 +21,25 @@ class UsedAircraftPresets {
                 // results. Null = no route filter applied.
                 minRangeKm: null
             },
+            routeFit: {
+                // Per-flight seats threshold scale used by the route-fit
+                // metric (J slice 4 v2). For a Route Assistant top-route with
+                // paxScore=N, the aircraft is considered to fit only when
+                // seats × LF ≥ N × paxSeatsPerScorePoint AND range covers the
+                // distance. Tunable so users can dial it for their server's
+                // demand profile; default 15 makes paxScore=10 require a
+                // ~150-effective-seat aircraft (small narrowbody minimum).
+                paxSeatsPerScorePoint: 15,
+                // Weekly seats threshold scale (J slice 4 v3). After the
+                // per-flight gate passes, the aircraft must also keep up at
+                // the route's published weekly frequency:
+                // weeklyFlights × seats × LF ≥ paxScore × weeklyDemandPerScorePoint.
+                // Default 100 means paxScore=10 needs 1000 effective weekly
+                // seats — a 150-seat narrowbody at LF 0.75 satisfies it at
+                // ~9 flights/wk. Routes without a published weeklyFlights
+                // skip this gate (no penalty).
+                weeklyDemandPerScorePoint: 100
+            },
             scoring: {
                 ageYears:          {enabled: true,  weight: 1, min: null, max: null},
                 conditionPct:      {enabled: false, weight: 1, min: null, max: null},
@@ -65,6 +84,7 @@ class UsedAircraftPresets {
         const block = Object.assign({}, defaults, stored)
         block.uiState     = Object.assign({}, defaults.uiState,     stored.uiState     || {})
         block.routeFilter = Object.assign({}, defaults.routeFilter, stored.routeFilter || {})
+        block.routeFit    = Object.assign({}, defaults.routeFit,    stored.routeFit    || {})
         block.scoring     = Object.assign({}, defaults.scoring)
         for (const k in (stored.scoring || {})) {
             block.scoring[k] = Object.assign(

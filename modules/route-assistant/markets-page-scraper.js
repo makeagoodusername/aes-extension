@@ -110,15 +110,48 @@ class RouteAssistantMarketsPageScraper {
         const out = await chrome.storage.local.get(keys)
         const map = new Map()
         for (const meta of keyMeta) {
-            const rec = out[meta.key]
+            let rec = out[meta.key]
             if (!rec) continue
             const ageDays = RouteAssistantMarketsPageScraper._normaliseMaxAge(maxAge[meta.family])
             if (RouteAssistantMarketsPageScraper._isExpired(rec, ageDays)) continue
+            // Letter K — `historic` family migrated to a `byPayload` map.
+            // Lazy-migrate legacy `{periods, capacities, prices, payload}`
+            // records on read so already-cached routes still work.
+            if (meta.family === "historic") {
+                rec = RouteAssistantMarketsPageScraper._migrateHistoricRecord(rec)
+            }
             let bucket = map.get(meta.pair)
             if (!bucket) { bucket = {}; map.set(meta.pair, bucket) }
             bucket[meta.family] = rec
         }
         return map
+    }
+
+    /**
+     * Letter K — backwards-compat read for historic records. The legacy
+     * shape stored a single payload's series at the top level
+     * (`{payload, periods, capacities, prices}`). The new shape stores
+     * every captured payload under `byPayload[NAME]`. This helper
+     * upgrades the legacy shape to the new shape on read so callers
+     * always see one consistent contract.
+     *
+     * Pure — does NOT write back to storage. The next `scrape()` for
+     * this route will overwrite the legacy record with the new shape.
+     */
+    static _migrateHistoricRecord(rec) {
+        if (!rec || typeof rec !== "object") return rec
+        if (rec.byPayload && typeof rec.byPayload === "object") return rec
+        if (!Array.isArray(rec.periods) || !rec.periods.length) return rec
+        const payload = (typeof rec.payload === "string" && rec.payload) || "ECONOMY"
+        return Object.assign({}, rec, {
+            byPayload: {
+                [payload]: {
+                    periods:    rec.periods,
+                    capacities: rec.capacities || [],
+                    prices:     rec.prices || []
+                }
+            }
+        })
     }
 
     /**
@@ -137,10 +170,26 @@ class RouteAssistantMarketsPageScraper {
         }
         const writes = {}
         const saved = {}
+        // Read the existing historic record so a fresh single-payload
+        // scrape doesn't wipe out previously-cached payloads. We write
+        // the union under `byPayload`.
+        let prevHistoric = null
+        if (parsed && parsed.historic) {
+            const histKey = RouteAssistantMarketsPageScraper.CACHE_PREFIXES.historic + pair
+            const cur = await chrome.storage.local.get([histKey])
+            prevHistoric = cur && cur[histKey] ? RouteAssistantMarketsPageScraper._migrateHistoricRecord(cur[histKey]) : null
+        }
         for (const fam of RouteAssistantMarketsPageScraper.FAMILIES) {
             if (!parsed || !parsed[fam]) continue
             const key = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam] + pair
-            const rec = Object.assign({}, base, parsed[fam])
+            let payload = parsed[fam]
+            if (fam === "historic") {
+                // Letter K — coerce parser output into the byPayload map
+                // shape, merging with any previously-cached payloads so a
+                // single-payload refresh doesn't lose the others.
+                payload = RouteAssistantMarketsPageScraper._mergeHistoric(prevHistoric, payload)
+            }
+            const rec = Object.assign({}, base, payload)
             writes[key] = rec
             saved[fam] = rec
         }
@@ -148,6 +197,32 @@ class RouteAssistantMarketsPageScraper {
             await chrome.storage.local.set(writes)
         }
         return saved
+    }
+
+    /**
+     * Letter K — fold a parser output into the byPayload map of a
+     * cache record. Accepts either the legacy single-payload shape
+     * (`{payload, periods, capacities, prices}`) or the new shape
+     * (`{byPayload: {…}}`). Returns the new shape with the union of
+     * everything we know about this route.
+     */
+    static _mergeHistoric(prev, incoming) {
+        if (!incoming) return prev || {byPayload: {}}
+        const out = {byPayload: {}}
+        if (prev && prev.byPayload) {
+            Object.assign(out.byPayload, prev.byPayload)
+        }
+        if (incoming.byPayload) {
+            Object.assign(out.byPayload, incoming.byPayload)
+        } else if (incoming.periods) {
+            const payload = (typeof incoming.payload === "string" && incoming.payload) || "ECONOMY"
+            out.byPayload[payload] = {
+                periods:    incoming.periods,
+                capacities: incoming.capacities || [],
+                prices:     incoming.prices || []
+            }
+        }
+        return out
     }
 
     /**
@@ -167,6 +242,121 @@ class RouteAssistantMarketsPageScraper {
             if (out[k]) result[fam] = out[k]
         }
         return result
+    }
+
+    /**
+     * Letter K — supported payload values for the per-class historic
+     * fan-out. AS's payload dropdown on the markets page accepts these
+     * keys (the URL responds to `?payload=NAME` for each). PAX is the
+     * sum of ECONOMY+BUSINESS+FIRST; CARGO is its own series.
+     */
+    static HISTORIC_PAYLOADS = ["ECONOMY", "BUSINESS", "FIRST", "PAX", "CARGO"]
+
+    /**
+     * Fetch a single payload's historic series and merge it into the
+     * route's existing `byPayload` cache record. Used by the demand-
+     * depth bulk sync to fan out per-class fetches without losing
+     * previously-cached payloads.
+     *
+     * Returns the parsed payload record `{periods, capacities, prices}`
+     * or null on parse/fetch failure.
+     */
+    async scrapeHistoricPayload(hubIata, destIata, payload) {
+        if (!payload || RouteAssistantMarketsPageScraper.HISTORIC_PAYLOADS.indexOf(payload) < 0) return null
+        const url = "https://" + this.server + ".airlinesim.aero/app/com/markets/"
+            + String(hubIata).toUpperCase() + String(destIata).toUpperCase()
+            + "?payload=" + encodeURIComponent(payload)
+        try {
+            const resp = await fetch(url, {credentials: "include"})
+            if (!resp.ok) {
+                console.warn("[AES marketsScraper] historic " + payload + " HTTP " + resp.status + " for " + hubIata + "-" + destIata)
+                return null
+            }
+            const html = await resp.text()
+            const parsed = RouteAssistantMarketsPageScraper._parseHistoricFromHtml(html)
+            if (!parsed || !parsed.periods || !parsed.periods.length) return null
+            // The query param drove which series the page rendered, so
+            // override whatever the parser guessed.
+            parsed.payload = payload
+            // Persist into the byPayload union without disturbing the
+            // other families.
+            await RouteAssistantMarketsPageScraper.saveAllRecords(hubIata, destIata, {
+                competitors: null, ownPricing: null, marketShare: null, historic: parsed
+            }, "fetch")
+            return {
+                periods:    parsed.periods,
+                capacities: parsed.capacities || [],
+                prices:     parsed.prices || []
+            }
+        } catch (e) {
+            console.warn("[AES marketsScraper] historic " + payload + " fetch failed for " + hubIata + "-" + destIata, e)
+            return null
+        }
+    }
+
+    /**
+     * Letter K — fan out per-class historic fetches across the visible
+     * route list, capped by `concurrency` and spaced by `staggerMs`.
+     * Mirrors `bulkScrape` orchestration but issues one fetch per
+     * (route, payload) tuple.
+     *
+     * `payloads` defaults to ["PAX", "CARGO"] (summary mode). Pass
+     * the full HISTORIC_PAYLOADS for the heavy 5-payload sweep.
+     */
+    async bulkScrapeHistoric(pairs, opts) {
+        opts = opts || {}
+        const payloads    = (opts.payloads && opts.payloads.length) ? opts.payloads : ["PAX", "CARGO"]
+        const concurrency = Math.max(1, Math.min(8, opts.concurrency || 3))
+        const staggerMs   = Math.max(0, opts.staggerMs || 1200)
+        const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
+
+        // Build the work list as (pair, payload) tuples.
+        const work = []
+        for (const p of pairs || []) {
+            const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
+            for (const pl of payloads) work.push({hub: a, dest: b, payload: pl})
+        }
+        const total = work.length
+        if (!total) return []
+        const results = new Array(total)
+
+        let cursor = 0
+        let inflight = 0
+        let done = 0
+        let lastDispatchAt = 0
+
+        return new Promise(resolve => {
+            const tryDispatch = () => {
+                while (inflight < concurrency && cursor < total) {
+                    const sinceLast = Date.now() - lastDispatchAt
+                    if (sinceLast < staggerMs) {
+                        setTimeout(tryDispatch, staggerMs - sinceLast)
+                        return
+                    }
+                    const idx = cursor++
+                    const job = work[idx]
+                    inflight++
+                    lastDispatchAt = Date.now()
+                    const finish = (rec) => {
+                        results[idx] = rec
+                        inflight--
+                        done++
+                        if (onProgress) {
+                            try { onProgress(done, total) } catch (e) { /* noop */ }
+                        }
+                        if (done >= total) resolve(results)
+                        else tryDispatch()
+                    }
+                    this.scrapeHistoricPayload(job.hub, job.dest, job.payload)
+                        .then(finish)
+                        .catch(err => {
+                            console.warn("[AES marketsScraper] historic bulk error:", err)
+                            finish(null)
+                        })
+                }
+            }
+            tryDispatch()
+        })
     }
 
     /**

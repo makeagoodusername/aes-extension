@@ -27,6 +27,8 @@ class RouteAssistantSettings {
             flightsfromMaxAgeDays: 7,
             distanceMaxAgeDays:    null,    // null = never expire; set to N to re-resolve entries older than N days
             collapsed: false,
+            panelWidth: 1100,               // px, user-resizable via left-edge drag handle (clamp 600–3000)
+            compactView: false,             // master toggle in the panel header — hides heavy column groups in one click
             // Tabbed view selector (Pax / Cargo / All). Default "all"
             // preserves the existing combined table for users without a
             // strong mode preference. Tab switches column visibility
@@ -78,6 +80,21 @@ class RouteAssistantSettings {
                 targetMargin:       null,
                 competitorAdjust:   null
             },
+            // Letter K — deeper per-route demand from AS market analysis.
+            // Surfaces real demand-pool size + price elasticity per route
+            // and per class, derived from the markets-page historic chart
+            // (per-payload) plus the inventory page's RM buckets.
+            demandDepth: {
+                showDemandColumns:    true,    // gate the new column group
+                classCoverage:        "summary",   // "summary" (PAX+CARGO) | "full" (5 payloads)
+                useRealDemandForLF:   false,   // opt-in profit-estimator switch
+                concurrency:          3,       // gentle — coexists with parallel ORS sync
+                staggerMs:            1200,
+                historicWindowPeriods: 12,     // last N weeks for the elasticity regression
+                lastBulkScrapeAt:     null,
+                historicMaxAgeDays:   null,    // markets historic — null = forever
+                inventoryMaxAgeDays:  3        // RM data is volatile; expire after 3d
+            },
             yieldFeedback: {
                 // Roadmap G — yield-timeline / actual-yields feedback loop.
                 showColumns:         true,    // gate the Actual $/flt + Δ% columns
@@ -107,7 +124,20 @@ class RouteAssistantSettings {
                 enterpriseMetaConcurrency: 4,
                 enterpriseMetaStaggerMs:   600,
                 enterpriseMetaMaxAgeDays:  90,    // enterprises rarely rebrand
-                lastEnterpriseMetaSyncAt:  null
+                lastEnterpriseMetaSyncAt:  null,
+                // F slice 3 — Contractual partners. Fetches
+                // /app/info/enterprises/<your_id>?tab=1 per own
+                // enterprise to know who YOU have alliance / IL /
+                // lessor agreements with. Cross-referenced at popover
+                // render time to surface a ⇄ glyph next to interlining
+                // partners (and optionally a ✦ for alliance partners).
+                myEnterpriseIds:           [],     // user's own enterprise ids; UI accepts comma-separated entry
+                partnersConcurrency:       2,      // typically 1-2 ids — small concurrency is fine
+                partnersStaggerMs:         400,
+                partnersMaxAgeDays:        30,     // less generous than meta — agreements move
+                lastPartnersSyncAt:        null,
+                showInterliningGlyph:      true,   // ⇄ next to IL partners in the popover
+                showAllianceGlyph:         false   // ✦ for alliance partners (off by default)
             },
             marketAnalysis: {
                 // Tier 2a — markets-page scraper for /app/com/markets/<HUB><DEST>.
@@ -206,6 +236,10 @@ class RouteAssistantSettings {
                                        ? block.distanceMaxAgeDays
                                        : defaults.distanceMaxAgeDays,
             collapsed:             !!block.collapsed,
+            panelWidth:            (typeof block.panelWidth === "number" && block.panelWidth >= 600 && block.panelWidth <= 3000)
+                                       ? block.panelWidth
+                                       : defaults.panelWidth,
+            compactView:           !!block.compactView,
             viewMode:              (block.viewMode === "pax" || block.viewMode === "cargo" || block.viewMode === "all")
                                        ? block.viewMode
                                        : defaults.viewMode,
@@ -215,6 +249,7 @@ class RouteAssistantSettings {
             yieldFeedback:         Object.assign({}, defaults.yieldFeedback,   block.yieldFeedback   || {}),
             carriers:              Object.assign({}, defaults.carriers,        block.carriers        || {}),
             marketAnalysis:        Object.assign({}, defaults.marketAnalysis,  block.marketAnalysis  || {}),
+            demandDepth:           Object.assign({}, defaults.demandDepth,     block.demandDepth     || {}),
             ors:                   Object.assign({}, defaults.ors,             block.ors             || {}),
             serviceProfiles:       RouteAssistantSettings._mergeServiceProfiles(defaults.serviceProfiles, block.serviceProfiles)
         }

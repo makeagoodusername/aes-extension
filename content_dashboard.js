@@ -33,6 +33,9 @@ function displayDashboard() {
           <option value="competitorMonitoring">Competitor Monitoring</option>
           <option value="aircraftProfitability">Aircraft Profitability</option>
           <option value="stationAutomation">Station Automation</option>
+          <option value="usedAircraftScanner">Used Aircraft Scanner</option>
+          <option value="scheduleManagement">Schedule Management</option>
+          <option value="flightsFrom">Flights From (real-world demand)</option>
           <option value="other">None</option>
         </select>
       </div>
@@ -66,6 +69,15 @@ function dashboardHandle() {
             break;
         case 'stationAutomation':
             displayStationAutomation();
+            break;
+        case 'usedAircraftScanner':
+            displayUsedAircraftScanner();
+            break;
+        case 'scheduleManagement':
+            displayScheduleManagement();
+            break;
+        case 'flightsFrom':
+            displayFlightsFrom();
             break;
         default:
             displayDefault();
@@ -2781,24 +2793,33 @@ async function displayStationAutomation() {
     panel.append(row);
     mainDiv.append(panel);
 
-    const thresholds = (settings.stationAutomation && settings.stationAutomation.thresholds) ||
-        [0, 1000, 5000, 10000, 50000, 100000, 500000, 1000000];
-    const airlineCode = airline.code;
+    const barThresholds = [
+        {value: 0, label: '≥ 0 bars (any)'},
+        {value: 1, label: '≥ 1 bar'},
+        {value: 3, label: '≥ 3 bars'},
+        {value: 5, label: '≥ 5 bars'},
+        {value: 7, label: '≥ 7 bars'},
+        {value: 10, label: '≥ 10 bars (full)'}
+    ];
+    // Station-automation storage key must match what the worker reads on
+    // /app/info/airports/* and /app/ops/stations* — those pages don't have the
+    // .facts table, so use the navbar-based identity instead of airline.code.
+    const airlineCode = AES.getAirlineIdentity() || airline.code;
 
     //Form
-    const countryInput = $('<input type="text" id="aes-stationAutomation-country" class="form-control" placeholder="e.g. FR or France">');
-    const countryLabel = $('<label for="aes-stationAutomation-country">Country (code or name)</label>');
-    const countryGroup = $('<div class="form-group"></div>').append(countryLabel, countryInput);
+    const countrySelect = $('<select id="aes-stationAutomation-country" class="form-control"><option value="">Loading countries…</option></select>');
+    const refreshCountriesLink = $('<a href="#" style="margin-left: 8px; font-size: 0.85em;">refresh list</a>');
+    const countryLabel = $('<label for="aes-stationAutomation-country">Country</label>').append(refreshCountriesLink);
+    const countryGroup = $('<div class="form-group"></div>').append(countryLabel, countrySelect);
 
     const paxSelect = $('<select id="aes-stationAutomation-pax" class="form-control"></select>');
     const cargoSelect = $('<select id="aes-stationAutomation-cargo" class="form-control"></select>');
-    thresholds.forEach(function(value) {
-        const labelText = value === 0 ? '≥ 0 (any)' : '≥ ' + Intl.NumberFormat().format(value);
-        paxSelect.append($('<option></option>').val(value).text(labelText));
-        cargoSelect.append($('<option></option>').val(value).text(labelText));
+    barThresholds.forEach(function(t) {
+        paxSelect.append($('<option></option>').val(t.value).text(t.label));
+        cargoSelect.append($('<option></option>').val(t.value).text(t.label));
     });
-    paxSelect.val(settings.stationAutomation?.defaultPaxThreshold || 0);
-    cargoSelect.val(settings.stationAutomation?.defaultCargoThreshold || 0);
+    paxSelect.val(settings.stationAutomation?.defaultPaxThreshold ?? 0);
+    cargoSelect.val(settings.stationAutomation?.defaultCargoThreshold ?? 0);
 
     const paxGroup = $('<div class="form-group"></div>').append(
         $('<label for="aes-stationAutomation-pax">Passenger demand</label>'), paxSelect
@@ -2813,13 +2834,21 @@ async function displayStationAutomation() {
         exceptionsInput
     );
 
+    const concSelect = $('<select id="aes-stationAutomation-conc" class="form-control"></select>');
+    [1, 2, 3, 6].forEach(c => concSelect.append($('<option></option>').val(c).text(c + (c > 1 ? ' parallel tabs' : ' tab'))));
+    concSelect.val(settings.stationAutomation?.defaultConcurrency ?? 6);
+    const concGroup = $('<div class="form-group"></div>').append(
+        $('<label for="aes-stationAutomation-conc">Parallel tabs</label>'), concSelect,
+        $('<p class="warning" style="font-size:90%; margin-top: 4px;">Pop-ups must be allowed for *.airlinesim.aero (chrome://settings/content/popups), otherwise only the first tab will open.</p>')
+    );
+
     const confirmBtn = $('<button type="button" class="btn btn-primary">Confirm</button>');
     const addAllBtn = $('<button type="button" class="btn btn-default" disabled>Add all stations</button>');
     const formFeedback = $('<span style="margin-left: 8px;"></span>');
     const actionBar = $('<div style="margin-top: 12px; display: flex; gap: 8px; align-items: center;"></div>')
         .append(confirmBtn, addAllBtn, formFeedback);
 
-    formCol.append(countryGroup, paxGroup, cargoGroup, exceptionsGroup, actionBar);
+    formCol.append(countryGroup, paxGroup, cargoGroup, exceptionsGroup, concGroup, actionBar);
 
     //Queue side-list
     const queueTitle = $('<h4>Queue</h4>');
@@ -2834,6 +2863,41 @@ async function displayStationAutomation() {
 
     //State
     let record = await StationAutomationStorage.load(server, airlineCode);
+    // Best-effort GC — drop run sessions and orphan result blobs older than a day.
+    StationAutomationStorage.cleanupOldRuns(server, airlineCode, record.activeRunId).catch(() => {});
+    let cachedCountries = settings.stationAutomation && settings.stationAutomation.countriesCache;
+    let countries = Array.isArray(cachedCountries) ? cachedCountries : [];
+
+    async function ensureCountries() {
+        if (countries.length) {
+            populateCountrySelect();
+            return;
+        }
+        formFeedback.removeClass().addClass('warning').text('Loading countries…');
+        try {
+            countries = await CountryScraper.loadCountriesList(server);
+        } catch (error) {
+            formFeedback.removeClass().addClass('bad').text('Failed to load countries: ' + error.message);
+            return;
+        }
+        if (!countries.length) {
+            formFeedback.removeClass().addClass('bad').text('Could not parse the countries page.');
+            return;
+        }
+        settings.stationAutomation = settings.stationAutomation || {};
+        settings.stationAutomation.countriesCache = countries;
+        chrome.storage.local.set({settings: settings}, function() {});
+        populateCountrySelect();
+        formFeedback.removeClass().text('');
+    }
+
+    function populateCountrySelect() {
+        countrySelect.empty();
+        countrySelect.append('<option value="">— Select country —</option>');
+        countries.forEach(function(c) {
+            countrySelect.append($('<option></option>').val(c.id).text(c.name + (c.code ? ' (' + c.code + ')' : '')));
+        });
+    }
 
     function renderQueue() {
         queueBody.empty();
@@ -2842,10 +2906,9 @@ async function displayStationAutomation() {
             addAllBtn.prop('disabled', true);
             return;
         }
-        addAllBtn.prop('disabled', Boolean(record.running));
+        addAllBtn.prop('disabled', false);
         record.queue.forEach(function(entry, idx) {
-            const filterText = 'Pax ≥ ' + Intl.NumberFormat().format(entry.paxThreshold) +
-                ', Cargo ≥ ' + Intl.NumberFormat().format(entry.cargoThreshold);
+            const filterText = 'Pax ≥ ' + entry.paxThreshold + ', Cargo ≥ ' + entry.cargoThreshold + ' bars';
             const exceptionsText = entry.exceptions.length ? entry.exceptions.join(', ') : '—';
             const removeBtn = $('<button type="button" class="btn btn-default btn-xs">remove</button>');
             removeBtn.click(async function() {
@@ -2854,7 +2917,7 @@ async function displayStationAutomation() {
             });
             const tr = $('<tr></tr>').append(
                 $('<td></td>').text(idx + 1),
-                $('<td></td>').text(entry.countryName || entry.country),
+                $('<td></td>').text(entry.countryName || entry.countryId),
                 $('<td></td>').text(filterText),
                 $('<td></td>').text(exceptionsText),
                 $('<td></td>').append(removeBtn)
@@ -2870,100 +2933,809 @@ async function displayStationAutomation() {
     }
 
     confirmBtn.click(async function() {
-        const country = countryInput.val().trim();
-        if (!country) {
-            formFeedback.removeClass().addClass('bad').text('Please enter a country.');
+        const countryId = countrySelect.val();
+        if (!countryId) {
+            formFeedback.removeClass().addClass('bad').text('Please select a country.');
             return;
         }
+        const selected = countries.find(c => c.id === countryId);
         const entry = {
-            country: country,
-            countryName: country,
+            countryId: countryId,
+            countryCode: selected?.code || '',
+            countryName: selected ? selected.name + (selected.code ? ' (' + selected.code + ')' : '') : countryId,
             paxThreshold: parseInt(paxSelect.val(), 10) || 0,
             cargoThreshold: parseInt(cargoSelect.val(), 10) || 0,
             exceptions: parseExceptions(exceptionsInput.val())
         };
         record = await StationAutomationStorage.enqueue(server, airlineCode, entry);
         formFeedback.removeClass().addClass('good').text('Added ' + entry.countryName + ' to queue.');
-        countryInput.val('');
+        countrySelect.val('');
         exceptionsInput.val('');
         renderQueue();
     });
 
     addAllBtn.click(async function() {
-        if (!record.queue.length || record.running) return;
+        if (!record.queue.length) {
+            formFeedback.removeClass().addClass('bad').text('Queue is empty.');
+            return;
+        }
         addAllBtn.prop('disabled', true);
-        formFeedback.removeClass().addClass('warning').text('Resolving first country…');
-        record.running = 1;
-        record.currentEntry = 0;
-        record.currentStationIdx = 0;
-        record.processedStations = [];
-        record.log = [];
-        try {
-            record.resolvedStations = await CountryScraper.resolveStations(record.queue[0], server);
-        } catch (error) {
-            formFeedback.removeClass().addClass('bad').text('Failed to resolve country stations: ' + error.message);
-            record.running = 0;
-            await StationAutomationStorage.save(record);
-            renderQueue();
+        formFeedback.removeClass().addClass('warning').text('Reading existing stations + resolving queued airports…');
+
+        const concurrency = parseInt(concSelect.val(), 10) || 6;
+        settings.stationAutomation = settings.stationAutomation || {};
+        settings.stationAutomation.defaultConcurrency = concurrency;
+        chrome.storage.local.set({settings: settings}, function() {});
+
+        // AS's live stations list is the source of truth for "what's already
+        // open" — fetch it in parallel with the country resolutions so we
+        // don't waste tabs re-opening stations from a prior partial run.
+        const [existingIatas, ...resolvedPerCountry] = await Promise.all([
+            CountryScraper.loadExistingStationIatas(server).catch(err => {
+                console.warn('[AES stationAutomation] existing-stations fetch failed', err);
+                return new Set();
+            }),
+            ...record.queue.map(entry =>
+                CountryScraper.resolveStations(entry, server)
+                    .then(airports => airports.map(a => ({
+                        iata: a.iata,
+                        airportId: a.airportId,
+                        countryName: entry.countryName,
+                        exceptions: entry.exceptions || [],
+                    })))
+                    .catch(error => {
+                        console.warn('[AES stationAutomation] resolve failed for', entry.countryName, error);
+                        return [];
+                    })
+            ),
+        ]);
+        const resolvedAll = resolvedPerCountry.flat().filter(a => a.airportId);
+        const allAirports = resolvedAll.filter(a => !existingIatas.has((a.iata || '').toUpperCase()));
+        const alreadyOpenCount = resolvedAll.length - allAirports.length;
+        if (!resolvedAll.length) {
+            formFeedback.removeClass().addClass('bad').text('No stations match your filters across any queued country.');
+            addAllBtn.prop('disabled', false);
             return;
         }
-        if (!record.resolvedStations.length) {
-            formFeedback.removeClass().addClass('bad').text('No stations match the filter for the first country. Nothing to do.');
-            record.running = 0;
-            await StationAutomationStorage.save(record);
-            renderQueue();
+        if (!allAirports.length) {
+            formFeedback.removeClass().addClass('good').text(
+                `Nothing to open — all ${resolvedAll.length} filtered airport${resolvedAll.length > 1 ? 's are' : ' is'} already in your network.`
+            );
+            addAllBtn.prop('disabled', false);
             return;
         }
+
+        // Round-robin split so each tab finishes in roughly the same wall time
+        // even if some airports are fast (already-operating) and some slow.
+        const tabCount = Math.min(concurrency, allAirports.length);
+        const chunks = Array.from({length: tabCount}, () => []);
+        allAirports.forEach((a, i) => chunks[i % tabCount].push(a));
+
+        const run = StationAutomationStorage.createRun({
+            server: server,
+            airlineId: airlineCode,
+            chunks: chunks,
+            concurrency: tabCount,
+        });
+        await StationAutomationStorage.saveRun(run);
+        record.activeRunId = run.runId;
         await StationAutomationStorage.save(record);
-        // Hand off to content_stationOpen.js by navigating to the first station's open page.
-        // TODO: confirm the AS station-opening URL template during discovery.
-        const firstStation = record.resolvedStations[0];
-        window.location.assign(buildStationOpenUrl(server, firstStation));
+
+        const blockedChunkIdxs = [];
+        for (let i = 0; i < run.chunks.length; i++) {
+            const first = run.chunks[i][0];
+            const url = 'https://' + server + '.airlinesim.aero/app/info/airports/' + first.airportId
+                + '#aesStationChunk=' + run.runId + ':' + i;
+            const win = window.open(url, '_blank');
+            if (!win) blockedChunkIdxs.push(i);
+        }
+        // If pop-ups blocked any tabs, synthesise failed results for their
+        // airports so the run still completes and the progress table doesn't
+        // hang on "X/Y processed" forever.
+        for (const chunkIdx of blockedChunkIdxs) {
+            for (const entry of run.chunks[chunkIdx]) {
+                await StationAutomationStorage.writeResult(server, airlineCode, run.runId, entry.flatIdx, {
+                    iata: entry.iata,
+                    status: 'failed',
+                    detail: 'Tab blocked by pop-up blocker.',
+                    finishedAt: Date.now(),
+                });
+            }
+        }
+        const existingNote = alreadyOpenCount ? ` (skipped ${alreadyOpenCount} already in your network)` : '';
+        if (blockedChunkIdxs.length > 0) {
+            formFeedback.removeClass().addClass('bad').text(
+                `${blockedChunkIdxs.length}/${run.chunks.length} tabs blocked by pop-up blocker. Allow pop-ups for *.airlinesim.aero and retry.${existingNote}`
+            );
+        } else {
+            formFeedback.removeClass().addClass('good').text(
+                `Opened ${run.chunks.length} tab${run.chunks.length > 1 ? 's' : ''} processing ${allAirports.length} new airport${allAirports.length > 1 ? 's' : ''}${existingNote}.`
+            );
+        }
+        addAllBtn.prop('disabled', false);
+        renderRunDisplay();
     });
 
     clearQueueBtn.click(async function() {
-        await StationAutomationStorage.clear(server, airlineCode);
-        record = await StationAutomationStorage.load(server, airlineCode);
+        // Only clear the queue array — keep activeRunId so an in-flight run
+        // remains visible in the progress table while the user prepares a new queue.
+        record.queue = [];
+        await StationAutomationStorage.save(record);
         formFeedback.removeClass();
         renderQueue();
     });
 
+    refreshCountriesLink.click(async function(e) {
+        e.preventDefault();
+        countries = [];
+        settings.stationAutomation = settings.stationAutomation || {};
+        settings.stationAutomation.countriesCache = [];
+        await new Promise(r => chrome.storage.local.set({settings: settings}, r));
+        await ensureCountries();
+    });
+
     renderQueue();
+    await ensureCountries();
 
-    //If a run is in progress, surface its progress
-    if (record.running) {
-        formFeedback.removeClass().addClass('warning').text(
-            'A run is in progress (entry ' + (record.currentEntry + 1) + ' of ' + record.queue.length +
-            ', station ' + record.currentStationIdx + ' of ' + record.resolvedStations.length + ').'
+    // Live run display: a single block we re-render whenever tab workers write
+    // per-airport results to chrome.storage.
+    const runBlock = $('<div></div>');
+    panel.append(runBlock);
+
+    async function renderRunDisplay() {
+        runBlock.empty();
+        const runId = record.activeRunId;
+        if (!runId) return;
+        const run = await StationAutomationStorage.loadRun(server, airlineCode, runId);
+        if (!run) return;
+        const results = await StationAutomationStorage.loadResults(server, airlineCode, runId);
+
+        const statusClass = {ok: 'good', skipped: 'warning', 'skipped-existing': 'warning'};
+        const counts = {ok: 0, 'skipped-existing': 0, skipped: 0, failed: 0};
+        Object.values(results).forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+        const done = Object.keys(results).length;
+        const total = run.total;
+        const title = done === total ? 'Last run' : 'Run in progress';
+
+        const summary = $('<p style="margin-bottom: 8px;"></p>').text(
+            `${done}/${total} processed — Opened ${counts.ok}, already existing ${counts['skipped-existing']}, skipped ${counts.skipped}, failed ${counts.failed}.`
         );
-        addAllBtn.prop('disabled', true);
-    }
 
-    //If there are log entries from a finished run, show them
-    if (!record.running && record.log.length) {
-        const logTitle = $('<h4>Last run</h4>');
+        // Order rows by chunk then position so the log reads naturally.
+        const rows = [];
+        run.chunks.forEach((chunk, chunkIdx) => {
+            chunk.forEach((entry, pos) => {
+                const r = results[entry.flatIdx];
+                rows.push({
+                    iata: entry.iata,
+                    country: entry.countryName || '',
+                    chunkIdx,
+                    pos,
+                    status: r?.status || 'pending',
+                    detail: r?.detail || '',
+                });
+            });
+        });
+
         const logTable = $('<table class="table table-bordered table-striped"></table>');
-        const logHead = $('<thead><tr><th>Station</th><th>Result</th><th>Detail</th></tr></thead>');
+        const logHead = $('<thead><tr><th>Station</th><th>Country</th><th>Tab</th><th>Result</th><th>Detail</th></tr></thead>');
         const logBody = $('<tbody></tbody>');
-        record.log.forEach(function(row) {
+        rows.forEach(row => {
+            const klass = statusClass[row.status] || 'bad';
             logBody.append($('<tr></tr>').append(
                 $('<td></td>').text(row.iata),
-                $('<td></td>').html('<span class="' + (row.status === 'ok' ? 'good' : row.status === 'skipped' ? 'warning' : 'bad') + '">' + row.status + '</span>'),
-                $('<td></td>').text(row.detail || '')
+                $('<td></td>').text(row.country),
+                $('<td></td>').text(row.chunkIdx + 1),
+                $('<td></td>').html('<span class="' + klass + '">' + row.status + '</span>'),
+                $('<td></td>').text(row.detail)
             ));
         });
         logTable.append(logHead, logBody);
-        panel.append(logTitle, $('<div class="as-table-well"></div>').append(logTable));
+        runBlock.append($('<h4></h4>').text(title), summary, $('<div class="as-table-well"></div>').append(logTable));
     }
-}
 
-function buildStationOpenUrl(server, iata) {
-    // TODO (AS discovery): confirm the real station-opening URL template.
-    // Known AS paths like /action/enterprise/stations/... should be verified against a live AS session.
-    return 'https://' + server + '.airlinesim.aero/app/network/stations/open?code=' + encodeURIComponent(iata);
+    // Single storage listener per panel mount. Replace any previous one so
+    // repeated re-renders don't stack duplicate listeners.
+    if (window._aesStationAutomationListener) {
+        chrome.storage.onChanged.removeListener(window._aesStationAutomationListener);
+    }
+    const prefix = server + airlineCode + 'stationAutomationRun:';
+    window._aesStationAutomationListener = (changes, area) => {
+        if (area !== 'local' || !record.activeRunId) return;
+        for (const key in changes) {
+            if (key.indexOf(prefix + record.activeRunId) === 0) {
+                renderRunDisplay();
+                return;
+            }
+        }
+    };
+    chrome.storage.onChanged.addListener(window._aesStationAutomationListener);
+
+    await renderRunDisplay();
 }
 
 //Display  default
+// Used Aircraft Scanner — singleton controller persists across re-renders so
+// an in-flight scan survives navigating away from the panel and back.
+var aesUsedAircraftScannerCtrl = null;
+async function displayUsedAircraftScanner() {
+    const mainDiv = $("#aes-div-dashboard");
+    mainDiv.empty();
+    mainDiv.append('<h3>Used Aircraft Scanner</h3>');
+
+    const block = await UsedAircraftPresets.load();
+    settings.usedAircraftScanner = block;
+    let editingId = block.presets[0]?.id || null;
+
+    if (!aesUsedAircraftScannerCtrl) {
+        aesUsedAircraftScannerCtrl = new ScanController(server);
+    }
+    const ctrl = aesUsedAircraftScannerCtrl;
+
+    // Resume any running session from a previous panel visit
+    if (block.lastScanId && (!ctrl.session || ctrl.session.scanId !== block.lastScanId)) {
+        await ctrl.resume(block.lastScanId);
+    }
+
+    // ====== Layout shell ======
+    const panel = $('<div class="as-panel"></div>');
+
+    // ----- Preset bar (one-line: dropdown + name + actions) -----
+    const presetBar = $('<div></div>').css({
+        display:      "flex",
+        flexWrap:     "wrap",
+        alignItems:   "center",
+        gap:          "8px",
+        marginBottom: "12px"
+    });
+    const presetSelect = $('<select id="aes-uas-preset" class="form-control input-sm" style="width:auto; min-width:200px;"></select>');
+    const nameInput    = $('<input type="text" id="aes-uas-name" class="form-control input-sm" placeholder="Preset name" style="width:auto; min-width:180px; flex:1; max-width:280px;">');
+    const saveBtn      = $('<button type="button" class="btn btn-default btn-sm">Save</button>');
+    const newBtn       = $('<button type="button" class="btn btn-default btn-sm">New</button>');
+    const dupBtn       = $('<button type="button" class="btn btn-default btn-sm">Duplicate</button>');
+    const deleteBtn    = $('<button type="button" class="btn btn-default btn-sm">Delete</button>');
+    presetBar.append(
+        $('<label for="aes-uas-preset" style="margin:0; font-weight:600;">Preset</label>'),
+        presetSelect, nameInput, saveBtn, newBtn, dupBtn, deleteBtn
+    );
+
+    // ----- Aircraft types section (fieldset wrapping the picker) -----
+    const typesFieldset = $('<fieldset></fieldset>').css({
+        marginBottom: "12px",
+        padding:      "8px 12px 12px 12px",
+        border:       "1px solid #ddd",
+        borderRadius: "4px"
+    });
+    const typesLegend = $('<legend>Aircraft types</legend>').css({
+        fontSize: "14px", padding: "0 6px", width: "auto", margin: "0", border: "0"
+    });
+    const gridContainer = $('<div></div>');
+    const validationMsg = $('<div style="margin-top:8px; font-size:90%;"></div>');
+    typesFieldset.append(typesLegend, gridContainer, validationMsg);
+
+    // ----- Advanced settings disclosure (default closed) -----
+    const advancedSection = makeDisclosureSection({
+        title:       "Advanced settings",
+        uiKey:       "advancedOpen",
+        displayMode: "flex"
+    });
+    advancedSection.body.css({gap: "16px", flexWrap: "wrap", alignItems: "flex-end"});
+
+    const concInput = $('<input type="number" id="aes-uas-conc" class="form-control input-sm" min="1" max="20" style="width:90px;">').val(block.concurrency);
+    const concGroup = $('<div class="form-group" style="margin:0;"></div>').append(
+        $('<label for="aes-uas-conc" style="display:block; margin-bottom:4px;">Concurrent tabs (max)</label>'),
+        concInput
+    );
+    const stagInput = $('<input type="number" id="aes-uas-stagger" class="form-control input-sm" min="0" step="100" style="width:120px;">').val(block.staggerMs);
+    const stagGroup = $('<div class="form-group" style="margin:0;"></div>').append(
+        $('<label for="aes-uas-stagger" style="display:block; margin-bottom:4px;">Stagger between tab opens (ms)</label>'),
+        stagInput
+    );
+    const popupNote = $('<p class="warning" style="font-size:90%; margin:0; flex-basis:100%;">'
+        + 'Pop-ups must be allowed for *.airlinesim.aero (chrome://settings/content/popups). '
+        + 'Otherwise the 2nd–6th tabs won\'t open.</p>');
+    advancedSection.body.append(concGroup, stagGroup, popupNote);
+
+    // ----- Filters & scoring disclosure (default open) -----
+    const filtersSection = makeDisclosureSection({title: "Filters & scoring", uiKey: "filtersOpen"});
+    const routeBlock   = $('<div style="margin-bottom:12px;"></div>');
+    const scoringBlock = $('<div></div>');
+    filtersSection.body.append(routeBlock, scoringBlock);
+
+    // ----- Action bar -----
+    const actionBar         = $('<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px;"></div>');
+    const startBtn          = $('<button type="button" class="btn btn-primary">Start scan</button>');
+    const cancelBtn         = $('<button type="button" class="btn btn-default">Cancel</button>');
+    const scanStatusInline  = $('<span style="color:#555;"></span>');
+    actionBar.append(startBtn, cancelBtn, scanStatusInline);
+
+    // ----- Queue disclosure (auto-toggles on scan transitions) -----
+    const queueSection = makeDisclosureSection({title: "Queue", uiKey: "queueOpen"});
+
+    // ----- Results header + body -----
+    const resultsHeaderEl = $('<div style="display:flex; justify-content:space-between; align-items:center; margin: 12px 0 8px 0;"></div>');
+    const resultsTitle    = $('<h4 style="margin:0;">Results</h4>');
+    const csvBtn          = $('<button type="button" class="btn btn-default btn-sm">Download CSV</button>').prop("disabled", true);
+    resultsHeaderEl.append(resultsTitle, csvBtn);
+    const resultsBlock = $('<div></div>');
+
+    panel.append(
+        presetBar,
+        typesFieldset,
+        advancedSection.root,
+        filtersSection.root,
+        actionBar,
+        queueSection.root,
+        resultsHeaderEl,
+        resultsBlock
+    );
+    mainDiv.append(panel);
+
+    // ====== Family grid component ======
+    // Singleton across preset switches — only setSelectedTypes is called when
+    // editingId changes so in-memory category/search/expansion state survives.
+    const familyGrid = new MarketScanFamilyGrid(gridContainer.get(0), {
+        onChange:    function() { runValidation(); },
+        concurrency: block.concurrency,
+        staggerMs:   block.staggerMs
+    });
+
+    // ====== Disclosure helpers ======
+    // Each section persists its open/closed state to block.uiState[uiKey]; the
+    // setOpen() returned by makeDisclosureSection skips the chrome.storage
+    // write when the value didn't change, so calling setOpen at init or
+    // re-running it from a status-transition guard is a safe no-op.
+    function makeDisclosureSection(opts) {
+        const displayMode = opts.displayMode || "block";
+        const root = $('<div></div>').css({
+            marginBottom: "12px",
+            border:       "1px solid #ddd",
+            borderRadius: "4px",
+            background:   "#fafafa"
+        });
+        const header = $('<div></div>').css({
+            padding:    "8px 12px",
+            cursor:     "pointer",
+            userSelect: "none",
+            display:    "flex",
+            alignItems: "center",
+            gap:        "8px"
+        });
+        const caret   = $('<span style="font-weight:bold; width:1em; text-align:center;"></span>');
+        const title   = $('<span style="font-weight:600;"></span>').text(opts.title || "");
+        const summary = $('<span style="color:#666; font-size:90%; margin-left:auto;"></span>');
+        header.append(caret, title, summary);
+        const body = $('<div style="padding: 0 12px 12px 12px;"></div>');
+        root.append(header, body);
+
+        function setOpen(open) {
+            open = !!open;
+            const wasOpen = !!block.uiState[opts.uiKey];
+            block.uiState[opts.uiKey] = open;
+            caret.text(open ? "▾" : "▸");
+            body.css("display", open ? displayMode : "none");
+            if (wasOpen !== open) UsedAircraftPresets.save({uiState: block.uiState});
+        }
+        header.click(() => setOpen(!block.uiState[opts.uiKey]));
+
+        return {root: root, header: header, body: body, summary: summary, setOpen: setOpen};
+    }
+
+    // Pop-ups callout stays visible even when Advanced is collapsed — it's the
+    // only gotcha that silently breaks the scan if the user forgets it.
+    function updateAdvancedSummary() {
+        advancedSection.summary.text(
+            block.concurrency + " tabs · "
+            + block.staggerMs + "ms stagger · pop-ups required"
+        );
+    }
+    updateAdvancedSummary();
+
+    // Apply persisted disclosure state — same value as on disk, so setOpen's
+    // change guard skips the redundant storage write.
+    advancedSection.setOpen(block.uiState.advancedOpen);
+    filtersSection.setOpen(block.uiState.filtersOpen);
+    queueSection.setOpen(block.uiState.queueOpen);
+
+    // ====== Helpers ======
+    function refreshPresetSelect() {
+        presetSelect.empty();
+        if (!block.presets.length) {
+            presetSelect.append('<option value="">— No presets yet —</option>');
+        } else {
+            block.presets.forEach(function(p) {
+                presetSelect.append($('<option></option>').val(p.id).text(p.name));
+            });
+        }
+        if (editingId) presetSelect.val(editingId);
+    }
+
+    function loadEditing() {
+        const p = block.presets.find(x => x.id === editingId);
+        nameInput.val(p ? p.name : "");
+        familyGrid.setSelectedTypes(p ? p.types : []);
+        runValidation();
+    }
+
+    function runValidation() {
+        const types = familyGrid.getSelectedTypes();
+        const overrides = block.typeFamilyOverrides || {};
+        const unmapped = types.filter(t => !TypeFamilyMap.resolve(t, overrides));
+        validationMsg.empty();
+        if (!types.length) {
+            validationMsg.text("Add at least one aircraft type.");
+            startBtn.prop("disabled", true);
+            return;
+        }
+        if (unmapped.length) {
+            // Custom (unmapped) types still scan — the controller falls
+            // through to "any aircraft family" in resolve(). Surface as a
+            // warning, not an error, and keep the start button enabled.
+            const ul = $('<ul style="margin:0; padding-left:18px;"></ul>');
+            unmapped.forEach(t => ul.append($('<li class="warning"></li>').text(t)));
+            validationMsg.append(
+                $('<div class="warning">Custom types — will scan under "any aircraft family":</div>'),
+                ul
+            );
+        }
+        startBtn.prop("disabled", types.length === 0);
+    }
+
+    // ====== Event wiring ======
+    presetSelect.change(function() {
+        editingId = presetSelect.val() || null;
+        loadEditing();
+    });
+
+    newBtn.click(async function() {
+        const created = await UsedAircraftPresets.create("New preset", []);
+        block.presets.push(created);
+        editingId = created.id;
+        refreshPresetSelect();
+        loadEditing();
+        nameInput.focus();
+    });
+
+    saveBtn.click(async function() {
+        const name = nameInput.val().trim();
+        const types = familyGrid.getSelectedTypes();
+        if (!editingId) {
+            const created = await UsedAircraftPresets.create(name || "New preset", types);
+            block.presets.push(created);
+            editingId = created.id;
+        } else {
+            await UsedAircraftPresets.update(editingId, {name: name, types: types});
+            const p = block.presets.find(x => x.id === editingId);
+            if (p) { p.name = name || p.name; p.types = types; }
+        }
+        refreshPresetSelect();
+        runValidation();
+    });
+
+    dupBtn.click(async function() {
+        if (!editingId) return;
+        // Save current edits before cloning so the duplicate matches what the
+        // user sees on screen, not the last on-disk version.
+        const name = nameInput.val().trim();
+        const types = familyGrid.getSelectedTypes();
+        await UsedAircraftPresets.update(editingId, {name: name, types: types});
+        const p = block.presets.find(x => x.id === editingId);
+        if (p) { p.name = name || p.name; p.types = types; }
+        const copy = await UsedAircraftPresets.duplicate(editingId);
+        if (!copy) return;
+        block.presets.push(copy);
+        editingId = copy.id;
+        refreshPresetSelect();
+        loadEditing();
+    });
+
+    deleteBtn.click(async function() {
+        if (!editingId) return;
+        if (!confirm("Delete this preset?")) return;
+        await UsedAircraftPresets.remove(editingId);
+        block.presets = block.presets.filter(p => p.id !== editingId);
+        editingId = block.presets[0]?.id || null;
+        refreshPresetSelect();
+        loadEditing();
+    });
+
+    concInput.change(async function() {
+        const v = Math.max(1, Math.min(20, parseInt(concInput.val(), 10) || 6));
+        concInput.val(v);
+        await UsedAircraftPresets.save({concurrency: v});
+        block.concurrency = v;
+        familyGrid.setScanParams(block.concurrency, block.staggerMs);
+        updateAdvancedSummary();
+    });
+
+    stagInput.change(async function() {
+        const v = Math.max(0, parseInt(stagInput.val(), 10) || 2000);
+        stagInput.val(v);
+        await UsedAircraftPresets.save({staggerMs: v});
+        block.staggerMs = v;
+        familyGrid.setScanParams(block.concurrency, block.staggerMs);
+        updateAdvancedSummary();
+    });
+
+    startBtn.click(async function() {
+        // Save before starting so the running scan reflects the current types
+        const name = nameInput.val().trim();
+        const types = familyGrid.getSelectedTypes();
+        if (editingId) {
+            await UsedAircraftPresets.update(editingId, {name: name, types: types});
+            const p = block.presets.find(x => x.id === editingId);
+            if (p) { p.name = name || p.name; p.types = types; }
+        }
+        const preset = block.presets.find(x => x.id === editingId)
+            || {id: null, name: name || "(unsaved)", types: types};
+        await ctrl.start(preset, {
+            concurrency: block.concurrency,
+            staggerMs: block.staggerMs,
+            typeFamilyOverrides: block.typeFamilyOverrides || {}
+        });
+    });
+
+    cancelBtn.click(async function() {
+        await ctrl.cancel();
+    });
+
+    // ====== Route requirements (inside filters disclosure) ======
+    // Hard-filter the results by route specs (currently: minimum range
+    // needed). Anything stricter would belong here too — runway length,
+    // takeoff distance, etc. — once those specs are extracted from the
+    // type detail page.
+    block.routeFilter = Object.assign({minRangeKm: null}, block.routeFilter || {});
+    const routeHeader = $('<h5 style="margin:0 0 4px 0;">Route requirements</h5>');
+    const routeHelp = $('<p style="font-size:90%; margin:0 0 6px 0; color:#555;">'
+        + 'Hide offers whose aircraft can\'t reach this distance. Aircraft with unknown range stay visible. Leave blank to disable.'
+        + '</p>');
+    const minRangeInput = $('<input type="number" class="form-control input-sm" min="0" step="100" placeholder="e.g. 5500" style="max-width:160px;">');
+    if (block.routeFilter.minRangeKm !== null && block.routeFilter.minRangeKm !== undefined) {
+        minRangeInput.val(block.routeFilter.minRangeKm);
+    }
+    const routeRow = $('<div style="display:flex; align-items:center; gap:8px;"></div>')
+        .append($('<label style="margin:0; white-space:nowrap;">Min range needed (km):</label>'), minRangeInput);
+    routeBlock.append(routeHeader, routeHelp, routeRow);
+
+    minRangeInput.on("input change", async function() {
+        const raw = minRangeInput.val();
+        const num = raw === "" ? null : Number(raw);
+        block.routeFilter = {
+            minRangeKm: (num !== null && isFinite(num) && num > 0) ? num : null
+        };
+        await UsedAircraftPresets.save({routeFilter: block.routeFilter});
+        resultsRenderer.setRouteFilter(block.routeFilter);
+    });
+
+    // ====== Scoring & filters table (inside filters disclosure) ======
+    // Rendered upfront — toggling the filtersOpen disclosure only changes
+    // body visibility. Lazy-rendering would break the closure-bound `sync`
+    // handlers each row carries.
+    block.scoring = block.scoring || {};
+    const scoringHeader = $('<h5 style="margin:8px 0 4px 0;">Scoring &amp; filters</h5>');
+    const scoringHelp = $('<p style="font-size:90%; margin:0 0 6px 0; color:#555;">'
+        + 'Score is a 0–100 ranking blended from every enabled variable, normalised across the offers currently showing. '
+        + 'Weight controls how strongly a variable pulls the overall score (default 1; set to 2 to count it double, 0 to ignore even when checked). '
+        + 'Filters (min / max) hide offers outside the range — blank = no limit and apply even when scoring is off. Changes re-rank instantly.'
+        + '</p>');
+    const scoringTable = $('<table class="table table-bordered" style="font-size:90%; margin-bottom:0; background:#fff;"></table>');
+    scoringTable.append('<thead><tr>'
+        + '<th style="width:60px;">Score</th>'
+        + '<th>Variable</th>'
+        + '<th>Direction</th>'
+        + '<th style="width:90px;">Weight</th>'
+        + '<th style="width:140px;">Min</th>'
+        + '<th style="width:140px;">Max</th>'
+        + '</tr></thead>');
+    const scoringBody = $('<tbody></tbody>');
+    scoringTable.append(scoringBody);
+    scoringBlock.append(scoringHeader, scoringHelp, scoringTable);
+
+    for (const f of MarketScanResultsTable.scoringFields()) {
+        const cfg = block.scoring[f.field] = Object.assign(
+            {enabled: false, weight: 1, min: null, max: null},
+            block.scoring[f.field] || {}
+        );
+        const cb = $('<input type="checkbox">').prop("checked", !!cfg.enabled);
+        const weightInput = $('<input type="number" class="form-control input-sm" min="0" step="0.5">');
+        weightInput.val(cfg.weight !== null && cfg.weight !== undefined ? cfg.weight : 1);
+        const minInput = $('<input type="number" class="form-control input-sm">');
+        const maxInput = $('<input type="number" class="form-control input-sm">');
+        if (cfg.min !== null && cfg.min !== undefined) minInput.val(cfg.min);
+        if (cfg.max !== null && cfg.max !== undefined) maxInput.val(cfg.max);
+
+        const tr = $('<tr></tr>');
+        tr.append($('<td style="text-align:center;"></td>').append(cb));
+        tr.append($('<td></td>').text(f.label));
+        tr.append($('<td></td>').text(f.direction === "lower" ? "lower = better" : "higher = better"));
+        tr.append($('<td></td>').append(weightInput));
+        tr.append($('<td></td>').append(minInput));
+        tr.append($('<td></td>').append(maxInput));
+        scoringBody.append(tr);
+
+        const sync = async function() {
+            const wRaw = weightInput.val();
+            const wNum = wRaw === "" ? 1 : Number(wRaw);
+            block.scoring[f.field] = {
+                enabled: cb.prop("checked"),
+                weight:  isFinite(wNum) && wNum >= 0 ? wNum : 1,
+                min: minInput.val() === "" ? null : Number(minInput.val()),
+                max: maxInput.val() === "" ? null : Number(maxInput.val())
+            };
+            await UsedAircraftPresets.save({scoring: block.scoring});
+            resultsRenderer.setScoring(block.scoring);
+        };
+        cb.change(sync);
+        weightInput.on("input change", sync);
+        minInput.on("input change", sync);
+        maxInput.on("input change", sync);
+    }
+
+    // ====== Cross-feature context for deal-scoring (slice 2 of J) ======
+    // Fleet + RA economics + RA top-routes feed the new $/seat, break-even,
+    // fleet-synergy, and route-fit metrics. All loads fail open — missing
+    // data falls back to em-dashes, never blocks the scanner.
+    const dealContext = await loadDealContext(server);
+
+    // ====== Results renderer ======
+    let resultsRenderer = new MarketScanResultsTable(resultsBlock[0]);
+    resultsRenderer.setScoring(block.scoring);
+    resultsRenderer.setRouteFilter(block.routeFilter);
+    resultsRenderer.setOverrides(block.typeFamilyOverrides);
+    resultsRenderer.setContext(dealContext);
+
+    csvBtn.click(function() {
+        const session = ctrl.session;
+        const scanId  = session ? session.scanId : Date.now().toString(36);
+        resultsRenderer.downloadCsv("aes-market-scan-" + scanId + ".csv");
+    });
+
+    // ====== Status / queue / results render loop ======
+    // Track previous status so we only auto-toggle the queue disclosure on
+    // running ↔ terminal transitions — never override the user mid-scan.
+    let prevStatus = ctrl.session ? ctrl.session.status : null;
+
+    async function renderState(session) {
+        const running = session && session.status === "running";
+        startBtn.prop("disabled", running);
+        cancelBtn.prop("disabled", !running);
+
+        if (!session) {
+            scanStatusInline.text("");
+            queueSection.summary.text("");
+            queueSection.body.empty();
+            resultsBlock.empty();
+            resultsTitle.text("Results");
+            csvBtn.prop("disabled", true);
+            runValidation();
+            return;
+        }
+
+        const counts = {pending: 0, inflight: 0, ok: 0, error: 0, timeout: 0};
+        for (const e of session.queue) counts[e.status] = (counts[e.status] || 0) + 1;
+        const total = session.queue.length;
+        const done = counts.ok + counts.error + counts.timeout;
+
+        scanStatusInline.html(
+            "<strong>" + session.status.toUpperCase() + "</strong> "
+            + "— preset: " + escapeHtml(session.presetName || "(unsaved)") + " "
+            + "— " + done + "/" + total + " complete "
+            + "(" + counts.inflight + " in flight, " + counts.error + " errors, " + counts.timeout + " timeouts)"
+        );
+
+        const summaryParts = [done + "/" + total + " complete"];
+        if (counts.inflight) summaryParts.push(counts.inflight + " in flight");
+        if (counts.error)    summaryParts.push(counts.error + " error" + (counts.error === 1 ? "" : "s"));
+        if (counts.timeout)  summaryParts.push(counts.timeout + " timeout" + (counts.timeout === 1 ? "" : "s"));
+        queueSection.summary.text(summaryParts.join(" · "));
+
+        // Auto-toggle queue disclosure on status transitions only — outside
+        // of transitions the user's manual toggle is respected. Errors/timeouts
+        // on a finished scan: leave the queue at the user's preference so the
+        // failures stay visible.
+        if (prevStatus !== session.status) {
+            if (session.status === "running") {
+                queueSection.setOpen(true);
+            } else if (counts.error === 0 && counts.timeout === 0) {
+                queueSection.setOpen(false);
+            }
+            prevStatus = session.status;
+        }
+
+        const qTable = $('<table class="table table-bordered table-striped" style="font-size:90%; margin-bottom:0;"></table>');
+        const qHead = $('<thead><tr><th>#</th><th>Type</th><th>Family</th><th>Status</th><th>Note</th></tr></thead>');
+        const qBody = $('<tbody></tbody>');
+        session.queue.forEach(function(e, i) {
+            const tr = $('<tr></tr>');
+            tr.append($('<td></td>').text(i + 1));
+            tr.append($('<td></td>').text(e.type));
+            tr.append($('<td></td>').text(e.family || "—"));
+            tr.append($('<td></td>').html(statusBadge(e.status)));
+            tr.append($('<td></td>').text(e.error || ""));
+            qBody.append(tr);
+        });
+        qTable.append(qHead, qBody);
+        queueSection.body.empty().append($('<div class="as-table-well"></div>').append(qTable));
+
+        const rows = await ctrl.aggregatedRows();
+        resultsTitle.text("Results (" + rows.length + " offers)");
+        csvBtn.prop("disabled", !rows.length);
+        resultsRenderer.render(rows);
+    }
+
+    function statusBadge(status) {
+        const colors = {
+            pending:  "#888",
+            inflight: "#3b82f6",
+            ok:       "#16a34a",
+            error:    "#dc2626",
+            timeout:  "#ea580c"
+        };
+        const color = colors[status] || "#666";
+        return '<span style="display:inline-block; padding:2px 8px; border-radius:4px; '
+            + 'background:' + color + '; color:white; font-size:85%;">' + status + '</span>';
+    }
+
+    function escapeHtml(s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+    }
+
+    // Subscribe to controller updates
+    ctrl.listeners = []; // reset listeners attached in a previous render
+    ctrl.onUpdate(function(session) { renderState(session); });
+
+    // Initial paint
+    refreshPresetSelect();
+    loadEditing();
+    renderState(ctrl.session);
+}
+
+/**
+ * Loads cross-feature context for the Used Aircraft Scanner deal-scoring
+ * metrics: the user's fleet (for synergy lookup), the Route Assistant
+ * economics block (for break-even math), and the latest top-routes
+ * snapshot the RA panel publishes (for route-fit count).
+ *
+ * Every load is best-effort. Missing pieces leave the corresponding
+ * metric as null — the table renders an em-dash and the score blend
+ * skips the row for that variable instead of zeroing it.
+ */
+async function loadDealContext(server) {
+    const ctx = {fleetByType: null, economics: null, topRoutes: null, topRoutesHub: null,
+                 routeFitConfig: null};
+    try {
+        const fleet = await RouteAssistantFleetStore.loadFleet(server, null);
+        if (fleet && fleet.byType) ctx.fleetByType = fleet.byType;
+    } catch (e) {
+        console.warn("[AES UsedAircraftScanner] fleet load failed:", e);
+    }
+    try {
+        const ra = await RouteAssistantSettings.load();
+        if (ra && ra.economics) ctx.economics = ra.economics;
+    } catch (e) {
+        console.warn("[AES UsedAircraftScanner] RA settings load failed:", e);
+    }
+    try {
+        const data = await chrome.storage.local.get(["routeAssistant:topRoutes"]);
+        const blob = data && data["routeAssistant:topRoutes"];
+        if (blob && Array.isArray(blob.rows)) {
+            ctx.topRoutes    = blob.rows;
+            ctx.topRoutesHub = blob.hub || null;
+        }
+    } catch (e) {
+        console.warn("[AES UsedAircraftScanner] topRoutes load failed:", e);
+    }
+    try {
+        const presets = await UsedAircraftPresets.load();
+        if (presets && presets.routeFit) ctx.routeFitConfig = presets.routeFit;
+    } catch (e) {
+        console.warn("[AES UsedAircraftScanner] routeFit config load failed:", e);
+    }
+    return ctx;
+}
+
 function displayDefault() {
     let mainDiv = $("#aes-div-dashboard");
     mainDiv.empty();
@@ -3052,4 +3824,156 @@ function getDate(type, scheduleData) {
         default:
             return 0;
     }
+}
+
+// Schedule Management — preset-driven, wave-aware schedule designer.
+// Singleton panel persists across re-renders so editor state survives a tab swap.
+var aesSchedulePanel = null;
+async function displayScheduleManagement() {
+    const mainDiv = document.getElementById("aes-div-dashboard");
+    mainDiv.innerHTML = "";
+    const root = document.createElement("div");
+    mainDiv.append(root);
+    aesSchedulePanel = new SchedulePanel(root, {
+        server: server,
+        airlineCode: airline.code
+    });
+    await aesSchedulePanel.render();
+}
+
+// Flights From — scrapes flightsfrom.com airport pages for real-world routes
+// and exposes the cached data for the scheduling-page side-by-side overlay.
+var aesFlightsFromCtrl = null;
+async function displayFlightsFrom() {
+    const mainDiv = $("#aes-div-dashboard");
+    mainDiv.empty();
+    mainDiv.append('<h3>Flights From (real-world demand)</h3>');
+
+    if (!aesFlightsFromCtrl) aesFlightsFromCtrl = new FlightsFromController();
+    const ctrl = aesFlightsFromCtrl;
+
+    const panel = $('<div class="as-panel"></div>');
+    const scanForm = $('<div class="form-inline" style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-bottom:12px;"></div>');
+    const iataGroup = $('<div class="form-group"></div>');
+    iataGroup.append('<label for="aes-ff-iata">Airport IATA</label>');
+    const iataInput = $('<input type="text" id="aes-ff-iata" class="form-control" maxlength="3" style="text-transform:uppercase;width:96px;" placeholder="LHR">');
+    iataGroup.append(iataInput);
+    const scanBtn   = $('<button type="button" class="btn btn-primary">Scan airport</button>');
+    const cancelBtn = $('<button type="button" class="btn btn-default">Cancel</button>');
+    scanForm.append(iataGroup, scanBtn, cancelBtn);
+
+    const popupNote = $('<p class="warning" style="font-size:90%;margin-top:4px;">'
+        + 'Pop-ups must be allowed for www.flightsfrom.com, otherwise the scrape tab will not open.</p>');
+
+    const statusBlock = $('<div style="margin:12px 0;"></div>');
+    const airportsBlock = $('<div style="margin-bottom:12px;"></div>');
+    const routesBlock = $('<div></div>');
+    panel.append(scanForm, popupNote, statusBlock, airportsBlock, routesBlock);
+    mainDiv.append(panel);
+
+    function renderStatus(scan) {
+        statusBlock.empty();
+        scanBtn.prop("disabled", !!(scan && scan.status === "running"));
+        cancelBtn.prop("disabled", !(scan && scan.status === "running"));
+        if (!scan) return;
+        const phase = scan.progress && scan.progress.phase ? scan.progress.phase : "";
+        const parts = [
+            "<strong>" + scan.iata + "</strong>",
+            scan.status.toUpperCase(),
+            phase ? "(" + phase + ")" : ""
+        ].filter(Boolean);
+        statusBlock.html('<div>' + parts.join(" — ") + (scan.error ? ' <span style="color:#dc2626;">' + escapeHtml(scan.error) + '</span>' : '') + '</div>');
+    }
+
+    ctrl.onUpdate(scan => {
+        renderStatus(scan);
+        // Refresh the cached list whenever a scan ends.
+        if (scan && scan.status !== "running") refreshAirports();
+    });
+
+    scanBtn.click(async function() {
+        const iata = (iataInput.val() || "").trim().toUpperCase();
+        if (!/^[A-Z]{3}$/.test(iata)) {
+            statusBlock.html('<div style="color:#dc2626;">Enter a 3-letter IATA code.</div>');
+            return;
+        }
+        try {
+            await ctrl.start(iata);
+        } catch (e) {
+            statusBlock.html('<div style="color:#dc2626;">' + escapeHtml(e.message || String(e)) + '</div>');
+        }
+    });
+    cancelBtn.click(async function() { await ctrl.cancel(); });
+
+    let selectedIata = null;
+    async function refreshAirports() {
+        const list = await FlightsFromStore.listAirports();
+        airportsBlock.empty();
+        if (!list.length) {
+            airportsBlock.html('<p style="color:#666;">No airports scanned yet.</p>');
+            routesBlock.empty();
+            return;
+        }
+        airportsBlock.append('<h4 style="margin:0 0 6px 0;">Cached airports</h4>');
+        const table = $('<table class="table table-striped table-hover" style="width:auto;font-size:90%;"></table>');
+        table.append('<thead><tr><th>IATA</th><th>Airport</th><th>Routes</th><th>Scraped</th><th></th></tr></thead>');
+        const tbody = $('<tbody></tbody>');
+        for (const a of list) {
+            const tr = $('<tr style="cursor:pointer;"></tr>');
+            if (a.iata === selectedIata) tr.css("background", "rgba(59,130,246,.15)");
+            const age = a.scrapedAt ? Math.round((Date.now() - a.scrapedAt) / 3600e3) + "h ago" : "—";
+            tr.append($('<td></td>').text(a.iata));
+            tr.append($('<td></td>').text(a.airportName || "—"));
+            tr.append($('<td style="text-align:right;"></td>').text(a.routeCount));
+            tr.append($('<td></td>').text(age));
+            const delBtn = $('<button class="btn btn-xs btn-default" title="Delete">✕</button>');
+            delBtn.click(async function(ev) {
+                ev.stopPropagation();
+                if (!confirm("Delete cached data for " + a.iata + "?")) return;
+                await FlightsFromStore.deleteAirport(a.iata);
+                if (selectedIata === a.iata) { selectedIata = null; routesBlock.empty(); }
+                await refreshAirports();
+            });
+            tr.append($('<td></td>').append(delBtn));
+            tr.click(function() { selectedIata = a.iata; refreshAirports(); renderRoutes(a.iata); });
+            tbody.append(tr);
+        }
+        table.append(tbody);
+        airportsBlock.append(table);
+    }
+
+    async function renderRoutes(iata) {
+        routesBlock.empty();
+        const rec = await FlightsFromStore.loadAirport(iata);
+        if (!rec || !rec.routes || !rec.routes.length) {
+            routesBlock.html('<p style="color:#666;">No routes stored for ' + iata + '.</p>');
+            return;
+        }
+        routesBlock.append('<h4 style="margin:0 0 6px 0;">' + iata + (rec.airportName ? ' — ' + escapeHtml(rec.airportName) : '') + ' · ' + rec.routes.length + ' routes</h4>');
+        const table = $('<table class="table table-bordered table-striped" style="font-size:90%;"></table>');
+        table.append('<thead><tr>'
+            + '<th>Dest</th><th>Name</th>'
+            + '<th style="text-align:right;">Weekly</th>'
+            + '<th style="text-align:right;">Seats/Wk</th>'
+            + '<th style="text-align:right;">km</th>'
+            + '<th>Airlines</th>'
+            + '</tr></thead>');
+        const tbody = $('<tbody></tbody>');
+        const sorted = rec.routes.slice().sort((a, b) =>
+            (b.seatsPerWeek || b.weeklyFlights || 0) - (a.seatsPerWeek || a.weeklyFlights || 0));
+        for (const r of sorted) {
+            const tr = $('<tr></tr>');
+            tr.append($('<td></td>').text(r.destIata || "—"));
+            tr.append($('<td></td>').text(r.destName || "—"));
+            tr.append($('<td style="text-align:right;"></td>').text(r.weeklyFlights || "—"));
+            tr.append($('<td style="text-align:right;"></td>').text(r.seatsPerWeek ? r.seatsPerWeek.toLocaleString() : "—"));
+            tr.append($('<td style="text-align:right;"></td>').text(r.distanceKm || "—"));
+            tr.append($('<td></td>').text(r.airlines || "—"));
+            tbody.append(tr);
+        }
+        table.append(tbody);
+        routesBlock.append($('<div class="as-table-well"></div>').append(table));
+    }
+
+    await refreshAirports();
 }

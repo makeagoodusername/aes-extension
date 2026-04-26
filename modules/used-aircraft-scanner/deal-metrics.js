@@ -118,6 +118,22 @@ class MarketScanDealMetrics {
      * worst-rank slot.
      */
     static daysToBreakEven(row, economics) {
+        const b = MarketScanDealMetrics.daysToBreakEvenBreakdown(row, economics)
+        return b ? b.value : null
+    }
+
+    /**
+     * Same calculation as `daysToBreakEven` but returns the full input set +
+     * derived intermediates ($/day pax revenue, $/day cargo revenue, $/day
+     * operating cost) so the table can show users exactly what produced the
+     * payback estimate.
+     *
+     * Returns null when the value can't be computed (no economics, missing
+     * spec, daily profit ≤ 0). Uneconomic rows still surface a *partial*
+     * breakdown internally; the public API normalises to null so the cell
+     * stays an em-dash and the score blend skips the row.
+     */
+    static daysToBreakEvenBreakdown(row, economics) {
         if (!row || !economics) return null
         const price = MarketScanDealMetrics.acquisitionPrice(row)
         if (price === null) return null
@@ -143,7 +159,26 @@ class MarketScanDealMetrics {
         const opCost      = hours   * (fuel + crew + maint)
         const profitPerDay = paxRev + cargoRev - opCost
         if (!isFinite(profitPerDay) || profitPerDay <= 0) return null
-        return Math.round(price / profitPerDay)
+        return {
+            value:        Math.round(price / profitPerDay),
+            price:        price,
+            speed:        speed,
+            seats:        seats,
+            cargo:        cargo,
+            hours:        hours,
+            dailyKm:      dailyKm,
+            loadFactor:   lf,
+            yieldPerKm:   yieldKm,
+            cargoLoadFactor:    cargoLf,
+            cargoYieldPerKgKm:  cargoY,
+            fuelPerHour:  fuel,
+            crewPerHour:  crew,
+            maintPerHour: maint,
+            paxRev:       paxRev,
+            cargoRev:     cargoRev,
+            opCost:       opCost,
+            profitPerDay: profitPerDay
+        }
     }
 
     /**
@@ -172,27 +207,91 @@ class MarketScanDealMetrics {
     /**
      * Route-fit cross-link. Counts how many of the user's top-N scored
      * Route Assistant routes the offer's aircraft can profitably fly.
-     * "Profitably" here is approximated by reach — the aircraft's range
-     * has to cover the great-circle distance. Seats/yield are NOT
-     * factored in: the goal is "would this aircraft be a candidate?"
-     * not "is this the optimal pick", which the RA panel already does.
+     *
+     * v1 (J slice 2) checked range only. v2 added per-flight demand
+     * (seats × LF ≥ paxScore × paxSeatsPerScorePoint). v3 (J slice 4)
+     * adds the weekly-frequency gate using the `weeklyFlights` field
+     * already published on `topRoutes`: a small regional that fits one
+     * flight's demand can still fail at a route that's flown 14×/wk by a
+     * widebody. Three sequential gates per route — range, per-flight
+     * demand, weekly frequency — counted separately so the tooltip
+     * surfaces *why* a route was rejected.
+     *
+     * Routes lacking `weeklyFlights` skip the frequency gate (no penalty)
+     * because we'd rather under-count than penalise routes that haven't
+     * been scraped via Tier 1 yet.
      *
      * Returns:
-     *   {fit, total, label}      when topRoutes is provided
-     *   null                     when topRoutes is unavailable
+     *   {fit, total, label,
+     *    rangeOnly,           // passes range check
+     *    demandLimited,       // range fits but seats×LF < paxScore×scale
+     *    frequencyLimited,    // demand fits but wf×seats×LF < paxScore×wScale
+     *    weeklyDemandPerScorePoint}  // echoed for the tooltip
+     *   null when topRoutes is unavailable.
      *
      * Routes with unknown distanceKm are excluded from the denominator
      * — they don't help or hurt the fit count.
+     *
+     * @param {object} options
+     *   {loadFactor, paxSeatsPerScorePoint, weeklyDemandPerScorePoint}
+     *   — falls back to defaults of 0.75, 15, and 100.
      */
-    static routeFit(row, topRoutes) {
+    static routeFit(row, topRoutes, options) {
         if (!Array.isArray(topRoutes)) return null
         const range = numOrNull(row && row.range)
+        const seats = numOrNull(row && row.seats)
         const known = topRoutes.filter(r => r && isFiniteNumber(r.distanceKm) && r.distanceKm > 0)
         const total = known.length
-        if (total === 0) return {fit: 0, total: 0, label: "0 / 0"}
-        if (range === null || range <= 0) return {fit: null, total: total, label: "—"}
-        const fit = known.reduce((acc, r) => acc + (r.distanceKm <= range ? 1 : 0), 0)
-        return {fit: fit, total: total, label: fit + " / " + total}
+        if (total === 0) {
+            return {fit: 0, total: 0, label: "0 / 0",
+                    rangeOnly: 0, demandLimited: 0, frequencyLimited: 0,
+                    weeklyDemandPerScorePoint: null}
+        }
+        if (range === null || range <= 0) {
+            return {fit: null, total: total, label: "—",
+                    rangeOnly: null, demandLimited: 0, frequencyLimited: 0,
+                    weeklyDemandPerScorePoint: null}
+        }
+
+        const lf       = numOrDefault(options && options.loadFactor, 0.75)
+        const scale    = numOrDefault(options && options.paxSeatsPerScorePoint, 15)
+        const wScale   = numOrDefault(options && options.weeklyDemandPerScorePoint, 100)
+        const effSeats = (seats !== null && seats > 0) ? seats * lf : null
+
+        let fit = 0
+        let rangeOnly = 0
+        let demandLimited = 0
+        let frequencyLimited = 0
+        for (const r of known) {
+            if (r.distanceKm > range) continue
+            rangeOnly++
+            const ps = numOrNull(r.paxScore)
+            if (ps !== null && ps > 0 && effSeats !== null) {
+                if (effSeats < ps * scale) {
+                    demandLimited++
+                    continue
+                }
+                const wf = numOrNull(r.weeklyFlights)
+                if (wf !== null && wf > 0 && wf * effSeats < ps * wScale) {
+                    frequencyLimited++
+                    continue
+                }
+            }
+            fit++
+        }
+        const parts = []
+        if (demandLimited > 0)    parts.push("−" + demandLimited + " demand")
+        if (frequencyLimited > 0) parts.push("−" + frequencyLimited + " freq")
+        const label = parts.length
+            ? fit + " / " + total + "  (" + parts.join(", ") + ")"
+            : fit + " / " + total
+        return {
+            fit: fit, total: total, label: label,
+            rangeOnly: rangeOnly,
+            demandLimited: demandLimited,
+            frequencyLimited: frequencyLimited,
+            weeklyDemandPerScorePoint: wScale
+        }
     }
 
     /**
@@ -236,6 +335,10 @@ class MarketScanDealMetrics {
      *   routeFitCount       — number | null         (null = no topRoutes)
      *   routeFitTotal       — number | null
      *   routeFitLabel       — "x / y" | "—" | null
+     *   routeFitRangeOnly         — number | null
+     *   routeFitDemandLimited     — number | null
+     *   routeFitFrequencyLimited  — number | null
+     *   routeFitWeeklyScale       — number | null   (echoed weeklyDemandPerScorePoint)
      *   maintLevel          — "green" | "amber" | "red" | null
      *   maintLabel          — "Fresh" | "Mid-life" | "Heavy" | null
      *   maintColor          — hex string | null
@@ -243,18 +346,30 @@ class MarketScanDealMetrics {
     static decorate(row, ctx) {
         ctx = ctx || {}
         row.pricePerSeat   = MarketScanDealMetrics.pricePerSeat(row)
-        row.seatKmYearCost = MarketScanDealMetrics.seatKmYearCost(row)
-        row.breakEvenDays  = MarketScanDealMetrics.daysToBreakEven(row, ctx.economics)
+        const seatKm = MarketScanDealMetrics.seatKmYearCostBreakdown(row)
+        row.seatKmYearCost      = seatKm ? seatKm.value : null
+        row.seatKmYearBreakdown = seatKm
+        const be = MarketScanDealMetrics.daysToBreakEvenBreakdown(row, ctx.economics)
+        row.breakEvenDays      = be ? be.value : null
+        row.breakEvenBreakdown = be
 
         const synergy = MarketScanDealMetrics.fleetSynergy(row, ctx.fleetByType)
         row.fleetOwned       = synergy ? synergy.owned : null
         row.fleetOwnedCount  = synergy ? synergy.count : null
         row.fleetLabel       = synergy ? synergy.label : null
 
-        const fit = MarketScanDealMetrics.routeFit(row, ctx.topRoutes)
-        row.routeFitCount = fit ? fit.fit : null
-        row.routeFitTotal = fit ? fit.total : null
-        row.routeFitLabel = fit ? fit.label : null
+        const fit = MarketScanDealMetrics.routeFit(row, ctx.topRoutes, {
+            loadFactor:                ctx.economics && ctx.economics.loadFactor,
+            paxSeatsPerScorePoint:     ctx.routeFitConfig && ctx.routeFitConfig.paxSeatsPerScorePoint,
+            weeklyDemandPerScorePoint: ctx.routeFitConfig && ctx.routeFitConfig.weeklyDemandPerScorePoint
+        })
+        row.routeFitCount            = fit ? fit.fit : null
+        row.routeFitTotal            = fit ? fit.total : null
+        row.routeFitLabel            = fit ? fit.label : null
+        row.routeFitRangeOnly        = fit ? fit.rangeOnly : null
+        row.routeFitDemandLimited    = fit ? fit.demandLimited : null
+        row.routeFitFrequencyLimited = fit ? fit.frequencyLimited : null
+        row.routeFitWeeklyScale      = fit ? fit.weeklyDemandPerScorePoint : null
 
         const maint = MarketScanDealMetrics.maintenanceTrajectory(row)
         row.maintLevel = maint ? maint.level : null

@@ -57,9 +57,84 @@
             "js": [
                 "modules/station-automation/storage.js",
                 "modules/station-automation/country-scraper.js",
+                "modules/used-aircraft-scanner/type-family-map.js",
+                "modules/used-aircraft-scanner/scan-session-store.js",
+                "modules/used-aircraft-scanner/presets-store.js",
+                "modules/used-aircraft-scanner/deal-metrics.js",
+                "modules/used-aircraft-scanner/results-table.js",
+                "modules/used-aircraft-scanner/scan-controller.js",
+                "modules/used-aircraft-scanner/family-grid-panel.js",
+                "modules/schedule-management/range-buckets.js",
+                "modules/schedule-management/presets-store.js",
+                "modules/schedule-management/schedule-store.js",
+                "modules/schedule-management/schedule-builder.js",
+                "modules/schedule-management/schedule-panel.js",
+                "modules/flightsfrom/data-store.js",
+                "modules/flightsfrom/scan-controller.js",
+                "modules/route-assistant/settings-store.js",
+                "modules/route-assistant/fleet-store.js",
                 "content_dashboard.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/enterprise/dashboard*"]
+        },
+        {
+            "js": [
+                "modules/used-aircraft-scanner/type-family-map.js",
+                "modules/used-aircraft-scanner/scan-session-store.js",
+                "modules/aircraft-type-specs.js",
+                "content_marketScan.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/aircraft/market*"]
+        },
+        {
+            "js": [
+                "modules/flightsfrom/data-store.js",
+                "content_flightsFrom.js"
+            ],
+            "matches": ["https://www.flightsfrom.com/*"]
+        },
+        {
+            "js": [
+                "modules/flightsfrom/data-store.js",
+                "modules/flightsfrom/scan-controller.js",
+                "modules/station-automation/country-scraper.js",
+                "modules/aircraft-type-specs.js",
+                "modules/route-assistant/demand-store.js",
+                "modules/route-assistant/country-resolver.js",
+                "modules/route-assistant/parallel-scanner.js",
+                "modules/route-assistant/score.js",
+                "modules/route-assistant/profit-estimator.js",
+                "modules/route-assistant/aggregator.js",
+                "modules/route-assistant/settings-store.js",
+                "modules/route-assistant/distance-resolver.js",
+                "modules/route-assistant/type-specs-store.js",
+                "modules/route-assistant/fleet-store.js",
+                "modules/route-assistant/route-overrides-store.js",
+                "modules/route-assistant/fuel-price-scraper.js",
+                "modules/route-assistant/fuel-burn-estimator.js",
+                "modules/route-assistant/ticket-price-scraper.js",
+                "modules/route-assistant/markets-page-scraper.js",
+                "modules/route-assistant/inventory-page-scraper.js",
+                "modules/route-assistant/demand-derivator.js",
+                "modules/route-assistant/ors-scraper.js",
+                "modules/route-assistant/yield-history-store.js",
+                "modules/route-assistant/yield-snapshot.js",
+                "modules/route-assistant/service-config-store.js",
+                "modules/route-assistant/service-profile-scraper.js",
+                "modules/route-assistant/carriers-scraper.js",
+                "modules/route-assistant/enterprise-meta-scraper.js",
+                "modules/route-assistant/contractual-partners-scraper.js",
+                "modules/route-assistant/panel.js",
+                "content_scheduling.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/com/scheduling*"]
+        },
+        {
+            "js": [
+                "modules/route-assistant/markets-page-scraper.js",
+                "content_markets.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/com/markets/*"]
         },
         {
             "js": [
@@ -67,7 +142,10 @@
                 "modules/station-automation/country-scraper.js",
                 "content_stationOpen.js"
             ],
-            "matches": ["https://*.airlinesim.aero/app/network/stations/open*"]
+            "matches": [
+                "https://*.airlinesim.aero/app/info/airports/*",
+                "https://*.airlinesim.aero/app/ops/stations*"
+            ]
         },
         {
             "js": ["content_personelManagement.js"],
@@ -102,7 +180,10 @@
     ],
     "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlgUt+9pr5xsoJIdZtv2s/miPjNaUMf5NdIRH6wQzgWpGzMCwf46cUSL0FbpnIo6E9d6pITalABU8Dx72/isyas/da0EQNCQkYxhvu2YakUyUMyzKg0jPuxR+VyaEzDMVQKyVD1xZb/jjOkHXvGew/EHPw9BzCdhKRptRqo4gqdgifS0/xQFiqneA35Hhqwo9bh5zfhZpdMsssMHH3uGGm1f4Yeq+j2ZUtvf74v8pWR5+sVI/dFhTSpQaT60sWFYkPVwtpQ5jUwqm9vDyAH0obZxVtBqI5UkmjEJsCXmQW6QdC4+gRwTgrKc137SH+mUVRHfcXogMSa72+szX63pMUQIDAQAB",
     "permissions": ["activeTab", "declarativeContent", "storage", "unlimitedStorage"],
-    "host_permissions": ["https://*.airlinesim.aero/"],
+    "host_permissions": [
+        "https://*.airlinesim.aero/",
+        "https://www.flightsfrom.com/"
+    ],
     "web_accessible_resources": [{
         "resources": ["/images/*"],
         "matches": ["https://*.airlinesim.aero/*"]
