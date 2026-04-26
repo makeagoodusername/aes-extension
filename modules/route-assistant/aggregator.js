@@ -1,0 +1,571 @@
+/**
+ * Builds the unified per-destination route record that drives the Route
+ * Assistant table. Pure: takes the data sources as inputs, returns an array
+ * of rows. The panel decides how to render and score them.
+ *
+ *   buildRouteRows({hubIata, ffData, demandMap, ownSchedule, fleetContext})
+ *
+ * Inputs:
+ *   hubIata       — origin IATA the user is scheduling from.
+ *   ffData        — FlightsFromStore record for the hub:
+ *                   {iata, scrapedAt, routes: [{destIata, destName,
+ *                    weeklyFlights, seatsPerWeek, distanceKm, airlines, aircraft}]}
+ *   demandMap     — Map<IATA, demandRecord> from RouteAssistantDemandStore.getMany.
+ *   ownSchedule   — record from chrome.storage.local["<server><airlineCode>schedule"].
+ *                   Shape: {date: {<dateYYYYMMDD>: {date, schedule:
+ *                     [{origin, destination, flightNumber: {<n>: {paxFreq,
+ *                     cargoFreq, ...}}}]}}}
+ *   fleetContext  — optional Phase 2 input for aircraft-aware columns:
+ *                   {selectedSpec, fleetSpecs, falloffPct, economics, overrides}
+ *                     selectedSpec — chosen aircraft spec to evaluate every
+ *                       row against. When mode is "fleet", the panel passes
+ *                       null and we pick per-row via fleetSpecs.
+ *                     fleetSpecs   — array of all owned aircraft specs (for
+ *                       "Fleet (any)" mode). The aggregator picks the most
+ *                       economical fit per row.
+ *                     overrides    — optional Map<"<HUB>-<DEST>", override>
+ *                       from RouteAssistantRouteOverridesStore.getMany. The
+ *                       per-row override beats the demand-driven LF curve
+ *                       and configured base yield in the profit estimator.
+ *                     falloffPct, economics — passed straight to the
+ *                       profit estimator.
+ *
+ * Output rows have:
+ *   destIata, destName, distanceKm, airlineCount,
+ *   weeklyFlights, seatsPerWeek,
+ *   paxScore, cargoScore (or null when demand is unresolved),
+ *   ownPaxFreq, ownCargoFreq, ownTotalFreq,
+ *   status — "NEW" | "OK" | "UNDER" | "OVER" | "OOR"
+ *
+ * When `fleetContext` is provided, rows additionally carry:
+ *   aircraftFit ("optimal"|"falloff"|"oor"|null), blockHours,
+ *   profitPerFlight, profitPerWeek, fitOk (1|0|null), aircraftTypeName
+ */
+class RouteAssistantAggregator {
+    static buildRouteRows(input) {
+        const hubIata             = String((input && input.hubIata) || "").toUpperCase()
+        const ffRoutes            = (input && input.ffData && input.ffData.routes) || []
+        const demandMap           = (input && input.demandMap) || new Map()
+        const overrideMap         = (input && input.overrideMap) || null
+        const yieldHistoryMap     = (input && input.yieldHistoryMap) || null
+        const serviceConfigMap    = (input && input.serviceConfigMap) || null
+        const serviceProfilesDef  = (input && input.serviceProfiles) || null
+        const fleet               = (input && input.fleet) || null
+        const ownByDest           = RouteAssistantAggregator._collectOwnFreq(input && input.ownSchedule, hubIata)
+        const fleetCtx            = (input && input.fleetContext) || null
+
+        return ffRoutes.map(r => {
+            const destIata = String(r.destIata || "").toUpperCase()
+            const demand   = demandMap.get(destIata) || null
+            const own      = ownByDest.get(destIata) || {paxFreq: 0, cargoFreq: 0}
+            const totalFreq = (own.paxFreq || 0) + (own.cargoFreq || 0)
+            const weeklyFlights = Number(r.weeklyFlights) || 0
+            const paxScore = demand ? demand.paxScore : null
+            const distanceKm = typeof r.distanceKm === "number" ? r.distanceKm : null
+            const override = overrideMap ? (overrideMap.get(hubIata + "-" + destIata) || null) : null
+
+            const row = {
+                destIata:      destIata,
+                destName:      r.destName || null,
+                airportId:     demand ? (demand.airportId || null) : null,
+                distanceKm:    distanceKm,
+                airlineCount:  Array.isArray(r.airlines) ? r.airlines.length : null,
+                weeklyFlights: weeklyFlights || null,
+                seatsPerWeek:  typeof r.seatsPerWeek === "number" ? r.seatsPerWeek : null,
+                paxScore:      paxScore,
+                cargoScore:    demand ? demand.cargoScore : null,
+                ownPaxFreq:    own.paxFreq || 0,
+                ownCargoFreq:  own.cargoFreq || 0,
+                ownTotalFreq:  totalFreq,
+                override:         override,
+                aircraftFit:      null,
+                blockHours:       null,
+                profitPerFlight:  null,
+                profitPerWeek:    null,
+                fitOk:            null,
+                aircraftTypeName: null,
+                isCargoOnly:      false,
+                profitBreakdown:  null,
+                actualProfitPerFlight: null,
+                actualProfitPerWeek:   null,
+                actualFrequency:       null,
+                actualSnapshotAt:      null,
+                actualAircraftTypes:   null,
+                actualContributingTails: null,
+                actualTotalKnownTails:   null,
+                actualSnapshots:       null,
+                actualSnapshotMode:    null,
+                actualVariancePct:     null,
+                serviceConfig:         null,
+                classMix:              null,
+                classMixSource:        null,
+                serviceLevel:          null,
+                serviceLevelSource:    null,
+                seatsByClass:          null,
+                weeklySeatsByClass:    null,
+                weeklySeatsTotal:      null,
+                classBreakdown:        null
+            }
+
+            if (yieldHistoryMap) RouteAssistantAggregator._applyYieldHistory(row, yieldHistoryMap, hubIata)
+            if (fleetCtx) RouteAssistantAggregator._applyFleetContext(row, fleetCtx, totalFreq)
+            if (serviceProfilesDef) {
+                const svcRec = serviceConfigMap
+                    ? (serviceConfigMap.get(hubIata + "-" + destIata) || null)
+                    : null
+                RouteAssistantAggregator._applyServiceProjection(row, serviceProfilesDef, svcRec, fleet)
+            }
+
+            row.status = RouteAssistantAggregator._statusFor(totalFreq, paxScore, weeklyFlights, row.aircraftFit)
+            return row
+        })
+    }
+
+    /**
+     * Re-applies fleet context to existing rows, mutating in place.
+     *
+     * Call this after `buildRouteRows` once distances are populated (cached
+     * distance pass + the lazy enrichment loop). Fleet fit/profit depend on
+     * row.distanceKm — re-running here picks up any distance updates that
+     * happened after the rows were built.
+     *
+     * Pass `fleetCtx = null` to clear fleet-derived fields (e.g. when the
+     * user switches Mode back to None).
+     */
+    static applyFleetContext(rows, fleetCtx, opts) {
+        if (!rows) return
+        const serviceProfilesDef = (opts && opts.serviceProfiles) || null
+        const serviceConfigMap   = (opts && opts.serviceConfigMap) || null
+        const fleet              = (opts && opts.fleet) || null
+        const hubIata            = String((opts && opts.hubIata) || "").toUpperCase()
+        for (const row of rows) {
+            if (fleetCtx) {
+                RouteAssistantAggregator._applyFleetContext(row, fleetCtx, row.ownTotalFreq || 0)
+            } else {
+                row.aircraftFit      = null
+                row.blockHours       = null
+                row.profitPerFlight  = null
+                row.profitPerWeek    = null
+                row.fitOk            = null
+                row.aircraftTypeName = null
+                row.isCargoOnly      = false
+                row.profitBreakdown  = null
+                row.actualVariancePct = null
+            }
+            // Service projection depends on the estimator's per-flight seats
+            // + LF + yield, so re-run it whenever fleet context changes.
+            if (serviceProfilesDef) {
+                const svcRec = (serviceConfigMap && hubIata)
+                    ? (serviceConfigMap.get(hubIata + "-" + row.destIata) || null)
+                    : (row.serviceConfig || null)
+                RouteAssistantAggregator._applyServiceProjection(row, serviceProfilesDef, svcRec, fleet)
+            } else {
+                RouteAssistantAggregator._clearServiceProjection(row)
+            }
+            row.status = RouteAssistantAggregator._statusFor(
+                row.ownTotalFreq || 0,
+                row.paxScore,
+                row.weeklyFlights || 0,
+                row.aircraftFit
+            )
+        }
+    }
+
+    /**
+     * Re-projects service config (class mix + level + per-class fares) onto
+     * every row. Used by the panel after the user saves a service-config
+     * popover or tweaks the defaults — independent of distance/spec changes
+     * (which would go through applyFleetContext).
+     */
+    static applyServiceProjection(rows, serviceProfilesDef, serviceConfigMap, hubIata, fleet) {
+        if (!rows) return
+        const hub = String(hubIata || "").toUpperCase()
+        for (const row of rows) {
+            if (!serviceProfilesDef) {
+                RouteAssistantAggregator._clearServiceProjection(row)
+                continue
+            }
+            const svcRec = (serviceConfigMap && hub)
+                ? (serviceConfigMap.get(hub + "-" + row.destIata) || null)
+                : null
+            RouteAssistantAggregator._applyServiceProjection(row, serviceProfilesDef, svcRec, fleet)
+        }
+    }
+
+    /**
+     * Re-projects yield-history snapshots onto every row. Cheap and pure —
+     * call after a fresh snapshot run so the actuals columns reflect the
+     * latest data without having to rebuild rows from flightsfrom data.
+     */
+    static applyYieldHistory(rows, yieldHistoryMap, hubIata) {
+        if (!rows) return
+        const hub = String(hubIata || "").toUpperCase()
+        for (const row of rows) {
+            if (yieldHistoryMap) {
+                RouteAssistantAggregator._applyYieldHistory(row, yieldHistoryMap, hub)
+            } else {
+                row.actualProfitPerFlight   = null
+                row.actualProfitPerWeek     = null
+                row.actualFrequency         = null
+                row.actualSnapshotAt        = null
+                row.actualAircraftTypes     = null
+                row.actualContributingTails = null
+                row.actualTotalKnownTails   = null
+                row.actualSnapshots         = null
+                row.actualSnapshotMode      = null
+                row.actualVariancePct       = null
+            }
+            // Variance depends on both the latest snapshot AND the estimator.
+            // Recompute now in case either side changed since the row was built.
+            RouteAssistantAggregator._recomputeVariance(row)
+        }
+    }
+
+    /**
+     * Mutates `row` to add the aircraft-aware fields. Picks the chosen spec —
+     * either the explicit selectedSpec (Type/Tail mode), or the most-economical
+     * fleet aircraft when fleetSpecs is provided (Fleet mode).
+     */
+    static _applyFleetContext(row, fleetCtx, totalFreq) {
+        let chosenSpec = fleetCtx.selectedSpec || null
+        if (!chosenSpec && Array.isArray(fleetCtx.fleetSpecs) && fleetCtx.fleetSpecs.length) {
+            const pick = RouteAssistantProfitEstimator.pickEconomical(
+                fleetCtx.fleetSpecs, row.distanceKm, fleetCtx.falloffPct
+            )
+            if (pick) chosenSpec = pick.spec
+        }
+        if (!chosenSpec) return
+
+        row.aircraftTypeName = chosenSpec.typeName || null
+
+        const est = RouteAssistantProfitEstimator.estimate({
+            distanceKm:        row.distanceKm,
+            spec:              chosenSpec,
+            frequency:         totalFreq,
+            paxScore:          row.paxScore,
+            cargoScore:        row.cargoScore,
+            economics:         fleetCtx.economics,
+            falloffPct:        fleetCtx.falloffPct,
+            override:          row.override || null,
+            useDistanceFuel:   !!fleetCtx.useDistanceFuel,
+            fuelPriceASc:      fleetCtx.fuelPriceASc,
+            fuelBurnOverrides: fleetCtx.fuelBurnOverrides
+        })
+
+        row.aircraftFit     = est.specOk ? est.fit : null
+        row.blockHours      = est.blockHours
+        row.profitPerFlight = est.profitPerFlight
+        row.profitPerWeek   = est.profitPerWeek
+        row.isCargoOnly     = est.isCargoOnly
+        row.fitOk           = est.specOk ? (est.fit === "oor" ? 0 : 1) : null
+        row.profitBreakdown = est.breakdown || null
+        RouteAssistantAggregator._recomputeVariance(row)
+    }
+
+    /**
+     * Pull the latest snapshot for `<hub>-<row.destIata>` and project its
+     * fields onto the row. Multi-snapshot history is exposed for the
+     * sparkline; the latest snapshot drives the column values.
+     */
+    static _applyYieldHistory(row, yieldHistoryMap, hubIata) {
+        if (!row || !row.destIata) return
+        const key = String(hubIata || "").toUpperCase() + "-" + String(row.destIata).toUpperCase()
+        const rec = yieldHistoryMap.get(key) || null
+        if (!rec || !Array.isArray(rec.snapshots) || !rec.snapshots.length) {
+            row.actualProfitPerFlight   = null
+            row.actualProfitPerWeek     = null
+            row.actualFrequency         = null
+            row.actualSnapshotAt        = null
+            row.actualAircraftTypes     = null
+            row.actualContributingTails = null
+            row.actualTotalKnownTails   = null
+            row.actualSnapshots         = null
+            row.actualSnapshotMode      = null
+            return
+        }
+        const latest = rec.snapshots[rec.snapshots.length - 1]
+        row.actualProfitPerFlight   = numOrNull(latest.profitPerFlight)
+        row.actualProfitPerWeek     = numOrNull(latest.profitPerWeek)
+        row.actualFrequency         = numOrNull(latest.frequency)
+        row.actualSnapshotAt        = latest.timestamp || rec.lastSnapshotAt || null
+        row.actualAircraftTypes     = Array.isArray(latest.aircraftTypeNames) ? latest.aircraftTypeNames.slice() : null
+        row.actualContributingTails = latest.contributingTails || null
+        row.actualTotalKnownTails   = latest.totalKnownTails   || null
+        row.actualSnapshots         = rec.snapshots.slice()
+        row.actualSnapshotMode      = latest.mode || "cumulative"
+    }
+
+    /**
+     * Variance % between the estimator's $/flt and the snapshot's $/flt.
+     * Positive = actual exceeds estimate; negative = actual below estimate.
+     * Returns null when either side is missing or the estimate is zero.
+     */
+    static _recomputeVariance(row) {
+        if (!row) return
+        const est = numOrNull(row.profitPerFlight)
+        const act = numOrNull(row.actualProfitPerFlight)
+        if (est === null || act === null || est === 0) {
+            row.actualVariancePct = null
+            return
+        }
+        row.actualVariancePct = Math.round(((act - est) / Math.abs(est)) * 100)
+    }
+
+    /**
+     * Project per-class seat counts, weekly seats offered, and a class-aware
+     * revenue/cost breakdown onto the row. Reads the estimator's existing
+     * profitBreakdown (so we get the same seats/LF/yield/distRT it used) and
+     * splits it across Y/C/F using the per-route classMix (or the defaults).
+     *
+     * The existing single-bucket $/flt and $/wk columns stay untouched —
+     * this projection is informational, surfaced in a new "Seats/wk" column
+     * and the service-config popover.
+     */
+    static _applyServiceProjection(row, defaults, record, fleet) {
+        if (!row || !defaults) return
+        const breakdown = row.profitBreakdown || null
+        const seatsTotal = breakdown ? Number(breakdown.seats) : 0
+        if (!seatsTotal || seatsTotal <= 0) {
+            RouteAssistantAggregator._clearServiceProjection(row)
+            return
+        }
+
+        // Tail-derived class mix from the assigned aircraft's seat counts
+        // (auto-detected from /app/fleets). Falls through to the default
+        // mix when the tail isn't in the cached fleet OR all three buckets
+        // are zero (e.g. unconfigured aircraft).
+        const tailMix = RouteAssistantAggregator._tailMixFromFleet(row, fleet)
+
+        const eff = (typeof RouteAssistantServiceConfigStore !== "undefined")
+            ? RouteAssistantServiceConfigStore.resolveEffective(record, defaults, tailMix)
+            : null
+        if (!eff) {
+            RouteAssistantAggregator._clearServiceProjection(row)
+            return
+        }
+
+        // Per-flight seat allocation. Largest-remainder distribution so the
+        // class counts add up exactly to the spec total — `Math.floor` alone
+        // would lose 1-2 seats on rounded mixes.
+        const rawSeats = {
+            Y: seatsTotal * (eff.classMix.Y || 0),
+            C: seatsTotal * (eff.classMix.C || 0),
+            F: seatsTotal * (eff.classMix.F || 0)
+        }
+        const seatsByClass = RouteAssistantAggregator._largestRemainder(rawSeats, seatsTotal)
+
+        // Weekly seats — multiply by the user's own weekly frequency on this
+        // route (departures only). Reverse direction populates the inbound
+        // row independently.
+        const weeklyFreq = Number(row.ownTotalFreq) || 0
+        const weeklySeatsByClass = {}
+        let weeklyTotal = 0
+        for (const cls of ["Y", "C", "F"]) {
+            const w = seatsByClass[cls] * weeklyFreq
+            weeklySeatsByClass[cls] = w
+            weeklyTotal += w
+        }
+
+        // Class-aware revenue + cost (per round-trip flight). Uses the
+        // estimator's effective LF/yield/falloff so it stays internally
+        // consistent with the displayed $/flt, then redistributes across
+        // classes via classYieldMult and per-class costs.
+        const baseYield = Number(breakdown.yieldPerKm) || 0
+        const yDemand   = Number(breakdown.yieldDemandMultiplier) || 1
+        const yMult     = Number(breakdown.yieldMultiplier) || 1
+        const lf        = Number(breakdown.paxLoadFactor) || 0
+        const distRT    = Number(breakdown.distanceRoundTripKm) || 0
+        const svcLevelMult = eff.serviceLevelYieldMult
+        const svcLevelPerPaxCost = eff.serviceLevelCostPerPax
+
+        // Markets-page scraped fare per class — when present we derive an
+        // effective yield from `currentPrice / one-way distance` and prefer
+        // it over the configured class-yield-multiplier fallback. Manual
+        // route overrides still win.
+        const distanceOneWay = (Number(row.distanceKm) > 0) ? Number(row.distanceKm)
+                            : (distRT > 0 ? distRT / 2 : 0)
+        const scrapedFares = row.ownPricing || null
+
+        const classes = {}
+        let totalRevenue = 0
+        let totalCost = 0
+        for (const cls of ["Y", "C", "F"]) {
+            const f = eff.classFares[cls]
+            const seatsCls = seatsByClass[cls]
+            const filled = seatsCls * lf
+            const scrapedFare = scrapedFares && scrapedFares[cls]
+            const scrapedYield = (typeof scrapedFare === "number" && scrapedFare > 0 && distanceOneWay > 0)
+                ? (scrapedFare / distanceOneWay)
+                : null
+            let yieldUsed, yieldSource
+            if (f.yieldPerKmOverride != null) {
+                yieldUsed   = f.yieldPerKmOverride
+                yieldSource = "override"
+            } else if (scrapedYield != null) {
+                yieldUsed   = scrapedYield
+                yieldSource = "scraped"
+            } else {
+                yieldUsed   = baseYield * (f.yieldMult || 1) * yDemand * svcLevelMult
+                yieldSource = "default"
+            }
+            const revenue = filled * yieldUsed * distRT * yMult
+            const perPaxCost = (f.costPerPaxOverride != null ? f.costPerPaxOverride : (f.costPerPax || 0))
+                + svcLevelPerPaxCost
+            const cost = filled * perPaxCost
+            classes[cls] = {
+                seats:           seatsCls,
+                seatsFilled:     Math.round(filled * 10) / 10,
+                yieldPerKm:      Math.round(yieldUsed * 10000) / 10000,
+                yieldOverride:   f.yieldPerKmOverride !== null,
+                yieldSource:     yieldSource,
+                scrapedFare:     (typeof scrapedFare === "number") ? scrapedFare : null,
+                costPerPax:      Math.round(perPaxCost * 100) / 100,
+                costOverride:    f.costPerPaxOverride !== null,
+                revenuePerFlight: Math.round(revenue),
+                costPerFlight:    Math.round(cost),
+                revenuePerWeek:  Math.round(revenue * weeklyFreq),
+                costPerWeek:     Math.round(cost * weeklyFreq),
+                weeklySeats:     weeklySeatsByClass[cls]
+            }
+            totalRevenue += revenue
+            totalCost += cost
+        }
+
+        row.serviceConfig       = record || null
+        row.classMix             = eff.classMix
+        row.classMixSource       = eff.source.classMix
+        row.serviceLevel         = eff.serviceLevel
+        row.serviceLevelSource   = eff.source.serviceLevel
+        row.seatsByClass         = seatsByClass
+        row.weeklySeatsByClass   = weeklySeatsByClass
+        row.weeklySeatsTotal     = weeklyTotal
+        row.classBreakdown       = {
+            classes:               classes,
+            totalRevenuePerFlight: Math.round(totalRevenue),
+            totalCostPerFlight:    Math.round(totalCost),
+            totalRevenuePerWeek:   Math.round(totalRevenue * weeklyFreq),
+            totalCostPerWeek:      Math.round(totalCost * weeklyFreq),
+            serviceLevelYieldMult: svcLevelMult,
+            serviceLevelPerPaxCost: svcLevelPerPaxCost
+        }
+    }
+
+    static _clearServiceProjection(row) {
+        if (!row) return
+        row.serviceConfig       = null
+        row.classMix            = null
+        row.classMixSource      = null
+        row.serviceLevel        = null
+        row.serviceLevelSource  = null
+        row.seatsByClass        = null
+        row.weeklySeatsByClass  = null
+        row.weeklySeatsTotal    = null
+        row.classBreakdown      = null
+    }
+
+    /**
+     * Largest-remainder allocator — distributes `total` across the keys of
+     * `raws` so the result sums to exactly `total` while keeping each
+     * bucket as close to its raw fraction as possible.
+     */
+    /**
+     * Derive the {Y, C, F} class-mix from the assigned tail's seat counts
+     * (`fleet.aircraft[].seatsY/seatsC/seatsF`, scraped by
+     * content_fleetManagement.js). Looks up by aircraftId first, falls back
+     * to registration. Returns null when no tail is assigned, the fleet
+     * record is missing, or all three buckets are zero — caller treats
+     * that as "no signal" and falls through to the default mix.
+     */
+    static _tailMixFromFleet(row, fleet) {
+        if (!row || !fleet || !Array.isArray(fleet.aircraft)) return null
+        const id  = row.liveAircraftId
+        const reg = row.liveAircraftReg
+        if (!id && !reg) return null
+        let tail = null
+        if (id) tail = fleet.aircraft.find(a => a && Number(a.aircraftId) === Number(id))
+        if (!tail && reg) tail = fleet.aircraft.find(a => a && a.registration === reg)
+        if (!tail) return null
+        const y = Number(tail.seatsY) || 0
+        const c = Number(tail.seatsC) || 0
+        const f = Number(tail.seatsF) || 0
+        const total = y + c + f
+        if (total <= 0) return null
+        return {Y: y / total, C: c / total, F: f / total}
+    }
+
+    static _largestRemainder(raws, total) {
+        const keys = Object.keys(raws)
+        const out = {}
+        let used = 0
+        const rems = []
+        for (const k of keys) {
+            const f = Math.floor(raws[k])
+            out[k] = f
+            used += f
+            rems.push({k: k, r: raws[k] - f})
+        }
+        rems.sort((a, b) => b.r - a.r)
+        let leftover = Math.max(0, total - used)
+        for (const item of rems) {
+            if (leftover <= 0) break
+            out[item.k] += 1
+            leftover -= 1
+        }
+        return out
+    }
+
+    /**
+     * Returns Map<destIata, {paxFreq, cargoFreq}> for flights that depart
+     * from `hubIata` in the most recent date entry of the saved schedule.
+     */
+    static _collectOwnFreq(scheduleRecord, hubIata) {
+        const out = new Map()
+        if (!scheduleRecord || !scheduleRecord.date) return out
+        const dates = Object.keys(scheduleRecord.date).sort()
+        if (!dates.length) return out
+        const latest = scheduleRecord.date[dates[dates.length - 1]]
+        if (!latest || !Array.isArray(latest.schedule)) return out
+
+        for (const route of latest.schedule) {
+            if (!route || !route.origin || !route.destination) continue
+            if (String(route.origin).toUpperCase() !== hubIata) continue
+            const dest = String(route.destination).toUpperCase()
+            const acc  = out.get(dest) || {paxFreq: 0, cargoFreq: 0}
+            for (const fnKey in (route.flightNumber || {})) {
+                const fn = route.flightNumber[fnKey]
+                if (!fn) continue
+                acc.paxFreq   += Number(fn.paxFreq)   || 0
+                acc.cargoFreq += Number(fn.cargoFreq) || 0
+            }
+            out.set(dest, acc)
+        }
+        return out
+    }
+
+    /**
+     * Status flag rules — kept conservative so they only highlight clear
+     * situations:
+     *   OOR   — selected aircraft can't reach the destination (overrides
+     *           everything else; must fix fleet/aircraft choice first)
+     *   NEW   — you don't fly the route
+     *   UNDER — you fly it, demand is high (paxScore ≥ 8) but your weekly
+     *           freq is < 1/10 of real-world
+     *   OVER  — you fly it more than 1/5 of real-world
+     *   OK    — anything else
+     * weeklyFlights = 0 means "no real-world reference", so we fall back to OK.
+     */
+    static _statusFor(ownTotalFreq, paxScore, weeklyFlights, aircraftFit) {
+        if (aircraftFit === "oor") return "OOR"
+        if (ownTotalFreq <= 0) return "NEW"
+        if (!weeklyFlights) return "OK"
+        if (typeof paxScore === "number" && paxScore >= 8 && ownTotalFreq < weeklyFlights / 10) return "UNDER"
+        if (ownTotalFreq > weeklyFlights / 5) return "OVER"
+        return "OK"
+    }
+}
+
+function numOrNull(v) {
+    if (v === null || v === undefined || v === "") return null
+    const n = Number(v)
+    return isFinite(n) ? n : null
+}

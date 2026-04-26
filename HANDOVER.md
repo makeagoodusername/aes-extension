@@ -1,0 +1,551 @@
+# AES — Handover
+
+This is the live current-state doc for the **AirlineSim Enhancement Suite (AES)** Chrome extension. A fresh session should be able to read this top-to-bottom and pick up cleanly. For long-form reference (algorithms, formulas, derivations), see `MANUAL.md`.
+
+- **Project:** AirlineSim Enhancement Suite (AES) — Chrome MV3 extension, vanilla JS + jQuery (no build step).
+- **What it is:** quality-of-life toolkit for AirlineSim, the browser airline-management game. Reads game pages via content scripts, scrapes data into `chrome.storage.local`, surfaces panels with scoring/filtering/automation. Read-mostly today; no writes back to AS.
+- **Repo root:** `/Users/jihwan/Downloads/AES.v0.6.9-beta/`
+- **Manifest version:** 0.6.9-beta (`manifest.json` → `version_name`).
+- **Upstream author:** Zoe Bijl (https://github.com/ZoeBijl/airlinesim-enhancement-suite/). User is maintaining/extending a fork.
+- **Git user:** `makeagoodusername`.
+
+---
+
+## 1 · Current state
+
+### Route Assistant — production
+**Mounts on:** `/app/com/scheduling*`. **File:** `modules/route-assistant/panel.js` (~2700 lines).
+
+A side-panel overlay that scores destinations from the current hub on demand × competition × distance × profit. Every Phase from 1 → 2.7 has shipped:
+
+- **Phase 1** — basic table: destinations from flightsfrom + AS station demand + own-schedule cross-check. NEW/OK/UNDER/OVER status flags, sortable scored table.
+- **Phase 1.5** — distance enrichment via three-tier resolver (`distance-resolver.js`): AS scheduling-page header → AS airport coords + great-circle → flightsfrom detail page. Persistent cache.
+- **Phase 2** — aircraft-fit + profit estimator (`profit-estimator.js`). Falloff zone for over-range routes, OOR status flag. Per-route override modal (LF / yield) right-click on a row.
+- **Phase 2.5** — yield modulation by demand, cargo revenue, crew/maintenance/fixed costs, age penalty.
+- **Phase 2.6** — distance cache invalidation, per-route LF/yield overrides.
+- **Phase 2.7** — fuel-price automation. Scrapes ASc$/l from `/action/portal/index`; per-type fuel burn via `RouteAssistantFuelBurn.estimate(spec, overrides)` (heuristic loadProxy × effFactor calibrated from forum data, ±15%); user can override per type.
+
+Long form: `MANUAL.md §2–§15`.
+
+### Used Aircraft Scanner — production (slices 1 + 2 of J shipped)
+**Mounts in:** dashboard panel at `/app/enterprise/dashboard*`. **Files:** `modules/used-aircraft-scanner/`, `content_marketScan.js` (child-tab worker).
+
+Concurrent child-tab scan of the AS used aircraft market across a preset list of types. Family + type filter automation; type-spec enrichment via `/action/enterprise/aircraftsType?id=`; sortable results table with scoring + filtering; route-range filter; CSV export; session resume across panel reloads; "Open offer" deep-link via Wicket-state replay.
+
+**Slice 1 (earlier session) — GUI overhaul:**
+- `family-grid-panel.js` — `MarketScanFamilyGrid` drill-down picker (chips strip, category filter, search, custom-add input, expandable per-family disclosures).
+- `type-family-map.js` — `AS_FAMILY_CATEGORY` map, `AS_CATEGORY_ORDER`, `TypeFamilyMap.category()` / `categoryColor()` / `familyList()`.
+- `results-table.js` — Family column + 4px color rail on the leftmost cell.
+
+**Slice 2 (this session) — smarter deal-scoring:**
+- New `modules/used-aircraft-scanner/deal-metrics.js` — `MarketScanDealMetrics` pure-function helpers: `pricePerSeat`, `seatKmYearCost`, `daysToBreakEven`, `fleetSynergy`, `routeFit`, `maintenanceTrajectory`, plus `decorate(row, ctx)` that runs all six and writes named scalars/labels onto the row.
+- `results-table.js` — six new columns (`$/seat`, `$/seat·km/yr`, `BE (days)`, `Maint.` pill, `Fleet` badge, `Route-fit (HUB)`); four new scoring fields (`pricePerSeat`, `seatKmYearCost`, `breakEvenDays` lower-is-better; `routeFitCount` higher-is-better); maint pill is render-only (numeric `maintRank` for sort) and fleet badge is binary; new `setContext({fleetByType, economics, topRoutes, topRoutesHub})` plumbed before `_draw()`; CSV path emits the new columns.
+- `presets-store.js` — added the four new scoring entries with `pricePerSeat` enabled by default; deep-merge ensures existing user blobs gain the new keys without resetting tuned siblings.
+- `content_dashboard.js` — `loadDealContext(server)` loads RA fleet (synergy), RA economics (break-even math), and `routeAssistant:topRoutes` (route-fit count). Best-effort: any failure leaves the metric as null and the cell as em-dash.
+- `modules/route-assistant/panel.js` — new `_publishTopRoutes(visible)` writes a slim snapshot (top-50 visible scored rows: destIata, destName, distanceKm, score, status, paxScore, cargoScore) to a single global key `routeAssistant:topRoutes` on every render. Single key (no per-hub keys); the scanner reads the most-recent published hub.
+- `manifest.json` — registered `deal-metrics.js`, `modules/route-assistant/settings-store.js`, `modules/route-assistant/fleet-store.js` in the dashboard content-script block.
+
+### Auto-Pricing — Tiers 1 + 2a + 2b shipped, Tier 3 open
+**Surfaces in:** Route Assistant panel (`/app/com/scheduling*`). **Files:** `modules/route-assistant/ticket-price-scraper.js`, `modules/route-assistant/markets-page-scraper.js`, `modules/route-assistant/ors-scraper.js`, `content_scheduling.js`, `content_markets.js`, `modules/route-assistant/panel.js`.
+
+Four-tier rollout, user-confirmed:
+
+- **Tier 1 — visibility (shipped).** Scrapes `/app/com/scheduling/<HUB><DEST>` for live route data: assigned aircraft (registration + typeId + name), departure time, **per-day flight counts** (`dailyFlights[7]` Mon→Sun), weekly total (`weeklyFlights`), cruise speed. Live-capture on visit + bulk-sync CTA in the "Live route data" expander. Three columns under the rose-tinted `pricing` group: **Eq**, **Dep**, **Wk** (e.g. `12 2222211` = 12/wk, 2x Mon–Fri + 1x weekends). Multi-daily fully captured.
+- **Tier 2a — Markets page (shipped this session).** New scraper for `/app/com/markets/<HUB><DEST>` covering competitor flights (every flight on the route with price + availability + status), your own pricing form snapshot (Y/C/F/Cargo current + default + slider ranges), market-share leaderboard (pax + cargo, with previous-period link), and 25-week historic capacity/price chart data. Storage **split across 4 directional key families** (`competitors`, `ownPricing`, `marketShare`, `historic`) so each can have its own freshness window. Live-capture on `/app/com/markets/*` visit + bulk-sync CTA in the teal-tinted "Market Analysis" expander. Four columns under the new `markets` group: **Mkt%** (your pax share), **Cmp#** (competitor count), **Cmp$** (median competitor Y price + delta), **Drft** (pricing drift vs. AS defaults).
+- **Tier 2b — ORS rank (shipped this session).** New scraper for `/app/info/ors`. Per-route GET → POST handshake (Wicket session can't be shared), walks every result page, parses each connection's overall rating + per-leg flight code/ID/aircraft/price/status, identifies "our" connections via the user-schedule cache flight-number set + carrier-prefix fallback. Stores **all rank flavors** (`rankAny`, `rankFirstLegOurs`, `rankAllOurs`, `rankNonstop`, `rankBookable`) plus ratings (`ourTopRating`, `ourBestNonstopRating`, `topCompetitorRating`, `ratingGapToTop`) and the **full connection list** so any metric is re-derivable at render time without re-scraping. Concurrency=2, stagger=1500ms, **circuit breaker** halts after 3 consecutive 429/503 errors and disables the bulk button for 10 min. Per-row drill-in drawer (▾ icon) renders the cached connection list lazily. Amber-tinted "ORS Rank" expander with controls for payload, departure/arrival window, ground-network toggle, primary column dropdown (8 rank flavors), per-column visibility, carrier-prefix override, min display threshold. Four columns under the `ors` group: **ORS** (user-selected primary metric), **RkNS** (nonstop rank), **Gap** (rating gap to top competitor), **OrsC#** (distinct first-leg competitors).
+- **Tier 3 — apply / write-back (open).** HIGH risk. Confirmed autonomy posture: one-click + batch-confirm by default; silent auto-apply behind a separate explicit setting. Target endpoint: the markets-page pricing form (`POST` to `/app/com/markets/<HUB><DEST>?<wicket>-pair~form` with `classes:prices:N:newPrice` body fields).
+- **Tier 4 — yield feedback.** Shipped this session as Roadmap G slice 1; see "Yield Feedback" below. Auto-Pricing Tier 4 is now folded into that loop.
+
+**Misnomer note:** the file is named `ticket-price-scraper.js` but it currently scrapes the **scheduling page** for live operational data (no prices on that page). Rename deferred to Tier 2 when the actual pricing scraper lands.
+
+### Yield Feedback (Roadmap G) — slice 1 shipped this session
+**Surfaces in:** Route Assistant panel (`/app/com/scheduling*`). **Files:** `modules/route-assistant/yield-history-store.js`, `modules/route-assistant/yield-snapshot.js`, plus extensions to `aggregator.js`, `panel.js`, `settings-store.js`.
+
+Closed-loop estimator-vs-actuals: takes the live-route-data cache (which lists assigned tails per route) and joins with each tail's `<server>aircraftFlights<id>` profit record (written by `content_aircraftFlights.js`). Profits are attributed per route by frequency-weighted (default), distance-weighted, or equal split, then persisted as `routeAssistant:yieldHistory:<HUB>-<DEST>` time series.
+
+**This session — slice 1:**
+- New `modules/route-assistant/yield-history-store.js` (`RouteAssistantYieldHistoryStore`) — directional cache with bulk load + append + history-limit prune.
+- New `modules/route-assistant/yield-snapshot.js` (`RouteAssistantYieldSnapshot`) — pure attribution engine. Reads aircraftFlights + ticketPrice records, returns per-route snapshots.
+- `aggregator.js` — `buildRouteRows` accepts `yieldHistoryMap`; `applyYieldHistory(rows, map, hub)` re-projects without rebuilding; rows now carry `actualProfitPerFlight`, `actualProfitPerWeek`, `actualFrequency`, `actualSnapshots`, `actualVariancePct`, `actualContributingTails`.
+- `panel.js` — new "Yield feedback (actuals)" expander in settings drawer with **Snapshot yields now** CTA, attribution mode select, variance threshold, history limit, columns toggle. New `actuals` column group with `Act $/flt` and `Δ%` columns. ASCII sparkline + tail-mix appended to existing $/flt breakdown tooltip. New "Calibrate from actuals" button in the per-route override editor — pre-fills the yield input with the value that would make the estimator match the latest snapshot at the current LF / spec.
+- `settings-store.js` — `yieldFeedback` block: `showColumns`, `varianceWarnPct`, `attributionMode`, `historyLimit`, `lastSnapshotAt`, `autoSnapshotOnMount`.
+
+**Limits:** snapshots only see routes whose ticket-price record has been scraped (run "Sync route data" first), and tails the user has visited via `/app/fleets/aircraft/<id>/1`. Snapshot summary console-logs how many tails were missing profit data so the user can fill the gaps. Profits are *cumulative* per tail in `aircraftFlights`, so v1 stores cumulative averages — slice 2 will add delta-mode for true periodic yield.
+
+### Service-profile + per-class auto-detect — shipped this session
+**Surfaces in:** Service columns (Seats/wk · Mix · Svc) on the Route Assistant panel. **Files:** `modules/route-assistant/service-profile-scraper.js` (NEW), `modules/route-assistant/markets-page-scraper.js` (extended), `modules/route-assistant/service-config-store.js` (extended), `modules/route-assistant/aggregator.js` (extended), `content_fleetManagement.js` (extended), `modules/route-assistant/panel.js` (extended).
+
+Replaces the manual class-mix / service-level inputs with values scraped from AS:
+
+- **Per-tail Y/C/F seat counts** — `content_fleetManagement.js` now extracts the "Y/C/F" column on `/app/fleets` (e.g. "217/30/0") into `seatsY/seatsC/seatsF` on each tail's fleet record. Aggregator uses these as the second-priority class-mix source (after per-route override, before settings default).
+- **Per-class fares (Y/C/F/Cargo)** — `markets-page-scraper.js` `_parseOwnPricing` reads the Pricing fieldset on `/app/com/markets/<HUB><DEST>`. The aggregator's `_applyServiceProjection` now resolves per-class effective yield as: route override → `ownPricing[cls] / distance` (scraped) → defaults. Per-class `yieldSource` exposed on the breakdown.
+- **Service-profile assignment** — same scraper grabs the `serviceProfileId` from the General Settings fieldset's `<select>`. New `RouteAssistantServiceProfileScraper` fetches `/action/enterprise/serviceProfiles` (list) + `/action/enterprise/serviceProfile?id=<id>` (per-profile catering levels per class). The detail parser robustly walks any 2-letter category prefix + class letter naming convention (`dry/drc/drf` for drinks, `mdy/mdc/mdf` for entrees, etc.) so AS adding new categories doesn't break it. Aggregate `classScore: {Y, C, F}` ∈ [0..1] is normalised across whichever categories the page exposes.
+- **Service-config popover** — gains a green "Auto-detected" banner above the inputs listing what AS knows (mix from assigned tail, AS fares per class, AS profile name + per-class quality scores).
+- **Settings → Service profiles** — new "AS service profiles auto-detect" sub-block with **Refresh AS service profiles** CTA + cache count + last-sync timestamp.
+- **Mix column** — color-codes the source (purple = route override, green = from assigned tail, sky-blue = settings default).
+
+**Cache layout:**
+- `routeAssistant:serviceProfilesList` → `{profiles: [{id, name, minDistanceKm, isDefault}], scrapedAt}`
+- `routeAssistant:serviceProfile:<id>` → `{id, name, categories: {drinks: {Y, C, F}, ...}, categoryByPrefix, classScore, scrapedAt}`
+- markets-page records (`routeAssistant:markets:ownPricing:<HUB>-<DEST>`) gain `generalSettings.serviceProfileId` (number) alongside the existing `serviceProfile` (label string).
+
+**Limits:** the coarse Budget/Standard/Premium service-level model is preserved for now — the scraped profile name + quality score is informational (surfaced in Svc tooltip + popover banner). A follow-up slice will let users *score* a route by its profile's classScore directly. Per-pax cost has no AS source — still inherited from settings or manual override.
+
+### Station Automation — production (earlier session)
+**Mounts on:** `/app/info/airports/<id>` + `/app/ops/stations*`. **Files:** `content_stationOpen.js`, `modules/station-automation/`.
+
+Auto-opens stations across queued countries. Worker runs on the airport detail page to click "Open Station", then on the stations-ops page to reconcile success. Untouched this session.
+
+### FlightsFrom integration — production (earlier session)
+**Mounts on:** `flightsfrom.com/*`. **Files:** `content_flightsFrom.js`, `modules/flightsfrom/`.
+
+Scrapes per-IATA destination listings (weekly flights, airline counts, distance via detail-page tier-3). Cache: `flightsFrom:<IATA>`.
+
+This session: Letter F shipped on top — `modules/route-assistant/carriers-scraper.js` adds a per-pair detail-page scraper that the Route Assistant panel calls directly via `fetch(...)` (cross-origin, covered by host_permissions, same pattern as distance-resolver tier-3). Output enriches the panel's Cmp column with a colored intensity badge + per-carrier hover tooltip.
+
+### Schedule Management — production (earlier session)
+**Files:** `modules/schedule-management/`.
+
+Wave templates, range-bucket aircraft-fit checks, schedule builder. Used by Route Assistant for fleet-aware fit/profit. Untouched this session.
+
+---
+
+## 2 · This session's changes
+
+| Feature | File | Type |
+|---|---|---|
+| Used Aircraft Scanner | `modules/used-aircraft-scanner/family-grid-panel.js` | NEW (slice 1) |
+| Used Aircraft Scanner | `modules/used-aircraft-scanner/type-family-map.js` | extended (slice 1) |
+| Used Aircraft Scanner | `modules/used-aircraft-scanner/results-table.js` | extended (slice 1 + 2) |
+| Used Aircraft Scanner | `modules/used-aircraft-scanner/deal-metrics.js` | NEW (slice 2 — pure-function metrics) |
+| Used Aircraft Scanner | `modules/used-aircraft-scanner/presets-store.js` | extended (slice 2 — 4 new scoring fields) |
+| Used Aircraft Scanner | `content_dashboard.js` | extended (slice 1 + 2; `loadDealContext` helper) |
+| Used Aircraft Scanner / Route Assistant cross-link | `modules/route-assistant/panel.js` | extended (slice 2 — `_publishTopRoutes`) |
+| Used Aircraft Scanner | `manifest.json` | extended (registered family-grid-panel.js, deal-metrics.js, RA fleet-store.js + settings-store.js in dashboard block) |
+| Auto-Pricing | `modules/route-assistant/ticket-price-scraper.js` | NEW (misnamed — scrapes scheduling page, not prices) |
+| Auto-Pricing | `modules/route-assistant/settings-store.js` | extended (`pricing` block added) |
+| Auto-Pricing | `modules/route-assistant/panel.js` | extended (Eq/Dep/Wk columns, expander, _applyCachedPrices) |
+| Auto-Pricing | `content_scheduling.js` | extended (live-capture on /app/com/scheduling/<HUB><DEST>) |
+| Auto-Pricing | `manifest.json` | extended (registered ticket-price-scraper.js) |
+| Yield Feedback | `modules/route-assistant/yield-history-store.js` | NEW (Roadmap G slice 1) |
+| Yield Feedback | `modules/route-assistant/yield-snapshot.js` | NEW (Roadmap G slice 1) |
+| Yield Feedback | `modules/route-assistant/aggregator.js` | extended (yieldHistoryMap input, applyYieldHistory, actuals projection) |
+| Yield Feedback | `modules/route-assistant/settings-store.js` | extended (`yieldFeedback` block) |
+| Yield Feedback | `modules/route-assistant/panel.js` | extended (snapshot expander, Actuals column group, sparkline tooltip, calibrate button) |
+| Yield Feedback | `manifest.json` | extended (registered yield-history-store.js + yield-snapshot.js) |
+| Carriers (F) | `modules/route-assistant/carriers-scraper.js` | NEW (per-pair flightsfrom scraper + bulkScrape + competitive-intensity classifier) |
+| Carriers (F) | `modules/route-assistant/settings-store.js` | extended (`carriers` block — showCarrierIntensity, concurrency, staggerMs, lastBulkScrapeAt, carriersMaxAgeDays) |
+| Carriers (F) | `modules/route-assistant/panel.js` | extended (`_applyCachedCarriers`, `_renderCarriersSection` expander, `_runBulkCarrierScrape`, Cmp column → colored pill + hover tooltip via `formatCarriersTooltip`) |
+| Carriers (F) | `manifest.json` | extended (registered carriers-scraper.js in scheduling block) |
+| Carriers (F slice 2) | `modules/route-assistant/enterprise-meta-scraper.js` | NEW (per-enterprise `/app/info/enterprises/<id>` scraper for banner + avatar + name + IATA; bulk + cache mirror of carriers-scraper) |
+| Carriers (F slice 2) | `modules/route-assistant/panel.js` | extended (`_applyCachedEnterpriseMeta`, `_runBulkEnterpriseMetaSync`, `_openCarrierPopover` / `_closeCarrierPopover` / `_positionCarrierPopover` / `_buildCarrierRow`, Cmp column rewired to open the rich popover when AS market-share data is present, `_initialBadge` helper) |
+| Carriers (F slice 2) | `modules/route-assistant/settings-store.js` | extended (`carriers` block — added enterpriseMetaConcurrency, enterpriseMetaStaggerMs, enterpriseMetaMaxAgeDays, lastEnterpriseMetaSyncAt) |
+| Carriers (F slice 2) | `manifest.json` | extended (registered enterprise-meta-scraper.js in scheduling block) |
+| Tabbed RA view | `modules/route-assistant/panel.js` | extended (tabBar above tableHost, `_renderTabBar`, `_currentViewMode`, `RouteAssistantPanel._columnModes`, mode-filtered `_activeColumns` + scoring blend + settings drawer) |
+| Tabbed RA view | `modules/route-assistant/settings-store.js` | extended (`viewMode: "all"\|"pax"\|"cargo"` top-level field with defaults + load merge) |
+| Tabbed RA view | `modules/route-assistant/panel.js` SCORING_FIELDS | each entry tagged with `modes` array (paxScore = ["all","pax"], cargoScore = ["all","cargo"], everything else = all three) |
+| Markets (Tier 2a) | `modules/route-assistant/markets-page-scraper.js` | NEW (per-route scraper writing 4 split key families: competitors, ownPricing, marketShare, historic) |
+| Markets (Tier 2a) | `content_markets.js` | NEW (live-capture on `/app/com/markets/<HUB><DEST>`) |
+| Markets (Tier 2a) | `modules/route-assistant/settings-store.js` | extended (`marketAnalysis` block — showColumns, concurrency, staggerMs, per-family TTLs, defaultPayloadChart) |
+| Markets (Tier 2a) | `modules/route-assistant/panel.js` | extended (`_applyCachedMarkets`, `_renderMarketAnalysisSection` expander, `_runBulkMarketScrape`, `markets` column group + 4 cols Mkt%/Cmp#/Cmp$/Drft) |
+| Markets (Tier 2a) | `manifest.json` | extended (registered markets-page-scraper.js in scheduling block + new content-script block for `/app/com/markets/*`) |
+| ORS (Tier 2b) | `modules/route-assistant/ors-scraper.js` | NEW (per-route GET→POST handshake, walks all result pages, computes 5 rank flavors + 4 ratings, circuit-breaker, full connections cached) |
+| ORS (Tier 2b) | `modules/route-assistant/settings-store.js` | extended (`ors` block — every form input + every rank flavor exposed; primaryColumn dropdown drives the headline panel column) |
+| ORS (Tier 2b) | `modules/route-assistant/panel.js` | extended (`_applyCachedOrs`, `_renderOrsRankSection` expander with all controls, `_runBulkOrsScrape` w/ circuit-breaker UI, `_openOrsConnectionsDrawer` drill-in modal, `ors` column group + 4 cols ORS/RkNS/Gap/OrsC#) |
+| ORS (Tier 2b) | `manifest.json` | extended (registered ors-scraper.js in scheduling block) |
+| Docs | `HANDOVER.md` | rewrite (this file) |
+
+Plan files written this session:
+- `~/.claude/plans/abstract-popping-manatee.md` — used for slice 1 of J + earlier handoff plan.
+- `~/.claude/plans/ticket-price-tier-1.md` — Auto-Pricing Tier 1 plan.
+- `~/.claude/plans/let-s-start-with-1-a-quizzical-lynx.md` — Tier 2a (markets) + 2b (ORS) plan.
+
+---
+
+## 3 · Project map
+
+```
+AES.v0.6.9-beta/
+├── manifest.json                              MV3 manifest. Content-script blocks per AS URL pattern.
+├── background.js                              MV3 service worker (minimal).
+├── helpers.js                                 AS namespace: formatCurrency, cleanInteger, …
+├── HANDOVER.md                                THIS file.
+├── MANUAL.md                                  Long-form reference (~875 lines).
+│
+├── content_dashboard.js                       Dashboard panel mount. ~3700 lines. Hosts the Used Aircraft Scanner UI.
+├── content_scheduling.js                      Mounts RouteAssistantPanel on /app/com/scheduling*; live-captures route data on /app/com/scheduling/<HUB><DEST>.
+├── content_marketScan.js                      Used-aircraft-scanner CHILD TAB worker (runs on /app/aircraft/market*).
+├── content_flightsFrom.js                     flightsfrom.com scraper (runs on www.flightsfrom.com).
+├── content_stationOpen.js                     Station-opening automation.
+├── content_aircraftFlights.js                 Per-aircraft flight-history extractor.
+├── content_fligthSchedule.js                  Own-schedule extractor (note original typo).
+├── content_inventory.js                       Inventory-page utilities.
+├── content_personelManagement.js              Personnel staffing helpers.
+├── content_enterpriceOverview.js              Enterprise overview helpers.
+├── content_flightInfo.js                      Flight-detail data extractor.
+├── content_settings.js                        AS settings-page helpers.
+├── content_fleetManagement.js                 Fleet-page helpers.
+│
+├── modules/
+│   ├── aes-menu.js                            Top-bar AES dropdown (every page).
+│   ├── about-dialog.js                        About modal.
+│   ├── aircraft-type-specs.js                 AESAircraftTypeSpecs.fetchById(typeId) — shared aircraft type-spec parser.
+│   │
+│   ├── used-aircraft-scanner/
+│   │   ├── type-family-map.js                 AS_TYPE_TO_FAMILY map + AS_FAMILY_CATEGORY + helpers.
+│   │   ├── presets-store.js                   UsedAircraftPresets settings CRUD.
+│   │   ├── scan-session-store.js              MarketScanSession — per-scan storage.
+│   │   ├── deal-metrics.js                    MarketScanDealMetrics — slice-2 metrics ($/seat, $/seat·km/yr, BE-days, fleet-synergy, route-fit, maint pill). NEW this session.
+│   │   ├── results-table.js                   MarketScanResultsTable — sortable HTML + CSV. Family column + color rail + slice-2 deal columns.
+│   │   ├── scan-controller.js                 ScanController — concurrent child-tab orchestrator.
+│   │   └── family-grid-panel.js               MarketScanFamilyGrid — type picker.
+│   │
+│   ├── route-assistant/
+│   │   ├── settings-store.js                  RouteAssistantSettings.load/save. Includes economics + pricing blocks.
+│   │   ├── demand-store.js                    RouteAssistantDemandStore — per-IATA AS pax/cargo demand cache.
+│   │   ├── country-resolver.js                IATA → countryId via DemandStore (cache-only).
+│   │   ├── parallel-scanner.js                Concurrent CountryScraper runner; seedAllCountries().
+│   │   ├── distance-resolver.js               Three-tier hub→dest distance with persistent cache.
+│   │   ├── route-overrides-store.js           Per-route LF/yield user overrides.
+│   │   ├── fleet-store.js                     User's fleet inventory cache.
+│   │   ├── type-specs-store.js                AS aircraft-type spec cache.
+│   │   ├── fuel-price-scraper.js              World fuel price scrape (table → SVG fallback).
+│   │   ├── fuel-burn-estimator.js             Per-type fuel-burn heuristic + override.
+│   │   ├── profit-estimator.js                Pure-function profit math.
+│   │   ├── score.js                           Pure weighted-average normaliser.
+│   │   ├── aggregator.js                      buildRouteRows + applyFleetContext.
+│   │   ├── ticket-price-scraper.js            Scheduling-page scraper for live route data. NEW earlier-this-session, misnamed.
+│   │   ├── carriers-scraper.js                Per-pair flightsfrom scraper for the full carrier list. NEW (Letter F). Bulk-scrape + competitive-intensity classifier.
+│   │   ├── enterprise-meta-scraper.js         Per-enterprise /app/info/enterprises/<id> scraper for banner + avatar + name + IATA. NEW this session (F slice 2). Non-directional cache; powers the Cmp popover's rich rendering.
+│   │   ├── markets-page-scraper.js            Markets-page scraper for /app/com/markets/<HUB><DEST>. NEW this session (Tier 2a). Writes 4 split key families: competitors, ownPricing, marketShare, historic. bulkLoadCache(pairs, {families}) reads any subset in one combined chrome.storage.local.get.
+│   │   ├── ors-scraper.js                     ORS rank scraper for /app/info/ors. NEW this session (Tier 2b). Per-route GET → POST handshake (Wicket can't share sessions). Walks all result pages, computes 5 rank flavors + 4 ratings, stores full connection list. Circuit-breaker on 3× consecutive 429/503.
+│   │   └── panel.js                           RouteAssistantPanel — UI. ~4200 lines after this session.
+│   │
+│   ├── flightsfrom/
+│   │   ├── data-store.js                      FlightsFromStore.
+│   │   └── scan-controller.js                 FlightsFromController (child-tab orchestrator).
+│   │
+│   ├── station-automation/
+│   │   ├── storage.js                         StationAutomation run-state storage.
+│   │   └── country-scraper.js                 CountryScraper — country/county directory walker.
+│   │
+│   ├── schedule-management/
+│   │   ├── range-buckets.js                   ScheduleFactors — distance/time math.
+│   │   ├── presets-store.js                   SchedulePresets.
+│   │   ├── schedule-store.js                  Built schedule cache.
+│   │   ├── schedule-builder.js                ScheduleBuilder — preset → wave-aware flight records.
+│   │   └── schedule-panel.js                  Dashboard schedule UI.
+│   │
+│   ├── aircraft-flights/                      Per-aircraft history panel modules.
+│   ├── inventory/                             Inventory-page validation.
+│   └── data-models/                           Shared data shapes.
+│
+├── css/content.css                            Cross-feature styles.
+├── images/                                    Logo assets.
+├── popup.html / popup.js / options.html / options.js
+└── js/jquery-3.4.1.min.js                     Vendored jQuery.
+```
+
+---
+
+## 4 · chrome.storage.local keys
+
+| Key pattern | Writer | Shape |
+|---|---|---|
+| `settings` | extension-wide | `{routeAssistant: {…}, usedAircraftScanner: {…}, …}` — single shared blob, deep-merged on load. |
+| `flightsFrom:<IATA>` | flightsfrom scraper | `{iata, scrapedAt, airportName, routes: [{destIata, destName, weeklyFlights, seatsPerWeek, distanceKm?, airlines, aircraft, detailUrl}]}` |
+| `flightsFrom:<IATA>:status` | flightsfrom scraper | `{iata, scanId, status, error?, progress: {phase, routeCount?}}` |
+| `routeAssistant:demand:<IATA>` | DemandStore | `{iata, name?, airportId?, countryId?, paxScore, cargoScore, scrapedAt, lat?, lon?}` |
+| `routeAssistant:distance:<MIN>-<MAX>` | DistanceResolver | `{distanceKm, source: "as-scheduling"\|"as-coords"\|"ff-detail", resolvedAt}`. **Pair key alphabetically sorted** (symmetric). |
+| `routeAssistant:override:<HUB>-<DEST>` | RouteOverridesStore | `{hub, dest, paxLF?, cargoLF?, yieldPerKm?, cargoYieldPerKgKm?, note?, createdAt, updatedAt}`. Directional. |
+| `routeAssistant:fuelPriceIndex` | fuel-price-scraper | `{value, unit: "ASc$/l"\|"index", date, scrapedAt, source: "table"\|"svg", sourceUrl, history?}` |
+| `routeAssistant:fuelBurnOverride:<typeId>` | fuel-burn-estimator | `{typeId, cycleL, perKmL, source: "manual", updatedAt}` |
+| `routeAssistant:typeSpec:<typeId>` | type-specs-store | `{typeId, typeName, seats, range, speed, cargoCapacity, paxSatisfaction?, …}` |
+| `routeAssistant:ticketPrice:<HUB>-<DEST>` | ticket-price-scraper (this session) | `{hub, dest, scrapedAt, source: "live"\|"fetch", flights[], primaryAircraftType, primaryAircraftTypeId, primaryAircraftReg, departureTime, weeklyFlights, dailyFlights[7], daysPerWeek, cruiseSpeedKmh, ourPrice: null, ourYield: null, orsRank: null, fareClasses: null}`. **Directional** (price/freq differ by direction). Tier 2 fields stay null until those scrapers ship. |
+| `routeAssistant:yieldHistory:<HUB>-<DEST>` | yield-snapshot.js (this session) | `{hub, dest, snapshots: [{timestamp, profitPerFlight, profitPerWeek, frequency, aircraftTypeNames, aircraftRegistrations, contributingTails, totalKnownTails, attributionMode}], lastSnapshotAt}`. **Directional**. Snapshots pruned to `historyLimit` (default 12) on each append. |
+| `routeAssistant:topRoutes` | route-assistant/panel.js (`_publishTopRoutes`) | `{hub, server, scrapedAt, count, rows: [{destIata, destName, distanceKm, score, status, paxScore, cargoScore}]}`. **Single global key** — overwritten on every panel render with up to 50 visible scored rows. Consumer: Used Aircraft Scanner deal-metrics (route-fit count). |
+| `routeAssistant:carriers:<HUB>-<DEST>` | carriers-scraper.js (Letter F) | `{hub, dest, scrapedAt, source: "ff-detail", carriers: [{name, code?, weeklyFlights?, aircraftTypes?: []}], totalAirlines, totalWeeklyFlights, parserNotes?}`. **Directional**. Sourced from `flightsfrom.com/<HUB>-<DEST>` cross-origin fetch. `parserNotes` populated when no carrier markup matched (SPA didn't SSR the list). |
+| `routeAssistant:enterpriseMeta:<id>` | enterprise-meta-scraper.js (this session — F slice 2) | `{enterpriseId, server, name, iata?, bannerUrl?, avatarUrl?, scrapedAt, parserNotes?}`. **NOT directional** — enterprise metadata is a property of the enterprise, not the route, so the same record serves every route that competitor appears on. Sourced from `/app/info/enterprises/<id>` cross-origin fetch (covered by `host_permissions`). 90-day default TTL; user-driven re-sync via the Carriers expander CTA. |
+| `routeAssistant:markets:competitors:<HUB>-<DEST>` | markets-page-scraper.js (this session — Tier 2a) | `{hub, dest, scrapedAt, source: "live"\|"fetch", competitors: [{flightCode, flightId, typeCode, typeId, depDateUtc, depDateLocal, depTimeUtc, depTimeLocal, arrTimeUtc, arrTimeLocal, serviceClass, availability, price, status, isOurs}]}`. **Directional**. Every competitor flight on the route with its actual prices + availability + status. |
+| `routeAssistant:markets:ownPricing:<HUB>-<DEST>` | markets-page-scraper.js (this session — Tier 2a) | `{hub, dest, scrapedAt, source, prices: {Y, C, F, Cargo}, defaults: {…}, sliderRanges: {Y: [1, 296], …}, generalSettings: {originTerminal, destinationTerminal, serviceProfile, boardingPreference, cargoPreference}}`. **Directional**. Snapshot of the markets-page Pricing fieldset; Tier 3 write-back will POST against the same endpoint. |
+| `routeAssistant:markets:marketShare:<HUB>-<DEST>` | markets-page-scraper.js (this session — Tier 2a) | `{hub, dest, scrapedAt, source, period: "17/2026", pax: [{rank, name, enterpriseId, sharePct, change}], cargo: [{…}]}`. **Directional**. Default `shareMaxAgeDays: 7` (weekly cadence). |
+| `routeAssistant:markets:historic:<HUB>-<DEST>` | markets-page-scraper.js (this session — Tier 2a) | `{hub, dest, scrapedAt, source, payload: "ECONOMY", periods: ["202545"…"202617"], capacities: [25 ints], prices: [25 ints]}`. **Directional**. Parsed from inline `lineChart(…).setData([…])` calls in the page's `<script>` blocks. |
+| `routeAssistant:ors:<HUB>-<DEST>` | ors-scraper.js (this session — Tier 2b) | `{hub, dest, scrapedAt, params: {payload, departureH, arrivalH, useGround}, totalConnections, ourFlightIds[], ourCarrierPrefixes[], rankAny, rankFirstLegOurs, rankAllOurs, rankNonstop, rankBookable, ourTopRating, ourBestNonstopRating, topCompetitorRating, ratingGapToTop, connections: [{idx, rating, totalDuration, totalPrice, bookable, legs: [{flightCode, flightId, typeCode, typeId, rating, price, serviceClass, status, isOurs, isGround}]}]}`. **Directional**. Single key per route; ~10KB. **Connections is the source of truth** — every rank flavor is re-derivable, never re-scrape just to display a different metric. |
+| `<server><airline>schedule` | content_fligthSchedule.js | `{type:"schedule", server, airline, date: {<YYYYMMDD>: {…schedule arrays…}}}`. ORS scraper reads this to build the "our flight numbers" set for `isOurs` detection. |
+| `<server>aircraftFlights<aircraftId>` | content_aircraftFlights.js | per-aircraft profit/flight history. Used by Fleet Mgmt page directly; **read by yield-snapshot.js** to derive per-route actuals. Shape: `{aircraftId, server, registration, equipment, date, time, profit, profitFlights, finishedFlights, totalFlights, type:"aircraftFlights"}`. |
+| `<server>marketScan:<scanId>` | scan-session-store | One scan's queue/state. |
+| `<server>marketScan:<scanId>:r:<typeSlug>` | scan-controller (child tabs) | One per-type result blob. |
+| `<server><airlineCode>stationAutomationRun:<runId>` | station-automation | One run's progress + results. |
+
+**Stable** — every prefix above is contract. External code reads them.
+
+---
+
+## 5 · Settings shape
+
+### `settings.routeAssistant` (defaults from `RouteAssistantSettings._defaults()`)
+
+```js
+{
+    scoring: {
+        paxScore:      {enabled, weight, direction, min, max},
+        cargoScore:    {…}, weeklyFlights: {…}, airlineCount: {…},
+        profitPerWeek: {…}, fitOk: {…},
+        actualProfitPerWeek: {…}    // Yield Feedback — score routes by realised $/wk
+    },
+    filters: {
+        minScore, maxDistanceKm,
+        statuses: {NEW, OK, UNDER, OVER, OOR},
+        fleetFlyableOnly
+    },
+    flightsfromMaxAgeDays,
+    distanceMaxAgeDays,
+    collapsed,
+    viewMode,                        // "all" | "pax" | "cargo" — tabbed table view
+    aircraft: {mode, typeId, registration, falloffPct, showAircraftColumns},
+    economics: {
+        loadFactor, loadFactorMin, loadFactorMax,
+        yieldPerKm, yieldDemandSensitivity,
+        cargoYieldPerKgKm, cargoLoadFactor, cargoLoadFactorMin,
+        cargoLoadFactorMax, cargoYieldDemandSensitivity,
+        fuelCostPerHour, fuelPriceAutoEnabled, fuelPriceBaselineCost,
+        fuelPriceBaselineValue, fuelPriceBaselineUnit, fuelAgePenaltyPerYear,
+        crewCostPerHour, maintenanceCostPerHour, otherFixedPerFlight,
+        falloffYieldMultiplier
+    },
+    pricing: {                    // Auto-Pricing scrape config
+        showPricingColumns,       // gate the Live route data columns
+        concurrency, staggerMs,
+        lastBulkScrapeAt, priceMaxAgeDays,
+        autonomyMode,             // off | suggest | oneClick | batch (T2/T3)
+        silentAutoEnabled,        // separate gate for silent auto-apply
+        targetMargin, competitorAdjust  // T2 placeholders
+    },
+    yieldFeedback: {              // Roadmap G — actual-yields feedback loop
+        showColumns,              // gate the Actuals column group (Act $/flt + Δ%)
+        varianceWarnPct,          // ±X% triggers the Δ% highlight (default 25)
+        attributionMode,          // "frequency" | "distance" | "equal"
+        historyLimit,             // newest N snapshots kept per route (default 12)
+        lastSnapshotAt,           // unix-ms; surfaces in the expander
+        autoSnapshotOnMount       // off by default; manual Snapshot CTA only
+    },
+    carriers: {                   // Letter F — full carrier list per route
+        showCarrierIntensity, concurrency, staggerMs,
+        lastBulkScrapeAt, carriersMaxAgeDays
+    },
+    marketAnalysis: {             // Tier 2a — markets-page scrape config
+        showColumns,              // gate Mkt% / Cmp# / Cmp$ / Drft cols
+        concurrency, staggerMs,
+        lastBulkScrapeAt,
+        competitorMaxAgeDays,     // null = never expire
+        shareMaxAgeDays,          // 7 default — weekly cadence
+        historicMaxAgeDays,
+        defaultPayloadChart       // PAX | ECONOMY | BUSINESS | FIRST | FREIGHT
+    },
+    ors: {                        // Tier 2b — ORS rank scrape + display config
+        showColumns,
+        concurrency,              // 2 default — ORS = expensive AS solver
+        staggerMs,                // 1500 default
+        lastBulkScrapeAt, rankMaxAgeDays,
+        // Default scrape parameters (all surfaced in the expander):
+        defaultPayload,           // ECONOMY | BUSINESS | FIRST | CARGO
+        defaultDepartureH,        // 0..48
+        defaultArrivalH,          // 24..72
+        defaultUseGround,         // bool
+        // Display preferences — every rank flavor surfaceable:
+        primaryColumn,            // ratingGapToTop | rankAny | rankFirstLegOurs |
+                                  // rankAllOurs | rankNonstop | rankBookable |
+                                  // ourTopRating | ourBestNonstopRating
+        showRankAnyColumn, showRankNonstopColumn,
+        showRatingGapColumn, showCompetitorCountColumn,
+        minRatingThresholdDisplay,   // hide values where ourTopRating < N
+        // Carrier identification override (e.g. "FGM,NYO" for multi-airline users):
+        airlineCarrierPrefixOverride,
+        // Circuit-breaker state — bulk button disabled for cooldown after trip:
+        circuitBreakerTrippedAt, circuitBreakerCooldownMs   // 600000 default = 10 min
+    }
+}
+```
+
+Defaults are deep-filled on load — adding new fields in a future version doesn't wipe user-tuned siblings.
+
+### `settings.usedAircraftScanner` (defaults from `UsedAircraftPresets._defaults()`)
+
+```js
+{
+    presets: [{id, name, types: string[]}],   // user-defined preset list
+    typeFamilyOverrides: {<asLabel>: <familyName>},
+    concurrency, staggerMs, lastScanId,
+    routeFilter: {minRangeKm},
+    scoring: {
+        ageYears: {enabled, weight, min, max}, conditionPct: {…},
+        seats: {…}, cargoCapacity: {…}, speed: {…}, range: {…},
+        paxSatisfaction: {…}, nextBid: {…}, immediatePurchase: {…},
+        leasingRate: {…}
+    }
+}
+```
+
+---
+
+## 6 · AS endpoints used
+
+| URL | Method | Purpose |
+|---|---|---|
+| `/action/info/countries` | GET | Country directory (StationAutomation, Route Assistant seed). |
+| `/action/info/country?id=<id>` | GET | Country page (airports + demand). |
+| `/action/info/county?id=<id>` | GET | Region page (US states, Russia oblasts; AS spelling: "county"). |
+| `/action/info/airports/<airportId>` | GET | Airport detail (lat/lon for great-circle). |
+| `/action/portal/index` | GET | World fuel price scrape (table → SVG fallback). |
+| `/action/holding/stockexchanges` | GET | Fuel price secondary source. |
+| `/action/enterprise/aircraftsType?id=<typeId>` | GET | Aircraft type specs. |
+| `/app/com/scheduling/<HUB><DEST>` | GET | **Distance** (header) + **live route data** (Flight Numbers overview table + segments matrix). 6-char concatenated path. NO prices, NO ORS rank. |
+| `/app/info/enterprises/<id>?tab=3` | GET | Own-schedule extract. |
+| `/app/info/enterprises/<id>` | GET | Enterprise overview page — read by `enterprise-meta-scraper.js` (F slice 2) for banner + avatar + display name; also the link target from the Cmp popover's clickable enterprise names. |
+| `https://www.flightsfrom.com/<IATA>` | GET (cross-origin) | Hub destination listing. |
+| `https://www.flightsfrom.com/<HUB>-<DEST>` | GET (cross-origin) | Pair detail page — used by both distance tier-3 fallback **and** the Letter F carriers-scraper for the per-route carrier list. |
+| `/app/com/markets/<HUB><DEST>` | GET | **INTEGRATED (Tier 2a, this session).** Per-route Market Analysis page. Source for: every competitor flight with prices + availability + status (`#inventory-table`), your own pricing form snapshot (Pricing fieldset), market-share leaderboard (pax + cargo), 25-week historic capacity/price charts (parsed from inline `lineChart(…).setData([…])`). Live-capture via `content_markets.js` + bulk-sync via the panel's Market Analysis expander. |
+| `/app/info/ors` | POST (after GET handshake) | **INTEGRATED (Tier 2b, this session).** Online Reservation System search form. The actual sort the AS demand model runs against. Per-route GET first to harvest Wicket session + form action, then POST with `origin-group:…:origin = <full airport name>`, `destination-group:…:destination = <name>`, `payload = radio0\|radio1\|radio2\|radio3`, `departure-group:…:departure = <0-48>`, `arrival-group:…:arrival = <24-72>`, `ground:useGroundNetwork = on`. Walk pagination via `.navigation a.next` (sample: 77 connections / 3 pages for JFK→LAX). |
+| `/app/com/markets/<HUB><DEST>` (POST `?<wicket>-pair~form`) | POST | **TIER 3 TARGET (open).** Pricing write-back. Form fields: `classes:prices:0:newPrice` (Y), `:1:` (C), `:2:` (F), `:3:` (Cargo) + `submit-prices` button. |
+| `/action/enterprise/flightsPrices` | GET | Global pricing list. Not currently used — the markets-page per-route data is preferred per user. |
+| `/app/com/inventory/<HUB><DEST>` | GET | Per-route inventory + fares. Linked from scheduling page; not currently scraped (markets page covers it). |
+
+All AS reads use `fetch(url, {credentials: "include"})` + `DOMParser`. No writes to AS today.
+
+---
+
+## 7 · AS quirks (relearn-the-hard-way avoided)
+
+- **Wicket session URLs.** AS pages have a numeric Wicket suffix like `?239`. Fetching without it usually still works (server redirects). The market scanner's child-tab worker uses `sessionStorage` to persist context across Wicket navigations.
+- **Country/county spelling.** Region-level URLs use AS's spelling `/action/info/county` (US states, Russia oblasts). The country-scraper handles both spellings.
+- **Airport detail page.** `/app/info/airports/<airportId>`. There's **no per-IATA lookup** endpoint — `/action/info/airports?searchString=` returns 404. IATA → airportId is cache-only via DemandStore.
+- **Demand 0–10.** Encoded in image filenames `<n>.png` where `n` is 1-indexed (`1.png` = score 0, `11.png` = score 10). `CountryScraper._readDemandBars` subtracts 1.
+- **Scheduling page URL.** `/app/com/scheduling/<HUB><DEST>` — concatenated 6-character path. Page header: e.g. `New York (JFK) – Los Angeles (LAX) 3,971 km` (distance source). The **Flight Numbers overview table** (legend "Flight Numbers") is the cleanest source for live route data — flight number, departure time, frequency-days pattern (`1234567`/`_234567`/etc.), assigned aircraft (registration link + type link). This page does **NOT** carry prices or ORS rank.
+- **Multi-daily routes.** A single route can have multiple flight numbers AND multiple frequency rows per FN. The right representation is **per-day flight counts** (`dailyFlights[7]` Mon→Sun, integer count) not "days flown". `2222211` = 2x Mon–Fri + 1x weekends = 12/wk. Real-airline-style notation.
+- **Server name.** `window.location.hostname.split(".")[0]` (e.g. `free1`, `tristar`). Storage keys are scoped per-server.
+- **Pricing surfaces.** AS prices live on `/action/enterprise/flightsPrices` (global) and `/app/com/inventory/<HUB><DEST>` (per-route). NOT on the scheduling page.
+- **ORS rank surfaces.** True ORS rank lives on `/app/info/ors` — submit the connection-search form (origin/destination/payload/window/ground) and parse the result list. Each `<tbody class="bookable\|unbookable">` is one connection; `<tr class="totals">` carries the connection-level rating (e.g., 67 for the top JFK→LAX nonstop in the sample). The markets-page market-share leaderboard is NOT the same as ORS rank — it's a per-period booking outcome, not a search-engine sort.
+- **Wicket form POST.** The ORS form is Apache Wicket. Each scrape requires a fresh GET → POST handshake — page-version IDs increment per interaction; reusing a stale session returns a `PageExpiredException` HTML page that parses as zero results (silent corruption). Concurrency=2 / stagger=1500ms keeps the per-route 2-request handshake cost manageable. Circuit breaker on 3× consecutive 429/503 prevents soft-bans during long bulk runs.
+- **Markets-page split storage.** One scrape of `/app/com/markets/<HUB><DEST>` writes 4 chrome.storage.local key families (`competitors`, `ownPricing`, `marketShare`, `historic`) so each can have its own freshness window. `RouteAssistantMarketsPageScraper.bulkLoadCache(pairs, {families: […]})` accepts a families array and issues one combined `chrome.storage.local.get`, so the split costs no extra round trip.
+- **AS version.** Currently 6.13.x. Page format changes happen — when a parser stops matching, grep for the relevant label and update selectors.
+
+---
+
+## 8 · How to test cold
+
+1. **Load.** `chrome://extensions` → Developer mode → Load unpacked → select `/Users/jihwan/Downloads/AES.v0.6.9-beta`. Or "Reload" if already loaded.
+2. **Used Aircraft Scanner.** Dashboard → AES dropdown → Used Aircraft Scanner. Confirm:
+   - Family-card grid renders with chips strip + category filter row + search input + custom-add row.
+   - Pick a small preset or tick a few types in the narrowbody category.
+   - Click **Start scan**. Child tabs open (allow popups for `*.airlinesim.aero`); queue table populates; results stream in.
+   - Results table has **Family** column at index 0 (or 1 when scoring active), with a 4px color rail down the leftmost cell.
+   - Click **Download CSV** — Family column present.
+3. **Route Assistant — basic.** Visit `/app/com/scheduling`. Panel mounts bottom-right (~1 s). If first-time on this game world: purple "demand cache empty" banner → click **Seed all countries** (5–15 min, one-time).
+4. **Auto-Pricing Tier 1 — live capture.** Open `/app/com/scheduling/JFKLAX` (or any route you fly). Open DevTools console. Within ~2 s, log:
+   ```
+   [AES routeAssistant] scheduling page parsed: 1 flight(s), primary=Boeing 767-300F, dep=06:05, 7/wk pattern=1111111, cruise=851km/h
+   [AES priceScraper] live-captured JFK→LAX {…}
+   ```
+5. **Auto-Pricing Tier 1 — bulk sync.** Back on `/app/com/scheduling`, open the Route Assistant panel's **Live route data** expander. Click **Sync route data for all visible routes**. Watch progress: `Syncing route data: 12/87…`. After completion, **Eq / Dep / Wk** columns populate (Wk shows `12 2222211` style). Hover `Wk` → tooltip with per-day breakdown.
+6. **Sanity-check distances.** JFK → LAX should be ~3,975 km, JFK → LHR ~5,540 km. Console logs `via as-scheduling` / `via as-coords` / `via ff-detail` per route.
+7. **Console clean.** No JS errors during any flow.
+
+If the Used Aircraft Scanner first-run logs `[AES priceScraper] no price/yield/ORS labels matched` — that's expected on the scheduling page; pricing/ORS aren't there. If `Wk` shows `—` for routes that have `Eq` and `Dep`: cache predates the multi-daily shape; click Sync to refresh.
+
+8. **Tier 2a — Markets page live capture.** Open `/app/com/markets/JFKATL` (or any active route). DevTools console within ~2s:
+   ```
+   [AES marketsScraper] live-captured JFK→ATL competitors=N pricing=Y/C/F/Cargo share=4 hist=25
+   ```
+9. **Tier 2a — Markets bulk sync.** Back on `/app/com/scheduling`, open the new teal **Market Analysis** expander. Click **Sync market analysis for all visible routes**. Watch progress; after completion the **Mkt% / Cmp# / Cmp$ / Drft** columns populate. Drft shows "drift" when your prices diverge from defaults, "dflt" otherwise. Hover Mkt% for the period + top-5 leaderboard.
+10. **Tier 2b — ORS rank.** Open the new amber **ORS Rank** expander. Choose payload (default Y) / window (default Wide 0–72h) / ground network (default on). Click **Sync ORS rank for all visible routes**. Pace ~30 routes/min. After completion, the **ORS** column shows your selected primary metric (default `ratingGapToTop`, signed; positive = winning). **RkNS / Gap / OrsC#** columns also populate. Click the ▾ on any ORS cell to drill into the cached connection list — no re-fetch.
+11. **ORS — primary column swap.** Change the **Primary column** dropdown in the ORS expander to "Rank — own nonstop". Confirm the ORS column re-renders with `#1`-style values without re-scraping.
+12. **ORS — circuit breaker.** Set ORS concurrency=10 in DevTools (`settings.routeAssistant.ors.concurrency = 10`) and trigger a bulk sync. After 3× consecutive 429/503, the expander shows a red banner with countdown and the bulk button disables.
+13. **Two-enterprise sanity.** If you operate FLY NYON. + NYON. on the same world, confirm both prefixes appear in `routeAssistant:ors:JFK-LAX → ourCarrierPrefixes` and connections from either enterprise are highlighted in the drill-in drawer.
+
+---
+
+## 9 · Open work / next steps
+
+Pulled from `MANUAL.md §16` (the master roadmap, letter-coded A–K) and the user's confirmed direction.
+
+### Immediate
+| Item | Status | Blocker |
+|---|---|---|
+| ~~**Auto-Pricing Tier 2a — Markets page**~~ | ✅ **Shipped this session.** See §1. Note the user actually wanted Tier 2a as the markets-page scraper (competitor flights + own pricing + market shares + historic charts), not just ORS rank — see new §1 for details. | — |
+| ~~**Auto-Pricing Tier 2b — ORS rank**~~ | ✅ **Shipped this session as the ORS scraper.** True ORS rank from `/app/info/ors`, not the markets page (where the leaderboard is per-period booking outcomes, a different metric). | — |
+| **Auto-Pricing Tier 3 — Apply / write-back** | Open. POST to `/app/com/markets/<HUB><DEST>?<wicket>-pair~form` with `classes:prices:N:newPrice` body. Per-route "Apply" button + batch-confirm modal default. Silent-auto behind a separate explicit setting (already wired into `settings.pricing.silentAutoEnabled`). |
+
+### Next
+| Letter | Item | Notes |
+|---|---|---|
+| **Tier 3** | Auto-Pricing apply / write-back | HIGH risk. Per-route "Apply" + batch-confirm modal default. Silent-auto behind separate explicit setting. POST to AS form. |
+| ~~**Tier 4**~~ | ~~Yield feedback loop~~ | ✅ **Shipped this session as Roadmap G slice 1.** Folded into the new yield-feedback expander. Slice 2 is delta-mode + auto-snapshot. |
+| ~~**J slice 2**~~ | ~~Used Aircraft Scanner — smarter deal-scoring~~ | ✅ **Shipped this session.** See §1 / §2. Six new metrics; `pricePerSeat` enabled by default in scoring blend. |
+| ~~**F**~~ | ~~Full carrier list per route~~ | ✅ **Shipped this session.** See §1 / §2. New `routeAssistant:carriers:<HUB>-<DEST>` cache, colored intensity pill on Cmp column, hover tooltip with per-carrier list. **Caveat:** flightsfrom.com is a SPA — when their server doesn't SSR the carrier list (page returns skeleton HTML) the cache row carries `parserNotes` and an empty `carriers: []`. A future slice can add a child-tab worker for guaranteed extraction. |
+| ~~**G**~~ | ~~Yield-timeline / actual-yields feedback~~ | ✅ **Slice 1 shipped this session.** See §1 "Yield Feedback". Slice 2 (deferred): delta-mode (snapshot-to-snapshot rather than cumulative averages), per-status `VAR+`/`VAR−` flag in the status column, auto-snapshot-on-mount, batch "calibrate all flagged routes". ~150 LOC. |
+| **H** | Wave + interlining + slot management | Tier 3, multi-session, ~600 LOC. Reuses `modules/schedule-management/`. |
+| **I** | ORS-aware pricing simulation | Tier 3, ~500 LOC. **Was blocked on F + G + K — F and G now shipped, only K remains.** |
+| **K** | Deeper per-route demand from AS market analysis | Tier 3, ~300 LOC. Heavy scraping; gate behind explicit CTA. Prereq for I. |
+| **J slice 3** (new) | Used Aircraft Scanner — surface deal-metric tooltips with input breakdown | Hover the `BE (days)` cell to see the daily-revenue + daily-cost breakdown that produced the number; same for `$/seat·km/yr`. Helps users sanity-check why an offer scored where it did. ~80 LOC. |
+| **J slice 4** (new) | Used Aircraft Scanner — route-fit upgrade beyond range | Currently route-fit only counts hub→dest distance ≤ aircraft range. Add seats-vs-demand check (paxScore × frequency target ≤ aircraft seats × LF) for tighter scoring. Cross-checks `RouteAssistantSettings.economics`. ~120 LOC. |
+| ~~**F slice 2**~~ | ~~Carriers — AS-native enterprise enrichment in the Cmp tooltip~~ | ✅ **Shipped this session.** New `modules/route-assistant/enterprise-meta-scraper.js` fetches `/app/info/enterprises/<id>` per AS competitor and caches `{name, iata, bannerUrl, avatarUrl}` at `routeAssistant:enterpriseMeta:<id>` (90d TTL, single global key per id — non-directional). Cmp pill replaced its native `title=""` with a custom DOM popover (hover-open with 200ms delay, 250ms grace on leave, click-to-pin, Escape/outside-click dismiss — same pattern as `_openProfitModifierPopover`). Each row in the popover shows avatar + clickable name link to `/app/info/enterprises/<id>` + banner + share% + ▲/▼ change + rank, sorted by share. Falls back to the plain-text tooltip when `marketSharePax` is empty (routes without markets-scraper hits). New "Sync enterprise data" CTA in the Carriers expander batches the per-id fetches (default 4 concurrent / 600ms stagger). |
+| **F slice 3** (new — user-requested, future) | Carriers — interlining (IL) agreement indicator | Adds an ⇄ glyph next to enterprises you have a codeshare/IL agreement with, mirroring the IL column in AS's own Stations table. **Source TBD:** likely AS Commercial → Cooperation page or a per-enterprise IL list. New cache `routeAssistant:interlineAgreements` → `{server, airline, scrapedAt, partners: [{enterpriseId, type, status}]}` (single key, refreshed via a dedicated CTA). Builds on top of F slice 2's popover. ~150 LOC. |
+| **L** (NEW — user-requested, ultimate goal) | Multi-account "canopy" — manage multiple AS accounts as one virtual airline group | **Vision:** the user runs several AS accounts/enterprises (today: FLY NYON. + NYON., potentially more across game worlds). Today each requires a separate browser login + manual context switch. Goal is a single AES interface that holds saved credentials + session cookies for every account, transparently logs in/out as the user navigates, and aggregates every account's routes / fleet / yields / market shares / ORS rank into one consolidated dashboard. The user manages a whole "canopy" of routes across all profiles from one panel and never thinks about which account they're logged into. **Sub-features:** (1) Account-vault store with encrypted credentials + per-account session cookies, refreshed on demand. (2) Background tab orchestrator that opens a hidden tab per account, logs in if expired, runs a scrape pass, closes the tab. (3) Aggregator layer above existing per-server caches — new schema like `aesCanopy:account:<accountId>` referencing existing `<server>` keys. (4) Cross-account columns in the Route Assistant (e.g. "Best account for this route", "Routes my OTHER airline already flies"). (5) Cross-account scheduler that flags conflicts (same hub-pair operated by multiple of your airlines = pricing self-cannibalisation). (6) Permission/safety gates — bulk write actions (Tier 3 pricing apply, station opens) confirm per account. **Risks:** AS may have ToS limits around session sharing / multi-instance use; needs to read AS rules on automation. Login automation is fragile (CAPTCHA, MFA). Heavy storage growth. Probably the largest single feature on the roadmap — Tier 4, multi-session build, ~2000+ LOC. **Prereqs:** essentially every existing feature (this depends on each scraper being canopy-aware; refactor work first). |
+
+### Tech debt
+- **Rename `ticket-price-scraper.js`** → `schedule-page-scraper.js` once Tier 2 has a real price scraper. Defer until then to minimize churn.
+- **Family-card grid override-walk** — slice 1 only walks the static `AS_TYPE_TO_FAMILY` map. User overrides land in the Custom card. A future slice should surface overridden labels inside their target family card.
+- **Existing presets with multi-daily routes** — Wk column reads legacy cache via `frequencyPattern` fallback; one Sync click re-writes to the new `dailyFlights[]` shape.
+- **`routeAssistant:topRoutes` freshness** — written every panel render, but the Used Aircraft Scanner reads on dashboard mount and never re-checks. If the user retunes weights and immediately scans, the dashboard will use the stale snapshot from the last RA panel visit. Acceptable for now; a `chrome.storage.onChanged` listener on the dashboard would auto-refresh the context (~20 LOC).
+- **Break-even daily-hours assumption** — `MarketScanDealMetrics.DAILY_BLOCK_HOURS` is hard-coded at 10. A future tweak could pull it from a per-aircraft-class table (regionals 8, narrow 12, wide 14) or expose it as a setting. Today the constant is tuned for "earliest-sensible payback" rather than optimistic.
+- **Carriers SSR fragility** — `RouteAssistantCarriersScraper` parses the initial HTML returned by `fetch(flightsfrom.com/<HUB>-<DEST>)`. When flightsfrom doesn't SSR the carrier list (or changes their markup), the record stores `parserNotes` describing what was tried and `carriers: []`. The panel falls back to the plain `airlineCount` integer in that case. A child-tab worker (parallel to `content_flightsFrom.js`) would let the SPA hydrate before extraction; defer until we observe SSR failing in practice.
+- **Competitive-intensity bands** — three-band thresholds (1 / 2-3 / 4+) are intuition-tuned, not data-fit. If users want different cutoffs the boundaries should move into `settings.routeAssistant.carriers` as `{lowMax, midMax}`.
+- **Enterprise-meta selector fragility** — `enterprise-meta-scraper.js` walks 4 strategies (`[class*='banner']`, `[class*='avatar' / 'logo' / 'profile']`, `og:image`, header-img) and disambiguates banner-vs-avatar by candidate width + class keywords. AS markup tweaks could break this. Records carry `parserNotes` so the failure mode surfaces in the popover footer ("Some banners/avatars missing — open Settings → Carriers → Sync enterprise data"). When the heuristic genuinely lands the wrong image in the banner slot, the user can right-click the popover row in a future slice to re-tune.
+- **Tabbed view — per-tab weights not stored** — switching the tab gates which scoring fields contribute, but the *weight* for each field is shared across all three tabs. A user who wants `weeklyFlights × 1` on Pax but `× 0.5` on Cargo today can't express it. If demanded, lift `settings.routeAssistant.scoring` from a single block to `{all: {…}, pax: {…}, cargo: {…}}` with deep-fill on load.
+
+---
+
+## 10 · Open invariants — don't break without checking
+
+- Every `chrome.storage.local` key prefix in §4 is **stable**. Other features and saved user data read them.
+- `RouteAssistantPanel.SCORING_FIELDS[i].field` ↔ `RouteAssistantPanel.COLUMNS[i].field` for any variable that's both scored and displayed.
+- `RouteAssistantSettings.load()` always returns a fully-populated object (deep-merged with `_defaults()`). Never assume a freshly-loaded settings object lacks a field.
+- `_pairKey` in `distance-resolver.js` is **alphabetically sorted** — distance is symmetric. `_pairKey` in `ticket-price-scraper.js` AND `yield-history-store.js` is **directional** — price/freq/profit differ by direction. Different rule per file; easy to mix up.
+- `enterprise-meta-scraper.js` is **NOT keyed by route** — its cache key is `routeAssistant:enterpriseMeta:<enterpriseId>`. The same record is reused across every route the enterprise competes on. Don't add HUB/DEST to the key; you'd just blow up storage with duplicates.
+- **Tabbed view (`viewMode`)** — `RouteAssistantPanel._columnModes(col)` and the SCORING_FIELDS `modes` array gate visibility per tab. The "all" tab MUST keep every field active (preserves the pre-tabbed score blend for users who don't switch tabs). New scoring/column entries that should hide on focused tabs need an explicit `modes` array; entries without one default to all three modes.
+- Yield Feedback v1 stores **cumulative-average** $/flt per route, not periodic deltas. The `aircraftFlights` source is itself cumulative; slice 2 needs to subtract the previous snapshot's cumulative numbers to get true periodic yield. Don't change this without updating slice-2 expectations.
+- `dailyFlights` is always a 7-element array (Mon→Sun); `weeklyFlights = dailyFlights.reduce(+, 0)`; `daysPerWeek = dailyFlights.filter(>0).length`.
+- The aggregator's `applyFleetContext(rows, null)` clears every fleet-derived field. Calling with `null` must reset to a clean Phase-1-style row.
+- Cargo revenue defaults to OFF (`cargoYieldPerKgKm: 0`). Don't change the default; existing users would see surprise number shifts.
+- Family-card grid does NOT walk `block.typeFamilyOverrides`. Override-walk is a slice-2 concern; scan-time controller still honors overrides.
+- Phase 1 + 1.5 + 2 + 2.5 + 2.6 + 2.7 are all in production with user-tuned settings. Don't rip features without confirming.
+- `routeAssistant:topRoutes` is **slim by design** (only the fields the Used Aircraft Scanner consumes). Adding fields here grows the per-render storage write — confirm a new consumer before extending.
+- `MarketScanDealMetrics.decorate()` mutates the row it's given. `MarketScanResultsTable._enrichDeal` always passes a fresh `Object.assign({}, r)` copy — new callers must do the same to avoid stomping `this.rows`.
+- `RouteAssistantCarriersScraper._pairKey` is **directional** — `<HUB>-<DEST>` matches the flightsfrom URL pattern. Different from the symmetric `_pairKey` in `distance-resolver.js`. Easy to mix up.
+- `RouteAssistantPanel._showCarrierIntensity` is a static class field updated in `_syncRenderContext()` from `settings.carriers.showCarrierIntensity`. The Cmp column's `render` closure reads it at draw time — adding new closures that depend on the carriers settings should follow the same pattern (don't reach back into a panel instance).
+- **Markets-page split storage.** `routeAssistant:markets:*:<HUB>-<DEST>` is **4 sibling key families**, not one blob. Always read via `RouteAssistantMarketsPageScraper.bulkLoadCache(pairs, {families: [...]})` so the read amplifies into one combined `chrome.storage.local.get`. Writers MUST go through `saveAllRecords` — direct writes risk leaving the families out of sync.
+- **ORS connections array is the source of truth for all rank flavors.** `routeAssistant:ors:<HUB>-<DEST>.connections` is the cached connection list; every rank flavor (`rankAny`, `rankNonstop`, …) and rating (`ourTopRating`, `ratingGapToTop`, …) is derived from it at scrape time. Adding a new rank metric should ALWAYS be a pure-function read against `connections`, never a re-scrape. The user explicitly chose "MAXIMISE OPTIONS" — keep that contract: store maximum data, filter at render time.
+- **ORS Wicket per-route handshake.** Each `RouteAssistantOrsScraper.scrape()` does GET → POST. Do NOT try to share a wicket session across the bulk batch — page-version IDs increment per interaction; reusing a stale session returns a `PageExpiredException` HTML page that parses as zero results (silent corruption). The 2-request handshake cost is acceptable at concurrency=2 / stagger=1500ms.
+- **ORS circuit breaker is mandatory.** First HTTP 429/503 increments `_consecutiveErrors`; 3 in a row halts the bulk run, persists `settings.ors.circuitBreakerTrippedAt`, and disables the bulk button for `circuitBreakerCooldownMs` (default 10 min). Never silently retry through rate limits.
+- **`_pairKey` rule (recap, growing list).** Symmetric (alphabetically sorted): `distance-resolver.js`. Directional (`<HUB>-<DEST>` literal): `ticket-price-scraper.js`, `yield-history-store.js`, `route-overrides-store.js`, `carriers-scraper.js`, **`markets-page-scraper.js`** (this session, all 4 families), **`ors-scraper.js`** (this session). Different rule per file; easy to mix up.
+- **`isOurs` detection** in `RouteAssistantOrsScraper.computeRanks` does **flight-number set match first, carrier-prefix fallback second**. Per user direction (option C of three offered). The flight-number set comes from the `<server><airline>schedule` cache (per-route `flightNumber: {FN1: {…}, FN2: {…}}` keys). For multi-enterprise users, both schedules contribute prefixes via `getOurCarrierPrefixes`.
+
+---
+
+## 11 · What's been said (recent context)
+
+- Auto-Pricing autonomy: c+d (one-click + batch-confirm) by default; silent-auto behind a separate explicit setting.
+- Pricing UI: separate "Live route data" expander, not folded into Economics drawer.
+- Tier order: 1 → 2a → 2b → 3 → 4. No skip-ahead.
+- `Wk` column convention: real-airline-style per-day pattern (`2222211`) over "days flown" so multi-daily routes are accurate.
+- Tier 2a parser: write against a real HTML sample (no heuristic-and-iterate this time).
+- Pricing surfaces: user said "no separate price pages" — meaning prefer the markets page and possibly inventory; defer the global `/action/enterprise/flightsPrices` until needed.
+- J slice 2 chosen this session over the (blocked) Auto-Pricing Tier 2a/2b. User will follow up with HTML samples for the Auto-Pricing Tier 2 work in a separate session.
+- **This session — Tier 2a + 2b.** User shared HTML samples for `/app/com/markets/JFKATL`, `/app/info/ors` (empty + populated JFK→LAX). User chose: build Tier 2a (markets) first then 2b (ORS); identify "our" connections by flight-number match preferred + carrier-prefix fallback (option C of three); fetch ALL ORS pages (not just page 1); store split per-family for markets (4 keys); two new expanders (Market Analysis + ORS Rank); **MAXIMISE OPTIONS AND CHOICE FILTERINGS** for ORS — surface every rank flavor + every form input as user-tunable settings.
+- Plan agent recommended trimming ORS rank flavors to 4 + cutting filter UI in half; this was overridden per the user's explicit "MAXIMISE OPTIONS" direction. Strategy: store maximum data, filter at render time. All 5 rank flavors stored, 8 rank flavors selectable as primary column, all form inputs (payload, window, ground, prefix override, threshold) exposed.
+- Letter F chosen as the next unblocked deliverable after J slice 2 — small bridge work, builds on the existing flightsfrom infra, opens up I (ORS sandbox) by knocking out one of its three prereqs.
+- Roadmap G chosen for the yield-feedback work (subsumes Auto-Pricing Tier 4). v1 is cumulative-average attribution; delta-mode and auto-snapshot left for slice 2 to keep the diff focused.
+- Attribution default = **frequency-weighted**: each tail's lifetime average $/flt × its weekly flights on a route. Distance-mode + equal-split exposed in the dropdown but unverified — frequency is the one to defend.
+- Calibrate-from-actuals affordance lives inside the existing per-route override editor (right-click a row), not as a one-click bulk action — high-impact write deserves a confirmation step.
+
+End of handover.
