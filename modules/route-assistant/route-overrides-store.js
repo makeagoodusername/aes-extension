@@ -11,12 +11,19 @@
  * directional record shape.
  *
  *   routeAssistant:override:<HUB>-<DEST>  →
- *     {hub, dest, paxLF?, cargoLF?, yieldPerKm?, cargoYieldPerKgKm?, note?, createdAt, updatedAt}
+ *     {hub, dest, paxLF?, cargoLF?, yieldPerKm?, cargoYieldPerKgKm?,
+ *      note?, expiresAt?, createdAt, updatedAt}
  *
  * Any field on the override is optional — a partial override only changes
  * the keys that are set and leaves the rest to fall through to the
  * demand-driven defaults. Removing a route's override clears the key
  * entirely.
+ *
+ * Q3 expiration — `expiresAt` is an optional unix-ms timestamp. When
+ * present and in the past, callers should treat the override as expired
+ * (skip applying its numeric fields) but keep the record in storage so
+ * the user can see it expired in the editor and choose to renew or
+ * clear. Records WITHOUT `expiresAt` never expire (default behaviour).
  */
 class RouteAssistantRouteOverridesStore {
     static PREFIX = "routeAssistant:override:"
@@ -116,6 +123,14 @@ class RouteAssistantRouteOverridesStore {
         if (typeof fields.note === "string" && fields.note.trim() !== "") {
             out.note = fields.note.trim().substring(0, 200)
         }
+        // Q3 — optional expiry timestamp. Must be a positive number; we
+        // don't reject past values (a record with an expired-already
+        // expiresAt is valid — callers will skip applying it, but the
+        // record stays in storage for the user to see and clear).
+        if (fields.expiresAt !== undefined && fields.expiresAt !== null && fields.expiresAt !== "") {
+            const ts = Number(fields.expiresAt)
+            if (isFinite(ts) && ts > 0) out.expiresAt = ts
+        }
         return out
     }
 
@@ -125,5 +140,33 @@ class RouteAssistantRouteOverridesStore {
             || cleaned.yieldPerKm !== undefined
             || cleaned.cargoYieldPerKgKm !== undefined
             || cleaned.note !== undefined
+            || cleaned.expiresAt !== undefined
+    }
+
+    /**
+     * Q3 — true when the override has an `expiresAt` in the past.
+     * Records without `expiresAt` never expire. `nowMs` defaults to
+     * Date.now() but the panel passes its own `_renderRows` timestamp
+     * so a single render's check is consistent across rows.
+     */
+    static isExpired(record, nowMs) {
+        if (!record || record.expiresAt == null) return false
+        const exp = Number(record.expiresAt)
+        if (!isFinite(exp) || exp <= 0) return false
+        const now = (typeof nowMs === "number" && isFinite(nowMs)) ? nowMs : Date.now()
+        return exp <= now
+    }
+
+    /**
+     * Q3 — days remaining until the override expires. Negative means
+     * already expired (number of days in the past). Returns null when
+     * the record has no `expiresAt`.
+     */
+    static daysUntilExpiry(record, nowMs) {
+        if (!record || record.expiresAt == null) return null
+        const exp = Number(record.expiresAt)
+        if (!isFinite(exp) || exp <= 0) return null
+        const now = (typeof nowMs === "number" && isFinite(nowMs)) ? nowMs : Date.now()
+        return (exp - now) / 86400000
     }
 }

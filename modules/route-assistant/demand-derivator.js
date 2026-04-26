@@ -42,16 +42,40 @@ class RouteAssistantDemandDerivator {
      *   historic: routeAssistant:markets:historic:<HUB>-<DEST>
      *   inventory: routeAssistant:inventory:<HUB>-<DEST>
      *   ownPricing: routeAssistant:markets:ownPricing:<HUB>-<DEST>
+     *   observations: routeAssistant:ratingObservations:<HUB>-<DEST>
+     *                 — `{observations: [...]}` or null. Slice 2c — feeds
+     *                 the per-route per-class rating-price elasticity
+     *                 regression. Pass null when no observation log exists.
      *
      * Returns:
      *   {paxDemandPool, cargoDemandPool, paxAvgPrice, cargoAvgPrice,
-     *    paxElasticity, cargoElasticity, rmTightness, derivationNotes,
-     *    scrapedAt}
+     *    paxElasticity, cargoElasticity, rmTightness,
+     *    ratingPriceElasticityByClass: {Y, C, F},     // null when not derivable
+     *    ratingObservationCounts:      {Y, C, F},     // post-filter survivors
+     *    ratingDerivationNotes:        [...],         // per-class skip/clip reasons
+     *    derivationNotes, scrapedAt}
+     *
+     * Backwards-compat: when called with the legacy 4-arg signature
+     * (historic, inventory, ownPricing, opts), the 4th argument is
+     * detected as opts (no `observations` array) and the rating
+     * regression returns nulls. The legacy demand-depth fields stay
+     * exactly as they were.
      */
-    static derive(historic, inventory, ownPricing, opts) {
+    static derive(historic, inventory, ownPricing, observations, opts) {
+        // Backwards-compat: legacy 4-arg call `derive(h, i, o, opts)`.
+        // The observation-store record shape ALWAYS carries `.observations`
+        // as an array. Anything else with no `.observations` array is opts.
+        if (opts === undefined
+            && observations
+            && typeof observations === "object"
+            && !Array.isArray(observations.observations)) {
+            opts = observations
+            observations = null
+        }
         opts = opts || {}
         const window = Math.max(2, Math.min(52, opts.window || RouteAssistantDemandDerivator.DEFAULT_WINDOW))
         const notes = []
+        const ratingNotes = []
 
         const out = {
             paxDemandPool:   null,
@@ -61,6 +85,9 @@ class RouteAssistantDemandDerivator {
             paxElasticity:   null,
             cargoElasticity: null,
             rmTightness:     null,
+            ratingPriceElasticityByClass: {Y: null, C: null, F: null},
+            ratingObservationCounts:      {Y: 0,    C: 0,    F: 0},
+            ratingDerivationNotes:        ratingNotes,
             derivationNotes: null,
             scrapedAt:       RouteAssistantDemandDerivator._latestTimestamp(historic, inventory, ownPricing)
         }
@@ -94,6 +121,25 @@ class RouteAssistantDemandDerivator {
 
         // ---------- Inventory-derived (RM tightness) ----------
         out.rmTightness = RouteAssistantDemandDerivator._rmTightness(inventory, notes)
+
+        // ---------- Observation-derived rating-price elasticity (slice 2c) ----------
+        // Pure function of the observation log — runs the per-class
+        // confounder-filter pipeline, the priceDev range + bucket gates,
+        // OLS via _linregSlope, slope→magnitude negation, clip, and
+        // non-monotone reject. One pass per class.
+        const obsList = (observations && Array.isArray(observations.observations))
+            ? observations.observations : []
+        const minObs = Math.max(2, Math.min(50, Number(opts.minObservations) || 4))
+        const rangeGate = (typeof opts.priceDevRangeGate === "number" && isFinite(opts.priceDevRangeGate))
+            ? opts.priceDevRangeGate : 0.08
+        const bucketsRequired = Math.max(2, Math.min(10, Number(opts.distinctBucketsRequired) || 2))
+        for (const cls of ["Y", "C", "F"]) {
+            const result = RouteAssistantDemandDerivator._ratingPriceElasticity(
+                obsList, cls, ratingNotes, {minObs, rangeGate, bucketsRequired}
+            )
+            out.ratingPriceElasticityByClass[cls] = result.alpha
+            out.ratingObservationCounts[cls]      = result.usedCount
+        }
 
         out.derivationNotes = notes.length ? notes.join("; ") : null
         return out
@@ -277,6 +323,187 @@ class RouteAssistantDemandDerivator {
         }
         notes && notes.push("rm tightness unavailable (no class summary or departure list)")
         return null
+    }
+
+    /**
+     * Slice 2c — derive a per-class rating-price elasticity α from the
+     * observation log. Returns `{alpha: <number|null>, usedCount: <int>}`.
+     *
+     * Pipeline:
+     *   1. Coerce observations into per-class (price, rating) pairs;
+     *      drop any pair with a non-finite or non-positive value on
+     *      either side.
+     *   2. Reject obs where pricingScrapedAt and orsScrapedAt differ by
+     *      >24h — fare may not match the rating snapshot.
+     *   3. Reject obs where comfortLevel changed vs the prior surviving
+     *      obs (comfort confounds rating shift).
+     *   4. Reject obs where ownConnections[cls] changed by ≥1 vs prior
+     *      (own-frequency confounds rating shift).
+     *   5. Reject obs where competitorConnections[cls] jumped by >20%
+     *      vs prior (competitor structure churn).
+     *   6. Need ≥minObs surviving pairs; else null.
+     *   7. Need range(priceDev%) ≥ rangeGate; else null + note
+     *      "insufficient price variation".
+     *   8. Need ≥bucketsRequired distinct priceDev% buckets at 1%
+     *      rounding; else null + note.
+     *   9. OLS of ratings on priceDev via _linregSlope.
+     *  10. magnitude = -slope; reject when negative ("non-monotone").
+     *  11. Clip to [0, 50]; note when clipped.
+     *
+     * Notes are pushed to `ratingNotes` as
+     * `"class <cls>: <message>"` so the panel's notes footer can
+     * surface every skip / clip reason per class.
+     */
+    static _ratingPriceElasticity(observations, cls, ratingNotes, opts) {
+        opts = opts || {}
+        const minObs = Math.max(2, Math.min(50, opts.minObs || 4))
+        const rangeGate = (typeof opts.rangeGate === "number" && isFinite(opts.rangeGate))
+            ? opts.rangeGate : 0.08
+        const bucketsRequired = Math.max(2, Math.min(10, opts.bucketsRequired || 2))
+        const result = {alpha: null, usedCount: 0}
+
+        if (!Array.isArray(observations) || !observations.length) return result
+
+        // Sort by `at` ascending so confounder filters can compare to
+        // the prior surviving obs in time order.
+        const sorted = observations.slice()
+            .filter(o => o && typeof o.at === "number" && isFinite(o.at))
+            .sort((a, b) => a.at - b.at)
+
+        // Step 1 — extract per-class valid (price, rating) pairs.
+        let dropStale = 0, dropComfort = 0, dropOwnFreq = 0, dropCompChurn = 0
+        const pairs = []
+        let prior = null
+        for (const o of sorted) {
+            const price  = Number((o.prices  || {})[cls])
+            const rating = Number((o.ratings || {})[cls])
+            if (!isFinite(price) || price  <= 0) continue
+            if (!isFinite(rating) || rating <= 0) continue
+
+            // Step 2 — pricing/ORS scrape time gap.
+            const ps = Number(o.pricingScrapedAt)
+            const os = Number(o.orsScrapedAt)
+            if (isFinite(ps) && isFinite(os) && Math.abs(os - ps) > 24 * 3600 * 1000) {
+                dropStale++
+                continue
+            }
+
+            const own = Number(((o.ownConnections        || {})[cls]))
+            const cmp = Number(((o.competitorConnections || {})[cls]))
+            const comfort = (o.comfortLevel == null) ? null : Number(o.comfortLevel)
+
+            // Steps 3 / 4 / 5 — confounder filters vs prior surviving obs.
+            if (prior) {
+                if (comfort != null && prior.comfort != null && comfort !== prior.comfort) {
+                    dropComfort++
+                    continue
+                }
+                if (isFinite(own) && isFinite(prior.own) && Math.abs(own - prior.own) >= 1) {
+                    dropOwnFreq++
+                    continue
+                }
+                if (isFinite(cmp) && isFinite(prior.cmp) && prior.cmp > 0) {
+                    const churn = Math.abs(cmp - prior.cmp) / prior.cmp
+                    if (churn > 0.20) {
+                        dropCompChurn++
+                        continue
+                    }
+                }
+            }
+            pairs.push({price, rating})
+            prior = {own, cmp, comfort}
+        }
+
+        if (dropStale)     ratingNotes.push("class " + cls + ": " + dropStale + " obs dropped (pricing/ORS gap > 24h)")
+        if (dropComfort)   ratingNotes.push("class " + cls + ": " + dropComfort + " obs dropped (comfort changed)")
+        if (dropOwnFreq)   ratingNotes.push("class " + cls + ": " + dropOwnFreq + " obs dropped (own-freq changed)")
+        if (dropCompChurn) ratingNotes.push("class " + cls + ": " + dropCompChurn + " obs dropped (competitor count churn > 20%)")
+
+        result.usedCount = pairs.length
+
+        // Step 6 — sample-size floor.
+        if (pairs.length < minObs) {
+            if (pairs.length > 0) {
+                ratingNotes.push("class " + cls + ": only " + pairs.length + "/" + minObs + " usable observations — using fallback α")
+            }
+            return result
+        }
+
+        // Step 7 — priceDev range gate.
+        const meanPrice = pairs.reduce((s, p) => s + p.price, 0) / pairs.length
+        if (meanPrice <= 0) return result
+        const priceDevs = pairs.map(p => (p.price - meanPrice) / meanPrice)
+        const range = RouteAssistantDemandDerivator._priceDevRange(priceDevs)
+        if (range < rangeGate) {
+            ratingNotes.push("class " + cls + ": insufficient price variation (range "
+                + (range * 100).toFixed(1) + "% < gate "
+                + (rangeGate * 100).toFixed(0) + "%)")
+            return result
+        }
+
+        // Step 8 — distinct-bucket gate.
+        const buckets = RouteAssistantDemandDerivator._distinctBuckets(priceDevs)
+        if (buckets < bucketsRequired) {
+            ratingNotes.push("class " + cls + ": only " + buckets
+                + " distinct priceDev bucket(s) — needed " + bucketsRequired)
+            return result
+        }
+
+        // Step 9 — OLS slope.
+        const ratings = pairs.map(p => p.rating)
+        const slope = RouteAssistantDemandDerivator._linregSlope(priceDevs, ratings)
+        if (slope === null || !isFinite(slope)) {
+            ratingNotes.push("class " + cls + ": regression failed (degenerate input)")
+            return result
+        }
+
+        // Step 10 — negate ONCE; slope is naturally negative on
+        // well-behaved routes. Positive slope = rating increases with
+        // price = non-monotone, which the model can't represent.
+        const magnitude = -slope
+        if (magnitude < 0) {
+            ratingNotes.push("class " + cls + ": rating increases with price ("
+                + magnitude.toFixed(2) + ", non-monotone — regression rejected)")
+            return result
+        }
+
+        // Step 11 — clip to [0, 50]. The model uses positive magnitude.
+        if (magnitude > 50) {
+            ratingNotes.push("class " + cls + ": α=" + magnitude.toFixed(2)
+                + " clipped to 50 (extreme price sensitivity)")
+            result.alpha = 50
+            return result
+        }
+
+        result.alpha = Math.round(magnitude * 100) / 100
+        ratingNotes.push("class " + cls + ": α=" + result.alpha
+            + " (derived from " + pairs.length + " observation"
+            + (pairs.length === 1 ? "" : "s") + ")")
+        return result
+    }
+
+    /** Range = max - min of an array. Returns 0 on empty / single-element. */
+    static _priceDevRange(devs) {
+        if (!Array.isArray(devs) || devs.length < 2) return 0
+        let lo = Infinity, hi = -Infinity
+        for (const v of devs) {
+            if (!isFinite(v)) continue
+            if (v < lo) lo = v
+            if (v > hi) hi = v
+        }
+        if (!isFinite(lo) || !isFinite(hi)) return 0
+        return hi - lo
+    }
+
+    /** Count distinct priceDev buckets at 1% (0.01) rounding granularity. */
+    static _distinctBuckets(devs) {
+        if (!Array.isArray(devs) || !devs.length) return 0
+        const set = new Set()
+        for (const v of devs) {
+            if (!isFinite(v)) continue
+            set.add(Math.round(v * 100))
+        }
+        return set.size
     }
 }
 

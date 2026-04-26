@@ -256,7 +256,15 @@ class RouteAssistantAggregator {
             useRealDemandForLF: !!fleetCtx.useRealDemandForLF,
             economics:         fleetCtx.economics,
             falloffPct:        fleetCtx.falloffPct,
-            override:          row.override || null,
+            // Q3 — pass null when the override has an `expiresAt` in the
+            // past. The record stays in storage + on the row (so the UI
+            // can render an expired-indicator), but the estimator falls
+            // back to demand-driven LF / configured base yield.
+            override:          (row.override
+                                && (typeof RouteAssistantRouteOverridesStore !== "undefined")
+                                && RouteAssistantRouteOverridesStore.isExpired(row.override))
+                                   ? null
+                                   : (row.override || null),
             useDistanceFuel:   !!fleetCtx.useDistanceFuel,
             fuelPriceASc:      fleetCtx.fuelPriceASc,
             fuelBurnOverrides: fleetCtx.fuelBurnOverrides

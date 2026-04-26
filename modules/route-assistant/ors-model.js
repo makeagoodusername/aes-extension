@@ -274,6 +274,30 @@ class RouteAssistantOrsModel {
             profitPerWeek:  _signedDelta(baseline.profitPerWeek,  projected.profitPerWeek)
         }
 
+        // Slice 2c — surface per-class α source labels in the notes
+        // footer. The panel's `_recomputeOrsSandbox` cascade resolver
+        // populates `alphaSourceByClass` via `modelParams.alphaSourceByClass`;
+        // the model just renders the labels into human-readable lines.
+        const alphaSrc    = (input.modelParams && input.modelParams.alphaSourceByClass) || {}
+        const alphaResMap = (params.ratingPriceElasticityByClass) || {}
+        for (const cls of ["Y", "C", "F"]) {
+            const pc = perClass[cls]
+            if (!pc) continue
+            const src = alphaSrc[cls]
+            const a   = Number.isFinite(alphaResMap[cls]) ? alphaResMap[cls] : params.ratingPriceElasticity
+            if (src === "override") {
+                notes.push("class " + cls + ": α=" + a + " (manual override)")
+            } else if (src === "derived") {
+                notes.push("class " + cls + ": α=" + a + " (derived from observation log)")
+            } else if (src === "siblingDerived") {
+                notes.push("class " + cls + ": α=" + a + " (borrowed from sibling class on this route)")
+            } else if (src === "fleetMedian") {
+                notes.push("class " + cls + ": α=" + a + " (fleet median across user's routes)")
+            } else if (src === "global") {
+                notes.push("class " + cls + ": α=" + a + " (global default — no per-route data yet)")
+            }
+        }
+
         return {
             baseline:    baseline,
             projected:   projected,
@@ -281,10 +305,12 @@ class RouteAssistantOrsModel {
             perClass:    perClass,
             notes:       notes,
             modelParams: {
-                ratingPriceElasticity: params.ratingPriceElasticity,
-                ratingComfortLift:     params.ratingComfortLift,
-                T:                     T,
-                source:                _isPositive(params.perRouteT) ? "perRoute" : "global"
+                ratingPriceElasticity:        params.ratingPriceElasticity,
+                ratingPriceElasticityByClass: alphaResMap,
+                alphaSourceByClass:           alphaSrc,
+                ratingComfortLift:            params.ratingComfortLift,
+                T:                            T,
+                source:                       _isPositive(params.perRouteT) ? "perRoute" : "global"
             },
             scenario:      scenario,
             baselineEcon:  baselineEcon,
@@ -457,13 +483,22 @@ class RouteAssistantOrsModel {
         const priceRatio = (_isPositive(observed) && newPrice != null)
             ? (newPrice - observed) / observed
             : 0
+        // Slice 2c — per-route per-class α resolution. Uses
+        // `Number.isFinite` (NOT `||`) so a manual override of `0`
+        // (route's rating doesn't respond to price) is honored. Panel's
+        // `_recomputeOrsSandbox` runs the cascade resolver and passes
+        // the resolved per-class map in via `modelParams`.
+        const alphaForClass = (params.ratingPriceElasticityByClass
+                              && Number.isFinite(params.ratingPriceElasticityByClass[cls]))
+            ? params.ratingPriceElasticityByClass[cls]
+            : params.ratingPriceElasticity
         let clampedHigh = false, clampedLow = false
         const projectedRatings = tagged.map(t => {
             if (!t.oursAll) return t.rating  // leave competitors + mixed-ownership rows fixed
             const base = t.rating
             if (!base) return base
             const shifted = base
-                - params.ratingPriceElasticity * priceRatio
+                - alphaForClass * priceRatio
                 + params.ratingComfortLift * (arg.comfortDelta || 0)
             const lo = base * RouteAssistantOrsModel.RATING_CLAMP_LOW
             const hi = base * RouteAssistantOrsModel.RATING_CLAMP_HIGH
@@ -491,7 +526,10 @@ class RouteAssistantOrsModel {
             projectedRanks:   projectedRanks,
             connectionsCount: tagged.length,
             ownConnectionsCount: ourIdx.length,
-            priceRatio:       priceRatio
+            priceRatio:       priceRatio,
+            // Slice 2c — surface the resolved α actually used for this
+            // class so the panel can render it next to the projection.
+            alphaUsed:        alphaForClass
         }
     }
 

@@ -616,7 +616,110 @@ class RouteAssistantOrsScraper {
         const saved = await RouteAssistantOrsScraper.saveRecord(hubIata, destIata, fields)
         this._sessionCache.set(pair, saved)
         this._consecutiveErrors = 0
+
+        // Slice 2c — log a rating observation for the per-route per-class
+        // α regression. Inside the scraper (NOT the panel) so bulkScrape
+        // — which loops calling scrape() at ors-scraper.js:809 — also
+        // logs. Failure is non-fatal — never break the scrape on a
+        // logging miss.
+        try {
+            await RouteAssistantOrsScraper._logRatingObservation(this.server, hubIata, destIata, saved)
+        } catch (e) {
+            console.warn("[AES orsScraper] rating observation log failed", e)
+        }
+
         return saved
+    }
+
+    /**
+     * Slice 2c — append one (price, rating, …) observation record to the
+     * rating-observation store. Reads the matching markets-page
+     * ownPricing snapshot to source per-class observed fares; per-class
+     * ratings come from the freshly-saved ORS record. Connection counts
+     * are computed from the cached `byClass.<cls>.connections` so the
+     * derivator can apply the own-frequency / competitor-churn confounder
+     * filters without re-fetching.
+     *
+     * Honored gates (early-return without writing):
+     *   - settings.routeAssistant.orsSandbox.ratingObservations.autoLogOnScrape
+     *     missing or false → do not log.
+     *   - validation in store._isValidObservation: at least one class
+     *     must have a finite positive price AND a finite positive rating.
+     */
+    static async _logRatingObservation(server, hubIata, destIata, savedRecord) {
+        if (typeof RouteAssistantRatingObservationStore === "undefined") return
+        if (!savedRecord || !savedRecord.byClass) return
+
+        // Settings gate. One get(["settings"]) is acceptable — the
+        // scraper only runs at user action and bulk-sync cadence is
+        // capped by concurrency=2 + stagger=1500ms.
+        let autoLog = true
+        try {
+            const sb = await chrome.storage.local.get(["settings"])
+            const ro = sb && sb.settings && sb.settings.routeAssistant
+                && sb.settings.routeAssistant.orsSandbox
+                && sb.settings.routeAssistant.orsSandbox.ratingObservations
+            if (ro && ro.autoLogOnScrape === false) autoLog = false
+        } catch (e) { /* best-effort — fall through to logging */ }
+        if (!autoLog) return
+
+        // Read the matching markets-page ownPricing snapshot (one
+        // storage call). Keyed `routeAssistant:markets:ownPricing:<HUB>-<DEST>`
+        // — directional, mirrors the ORS record key.
+        const pair = String(hubIata || "").toUpperCase() + "-" + String(destIata || "").toUpperCase()
+        const opKey = "routeAssistant:markets:ownPricing:" + pair
+        let ownPricing = null
+        try {
+            const out = await chrome.storage.local.get([opKey])
+            ownPricing = out && out[opKey] ? out[opKey] : null
+        } catch (e) { /* best-effort */ }
+
+        const prices = (ownPricing && ownPricing.prices) || {}
+        const byClass = savedRecord.byClass || {}
+        const CLASS_PAYLOAD = {Y: "ECONOMY", C: "BUSINESS", F: "FIRST"}
+
+        const obs = {
+            at:                    Date.now(),
+            prices:                {Y: null, C: null, F: null},
+            ratings:               {Y: null, C: null, F: null},
+            ownConnections:        {Y: 0,    C: 0,    F: 0},
+            competitorConnections: {Y: 0,    C: 0,    F: 0},
+            comfortLevel:          null,
+            pricingScrapedAt:      (ownPricing && typeof ownPricing.scrapedAt === "number") ? ownPricing.scrapedAt : null,
+            orsScrapedAt:          (typeof savedRecord.scrapedAt === "number") ? savedRecord.scrapedAt : Date.now()
+        }
+
+        for (const cls of ["Y", "C", "F"]) {
+            const p = Number(prices[cls])
+            if (isFinite(p) && p > 0) obs.prices[cls] = p
+            const classRec = byClass[CLASS_PAYLOAD[cls]] || null
+            if (classRec) {
+                const r = Number(classRec.ourTopRating)
+                if (isFinite(r) && r > 0) obs.ratings[cls] = r
+                if (Array.isArray(classRec.connections)) {
+                    let own = 0, comp = 0
+                    for (const c of classRec.connections) {
+                        const flightLegs = (c.legs || []).filter(l => !l.isGround)
+                        if (!flightLegs.length) continue
+                        if (flightLegs.every(l => !!l.isOurs)) own++
+                        else comp++
+                    }
+                    obs.ownConnections[cls]        = own
+                    obs.competitorConnections[cls] = comp
+                }
+            }
+        }
+
+        // ServiceProfile from ownPricing — int when AS exposes a level,
+        // null otherwise. Comfort changes between observations are a
+        // confounder and the derivator drops obs that change comfort.
+        if (ownPricing && ownPricing.generalSettings) {
+            const sp = ownPricing.generalSettings.serviceProfile
+            const n = Number(sp)
+            if (isFinite(n)) obs.comfortLevel = n
+        }
+
+        await RouteAssistantRatingObservationStore.add(hubIata, destIata, obs)
     }
 
     /**

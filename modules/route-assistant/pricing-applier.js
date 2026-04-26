@@ -1,0 +1,794 @@
+"use strict"
+
+/**
+ * Auto-Pricing Tier 3 — POST write-back to the AS markets-page pricing form.
+ *
+ * Reads `/app/com/markets/<HUB><DEST>` to harvest the per-route Wicket
+ * session + form action + slider ranges + current prices, then posts new
+ * prices via the same form. Mirrors `ors-scraper.js`'s GET → POST handshake
+ * — Wicket page-version IDs invalidate per interaction, so every apply
+ * does its own fresh handshake and never reuses a session across calls.
+ *
+ * Slicing — this file ships in three increments:
+ *   - **Tier 3.1 (this slice)** — foundation + dry-run only. `apply()`
+ *     accepts `opts.dryRun`; the default is governed by `dryRunOnly` /
+ *     `applyEnabled` settings. When dryRun=true the applier walks the
+ *     full pipeline (preflight → fetch handshake → buildBody) but
+ *     SKIPS the actual POST and writes a `dry-run` log entry instead.
+ *     Settings.applyEnabled is OFF by default; flipping it doesn't yet
+ *     enable writes because `dryRunOnly` is also true. Both gates have
+ *     to be cleared for Tier 3.2.
+ *   - **Tier 3.2 (next session)** — flips `dryRunOnly` to false, wires
+ *     real POST + `verify()` post-write check + `_undoableSave` Undo
+ *     restoration. Per-route + global cooldown enforced.
+ *   - **Tier 3.3 (next session)** — bulk apply modal Apply CTA enabled
+ *     + silent-auto loop behind `silentAutoEnabled` with hard caps.
+ *
+ * Storage of per-apply records is in pricing-apply-log.js. This file
+ * stays focused on the network handshake + parsing + body construction.
+ * Pure parsing is exposed as static methods so unit-testing the
+ * brittle Wicket bits doesn't need a live AS session.
+ *
+ * Public API:
+ *   const applier = new RouteAssistantPricingApplier(server, {dryRunOnly, applyEnabled, ...})
+ *   const result = await applier.apply(hub, dest, {Y, C, F, Cargo}, {
+ *     scope:        {airportPair, flightNumbers, returnAirportPair, returnFlightNumbers},
+ *     source:       "manual" | "sandbox" | "batch" | "silent-auto",
+ *     dryRun:       <bool — overrides the instance dryRunOnly only when truthy>,
+ *     submitButton: "submit-prices" | "p::submit" | "submit-settings",
+ *     reason:       <string, optional, persisted to apply log>,
+ *     sandboxScenario: <object, optional>,
+ *     projectedDelta:  <object, optional>,
+ *     onPreflight:  fn(preflightResult) — called BEFORE POST; can
+ *                   abort by returning `false` or {abort: true, reason}
+ *   })
+ *   // → {status: "dry-run"|"posted"|"verified"|"failed", logId, prevPrices, newPrices,
+ *   //    blockers?, warnings?, error?}
+ *
+ * Static helpers (pure):
+ *   RouteAssistantPricingApplier.parseFormContext(html)
+ *     → {sessionId, formActionPath, formId, hiddenFields, currentPrices,
+ *        defaults, sliderRanges, generalSettings, classOrder}
+ *   RouteAssistantPricingApplier.buildBody({formContext, prices, settings, scope, submitButton})
+ *     → URLSearchParams
+ *   RouteAssistantPricingApplier.fingerprint(hub, dest, prices, scope)
+ *     → string (deterministic hash for idempotency dedup)
+ */
+class RouteAssistantPricingApplier {
+    // Wicket form-input names. Stable across the snapshots we have. If AS
+    // changes any of these the parser will silently drop the unrecognised
+    // field and the body-builder will skip emitting it; preflight surfaces
+    // a warning if the snapshot's `currentPrices` is empty.
+    static FIELD_NAMES = {
+        prices: {
+            // index → form-field name. Order matches AS's class order in
+            // the pricing fieldset (Y first, Cargo last).
+            Y:     "classes:prices:0:newPrice",
+            C:     "classes:prices:1:newPrice",
+            F:     "classes:prices:2:newPrice",
+            Cargo: "classes:prices:3:newPrice"
+        },
+        settings: {
+            originTerminal:      "originTerminal-group:originTerminal-group_body:originTerminal",
+            destinationTerminal: "destinationTerminal-group:destinationTerminal-group_body:destinationTerminal",
+            serviceProfile:      "serviceProfile-group:serviceProfile-group_body:serviceProfile",
+            boardingPreference:  "boardingPreference-group:boardingPreference-group_body:boardingPreference",
+            cargoPreference:     "cargoPreference-group:cargoPreference-group_body:cargoPreference"
+        },
+        scope: {
+            airportPair:         "settings:airportPair",
+            flightNumbers:       "settings:flightNumbers",
+            returnAirportPair:   "settings:returnAirportPair",
+            returnFlightNumbers: "settings:returnFlightNumbers"
+        }
+    }
+
+    static SUBMIT_BUTTONS = {
+        pricesOnly:        "submit-prices",
+        pricesAndSettings: "p::submit",
+        settingsOnly:      "submit-settings"
+    }
+
+    static DEFAULT_SUBMIT = "submit-prices"
+
+    // Watchful regexes for a few Wicket failure modes that return HTTP 200
+    // bodies but represent silent failures. Same approach as ors-scraper.js.
+    static PAGE_EXPIRED_RE      = /PageExpiredException|Wicket\.PageExpiredException/i
+    static AUTHENTICATION_RE    = /<form[^>]+action=["'][^"']*\/login/i
+    static APPLIED_OK_PHRASE_RE = /Pricing.*?(?:applied|saved|updated)/i
+
+    /**
+     * Default scope — apply to the airport pair AND all flight numbers
+     * routed across it. Outbound only; the user opts into return on a
+     * per-apply basis. Mirrors the page's checked checkboxes.
+     */
+    static DEFAULT_SCOPE = {
+        airportPair:         true,
+        flightNumbers:       true,
+        returnAirportPair:   false,
+        returnFlightNumbers: false
+    }
+
+    /**
+     * @param {string} server  — `free1`, `tristar`, etc.
+     * @param {object} [opts]
+     * @param {boolean} [opts.dryRunOnly=true]   — hard gate; when true, apply()
+     *   never POSTs even if `dryRun` arg is false. Tier 3.1 ships with this
+     *   true and `applyEnabled=false`; Tier 3.2 flips it.
+     * @param {boolean} [opts.applyEnabled=false] — secondary gate. The user
+     *   has to flip this on AND `dryRunOnly` has to be off before any
+     *   real write happens. Belt-and-braces.
+     * @param {number} [opts.cooldownMinPerRoute=60] — minutes; preflight
+     *   blocks an apply for the same route within this window.
+     * @param {number} [opts.warnAboveDeltaPct=5]   — issues a preflight
+     *   warning (NOT a blocker) when any class's |Δ%| exceeds this.
+     * @param {RouteAssistantPricingApplyLog} [opts.applyLog] — log store
+     *   instance. Optional — when omitted apply() only returns the
+     *   in-memory result without persisting an audit trail.
+     */
+    constructor(server, opts) {
+        if (!server) throw new Error("RouteAssistantPricingApplier: server required")
+        opts = opts || {}
+        this.server = server
+        this.dryRunOnly         = opts.dryRunOnly !== false
+        this.applyEnabled       = !!opts.applyEnabled
+        this.cooldownMinPerRoute = isFinite(opts.cooldownMinPerRoute) ? Math.max(0, opts.cooldownMinPerRoute) : 60
+        this.warnAboveDeltaPct  = isFinite(opts.warnAboveDeltaPct) ? Math.max(0, opts.warnAboveDeltaPct) : 5
+        this.applyLog           = opts.applyLog || null
+    }
+
+    static _pairKey(hub, dest) {
+        return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
+    }
+
+    static _baseUrl(server) {
+        return "https://" + server + ".airlinesim.aero"
+    }
+
+    static _markUrl(server, hub, dest) {
+        return RouteAssistantPricingApplier._baseUrl(server)
+            + "/app/com/markets/" + String(hub).toUpperCase() + String(dest).toUpperCase()
+    }
+
+    // ------------------------------------------------------------------
+    // Form parsing — pure, static. Walks the GET response to harvest the
+    // Wicket session, the form action URL, every hidden input, and the
+    // current per-class prices + slider ranges.
+    // ------------------------------------------------------------------
+
+    /**
+     * Locate the pricing form, parse out everything we need to reconstruct
+     * it as a POST body.
+     *
+     * Returns null when we couldn't find the form (page format changed,
+     * the user isn't logged in, the route doesn't exist, etc.). The
+     * caller must handle null — preflight surfaces a `noFormContext`
+     * blocker which the modal renders with a clear "couldn't locate
+     * pricing form on AS — refresh the page and try again" hint.
+     */
+    static parseFormContext(html) {
+        if (!html) return null
+        const doc = new DOMParser().parseFromString(html, "text/html")
+
+        // Session ID lives in the wicket-ajax-base-url script. Same
+        // structure as the ORS form. The number after the `?` is what we
+        // need; the rest of the URL changes per interaction.
+        let sessionId = null
+        const baseUrlScript = doc.getElementById("wicket-ajax-base-url")
+        if (baseUrlScript && baseUrlScript.textContent) {
+            const m = /Wicket\.Ajax\.baseUrl\s*=\s*["'][^?"']+\?(\d+)/i.exec(baseUrlScript.textContent)
+            if (m) sessionId = m[1]
+        }
+
+        // Locate the pricing form — it's the form whose action URL ends
+        // in `~panel-settings-settings~form` (NOT the search form which
+        // ends in `-base.search` or the pair-form which is the legend
+        // submission). Disambiguate by looking for the `submit-prices`
+        // button inside the form.
+        let pricingForm = null
+        for (const f of doc.querySelectorAll("form[method='post']")) {
+            if (f.querySelector("button[name='submit-prices']") || f.querySelector("input[name='submit-prices']")) {
+                pricingForm = f
+                break
+            }
+        }
+        if (!pricingForm) return null
+
+        const formAction = pricingForm.getAttribute("action") || ""
+        // Action URL example:
+        //   https://free1.airlinesim.aero/app/com/markets/JFKATL?869-1.-pair-pair~panel-settings-settings~form
+        // We want the `869-1.-pair-pair~panel-settings-settings~form` portion
+        // because the POST URL keeps the host-relative `/app/com/markets/<HUB><DEST>`
+        // identical and only the query-string changes.
+        const actionMatch = /\?([^"'#]+)$/.exec(formAction)
+        const formActionPath = actionMatch ? actionMatch[1] : null
+        if (!formActionPath) return null
+
+        const formId = pricingForm.getAttribute("id") || null
+
+        // Hidden fields. Wicket forms occasionally inject a CSRF-ish
+        // hidden token in the form's `<div class="hidden-fields">`.
+        // Sample shows the div empty, but harvest defensively so we
+        // don't break if AS adds one.
+        const hiddenFields = {}
+        for (const inp of pricingForm.querySelectorAll("input[type='hidden']")) {
+            const name = inp.getAttribute("name")
+            if (name) hiddenFields[name] = inp.getAttribute("value") || ""
+        }
+
+        // Current prices — parse the pricing fieldset. We need both the
+        // class label (Y/C/F/Cargo) and the corresponding input's name
+        // (`classes:prices:N:newPrice`) so a future AS reorder doesn't
+        // silently misalign indices.
+        const currentPrices = {}
+        const defaults      = {}
+        const sliderRanges  = {}
+        const classOrder    = []   // ["Y", "C", "F", "Cargo"] in field-index order
+
+        let pricingFs = null
+        for (const fs of pricingForm.querySelectorAll("fieldset")) {
+            const legend = fs.querySelector("legend")
+            if (legend && /^pricing$/i.test((legend.textContent || "").trim())) {
+                pricingFs = fs
+                break
+            }
+        }
+        if (pricingFs) {
+            for (const tr of pricingFs.querySelectorAll("table tbody tr")) {
+                const cells = tr.querySelectorAll("td")
+                if (cells.length < 5) continue
+                const cls = (cells[0].textContent || "").trim()
+                const cur = RouteAssistantPricingApplier._parseInt(cells[1].textContent)
+                const newInp = cells[2].querySelector("input[type='text']")
+                const newName = newInp ? newInp.getAttribute("name") : null
+                const newVal = newInp ? RouteAssistantPricingApplier._parseInt(newInp.getAttribute("value")) : cur
+                const defSpan = cells[4].querySelector("span")
+                const defVal = defSpan
+                    ? RouteAssistantPricingApplier._parseInt(defSpan.textContent)
+                    : RouteAssistantPricingApplier._parseInt(cells[4].textContent)
+                if (!cls) continue
+                classOrder.push(cls)
+                currentPrices[cls] = newVal != null ? newVal : cur
+                defaults[cls]      = defVal
+                if (newName) {
+                    // Track the actual field name AS used. We trust this
+                    // over our static FIELD_NAMES map when building the
+                    // body — guards against AS reordering the table.
+                    if (!RouteAssistantPricingApplier._observedFieldNames) {
+                        RouteAssistantPricingApplier._observedFieldNames = {}
+                    }
+                    RouteAssistantPricingApplier._observedFieldNames[cls] = newName
+                }
+            }
+        }
+
+        // Slider ranges (per-class min/max). Mirror of markets-page-scraper.js's
+        // `_parseOwnPricing`. We need these for the preflight clamp check.
+        const scriptText = RouteAssistantPricingApplier._collectScriptText(doc)
+        const sliderRe = /slider\(\s*\{[^}]*?value:\s*(\d+)\s*,\s*min:\s*(\d+)\s*,\s*max:\s*(\d+)/g
+        const sliderMatches = []
+        let sm
+        while ((sm = sliderRe.exec(scriptText)) !== null) {
+            sliderMatches.push({value: +sm[1], min: +sm[2], max: +sm[3]})
+        }
+        for (let i = 0; i < classOrder.length && i < sliderMatches.length; i++) {
+            sliderRanges[classOrder[i]] = [sliderMatches[i].min, sliderMatches[i].max]
+        }
+
+        // General Settings — capture current selected values per <select>.
+        // We round-trip these unchanged on price-only applies so the form
+        // doesn't accidentally clear the user's terminal / service
+        // profile / boarding selection.
+        const generalSettings = {}
+        let generalFs = null
+        for (const fs of pricingForm.querySelectorAll("fieldset")) {
+            const legend = fs.querySelector("legend")
+            if (legend && /^general\s*settings$/i.test((legend.textContent || "").trim())) {
+                generalFs = fs
+                break
+            }
+        }
+        if (generalFs) {
+            for (const sel of generalFs.querySelectorAll("select")) {
+                const name = sel.getAttribute("name") || ""
+                if (!name) continue
+                const opt = sel.options[sel.selectedIndex]
+                generalSettings[name] = opt ? (opt.getAttribute("value") || "") : ""
+            }
+        }
+
+        return {
+            sessionId,
+            formActionPath,
+            formId,
+            hiddenFields,
+            currentPrices,
+            defaults,
+            sliderRanges,
+            generalSettings,
+            classOrder,
+            // Echo the per-class field names AS exposed in this snapshot.
+            // Trusted over FIELD_NAMES.prices when both differ.
+            observedFieldNames: RouteAssistantPricingApplier._observedFieldNames || null
+        }
+    }
+
+    /**
+     * Build the URL-encoded form body. Submit-button name is included as
+     * a body field per Wicket convention (the AS form uses native
+     * <button name="..."> submits, so the body has to disambiguate).
+     *
+     * Designed to be reused by 3.2/3.3 — pass `prices` as a partial map;
+     * any class missing from `prices` is sent at its current value
+     * (round-trip preserves AS state for unspecified classes). This
+     * matters when the user only wants to bump Y but the form expects
+     * all four price fields.
+     */
+    static buildBody({formContext, prices, settings, scope, submitButton}) {
+        if (!formContext) throw new Error("buildBody: formContext required")
+        const body = new URLSearchParams()
+
+        // Hidden inputs first.
+        for (const k in formContext.hiddenFields) {
+            body.set(k, formContext.hiddenFields[k])
+        }
+
+        // Per-class prices. Use the observed field name when available so
+        // an AS reordering of the table doesn't misalign indices.
+        const observed = formContext.observedFieldNames || {}
+        const fallback = RouteAssistantPricingApplier.FIELD_NAMES.prices
+        const merged = {}
+        for (const cls of (formContext.classOrder || [])) {
+            if (!cls) continue
+            const fieldName = observed[cls] || fallback[cls]
+            if (!fieldName) continue
+            const desired = prices && prices[cls] != null ? prices[cls] : formContext.currentPrices[cls]
+            if (desired == null) continue
+            merged[cls] = desired
+            body.set(fieldName, String(Math.round(desired)))
+        }
+
+        // General settings — round-trip every <select> at its current
+        // selected value unless the caller provides an override.
+        const settingsMap = settings || {}
+        for (const fieldName in formContext.generalSettings) {
+            const override = settingsMap[fieldName]
+            const value = override != null ? override : formContext.generalSettings[fieldName]
+            body.set(fieldName, String(value))
+        }
+
+        // Scope checkboxes — Wicket only sends checked checkboxes on
+        // <form>.submit(); unchecked boxes are absent from the body. Mirror that.
+        const eff = Object.assign({}, RouteAssistantPricingApplier.DEFAULT_SCOPE, scope || {})
+        const scopeFields = RouteAssistantPricingApplier.FIELD_NAMES.scope
+        for (const k in scopeFields) {
+            if (eff[k]) body.set(scopeFields[k], "on")
+        }
+
+        // Submit button. Required — Wicket disambiguates which submit
+        // handler to invoke by which submit name is in the body.
+        const sb = submitButton || RouteAssistantPricingApplier.DEFAULT_SUBMIT
+        body.set(sb, sb === "p::submit" ? "1" : "1")
+
+        return body
+    }
+
+    /**
+     * Deterministic fingerprint for (route + prices + scope). Used by
+     * the apply log to dedup repeated identical applies (a misclick
+     * within minutes shouldn't pollute the audit trail with two
+     * identical entries). Sub-classes / future modes can extend the
+     * input set.
+     */
+    static fingerprint(hub, dest, prices, scope) {
+        const parts = []
+        parts.push("h=" + String(hub || "").toUpperCase())
+        parts.push("d=" + String(dest || "").toUpperCase())
+        const p = prices || {}
+        parts.push("Y=" + (p.Y != null     ? Math.round(p.Y)     : ""))
+        parts.push("C=" + (p.C != null     ? Math.round(p.C)     : ""))
+        parts.push("F=" + (p.F != null     ? Math.round(p.F)     : ""))
+        parts.push("X=" + (p.Cargo != null ? Math.round(p.Cargo) : ""))
+        const s = scope || {}
+        parts.push("ap=" + (s.airportPair         ? 1 : 0))
+        parts.push("fn=" + (s.flightNumbers       ? 1 : 0))
+        parts.push("rap=" + (s.returnAirportPair  ? 1 : 0))
+        parts.push("rfn=" + (s.returnFlightNumbers ? 1 : 0))
+        return parts.join("|")
+    }
+
+    // ------------------------------------------------------------------
+    // Apply pipeline — orchestrates GET handshake → preflight → POST.
+    // ------------------------------------------------------------------
+
+    /**
+     * Tier 3.1 entry. Walks the full pipeline; in dry-run mode (the
+     * default) skips the actual POST and returns a synthetic result so
+     * the UI can show exactly what would have been sent.
+     *
+     * @param {string} hub
+     * @param {string} dest
+     * @param {object} prices  — partial map; missing classes round-trip
+     * @param {object} [opts]
+     * @returns {Promise<object>}  result envelope
+     */
+    async apply(hub, dest, prices, opts) {
+        opts = opts || {}
+        const pair = RouteAssistantPricingApplier._pairKey(hub, dest)
+        const dryRun = !!opts.dryRun || this.dryRunOnly || !this.applyEnabled
+        const source = opts.source || "manual"
+        const scope  = Object.assign({}, RouteAssistantPricingApplier.DEFAULT_SCOPE, opts.scope || {})
+        const submitButton = opts.submitButton || RouteAssistantPricingApplier.DEFAULT_SUBMIT
+        const reason = (opts.reason || "").toString().slice(0, 240) || null
+
+        const fingerprint = RouteAssistantPricingApplier.fingerprint(hub, dest, prices, scope)
+        const startedAt = Date.now()
+
+        const baseEnvelope = {
+            hub:              String(hub || "").toUpperCase(),
+            dest:             String(dest || "").toUpperCase(),
+            ts:               startedAt,
+            source,
+            scope,
+            submitButton,
+            sandboxScenario:  opts.sandboxScenario || null,
+            projectedDelta:   opts.projectedDelta  || null,
+            reason,
+            fingerprint,
+            requestedPrices:  prices,
+            dryRun
+        }
+
+        // Step 1 — GET the markets page so we have a fresh form context.
+        const url = RouteAssistantPricingApplier._markUrl(this.server, hub, dest)
+        let html = null
+        let formContext = null
+        try {
+            const resp = await fetch(url, {credentials: "include"})
+            if (!resp.ok) {
+                return await this._completeAsFailure(baseEnvelope, {
+                    code:    "fetchFailed",
+                    message: "GET " + url + " returned HTTP " + resp.status,
+                    httpStatus: resp.status
+                })
+            }
+            html = await resp.text()
+        } catch (e) {
+            return await this._completeAsFailure(baseEnvelope, {
+                code:    "fetchThrew",
+                message: "GET threw: " + (e && e.message || String(e))
+            })
+        }
+        if (RouteAssistantPricingApplier.AUTHENTICATION_RE.test(html)) {
+            return await this._completeAsFailure(baseEnvelope, {
+                code:    "notLoggedIn",
+                message: "Markets page returned a login form — sign into AS in this browser tab and retry."
+            })
+        }
+        formContext = RouteAssistantPricingApplier.parseFormContext(html)
+        if (!formContext) {
+            return await this._completeAsFailure(baseEnvelope, {
+                code:    "noFormContext",
+                message: "Couldn't locate the pricing form on /app/com/markets/" + pair.replace("-", "")
+                       + ". AS markup may have changed; refresh the page and retry."
+            })
+        }
+
+        // Step 2 — preflight. Pure-function, runs against the fetched
+        // form context. Caller can short-circuit via `opts.onPreflight`
+        // (the modal does this — confirmation step on warnings).
+        const preflight = RouteAssistantPricingApplier.preflight({
+            formContext,
+            prices,
+            warnAboveDeltaPct: this.warnAboveDeltaPct,
+            cooldownMinPerRoute: this.cooldownMinPerRoute,
+            lastApplyAt: opts.lastApplyAt || null
+        })
+        baseEnvelope.preflight = preflight
+        baseEnvelope.prevPrices = Object.assign({}, formContext.currentPrices)
+
+        if (typeof opts.onPreflight === "function") {
+            try {
+                const verdict = await opts.onPreflight(preflight, baseEnvelope)
+                if (verdict === false || (verdict && verdict.abort)) {
+                    return await this._completeAsAborted(baseEnvelope, {
+                        code:    "userAborted",
+                        message: (verdict && verdict.reason) || "User aborted at preflight"
+                    })
+                }
+            } catch (e) {
+                return await this._completeAsFailure(baseEnvelope, {
+                    code:    "preflightThrew",
+                    message: "Preflight callback threw: " + (e && e.message || String(e))
+                })
+            }
+        }
+        if (preflight.blockers.length) {
+            return await this._completeAsAborted(baseEnvelope, {
+                code:    "preflightBlocked",
+                message: "Preflight blockers: " + preflight.blockers.map(b => b.code).join(", "),
+                blockers: preflight.blockers
+            })
+        }
+
+        // Step 3 — build the body. Always built (even in dry-run) so the
+        // log entry shows what would have been posted.
+        const body = RouteAssistantPricingApplier.buildBody({
+            formContext,
+            prices,
+            settings: opts.settings || null,
+            scope,
+            submitButton
+        })
+        baseEnvelope.bodyPreview = RouteAssistantPricingApplier._summariseBody(body)
+        baseEnvelope.newPrices = RouteAssistantPricingApplier._extractPricesFromBody(body, formContext)
+
+        // Step 4 — Tier 3.1 short-circuit. Dry-run → log + return without POST.
+        if (dryRun) {
+            return await this._completeAsDryRun(baseEnvelope)
+        }
+
+        // ------- Tier 3.2 path (gated; this branch will not execute in 3.1) -------
+        // Both gates have to be cleared:
+        //   - this.dryRunOnly === false
+        //   - this.applyEnabled === true
+        // Settings.applyEnabled is false by default in 3.1; flipping it
+        // alone won't unlock anything because dryRunOnly is also true.
+        // 3.2 ships with dryRunOnly defaulting to false; the user has to
+        // explicitly opt in via settings.applyEnabled to commit a write.
+
+        const postUrl = url + "?" + formContext.formActionPath
+        let respHtml = null
+        let httpStatus = null
+        try {
+            const resp = await fetch(postUrl, {
+                method:      "POST",
+                credentials: "include",
+                headers:     {"Content-Type": "application/x-www-form-urlencoded"},
+                body:        body.toString()
+            })
+            httpStatus = resp.status
+            respHtml = await resp.text()
+            if (!resp.ok) {
+                return await this._completeAsFailure(baseEnvelope, {
+                    code:    "postFailed",
+                    message: "POST " + postUrl + " returned HTTP " + resp.status,
+                    httpStatus
+                })
+            }
+        } catch (e) {
+            return await this._completeAsFailure(baseEnvelope, {
+                code:    "postThrew",
+                message: "POST threw: " + (e && e.message || String(e))
+            })
+        }
+
+        if (RouteAssistantPricingApplier.PAGE_EXPIRED_RE.test(respHtml)) {
+            return await this._completeAsFailure(baseEnvelope, {
+                code:    "pageExpired",
+                message: "Wicket session expired between GET and POST — retry."
+            })
+        }
+
+        // Step 5 — verify by parsing the response (which is the same
+        // markets page re-rendered with the new prices applied). When
+        // the response doesn't carry the new values, fall back to a
+        // separate verify() round-trip — Wicket sometimes returns just
+        // a redirect-snippet response.
+        let verifiedPrices = null
+        const respContext = RouteAssistantPricingApplier.parseFormContext(respHtml)
+        if (respContext && respContext.currentPrices) {
+            verifiedPrices = respContext.currentPrices
+        } else {
+            verifiedPrices = await this._verify(hub, dest)
+        }
+        const verifyOk = RouteAssistantPricingApplier._verifyMatches(baseEnvelope.newPrices, verifiedPrices)
+
+        baseEnvelope.verifyAt        = Date.now()
+        baseEnvelope.verifiedPrices  = verifiedPrices
+        baseEnvelope.httpStatus      = httpStatus
+
+        if (verifyOk) return await this._completeAsVerified(baseEnvelope)
+        return await this._completeAsPostedUnverified(baseEnvelope)
+    }
+
+    /**
+     * Pure-function preflight. Returns
+     *   {blockers: [...], warnings: [...], deltas: {Y, C, F, Cargo}}
+     * — caller decides what to do with each. The modal in panel.js
+     * renders both lists; blockers disable the Apply button outright.
+     */
+    static preflight({formContext, prices, warnAboveDeltaPct, cooldownMinPerRoute, lastApplyAt}) {
+        const out = {blockers: [], warnings: [], deltas: {}, percentDeltas: {}}
+        if (!formContext) {
+            out.blockers.push({code: "noFormContext", message: "No form context"})
+            return out
+        }
+        if (!prices || !Object.keys(prices).length) {
+            out.blockers.push({code: "noPrices",      message: "No prices supplied"})
+            return out
+        }
+
+        const cur = formContext.currentPrices || {}
+        const ranges = formContext.sliderRanges || {}
+
+        for (const cls in prices) {
+            const newVal = prices[cls]
+            if (newVal == null || !isFinite(newVal)) continue
+            const rounded = Math.round(newVal)
+            if (rounded < 0) {
+                out.blockers.push({code: "negativePrice", message: cls + " price " + rounded + " is negative", cls})
+                continue
+            }
+            const r = ranges[cls]
+            if (r && (rounded < r[0] || rounded > r[1])) {
+                out.blockers.push({
+                    code:    "outOfSliderRange",
+                    message: cls + " price " + rounded + " is outside AS slider range [" + r[0] + ", " + r[1] + "]",
+                    cls,
+                    sliderMin: r[0],
+                    sliderMax: r[1],
+                    requested: rounded
+                })
+            }
+            const cv = cur[cls]
+            if (cv != null && cv > 0) {
+                const delta = rounded - cv
+                const pct = (delta / cv) * 100
+                out.deltas[cls] = delta
+                out.percentDeltas[cls] = pct
+                if (Math.abs(pct) >= (warnAboveDeltaPct || 5)) {
+                    out.warnings.push({
+                        code: "largeDelta",
+                        message: cls + " price " + (pct > 0 ? "+" : "") + pct.toFixed(1)
+                            + "% (from " + cv + " to " + rounded + ")",
+                        cls,
+                        deltaPct: pct
+                    })
+                }
+            }
+        }
+
+        if (cooldownMinPerRoute > 0 && lastApplyAt) {
+            const minsSince = (Date.now() - lastApplyAt) / 60000
+            if (minsSince < cooldownMinPerRoute) {
+                const remaining = Math.ceil(cooldownMinPerRoute - minsSince)
+                out.blockers.push({
+                    code:    "cooldownActive",
+                    message: "Last apply on this route was " + Math.round(minsSince)
+                        + " min ago; cooldown is " + cooldownMinPerRoute + " min ("
+                        + remaining + " min remaining).",
+                    remainingMin: remaining
+                })
+            }
+        }
+
+        return out
+    }
+
+    /**
+     * Standalone verify — re-fetch the markets page and parse the
+     * current prices without doing a POST. Used as a fallback when the
+     * POST response doesn't carry the expected values, and exposed so
+     * 3.2's Tier 3 batch can sweep verify across a list of routes.
+     */
+    async _verify(hub, dest) {
+        try {
+            const url = RouteAssistantPricingApplier._markUrl(this.server, hub, dest)
+            const resp = await fetch(url, {credentials: "include"})
+            if (!resp.ok) return null
+            const html = await resp.text()
+            const ctx = RouteAssistantPricingApplier.parseFormContext(html)
+            return ctx ? ctx.currentPrices : null
+        } catch (e) {
+            return null
+        }
+    }
+
+    static _verifyMatches(expected, actual) {
+        if (!expected || !actual) return false
+        for (const k in expected) {
+            const e = expected[k]
+            const a = actual[k]
+            if (e == null || a == null) continue
+            if (Math.round(e) !== Math.round(a)) return false
+        }
+        return true
+    }
+
+    // ------------------------------------------------------------------
+    // Result envelope writers — every terminal path goes through one of
+    // these so the apply log stays consistent across success / dry-run
+    // / abort / failure.
+    // ------------------------------------------------------------------
+
+    async _completeAsDryRun(envelope) {
+        const final = Object.assign({}, envelope, {status: "dry-run"})
+        return await this._writeLog(final)
+    }
+
+    async _completeAsVerified(envelope) {
+        const final = Object.assign({}, envelope, {status: "verified"})
+        return await this._writeLog(final)
+    }
+
+    async _completeAsPostedUnverified(envelope) {
+        const final = Object.assign({}, envelope, {
+            status: "posted",
+            warning: "POST returned 200 but post-write verification didn't match expected prices."
+        })
+        return await this._writeLog(final)
+    }
+
+    async _completeAsFailure(envelope, error) {
+        const final = Object.assign({}, envelope, {status: "failed", error})
+        return await this._writeLog(final)
+    }
+
+    async _completeAsAborted(envelope, reason) {
+        const final = Object.assign({}, envelope, {status: "aborted", error: reason})
+        return await this._writeLog(final)
+    }
+
+    async _writeLog(record) {
+        if (this.applyLog && typeof this.applyLog.add === "function") {
+            try {
+                const saved = await this.applyLog.add(record)
+                if (saved && saved.id) record.logId = saved.id
+            } catch (e) {
+                console.warn("[AES pricingApplier] apply-log write failed", e)
+            }
+        }
+        return record
+    }
+
+    // ------------------------------------------------------------------
+    // Static helpers
+    // ------------------------------------------------------------------
+
+    static _parseInt(text) {
+        if (text == null) return null
+        const m = /-?\d[\d,.]*/.exec(String(text).replace(/[^\d,.\-]/g, " "))
+        if (!m) return null
+        const n = parseInt(m[0].replace(/[,.\s]/g, ""), 10)
+        return isFinite(n) ? n : null
+    }
+
+    static _collectScriptText(doc) {
+        if (!doc) return ""
+        const out = []
+        for (const s of doc.querySelectorAll("script")) {
+            if (s.textContent) out.push(s.textContent)
+        }
+        return out.join("\n")
+    }
+
+    static _summariseBody(body) {
+        const out = []
+        for (const [k, v] of body.entries()) {
+            // Truncate long values so the audit trail stays readable.
+            const vs = String(v)
+            out.push(k + "=" + (vs.length > 80 ? vs.substring(0, 77) + "…" : vs))
+        }
+        return out.join("&")
+    }
+
+    static _extractPricesFromBody(body, formContext) {
+        const out = {}
+        const observed = formContext.observedFieldNames || {}
+        const fallback = RouteAssistantPricingApplier.FIELD_NAMES.prices
+        for (const cls of (formContext.classOrder || [])) {
+            const fieldName = observed[cls] || fallback[cls]
+            if (!fieldName) continue
+            const raw = body.get(fieldName)
+            if (raw == null) continue
+            const n = parseInt(raw, 10)
+            if (isFinite(n)) out[cls] = n
+        }
+        return out
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantPricingApplier = RouteAssistantPricingApplier
+}

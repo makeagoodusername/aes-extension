@@ -148,6 +148,83 @@ class ScheduleBuilder {
     }
 
     /**
+     * Slice 2 — compute valid inbound→outbound connections at the hub.
+     *
+     * For every (inbound, outbound) pair where the outbound's depTimeLocal
+     * lies in [inbound.arrTimeLocal + minTransfer, inbound.arrTimeLocal +
+     * maxTransfer], emit a record. The classifier callback sorts each pair
+     * into "own" / "interline" / "alliance" — pairs the classifier rejects
+     * (returns null) are dropped so the SVG overlay stays readable.
+     *
+     * Pure: no DOM, no I/O. Day-wrap (inbound 23:30 → outbound next-day
+     * 01:00) is OUT OF SCOPE for slice 2; minutesBetween returns a
+     * negative delta and the pair is dropped. A future slice 3+ can add
+     * multi-day awareness.
+     *
+     * @param {Array} flights - output of evaluateFlights()
+     * @param {object} opts
+     *   - carrierClassifier: (flight) => "own"|"interline"|"alliance"|null
+     *     Optional; when undefined, every pair classifies as "own" so the
+     *     graph still renders for users who haven't synced partner data.
+     * @returns {Array} list of {inboundSeq, outboundSeq, inboundOrigin,
+     *   outboundDest, transferMinutes, classification} records, plus an
+     *   optional final {overflow:true, count} sentinel when capped.
+     */
+    computeConnections(flights, opts) {
+        const o = opts || {}
+        const factors = this.preset && this.preset.factors
+        if (!factors) return []
+        const minXfr = Number(factors.minTransferMinutes) || 0
+        const maxXfr = Number(factors.maxTransferMinutes) || 240
+        const idealMid = (minXfr + maxXfr) / 2
+        const classifier = typeof o.carrierClassifier === "function"
+            ? o.carrierClassifier
+            : (() => "own")
+
+        const inbounds  = []
+        const outbounds = []
+        for (const f of flights || []) {
+            if (f.direction === "inbound" && f.arrTimeLocal) inbounds.push(f)
+            else if (f.direction === "outbound" && f.depTimeLocal) outbounds.push(f)
+        }
+
+        const candidates = []
+        for (const inb of inbounds) {
+            const arrMin = ScheduleFactors.parseHHMM(inb.arrTimeLocal)
+            if (!isFinite(arrMin)) continue
+            for (const out of outbounds) {
+                const depMin = ScheduleFactors.parseHHMM(out.depTimeLocal)
+                if (!isFinite(depMin)) continue
+                const transfer = depMin - arrMin
+                if (transfer < minXfr || transfer > maxXfr) continue
+                const cls = classifier(out)
+                if (!cls) continue
+                candidates.push({
+                    inboundSeq:      inb.seq,
+                    outboundSeq:     out.seq,
+                    inboundOrigin:   inb.origin,
+                    outboundDest:    out.destination,
+                    transferMinutes: transfer,
+                    classification:  cls
+                })
+            }
+        }
+
+        // Sort by closest-to-ideal-mid; cap at 100 to keep the SVG legible.
+        candidates.sort((a, b) =>
+            Math.abs(a.transferMinutes - idealMid) - Math.abs(b.transferMinutes - idealMid)
+        )
+        const CAP = 100
+        if (candidates.length > CAP) {
+            const overflow = candidates.length - CAP
+            const out = candidates.slice(0, CAP)
+            out.push({overflow: true, count: overflow})
+            return out
+        }
+        return candidates
+    }
+
+    /**
      * Convenience that runs all three phases and returns a schedule record
      * ready to hand to ScheduleStore.save().
      *
@@ -210,7 +287,14 @@ class ScheduleBuilder {
             origin: isOutbound ? this.preset.hub : route.destination,
             destination: isOutbound ? route.destination : this.preset.hub,
             aircraftType: route.aircraftType || null,
+            // Slice 1 contract: depTimeLocal carries the wave-spread time for
+            // BOTH directions (renderer reads it as a layout coord regardless
+            // of direction). Don't change this without auditing _renderLane.
             depTimeLocal: timeHHMM,
+            // Slice 2 — explicit arrival time at the hub for inbound flights;
+            // null on outbound. computeConnections reads inbound.arrTimeLocal
+            // and outbound.depTimeLocal to derive transfer minutes.
+            arrTimeLocal: isOutbound ? null : timeHHMM,
             distanceNm: route.distanceNm,
             rangeBucket: ScheduleFactors.bucketize(route.distanceNm, this.preset.factors.rangeBuckets),
             dayMask: dayMask.slice()

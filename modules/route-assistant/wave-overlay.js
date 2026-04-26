@@ -79,19 +79,23 @@ class RouteAssistantWaveOverlay {
 
     /**
      * Run the build. Returns flights + warnings + placements + unplaced
-     * + shortfall + skipped + validation in a single rich object so the
-     * renderer can show the full picture without re-running phases.
+     * + shortfall + skipped + validation + connections in a single rich
+     * object so the renderer can show the full picture without re-running
+     * phases.
      *
      * @param {object} preset - SchedulePresets record
      * @param {Array} scoredRows
-     * @param {object} ctx - {server, airlineCode, hubIata, selectedSpec, topN}
-     * @returns {object} {validation, routes, flights, warnings, placements, unplaced, shortfall, skipped, preset}
+     * @param {object} ctx - {server, airlineCode, hubIata, selectedSpec, topN,
+     *                        carrierClassifier?}
+     * @returns {object} {validation, routes, flights, warnings, placements,
+     *   unplaced, shortfall, skipped, connections, preset}
      */
     static buildSchedule(preset, scoredRows, ctx) {
         const c = ctx || {}
         const out = {
             validation: [], routes: [], flights: [], warnings: [],
             placements: [], unplaced: [], shortfall: {}, skipped: [],
+            connections: [],
             preset: preset || null
         }
         if (!preset) {
@@ -126,6 +130,13 @@ class RouteAssistantWaveOverlay {
         const evaluation = builder.evaluateFlights(assignment.placements)
         out.flights  = evaluation.flights
         out.warnings = evaluation.warnings
+
+        // Slice 2 — connection-graph: derive valid inbound→outbound pairs.
+        // The classifier callback (panel-supplied) sorts pairs into own /
+        // interline / alliance buckets using the F slice 3 partner cache.
+        out.connections = builder.computeConnections(out.flights, {
+            carrierClassifier: c.carrierClassifier
+        })
         return out
     }
 
@@ -210,6 +221,15 @@ class RouteAssistantWaveOverlay {
             host.append(lane)
         }
 
+        // ----- Slice 2 connection-graph SVG overlay -----
+        // Lanes are now in the live DOM, so getBoundingClientRect() returns
+        // valid coords. The overlay's <svg> sits above the lanes with
+        // pointer-events:none so flight-bar tooltips/clicks still work.
+        if (o.showConnections !== false
+            && build.connections && build.connections.length) {
+            RouteAssistantWaveOverlay._renderConnectionsOverlay(host, build.connections)
+        }
+
         // ----- Warnings panel -----
         if (build.warnings && build.warnings.length) {
             const wbox = document.createElement("div")
@@ -269,6 +289,13 @@ class RouteAssistantWaveOverlay {
                 + (build.skipped.length > 10 ? "…" : "")
             host.append(sbox)
         }
+
+        // ----- Slice 2 connection-graph legend -----
+        // Always renders so the user knows the feature exists, even when the
+        // SVG overlay is toggled off via showConnections.
+        RouteAssistantWaveOverlay._renderConnectionLegend(
+            host, build.connections || [], (preset && preset.factors) || {}
+        )
     }
 
     /**
@@ -320,6 +347,11 @@ class RouteAssistantWaveOverlay {
             const top   = isOut ? "2px" : "26px"
 
             const bar = document.createElement("div")
+            // Slice 2 — connection-graph hover keys off these dataset attrs.
+            // seq is unique per build; direction lets the SVG anchor logic
+            // pick which edge of the bar to attach the curve to.
+            bar.dataset.flightSeq = String(f.seq)
+            bar.dataset.direction = f.direction
             Object.assign(bar.style, {
                 position:    "absolute",
                 top:         top,
@@ -390,5 +422,185 @@ class RouteAssistantWaveOverlay {
             pointerEvents: "none"
         })
         return band
+    }
+
+    /**
+     * Slice 2 — render curved SVG connection lines over the lanes.
+     *
+     * One <svg> overlays the host, sized to its bounding box. For each
+     * connection record, look up the matching inbound + outbound bar via
+     * data-flight-seq, anchor a cubic bezier between the inbound's right
+     * edge and the outbound's left edge, stroke-style by classification.
+     * pointer-events:none on the SVG so existing bar tooltips/clicks still
+     * work; hover wiring lives on the host via event delegation.
+     *
+     * Caller has already verified build.connections.length > 0.
+     */
+    static _renderConnectionsOverlay(host, connections) {
+        host.style.position = "relative"
+        const hostRect = host.getBoundingClientRect()
+        const SVGNS = "http://www.w3.org/2000/svg"
+        const svg = document.createElementNS(SVGNS, "svg")
+        svg.setAttribute("data-aes-conn-overlay", "1")
+        svg.setAttribute("width", "100%")
+        svg.setAttribute("height", "100%")
+        Object.assign(svg.style, {
+            position:      "absolute",
+            inset:         "0",
+            pointerEvents: "none",
+            zIndex:        "5",
+            overflow:      "visible"
+        })
+
+        const styleByCls = {
+            own:       {stroke: "#60a5fa", dash: null},
+            interline: {stroke: "#fbbf24", dash: "4 3"},
+            alliance:  {stroke: "#a78bfa", dash: "2 2 6 2"}
+        }
+
+        let drawn = 0
+        for (const c of connections) {
+            if (c.overflow) continue
+            const inb = host.querySelector('[data-flight-seq="' + c.inboundSeq + '"]')
+            const out = host.querySelector('[data-flight-seq="' + c.outboundSeq + '"]')
+            if (!inb || !out) continue
+            const ir = inb.getBoundingClientRect()
+            const or = out.getBoundingClientRect()
+            // Local coords (px relative to host's top-left).
+            const x1 = ir.right - hostRect.left
+            const y1 = ir.top + ir.height / 2 - hostRect.top
+            const x2 = or.left - hostRect.left
+            const y2 = or.top + or.height / 2 - hostRect.top
+            // Cubic bezier with control points pulled inward 40% horizontally
+            // for a smooth S-curve when y1 ≠ y2 (cross-lane connections).
+            const dx = Math.max(20, Math.abs(x2 - x1) * 0.4)
+            const cx1 = x1 + dx
+            const cx2 = x2 - dx
+            const d = "M " + x1 + " " + y1
+                + " C " + cx1 + " " + y1
+                + " " + cx2 + " " + y2
+                + " " + x2 + " " + y2
+            const style = styleByCls[c.classification] || styleByCls.own
+            const path = document.createElementNS(SVGNS, "path")
+            path.setAttribute("d", d)
+            path.setAttribute("fill", "none")
+            path.setAttribute("stroke", style.stroke)
+            path.setAttribute("stroke-width", "1.5")
+            path.setAttribute("stroke-linecap", "round")
+            if (style.dash) path.setAttribute("stroke-dasharray", style.dash)
+            path.setAttribute("opacity", "0.55")
+            path.dataset.inSeq  = String(c.inboundSeq)
+            path.dataset.outSeq = String(c.outboundSeq)
+            svg.append(path)
+            drawn++
+        }
+
+        if (!drawn) return
+        host.append(svg)
+        RouteAssistantWaveOverlay._wireConnectionHover(host, svg)
+    }
+
+    /**
+     * Slice 2 — hover wiring. Mouse over any flight bar (data-flight-seq
+     * attribute) dims every non-matching connection path and brightens the
+     * matching ones. Mouse out restores defaults. Event delegation so panel
+     * re-renders that wipe + rebuild bars don't leak listeners.
+     */
+    static _wireConnectionHover(host, svg) {
+        const setBaseline = () => {
+            for (const p of svg.querySelectorAll("path")) {
+                p.setAttribute("opacity", "0.55")
+                p.setAttribute("stroke-width", "1.5")
+            }
+        }
+        host.addEventListener("mouseover", (e) => {
+            const t = e.target && e.target.closest && e.target.closest("[data-flight-seq]")
+            if (!t) return
+            const seq = t.dataset.flightSeq
+            if (!seq) return
+            for (const p of svg.querySelectorAll("path")) {
+                const matches = p.dataset.inSeq === seq || p.dataset.outSeq === seq
+                if (matches) {
+                    p.setAttribute("opacity", "1")
+                    p.setAttribute("stroke-width", "2.5")
+                } else {
+                    p.setAttribute("opacity", "0.08")
+                    p.setAttribute("stroke-width", "0.8")
+                }
+            }
+        })
+        host.addEventListener("mouseout", (e) => {
+            const t = e.target && e.target.closest && e.target.closest("[data-flight-seq]")
+            if (!t) return
+            // Only reset if we left the bar entirely (relatedTarget isn't another bar).
+            const into = e.relatedTarget && e.relatedTarget.closest
+                ? e.relatedTarget.closest("[data-flight-seq]")
+                : null
+            if (into) return
+            setBaseline()
+        })
+    }
+
+    /**
+     * Slice 2 — render a small legend strip below the gantt explaining the
+     * three connection visual styles + counts + transfer-time range. Always
+     * rendered (even when the SVG overlay is toggled off) so users discover
+     * the feature.
+     */
+    static _renderConnectionLegend(host, connections, factors) {
+        const real = (connections || []).filter(c => !c.overflow)
+        const overflow = (connections || []).find(c => c.overflow)
+        const minXfr = Number(factors.minTransferMinutes) || 45
+        const maxXfr = Number(factors.maxTransferMinutes) || 240
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:8px;padding:6px 8px;display:flex;"
+            + "gap:10px;align-items:center;flex-wrap:wrap;font-size:11px;"
+            + "background:rgba(15,22,35,0.6);border:1px solid #1f2937;"
+            + "border-radius:4px;color:#cbd5e1;"
+
+        const head = document.createElement("strong")
+        head.textContent = "🔗 Connections"
+        head.style.cssText = "color:#e5e7eb;"
+        wrap.append(head)
+
+        if (!real.length) {
+            const empty = document.createElement("span")
+            empty.textContent = "No valid inbound→outbound pairs in this build."
+            empty.style.cssText = "color:#6b7280;font-style:italic;"
+            wrap.append(empty)
+            host.append(wrap)
+            return
+        }
+
+        const counts = {own: 0, interline: 0, alliance: 0}
+        for (const c of real) counts[c.classification] = (counts[c.classification] || 0) + 1
+
+        const mkPill = (glyph, label, color, count) => {
+            const pill = document.createElement("span")
+            pill.style.cssText = "display:inline-flex;align-items:center;gap:4px;"
+                + "padding:2px 6px;border-radius:8px;font-size:10px;"
+                + "color:" + color + ";border:1px solid " + color + "55;"
+                + "background:" + color + "12;"
+            pill.textContent = glyph + " " + label + " (" + count + ")"
+            return pill
+        }
+        wrap.append(mkPill("●",   "own",       "#60a5fa", counts.own))
+        wrap.append(mkPill("▬▬",  "interline", "#fbbf24", counts.interline))
+        wrap.append(mkPill("╴╴╴", "alliance",  "#a78bfa", counts.alliance))
+
+        const range = document.createElement("span")
+        range.textContent = "⏱ " + minXfr + "–" + maxXfr + " min"
+        range.style.cssText = "color:#9ca3af;font-size:10px;"
+        wrap.append(range)
+
+        if (overflow && overflow.count > 0) {
+            const more = document.createElement("span")
+            more.textContent = "+" + overflow.count + " more (capped)"
+            more.style.cssText = "color:#fbbf24;font-size:10px;font-style:italic;"
+            wrap.append(more)
+        }
+
+        host.append(wrap)
     }
 }
