@@ -76,3 +76,18 @@
 [class^="layout-col-md"]:has(.types):not(:has(li)) {
     display: none;
 }
+
+/**
+ * Route Assistant — U15 column-band hover highlight. Hovering a group
+ * header in the Route Assistant table flashes the corresponding column
+ * band so the user sees which columns belong to which group. Inset
+ * box-shadow lifts the cell brightness without disturbing the existing
+ * tint or sort indicators.
+ */
+#aes-route-assistant td.aes-grp-hover,
+#aes-route-assistant th.aes-grp-hover {
+    box-shadow: inset 0 0 0 999px rgba(255, 255, 255, 0.045);
+}
+#aes-route-assistant th[data-group-header="1"]:hover {
+    cursor: default;
+}

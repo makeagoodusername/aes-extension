@@ -21,9 +21,11 @@ class RouteAssistantPanel {
         this.body = null
         this.statusBar = null
         this.controlsHost = null   // hosts the Mode + Aircraft dropdowns
+        this.chipBar = null        // Q1 quick-filter chips, between tabBar and tableHost
         this.tableHost = null
         this.settingsHost = null
         this.collapsed = false
+        this._hubShortcutHandler = null   // Q15 hub keyboard quick-swap (Alt+1..5)
 
         this.settings = null      // RouteAssistantSettings.load() result
         this.hubIata = null
@@ -42,6 +44,7 @@ class RouteAssistantPanel {
         this.overrideMap = new Map()
         this.yieldHistoryMap = new Map()    // routeAssistant:yieldHistory:<HUB>-<DEST>
         this.serviceConfigMap = new Map()   // routeAssistant:serviceConfig:<HUB>-<DEST>
+        this.routeNoteMap = new Map()       // routeAssistant:routeNote:<HUB>-<DEST>
         this.serviceProfilesCache = new Map()  // Map<id, profileDetail> from RouteAssistantServiceProfileScraper
         this._serviceProfilesList = null    // {profiles, scrapedAt}
         this._serviceProfileSyncRunning = false
@@ -79,6 +82,12 @@ class RouteAssistantPanel {
         this._diffPrevSnapshot   = null
         this._diffBaselineLoaded = false
 
+        // Route-note popover state. Cleanup function unbinds the
+        // outside-click + Escape listeners; nullified by
+        // _closeRouteNotePopover when the popover dismisses.
+        this._routeNotePopover        = null
+        this._routeNotePopoverCleanup = null
+
         // Watchlist (starred routes) — global Set<"HUB-DEST"> loaded once
         // per refresh() from RouteAssistantWatchlistStore. The panel
         // decorates each scoredRow with `_starred: bool` before sorting
@@ -86,6 +95,32 @@ class RouteAssistantPanel {
         // toggles flip the in-memory Set immediately, persist async, then
         // re-render — no need to await storage to update the UI.
         this._watchlist = new Set()
+
+        // Wave overlay (Roadmap H slice 1) — cached build + presets list
+        // kept across intra-mode re-renders. Invalidated explicitly by the
+        // Re-run button + on hub change / preset change.
+        this._waveBuild    = null
+        this._wavePresets  = null   // last-loaded SchedulePresets.load() block
+        this._waveBuildHub = null   // hub IATA the cached build was for
+
+        // ORS Sandbox (Letter I slice 1) — per-route pricing simulator state.
+        // `_orsSandboxRoute` holds the {hub, dest} of the picked route;
+        // `_orsSandboxResult` caches the latest projection from
+        // RouteAssistantOrsModel.project so re-renders during slider drag
+        // don't blow away the in-flight result. `_orsSandboxRaf` coalesces
+        // slider-input events to one recompute per animation frame.
+        this._orsSandboxRoute  = null
+        this._orsSandboxResult = null
+        this._orsSandboxRaf    = 0
+
+        // Active prompts — alert rules + per-mount fired set.
+        // The fired set keeps the same rule+route from spamming toasts on
+        // intra-mount re-renders (sort change, filter tweak, etc.). The
+        // store-level cooldown (rule.cooldownHours) handles the cross-
+        // mount case so the user doesn't see the same alert every time
+        // they open the panel within a day.
+        this._alertRules = []
+        this._alertFiredThisMount = new Set()
     }
 
     async mount() {
@@ -96,6 +131,7 @@ class RouteAssistantPanel {
         this._buildSkeleton()
         document.body.append(this.root)
         this._attachStorageListener()
+        this._attachHubShortcuts()
         await this.refresh()
         this._maybeAutoSnapshot()
     }
@@ -121,10 +157,20 @@ class RouteAssistantPanel {
     dispose() {
         this._disposed = true
         if (this.scanner) this.scanner.abort()
+        if (this._onViewportResize) {
+            window.removeEventListener("resize", this._onViewportResize)
+            this._onViewportResize = null
+        }
+        if (this._viewportResizeTimer) {
+            clearTimeout(this._viewportResizeTimer)
+            this._viewportResizeTimer = null
+        }
         this._detachStorageListener()
+        this._detachHubShortcuts()
         this._closeProfitPopover()
         this._closeServicePopover()
         this._closeCarrierPopover()
+        this._closeRouteNotePopover()
         if (this._overrideEditor && this._overrideEditor.parentNode) {
             this._overrideEditor.parentNode.removeChild(this._overrideEditor)
             this._overrideEditor = null
@@ -205,12 +251,465 @@ class RouteAssistantPanel {
         this._renderRows()
         try {
             await RouteAssistantWatchlistStore.toggle(hub, dest)
+            // Foundation toast — gives the user visible confirmation of the
+            // flip and a one-click Undo. Replaces silent state changes.
+            if (typeof RouteAssistantToast !== "undefined") {
+                const verb = wasStarred ? "Unstarred" : "Starred"
+                RouteAssistantToast.show(verb + " " + key, {
+                    type:  wasStarred ? "info" : "success",
+                    id:    "watchlist-" + key,
+                    action: {
+                        label: "Undo",
+                        fn:    () => this._toggleWatchlist(hub, dest)
+                    }
+                })
+            }
         } catch (e) {
             console.warn("[AES routeAssistant] watchlist toggle failed:", e)
             if (wasStarred) this._watchlist.add(key)
             else            this._watchlist.delete(key)
             this._renderRows()
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.error("Watchlist toggle failed for " + key)
+            }
         }
+    }
+
+    /**
+     * Export the entire `settings.routeAssistant` + `settings.usedAircraftScanner`
+     * blobs as a downloadable JSON file. Wrap-format envelope is documented
+     * next to AES_CONFIG_FORMAT below.
+     */
+    async _exportConfig() {
+        const data = await chrome.storage.local.get(["settings"])
+        const settings = data.settings || {}
+        const manifest = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getManifest)
+            ? chrome.runtime.getManifest()
+            : {}
+        const envelope = {
+            format:              AES_CONFIG_FORMAT,
+            version:             manifest.version_name || manifest.version || "unknown",
+            exportedAt:          new Date().toISOString(),
+            server:              this.server || "",
+            routeAssistant:      settings.routeAssistant || {},
+            usedAircraftScanner: settings.usedAircraftScanner || {}
+        }
+        const json = JSON.stringify(envelope, null, 2)
+        const blob = new Blob([json], {type: "application/json"})
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = "aes-config-" + (this.server || "world") + "-"
+            + new Date().toISOString().slice(0, 10) + ".json"
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.success("Exported " + a.download)
+        }
+    }
+
+    /**
+     * Open the system file picker for an AES config JSON, validate it,
+     * compute the diff against current settings, and show a modal listing
+     * every change with Apply / Cancel. On Apply both blobs are written
+     * back through their respective stores (which deep-merge against
+     * defaults for any missing keys).
+     */
+    _openImportConfig() {
+        const input = document.createElement("input")
+        input.type = "file"
+        input.accept = "application/json,.json"
+        input.style.display = "none"
+        input.addEventListener("change", async () => {
+            const file = input.files && input.files[0]
+            document.body.removeChild(input)
+            if (!file) return
+            let parsed
+            try {
+                const text = await file.text()
+                parsed = JSON.parse(text)
+            } catch (e) {
+                this._noteToast("Couldn't parse JSON: " + e.message, true)
+                return
+            }
+            if (!parsed || parsed.format !== AES_CONFIG_FORMAT) {
+                this._noteToast("Not a valid AES config file (expected format: \""
+                    + AES_CONFIG_FORMAT + "\").", true)
+                return
+            }
+            // Defend against hand-edited JSON where a namespace was replaced
+            // with a non-object — _diffConfig would otherwise walk Object.keys
+            // on a string/array and produce nonsense rows.
+            if (parsed.routeAssistant !== undefined && !_isPlainObject(parsed.routeAssistant)) {
+                this._noteToast("Config file shape is invalid (routeAssistant must be an object).", true)
+                return
+            }
+            if (parsed.usedAircraftScanner !== undefined && !_isPlainObject(parsed.usedAircraftScanner)) {
+                this._noteToast("Config file shape is invalid (usedAircraftScanner must be an object).", true)
+                return
+            }
+            const data = await chrome.storage.local.get(["settings"])
+            const cur = data.settings || {}
+            const changes = _diffConfig(
+                {routeAssistant: cur.routeAssistant || {}, usedAircraftScanner: cur.usedAircraftScanner || {}},
+                {routeAssistant: parsed.routeAssistant || {}, usedAircraftScanner: parsed.usedAircraftScanner || {}}
+            )
+            this._showImportDiffModal(parsed, changes)
+        })
+        document.body.appendChild(input)
+        input.click()
+    }
+
+    /**
+     * Floating modal listing every changed leaf path in the import diff.
+     * Apply writes both blobs back via their stores; Cancel discards.
+     * No-changes case still shows the modal so the user knows the file
+     * matched their current state (and didn't silently no-op).
+     */
+    _showImportDiffModal(parsed, changes) {
+        const overlay = document.createElement("div")
+        overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);"
+            + "z-index:10001;display:flex;align-items:center;justify-content:center;"
+        const modal = document.createElement("div")
+        modal.style.cssText = "background:#1f2937;color:#f3f4f6;border:1px solid #374151;"
+            + "border-radius:6px;padding:12px 16px;min-width:480px;max-width:80vw;"
+            + "max-height:80vh;display:flex;flex-direction:column;font:13px/1.4 sans-serif;"
+
+        // Partition changes by namespace so the per-section toggles can hide
+        // their rows without rebuilding the list, and Apply can gate each
+        // store's save() independently.
+        const raChanges  = changes.filter(c => c.path.startsWith("routeAssistant."))
+        const uasChanges = changes.filter(c => c.path.startsWith("usedAircraftScanner."))
+
+        const h = document.createElement("strong")
+        h.textContent = "Import AES config — " + changes.length + " change"
+            + (changes.length === 1 ? "" : "s")
+        h.style.cssText = "font-size:14px;margin-bottom:6px;"
+
+        const meta = document.createElement("div")
+        meta.style.cssText = "color:#9ca3af;font-size:11px;margin-bottom:8px;"
+        meta.textContent = "From: v" + (parsed.version || "?") + "  ·  exported "
+            + (parsed.exportedAt ? new Date(parsed.exportedAt).toLocaleString() : "?")
+            + (parsed.server ? "  ·  server " + parsed.server : "")
+
+        // Version-skew warning — informational only, never blocks Apply. The
+        // deep-merge in each store's save() handles missing/extra keys, but
+        // a renamed key would silently land in the wrong place, so the user
+        // should eyeball the diff before committing across versions.
+        const currentVersion = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getManifest)
+            ? (chrome.runtime.getManifest().version_name || chrome.runtime.getManifest().version || "")
+            : ""
+        let skewBanner = null
+        if (parsed.version && currentVersion && parsed.version !== currentVersion) {
+            skewBanner = document.createElement("div")
+            skewBanner.style.cssText = "margin:0 0 8px 0;padding:6px 10px;"
+                + "background:rgba(245, 158, 11, 0.12);border:1px solid rgba(245, 158, 11, 0.40);"
+                + "border-radius:4px;color:#fcd34d;font-size:11px;"
+            skewBanner.textContent = "⚠ Imported from v" + parsed.version
+                + ". You're on v" + currentVersion
+                + ". Schema may have changed shape; review the diff carefully."
+        }
+
+        // Per-namespace toggles — disabled when the namespace isn't present
+        // in the envelope. State drives both the row visibility and which
+        // save() runs at Apply time.
+        const raPresent  = parsed.routeAssistant !== undefined
+        const uasPresent = parsed.usedAircraftScanner !== undefined
+        let importRA  = raPresent
+        let importUAS = uasPresent
+
+        const toggles = document.createElement("div")
+        toggles.style.cssText = "display:flex;gap:14px;margin-bottom:8px;font-size:12px;color:#cbd5e1;"
+
+        const mkToggle = (label, count, present, getter, setter) => {
+            const wrap = document.createElement("label")
+            wrap.style.cssText = "display:inline-flex;align-items:center;gap:6px;cursor:"
+                + (present ? "pointer" : "default") + ";"
+                + (present ? "" : "opacity:0.45;")
+            const cb = document.createElement("input")
+            cb.type = "checkbox"
+            cb.checked = getter() && present
+            cb.disabled = !present
+            cb.style.cursor = present ? "pointer" : "default"
+            cb.addEventListener("change", () => {
+                setter(cb.checked)
+                applyVisibilityAndLabel()
+            })
+            const txt = document.createElement("span")
+            txt.textContent = label + " (" + count + " change"
+                + (count === 1 ? "" : "s") + ")"
+            wrap.append(cb, txt)
+            return wrap
+        }
+        toggles.append(
+            mkToggle("Route Assistant", raChanges.length, raPresent,
+                () => importRA, (v) => { importRA = v }),
+            mkToggle("Used Aircraft Scanner", uasChanges.length, uasPresent,
+                () => importUAS, (v) => { importUAS = v })
+        )
+
+        const list = document.createElement("div")
+        list.style.cssText = "overflow-y:auto;flex:1;border:1px solid #374151;"
+            + "border-radius:4px;padding:6px 8px;margin-bottom:10px;background:#0f1623;"
+            + "font-family:ui-monospace,monospace;font-size:11px;"
+
+        // Tag each row with its namespace so toggle handlers can flip
+        // display:none without rebuilding the list.
+        const rowEntries = []
+
+        if (!changes.length) {
+            const p = document.createElement("p")
+            p.textContent = "Imported config is identical to current settings — nothing to apply."
+            p.style.cssText = "color:#9ca3af;margin:6px 0;"
+            list.append(p)
+        } else {
+            for (const c of changes) {
+                const namespace = c.path.startsWith("routeAssistant.")        ? "ra"
+                                : c.path.startsWith("usedAircraftScanner.")   ? "uas"
+                                                                              : "other"
+                const row = document.createElement("div")
+                row.style.cssText = "padding:2px 0;border-bottom:1px solid #1f2937;"
+                const tagColor = c.kind === "added"   ? "#86efac"
+                              : c.kind === "removed" ? "#fca5a5"
+                              : "#fde68a"
+                const tag = document.createElement("span")
+                tag.textContent = c.kind.toUpperCase().padEnd(8, " ")
+                tag.style.cssText = "color:" + tagColor + ";font-weight:bold;margin-right:6px;"
+                const path = document.createElement("span")
+                path.textContent = c.path
+                path.style.cssText = "color:#cbd5e1;"
+                row.append(tag, path)
+                if (c.kind === "changed") {
+                    const arrow = document.createElement("div")
+                    arrow.style.cssText = "color:#9ca3af;margin-left:64px;"
+                    arrow.textContent = _formatDiffValue(c.from) + "  →  " + _formatDiffValue(c.to)
+                    row.append(arrow)
+                } else if (c.kind === "added") {
+                    const arrow = document.createElement("div")
+                    arrow.style.cssText = "color:#9ca3af;margin-left:64px;"
+                    arrow.textContent = "(new)  →  " + _formatDiffValue(c.to)
+                    row.append(arrow)
+                } else {
+                    const arrow = document.createElement("div")
+                    arrow.style.cssText = "color:#9ca3af;margin-left:64px;"
+                    arrow.textContent = _formatDiffValue(c.from) + "  →  (removed)"
+                    row.append(arrow)
+                }
+                list.append(row)
+                rowEntries.push({row, namespace})
+            }
+        }
+
+        const btnRow = document.createElement("div")
+        btnRow.style.cssText = "display:flex;gap:8px;justify-content:flex-end;"
+        const cancel = document.createElement("button")
+        cancel.textContent = "Cancel"
+        Object.assign(cancel.style, smallBtnStyle())
+        cancel.style.background = "#374151"
+        const apply = document.createElement("button")
+        Object.assign(apply.style, smallBtnStyle())
+
+        // Recompute visible-changes count + Apply label whenever a namespace
+        // toggle flips. Also flips row visibility in place — checking a box
+        // restores rows without rebuilding the list.
+        const applyVisibilityAndLabel = () => {
+            const visibleCount = (importRA ? raChanges.length : 0)
+                + (importUAS ? uasChanges.length : 0)
+            for (const e of rowEntries) {
+                const show = (e.namespace === "ra"  && importRA)
+                          || (e.namespace === "uas" && importUAS)
+                          || (e.namespace === "other")
+                e.row.style.display = show ? "" : "none"
+            }
+            if (visibleCount === 0) {
+                apply.textContent = "Close"
+                apply.style.background = "#374151"
+            } else {
+                apply.textContent = "Apply " + visibleCount + " change"
+                    + (visibleCount === 1 ? "" : "s")
+                apply.style.background = ""
+            }
+        }
+        applyVisibilityAndLabel()
+
+        // Lifecycle — single close() removes the overlay AND unbinds both
+        // listeners. Previous version only unbound the keydown listener on
+        // Escape press, so Cancel/Apply leaked it forever.
+        const onKey = (e) => { if (e.key === "Escape") close() }
+        const onOverlayClick = (e) => { if (e.target === overlay) close() }
+        const close = () => {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
+            document.removeEventListener("keydown", onKey)
+            overlay.removeEventListener("click", onOverlayClick)
+        }
+        cancel.addEventListener("click", close)
+        apply.addEventListener("click", async () => {
+            const visibleCount = (importRA ? raChanges.length : 0)
+                + (importUAS ? uasChanges.length : 0)
+            close()
+            if (visibleCount === 0) return
+
+            // Per-namespace try/catch so a UAS save failure doesn't bury the
+            // fact that the RA save already landed. The user always learns
+            // exactly which blob made it into storage.
+            const applied = []
+            const failed  = []
+            if (importRA && parsed.routeAssistant) {
+                try {
+                    await RouteAssistantSettings.save(parsed.routeAssistant)
+                    applied.push("routeAssistant")
+                } catch (e) {
+                    failed.push({ns: "routeAssistant", err: e && e.message ? e.message : String(e)})
+                }
+            }
+            if (importUAS && parsed.usedAircraftScanner) {
+                try {
+                    await UsedAircraftPresets.save(parsed.usedAircraftScanner)
+                    applied.push("usedAircraftScanner")
+                } catch (e) {
+                    failed.push({ns: "usedAircraftScanner", err: e && e.message ? e.message : String(e)})
+                }
+            }
+            if (applied.length) {
+                try {
+                    this.settings = await RouteAssistantSettings.load()
+                    this._render()
+                } catch (e) {
+                    console.warn("[AES routeAssistant] post-import reload failed:", e)
+                }
+            }
+            if (failed.length === 0) {
+                this._noteToast("Imported " + applied.length + " section"
+                    + (applied.length === 1 ? "" : "s")
+                    + ", " + visibleCount + " change"
+                    + (visibleCount === 1 ? "" : "s"), false)
+            } else if (applied.length > 0) {
+                this._noteToast("Partial import — applied " + applied.join(", ")
+                    + "; failed " + failed.map(f => f.ns).join(", ")
+                    + ": " + failed[0].err, true)
+            } else {
+                this._noteToast("Import failed: " + failed[0].err, true)
+            }
+        })
+        overlay.addEventListener("click", onOverlayClick)
+        document.addEventListener("keydown", onKey)
+
+        btnRow.append(cancel, apply)
+        const children = [h, meta]
+        if (skewBanner) children.push(skewBanner)
+        if (changes.length > 0) children.push(toggles)
+        children.push(list, btnRow)
+        modal.append(...children)
+        overlay.append(modal)
+        document.body.appendChild(overlay)
+    }
+
+    /**
+     * Open a small popup menu anchored to the Config button. Two items:
+     * Export → triggers _exportConfig; Import → triggers _openImportConfig.
+     * Click outside / Escape closes. Modeled after the panel's other
+     * lightweight menus rather than a styled <select>.
+     */
+    _openConfigMenu(anchor) {
+        const existing = document.getElementById("aes-config-menu")
+        if (existing) { existing.parentNode.removeChild(existing); return }
+        const menu = document.createElement("div")
+        menu.id = "aes-config-menu"
+        menu.style.cssText = "position:absolute;background:#0f1623;border:1px solid #374151;"
+            + "border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.4);z-index:10000;"
+            + "padding:4px 0;font:12px/1.4 sans-serif;color:#f3f4f6;min-width:200px;"
+        const rect = anchor.getBoundingClientRect()
+        menu.style.top  = (rect.bottom + 4) + "px"
+        menu.style.left = (rect.right  - 200) + "px"
+        const mkItem = (label, fn) => {
+            const item = document.createElement("div")
+            item.textContent = label
+            item.style.cssText = "padding:6px 12px;cursor:pointer;"
+            item.addEventListener("mouseenter", () => item.style.background = "#1f2937")
+            item.addEventListener("mouseleave", () => item.style.background = "")
+            item.addEventListener("click", () => { close(); fn() })
+            return item
+        }
+        const close = () => {
+            if (menu.parentNode) menu.parentNode.removeChild(menu)
+            document.removeEventListener("click", onDocClick, true)
+            document.removeEventListener("keydown", onKey)
+        }
+        const onDocClick = (e) => { if (!menu.contains(e.target) && e.target !== anchor) close() }
+        const onKey = (e) => { if (e.key === "Escape") close() }
+        menu.append(
+            mkItem("Export config → file", () => this._exportConfig()),
+            mkItem("Import config ← file", () => this._openImportConfig())
+        )
+        document.body.appendChild(menu)
+        setTimeout(() => {
+            document.addEventListener("click",   onDocClick, true)
+            document.addEventListener("keydown", onKey)
+        }, 0)
+    }
+
+    /**
+     * Right-click context menu for table rows. Two items: the legacy
+     * override editor (default — preserves muscle memory) and a new
+     * "Open in ORS Sandbox" entry that switches to the sandbox mode and
+     * pins the row's destination as the simulated route.
+     */
+    _openRowContextMenu(row, x, y) {
+        const existing = document.getElementById("aes-row-context-menu")
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
+        const menu = document.createElement("div")
+        menu.id = "aes-row-context-menu"
+        menu.style.cssText = "position:fixed;background:#0f1623;border:1px solid #374151;"
+            + "border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.4);z-index:10000;"
+            + "padding:4px 0;font:12px/1.4 sans-serif;color:#f3f4f6;min-width:220px;"
+        // Position via fixed coords; clamp to viewport.
+        const vw = window.innerWidth, vh = window.innerHeight
+        menu.style.top  = Math.min(vh - 80, y) + "px"
+        menu.style.left = Math.min(vw - 230, x) + "px"
+        const close = () => {
+            if (menu.parentNode) menu.parentNode.removeChild(menu)
+            document.removeEventListener("click",   onDocClick, true)
+            document.removeEventListener("keydown", onKey)
+        }
+        const mkItem = (label, fn) => {
+            const item = document.createElement("div")
+            item.textContent = label
+            item.style.cssText = "padding:6px 12px;cursor:pointer;"
+            item.addEventListener("mouseenter", () => item.style.background = "#1f2937")
+            item.addEventListener("mouseleave", () => item.style.background = "")
+            item.addEventListener("click", () => { close(); fn() })
+            return item
+        }
+        const onDocClick = (e) => { if (!menu.contains(e.target)) close() }
+        const onKey = (e) => { if (e.key === "Escape") close() }
+        menu.append(
+            mkItem("Modify yield / LF…",        () => this._openOverrideEditor(row)),
+            mkItem("Open in ORS Sandbox 🧪",   () => this._openInOrsSandbox(row))
+        )
+        document.body.appendChild(menu)
+        setTimeout(() => {
+            document.addEventListener("click",   onDocClick, true)
+            document.addEventListener("keydown", onKey)
+        }, 0)
+    }
+
+    /**
+     * Right-click drill-in target — pins the route on the sandbox state
+     * and enables sandbox mode in one step. Persists `lastRouteIata` and
+     * `enabled = true` so the next mount restores the same view.
+     */
+    async _openInOrsSandbox(row) {
+        if (!row || !row.destIata) return
+        this._orsSandboxRoute  = {hub: this.hubIata, dest: row.destIata, _row: row}
+        this._orsSandboxResult = null
+        const cfg = Object.assign({}, this.settings.orsSandbox || {})
+        cfg.enabled = true
+        cfg.lastRouteIata = row.destIata
+        this.settings.orsSandbox = cfg
+        try { await RouteAssistantSettings.save({orsSandbox: cfg}) } catch (e) { /* non-fatal */ }
+        this._render()
     }
 
     // ---------- Skeleton ----------
@@ -226,11 +725,23 @@ class RouteAssistantPanel {
             && this.settings.panelWidth >= 600 && this.settings.panelWidth <= 3000)
             ? this.settings.panelWidth
             : 1100
+        // Belt-and-braces clamp. CSS `max-width: calc(100vw - 32px)` *should*
+        // be enough on its own, but in practice users have reported the
+        // panel's left edge drifting off-screen when the saved width
+        // exceeds the current viewport (e.g., resized on a wide monitor,
+        // re-opened on a narrow laptop screen). Compute the effective
+        // width in JS and apply it explicitly; a window-resize listener
+        // (below) keeps it honest as the viewport changes.
+        const clampWidth = (desired) => {
+            const max = Math.max(600, window.innerWidth - 32)
+            return Math.max(600, Math.min(desired, max))
+        }
+        const initialWidth = clampWidth(savedWidth)
         Object.assign(this.root.style, {
             position: "fixed",
             right: "16px",
             bottom: "16px",
-            width: savedWidth + "px",
+            width: initialWidth + "px",
             maxWidth: "calc(100vw - 32px)",
             maxHeight: "95vh",
             background: "#1f2937",
@@ -244,6 +755,27 @@ class RouteAssistantPanel {
             flexDirection: "column",
             overflow: "hidden"
         })
+
+        // Re-clamp on viewport change. Saves the user from "drag panel wide
+        // on big monitor, switch to small screen, panel left-edge falls
+        // off-screen". Also re-renders so `_activeColumns` recomputes the
+        // auto-compact gate based on the new viewport.
+        const onViewportResize = () => {
+            if (!this.root || this._disposed) return
+            const desired = (this.settings && typeof this.settings.panelWidth === "number")
+                ? this.settings.panelWidth : 1100
+            this.root.style.width = clampWidth(desired) + "px"
+            // Debounced re-render so the auto-compact column set responds
+            // to the new effective width without thrashing on every pixel.
+            if (this._viewportResizeTimer) clearTimeout(this._viewportResizeTimer)
+            this._viewportResizeTimer = setTimeout(() => {
+                this._viewportResizeTimer = null
+                if (!this._disposed) this._render()
+            }, 200)
+        }
+        window.addEventListener("resize", onViewportResize)
+        this._onViewportResize = onViewportResize
+        this._clampPanelWidth = clampWidth
 
         // Left-edge drag handle for resizing. 6px wide invisible strip on
         // the panel's left side; cursor flips to ew-resize on hover. Mouse-
@@ -324,9 +856,25 @@ class RouteAssistantPanel {
         // via settings.routeAssistant.compactView.
         this._compactBtn = makeBtn("◧", "Compact view (toggle heavy column groups)",
             () => this._toggleCompactView())
+        // Wave View toggle (H slice 1) — replaces the table with a
+        // Gantt-style timeline of the recommended wave structure for
+        // the top-N scored rows. Reuses ScheduleBuilder / SchedulePresets.
+        this._waveBtn = makeBtn("📊", "Wave View (toggle Gantt timeline)",
+            () => this._toggleWaveView())
+        // ORS Sandbox toggle (Letter I slice 1) — replaces the table with
+        // a per-route pricing simulator. Mutually exclusive with Wave
+        // View; when both flags are on, Wave View wins (its render branch
+        // fires first in _renderRows).
+        this._orsSandboxBtn = makeBtn("🧪", "ORS Sandbox (toggle pricing simulator)",
+            () => this._toggleOrsSandbox())
         const settingsBtn = makeBtn("⚙", "Score weights & filters", () => this._toggleSettings())
+        // Config export/import — opens a tiny menu with two items. Persists
+        // both routeAssistant + usedAircraftScanner blobs as a single JSON
+        // file; import shows a diff modal before committing.
+        const configBtn = makeBtn("⇅", "Export / import config (JSON roundtrip)",
+            (e) => this._openConfigMenu(e.currentTarget))
         const toggleBtn = makeBtn("_", "Minimise", () => this._toggleCollapse())
-        header.append(title, refreshBtn, this._compactBtn, settingsBtn, toggleBtn)
+        header.append(title, refreshBtn, this._compactBtn, this._waveBtn, this._orsSandboxBtn, settingsBtn, configBtn, toggleBtn)
 
         this.statusBar = document.createElement("div")
         Object.assign(this.statusBar.style, {
@@ -393,6 +941,11 @@ class RouteAssistantPanel {
         this.tabBar = document.createElement("div")
         this.body.append(this.tabBar)
 
+        // Q1 quick-filter chips — same lifecycle reasoning as tabBar.
+        // Hidden when there are zero rows (e.g. the FF-not-scanned banner).
+        this.chipBar = document.createElement("div")
+        this.body.append(this.chipBar)
+
         this.tableHost = document.createElement("div")
         this.body.append(this.tableHost)
 
@@ -447,6 +1000,54 @@ class RouteAssistantPanel {
         this._render()
     }
 
+    /**
+     * H slice 1 — Wave View toggle. When ON, _renderRows() takes the
+     * wave-overlay branch which replaces the table with a Gantt timeline
+     * built from this.scoredRows (top-N) + the user's selected preset.
+     * Persisted to settings.waveView so the mode survives page reloads.
+     */
+    async _toggleWaveView() {
+        const next = !(this.settings && this.settings.waveView)
+        if (this.settings) this.settings.waveView = next
+        try { await RouteAssistantSettings.save({waveView: next}) }
+        catch (e) { /* non-fatal */ }
+        if (this._waveBtn) {
+            this._waveBtn.style.opacity = next ? "1" : "0.6"
+            this._waveBtn.title = next
+                ? "Wave View ON — Gantt timeline of the recommended schedule. Click to return to the table."
+                : "Wave View OFF — table view. Click to switch to the Gantt wave overlay."
+        }
+        // Invalidate cached build so toggling re-runs against current rows.
+        this._waveBuild = null
+        this._render()
+    }
+
+    /**
+     * Letter I slice 1 — ORS Sandbox toggle. When ON, _renderRows() takes
+     * the sandbox branch which replaces the table with a per-route
+     * pricing simulator (rank/share/$/wk projections from cached
+     * ORS + markets + demand-derivator data).
+     * Persisted to settings.orsSandbox.enabled so the mode survives
+     * page reloads. Mutually exclusive with Wave View — Wave wins when
+     * both are on (Wave's render branch fires first).
+     */
+    async _toggleOrsSandbox() {
+        const cfg = (this.settings && this.settings.orsSandbox) || {}
+        const next = !cfg.enabled
+        if (this.settings) this.settings.orsSandbox = Object.assign({}, cfg, {enabled: next})
+        try { await RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox}) }
+        catch (e) { /* non-fatal */ }
+        if (this._orsSandboxBtn) {
+            this._orsSandboxBtn.style.opacity = next ? "1" : "0.6"
+            this._orsSandboxBtn.title = next
+                ? "ORS Sandbox ON — per-route pricing simulator. Click to return to the table."
+                : "ORS Sandbox OFF — table view. Click to switch to the pricing simulator."
+        }
+        // Invalidate cached projection so toggling re-runs against current cache.
+        this._orsSandboxResult = null
+        this._render()
+    }
+
     // ---------- Data refresh ----------
 
     /**
@@ -461,6 +1062,7 @@ class RouteAssistantPanel {
             return
         }
         this.hubIata = iata
+        this._trackRecentHub(iata)
 
         // Diff-against-last-visit — load the previous snapshot ONCE per
         // (mount, hub) pair. Subsequent in-mount refreshes (storage events,
@@ -476,7 +1078,7 @@ class RouteAssistantPanel {
         // Watchlist — global Set across all hubs. Loaded fresh every
         // refresh so cross-tab toggles eventually surface (no chrome.storage
         // listener wired for this key in v1; refresh is enough).
-        this._watchlist = await RouteAssistantWatchlistStore.load()
+        this._watchlist = await RouteAssistantWatchlistStore.loadKeys()
 
         this.ffData = await FlightsFromStore.loadAirport(iata)
         this.ownSchedule = await this._loadOwnSchedule()
@@ -506,6 +1108,14 @@ class RouteAssistantPanel {
         this.serviceConfigMap = (typeof RouteAssistantServiceConfigStore !== "undefined")
             ? await RouteAssistantServiceConfigStore.getMany(dests.map(d => [iata, d]))
             : new Map()
+        this.routeNoteMap = (typeof RouteAssistantRouteNoteStore !== "undefined")
+            ? await RouteAssistantRouteNoteStore.getMany(dests.map(d => [iata, d]))
+            : new Map()
+        // Active prompts — load alert rules + reset the per-mount fired
+        // set so the same rule+route can re-fire on the next mount (the
+        // store-level cooldown handles short-window suppression).
+        await this._loadAlertRules()
+        this._alertFiredThisMount = new Set()
         // Service-profile cache (auto-detected from /action/enterprise/*)
         if (typeof RouteAssistantServiceProfileScraper !== "undefined") {
             this.serviceProfilesCache = await RouteAssistantServiceProfileScraper.loadAllDetails()
@@ -519,6 +1129,7 @@ class RouteAssistantPanel {
             overrideMap:      this.overrideMap,
             yieldHistoryMap:  this.yieldHistoryMap,
             serviceConfigMap: this.serviceConfigMap,
+            routeNoteMap:     this.routeNoteMap,
             serviceProfiles:  (this.settings && this.settings.serviceProfiles) || null,
             fleet:            this.fleet,
             ownSchedule:      this.ownSchedule
@@ -540,6 +1151,7 @@ class RouteAssistantPanel {
         this._render()
         this._enrichDistancesAsync()
         this._enrichTypeSpecsAsync()
+        this._maybeAutoRefreshMarketsAndDemand()
     }
 
     /**
@@ -1173,6 +1785,267 @@ class RouteAssistantPanel {
         this.tabBar.append(wrap)
     }
 
+    /**
+     * Q1 quick-filter chips — fast-path UI for the most common filters.
+     * Each chip toggles a single setting under settings.filters and re-renders.
+     * Status chips mirror settings.filters.statuses[<key>] (the chip is "ON"
+     * when the status is being SHOWN). The remaining chips toggle dedicated
+     * filter flags (watchlistOnly, lossMakers, hasOverride, hasNote) and the
+     * "Δ Changed" innovation toggle (onlyChanged).
+     *
+     * Hides when there are no rows yet — a chip strip without a table looks
+     * disembodied during the first-mount scan. Also hides when collapsed.
+     */
+    _renderChipBar() {
+        if (!this.chipBar) return
+        this.chipBar.innerHTML = ""
+        if (this.collapsed) return
+        if (!this.rows || !this.rows.length) return
+        const f = (this.settings && this.settings.filters) || {}
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;flex-wrap:wrap;gap:5px;margin:0 0 6px 0;"
+            + "align-items:center;font-size:11px;"
+
+        // Build one chip. `state.label` shows on the chip; `state.active`
+        // controls highlight; `state.toggle` is the click handler that
+        // mutates settings + saves + re-renders. `state.tip` becomes the
+        // hover tooltip.
+        const mkChip = (state) => {
+            const btn = document.createElement("button")
+            btn.type = "button"
+            btn.textContent = state.label
+            btn.title = state.tip || state.label
+            btn.style.cssText = "padding:3px 9px;border-radius:11px;font-size:11px;cursor:pointer;"
+                + "transition:background 120ms ease, color 120ms ease;"
+                + "border:1px solid " + (state.active ? (state.tint || "#60a5fa") : "#374151") + ";"
+                + "background:"        + (state.active ? (state.tint || "#1d4ed8") : "transparent") + ";"
+                + "color:"             + (state.active ? "#f8fafc" : "#9ca3af") + ";"
+                + "font-weight:"       + (state.active ? "600" : "400") + ";"
+            btn.addEventListener("click", state.toggle)
+            return btn
+        }
+
+        // ★ Watchlist
+        wrap.append(mkChip({
+            label: "★ Watchlist",
+            tip:   "Show only starred routes",
+            active: !!f.watchlistOnly,
+            tint:  "#92400e",
+            toggle: () => this._toggleQuickFilter("watchlistOnly")
+        }))
+
+        // Status chips. Active when the status is INCLUDED (filter shows it).
+        const statuses = f.statuses || {}
+        const STATUS_CHIPS = [
+            ["NEW",   "#1e40af", "Show NEW (untouched candidates)"],
+            ["OK",    "#166534", "Show OK (frequency in line with demand)"],
+            ["UNDER", "#92400e", "Show UNDER (room to scale up)"],
+            ["OVER",  "#7c2d12", "Show OVER (possibly over-deployed)"],
+            ["OOR",   "#7f1d1d", "Show OOR (out of selected aircraft's range)"]
+        ]
+        for (const [key, tint, tip] of STATUS_CHIPS) {
+            wrap.append(mkChip({
+                label: key,
+                tip:   tip,
+                active: statuses[key] !== false,
+                tint:  tint,
+                toggle: () => this._toggleStatusChip(key)
+            }))
+        }
+
+        // Spacer between status group and content-based filters.
+        const sep = document.createElement("span")
+        sep.style.cssText = "color:#374151;margin:0 2px;"
+        sep.textContent = "·"
+        wrap.append(sep)
+
+        wrap.append(mkChip({
+            label: "$ Loss-makers",
+            tip:   "Show only routes with profitPerWeek < 0 (negative cash). Requires an aircraft picked.",
+            active: !!f.lossMakers,
+            tint:  "#7f1d1d",
+            toggle: () => this._toggleQuickFilter("lossMakers")
+        }))
+        wrap.append(mkChip({
+            label: "📌 Override",
+            tip:   "Show only routes with a saved LF / yield override",
+            active: !!f.hasOverride,
+            tint:  "#6d28d9",
+            toggle: () => this._toggleQuickFilter("hasOverride")
+        }))
+        wrap.append(mkChip({
+            label: "📝 Note",
+            tip:   "Show only routes with a saved free-text note",
+            active: !!f.hasNote,
+            tint:  "#0e7490",
+            toggle: () => this._toggleQuickFilter("hasNote")
+        }))
+        wrap.append(mkChip({
+            label: "Δ Changed",
+            tip:   "Show only routes whose tracked metrics moved since your last visit"
+                + " (any ▲/▼ badge). Requires a previous-visit baseline to be useful.",
+            active: !!f.onlyChanged,
+            tint:  "#0d9488",
+            toggle: () => this._toggleQuickFilter("onlyChanged")
+        }))
+
+        // Right-aligned "Clear" — only shown when at least one chip is active
+        // OR a status is hidden, so it doesn't add clutter to the default state.
+        const anyContentFilter = !!f.watchlistOnly || !!f.lossMakers || !!f.hasOverride
+            || !!f.hasNote || !!f.onlyChanged
+        const anyStatusHidden = STATUS_CHIPS.some(([k]) => statuses[k] === false)
+        if (anyContentFilter || anyStatusHidden) {
+            const spacer = document.createElement("span")
+            spacer.style.cssText = "flex:1;"
+            wrap.append(spacer)
+            const clearBtn = document.createElement("button")
+            clearBtn.type = "button"
+            clearBtn.textContent = "Clear filters"
+            clearBtn.title = "Reset every chip — show all rows"
+            clearBtn.style.cssText = "padding:3px 9px;border-radius:11px;font-size:11px;cursor:pointer;"
+                + "border:1px dashed #475569;background:transparent;color:#9ca3af;"
+            clearBtn.addEventListener("click", () => this._clearQuickFilters())
+            wrap.append(clearBtn)
+        }
+        this.chipBar.append(wrap)
+    }
+
+    /** Flip a top-level filter flag. Persists + re-renders. */
+    async _toggleQuickFilter(key) {
+        const filters = Object.assign({}, this.settings.filters || {})
+        filters[key] = !filters[key]
+        this.settings.filters = filters
+        try { await RouteAssistantSettings.save({filters: filters}) } catch (e) { /* non-fatal */ }
+        this._renderRows()
+    }
+
+    /**
+     * Status chips show "active" when the status is being SHOWN. Toggling
+     * mutates filters.statuses[<key>] — same source the settings drawer
+     * already reads — so the two UIs stay in sync.
+     */
+    async _toggleStatusChip(statusKey) {
+        const filters = Object.assign({}, this.settings.filters || {})
+        const next = Object.assign({}, filters.statuses || {})
+        next[statusKey] = next[statusKey] === false ? true : false
+        filters.statuses = next
+        this.settings.filters = filters
+        try { await RouteAssistantSettings.save({filters: filters}) } catch (e) { /* non-fatal */ }
+        // Re-render the settings drawer if it's open so the checkboxes
+        // stay in sync with the chip flip.
+        this._renderRows()
+        if (this.settingsHost && this.settingsHost.dataset.open === "1") {
+            this._renderSettings()
+        }
+    }
+
+    /** Reset every chip to its default (all statuses ON, content flags OFF). */
+    async _clearQuickFilters() {
+        const filters = Object.assign({}, this.settings.filters || {})
+        filters.statuses = {NEW: true, OK: true, UNDER: true, OVER: true, OOR: true}
+        filters.watchlistOnly = false
+        filters.lossMakers    = false
+        filters.hasOverride   = false
+        filters.hasNote       = false
+        filters.onlyChanged   = false
+        this.settings.filters = filters
+        try { await RouteAssistantSettings.save({filters: filters}) } catch (e) { /* non-fatal */ }
+        this._renderRows()
+        if (this.settingsHost && this.settingsHost.dataset.open === "1") {
+            this._renderSettings()
+        }
+    }
+
+    /**
+     * Q15 hub keyboard quick-swap — push the current hub onto the most-
+     * recent-first list, dedupe case-insensitively, cap at 5. Persisted
+     * to settings so the chips survive a tab close.
+     */
+    _trackRecentHub(iata) {
+        if (!iata || typeof iata !== "string") return
+        const hub = iata.toUpperCase()
+        if (!/^[A-Z]{3}$/.test(hub)) return
+        const list = Array.isArray(this.settings.recentHubs)
+            ? this.settings.recentHubs.slice()
+            : []
+        const existing = list.indexOf(hub)
+        if (existing === 0) return
+        if (existing > 0) list.splice(existing, 1)
+        list.unshift(hub)
+        const trimmed = list.slice(0, 5)
+        this.settings.recentHubs = trimmed
+        RouteAssistantSettings.save({recentHubs: trimmed}).catch(() => {})
+    }
+
+    /**
+     * Q15 — Alt+1..5 jumps to the corresponding entry in settings.recentHubs.
+     * Skipped when focus is inside an input/textarea/contentEditable so the
+     * shortcut never eats keystrokes the user is actually typing.
+     */
+    _attachHubShortcuts() {
+        if (this._hubShortcutHandler) return
+        this._hubShortcutHandler = (e) => {
+            if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return
+            const k = e.key
+            if (k < "1" || k > "5") return
+            const t = e.target
+            if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return
+            const list = (this.settings && this.settings.recentHubs) || []
+            const idx = Number(k) - 1
+            const target = list[idx]
+            if (!target) return
+            if (this.hubIata && target === this.hubIata.toUpperCase()) return
+            e.preventDefault()
+            window.location.assign("/app/com/scheduling/" + encodeURIComponent(target))
+        }
+        document.addEventListener("keydown", this._hubShortcutHandler, true)
+    }
+
+    _detachHubShortcuts() {
+        if (!this._hubShortcutHandler) return
+        document.removeEventListener("keydown", this._hubShortcutHandler, true)
+        this._hubShortcutHandler = null
+    }
+
+    /**
+     * Recent-hubs chip strip rendered into the controls bar. Empty when the
+     * user has only ever visited one hub. Click navigates; the small digit
+     * suffix mirrors the Alt+1..5 shortcut so the affordance is discoverable.
+     */
+    _renderRecentHubsBar(host) {
+        const list = (this.settings && this.settings.recentHubs) || []
+        if (!Array.isArray(list) || list.length < 2) return
+        const others = list.filter(h => !this.hubIata || h !== this.hubIata.toUpperCase())
+        if (!others.length) return
+        const wrap = document.createElement("label")
+        wrap.style.cssText = "display:flex;gap:5px;align-items:center;color:#9ca3af;"
+        wrap.title = "Recent hubs — click or use Alt+1..5 to jump"
+        wrap.append(document.createTextNode("Hubs"))
+        const inner = document.createElement("span")
+        inner.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;align-items:center;"
+        for (let i = 0; i < others.length && i < 5; i++) {
+            const hub = others[i]
+            const altIdx = list.indexOf(hub) + 1
+            const btn = document.createElement("button")
+            btn.type = "button"
+            btn.textContent = hub
+            btn.title = "Alt+" + altIdx + " — jump to " + hub
+            btn.style.cssText = "padding:2px 7px;border-radius:10px;font-size:11px;cursor:pointer;"
+                + "background:transparent;color:#cbd5e1;border:1px solid #475569;"
+                + "font-family:monospace;letter-spacing:0.5px;"
+            btn.addEventListener("click", () => {
+                window.location.assign("/app/com/scheduling/" + encodeURIComponent(hub))
+            })
+            const idxSup = document.createElement("sub")
+            idxSup.textContent = String(altIdx)
+            idxSup.style.cssText = "color:#6b7280;margin-left:3px;font-size:9px;"
+            btn.append(idxSup)
+            inner.append(btn)
+        }
+        wrap.append(inner)
+        host.append(wrap)
+    }
+
     _renderStatusBar() {
         this.statusBar.innerHTML = ""
         const hubText = document.createElement("span")
@@ -1364,6 +2237,143 @@ class RouteAssistantPanel {
         toast.textContent = msg
     }
 
+    /**
+     * Q11 single-step undo wrapper. Caller supplies `perform` (the save) +
+     * optional `restore` (the closure that re-applies the captured prev
+     * state) + optional `afterRestore` (re-render hook). Returns whatever
+     * `perform` returns.
+     *
+     * On success, fires a floating RouteAssistantToast with an Undo button
+     * wired to `restore`. On failure, fires an error toast and re-throws so
+     * the caller can keep its own error path.
+     *
+     * Capture-then-perform is the caller's responsibility — `perform` is
+     * called AFTER the caller has read the prev state into a closure that
+     * `restore` can use. This keeps the helper free of store-specific
+     * knowledge.
+     */
+    async _undoableSave(arg) {
+        let result
+        try {
+            result = await arg.perform()
+        } catch (e) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                const msg = (e && e.message) ? e.message : String(e)
+                RouteAssistantToast.error((arg.label || "Save") + " failed: " + msg)
+            }
+            throw e
+        }
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show(arg.label, {
+                type:     arg.type || "success",
+                duration: arg.durationMs || 6000,
+                action:   arg.restore ? {
+                    label: arg.actionLabel || "Undo",
+                    fn:    async () => {
+                        try {
+                            await arg.restore()
+                            if (typeof arg.afterRestore === "function") arg.afterRestore()
+                            RouteAssistantToast.info("Reverted", {duration: 2500})
+                        } catch (e) {
+                            const msg = (e && e.message) ? e.message : String(e)
+                            RouteAssistantToast.error("Undo failed: " + msg)
+                        }
+                    }
+                } : undefined
+            })
+        }
+        return result
+    }
+
+    // ---------- Active prompts (alert rules) ----------
+
+    /**
+     * Reload alert rules from chrome.storage.local. Called once per refresh
+     * so the panel's rules are always current. Failures are non-fatal —
+     * an empty rule list silently disables alerts until the next reload.
+     */
+    async _loadAlertRules() {
+        if (typeof RouteAssistantAlertRulesStore === "undefined") {
+            this._alertRules = []
+            return
+        }
+        try {
+            const rec = await RouteAssistantAlertRulesStore.load()
+            this._alertRules = (rec && rec.rules) || []
+        } catch (e) {
+            console.warn("[AES routeAssistant] alert rules load failed:", e)
+            this._alertRules = []
+        }
+    }
+
+    /**
+     * Evaluate alert rules against the current scoredRows and fire toasts
+     * for triggered alerts. Dedupes per-mount via `_alertFiredThisMount`
+     * + persists `recordFired` so the store-level cooldown carries across
+     * mounts.
+     */
+    _evaluateAndFireAlerts(rows) {
+        if (typeof RouteAssistantAlertEvaluator === "undefined") return
+        if (typeof RouteAssistantToast === "undefined")          return
+        if (!Array.isArray(this._alertRules) || !this._alertRules.length) return
+        if (!Array.isArray(rows) || !rows.length) return
+
+        const triggered = RouteAssistantAlertEvaluator.evaluate(this._alertRules, rows, {
+            hubIata: this.hubIata,
+            now:     Date.now()
+        })
+        if (!triggered.length) return
+
+        for (const alert of triggered) {
+            const key = alert.ruleId + "|" + alert.routeKey
+            if (this._alertFiredThisMount.has(key)) continue
+            this._alertFiredThisMount.add(key)
+
+            const toastType = alert.severity === "error" ? "error"
+                : alert.severity === "info" ? "info"
+                : "warn"
+            RouteAssistantToast.show(alert.message, {
+                type:     toastType,
+                duration: 8000,
+                id:       "alert-" + key,
+                action: {
+                    label: "View",
+                    fn:    () => this._scrollToRouteRow(alert.dest)
+                }
+            })
+
+            // Persist the fire timestamp so the store-level cooldown
+            // suppresses the same trigger on the next mount within the
+            // cooldown window.
+            if (typeof RouteAssistantAlertRulesStore !== "undefined") {
+                RouteAssistantAlertRulesStore.recordFired(alert.ruleId, alert.routeKey)
+                    .catch(() => {})
+            }
+        }
+    }
+
+    /**
+     * Scroll the table to a specific destIata's row + flash-highlight it.
+     * Called from the "View" action on an alert toast.
+     */
+    _scrollToRouteRow(destIata) {
+        if (!this.tableHost || !destIata) return
+        const target = String(destIata).toUpperCase()
+        const cells = this.tableHost.querySelectorAll("tbody td")
+        for (const td of cells) {
+            if ((td.textContent || "").trim().toUpperCase() === target) {
+                const row = td.parentElement
+                if (!row) continue
+                row.scrollIntoView({behavior: "smooth", block: "center"})
+                const prevBg = row.style.background
+                row.style.transition = "background 1500ms ease"
+                row.style.background = "rgba(251, 191, 36, 0.18)"
+                setTimeout(() => { row.style.background = prevBg || "" }, 2000)
+                return
+            }
+        }
+    }
+
     // ---------- Aircraft picker ----------
 
     /**
@@ -1380,6 +2390,46 @@ class RouteAssistantPanel {
             this.controlsHost.style.display = "none"
             return
         }
+
+        // Q12 free-text search — first control on the bar so it's the most
+        // discoverable. Persists to settings.searchQuery; debounced 200ms
+        // so typing doesn't thrash _renderRows on every keystroke.
+        const searchWrap = document.createElement("label")
+        searchWrap.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
+        searchWrap.title = "Filter rows by IATA / city / route note (case-insensitive substring)."
+        searchWrap.append(document.createTextNode("🔍"))
+        const searchInp = document.createElement("input")
+        searchInp.type = "search"
+        searchInp.placeholder = "Search IATA / city / note"
+        searchInp.value = (this.settings && this.settings.searchQuery) || ""
+        searchInp.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #475569;"
+            + "border-radius:3px;padding:2px 6px;font-size:11px;min-width:180px;"
+        let searchTimer = null
+        searchInp.addEventListener("input", () => {
+            const v = searchInp.value
+            this.settings.searchQuery = v
+            // Debounce both the storage write AND the re-render so typing
+            // is fluid even on slow disks. Render runs at the same cadence
+            // as save — keystrokes coalesce naturally.
+            clearTimeout(searchTimer)
+            searchTimer = setTimeout(() => {
+                RouteAssistantSettings.save({searchQuery: v}).catch(() => {})
+                this._renderRows()
+            }, 200)
+        })
+        searchInp.addEventListener("search", () => {
+            // The native "search" event fires when the user clicks the X
+            // clear-button. Re-render immediately, no debounce.
+            this.settings.searchQuery = ""
+            RouteAssistantSettings.save({searchQuery: ""}).catch(() => {})
+            this._renderRows()
+        })
+        searchWrap.append(searchInp)
+        this.controlsHost.append(searchWrap)
+
+        // Q15 — recent-hubs chip strip. Renders nothing when the user has
+        // only ever visited one hub, so first-time users don't see clutter.
+        this._renderRecentHubsBar(this.controlsHost)
 
         const fleetEmpty = !this.fleet || !this.fleet.aircraft || !this.fleet.aircraft.length
         const a = this.settings.aircraft || {}
@@ -1544,6 +2594,9 @@ class RouteAssistantPanel {
         RouteAssistantPanel._serviceProfilesCacheStatic = this.serviceProfilesCache || null
         const carriers = this.settings && this.settings.carriers
         RouteAssistantPanel._showCarrierIntensity = !carriers || carriers.showCarrierIntensity !== false
+        const ma = this.settings && this.settings.marketAnalysis
+        const stale = ma && Number(ma.staleThresholdDays)
+        RouteAssistantPanel._demandStaleThresholdDays = (stale > 0) ? stale : 14
         const ors = this.settings && this.settings.ors
         RouteAssistantPanel._orsPrimaryColumn = (ors && ors.primaryColumn) || "ratingGapToTop"
         const wl = this.settings && this.settings.watchlist
@@ -1557,6 +2610,23 @@ class RouteAssistantPanel {
                 ? "Compact view ON — heavy column groups hidden. Click to show all."
                 : "Compact view OFF — all column groups visible. Click to hide heavy groups."
         }
+        // Wave View visual state.
+        const waveOn = !!(this.settings && this.settings.waveView)
+        if (this._waveBtn) {
+            this._waveBtn.style.opacity = waveOn ? "1" : "0.6"
+            this._waveBtn.title = waveOn
+                ? "Wave View ON — Gantt timeline of the recommended schedule. Click to return to the table."
+                : "Wave View OFF — table view. Click to switch to the Gantt wave overlay."
+        }
+        // ORS Sandbox visual state.
+        const sbCfg  = (this.settings && this.settings.orsSandbox) || {}
+        const sbOn   = !!sbCfg.enabled
+        if (this._orsSandboxBtn) {
+            this._orsSandboxBtn.style.opacity = sbOn ? "1" : "0.6"
+            this._orsSandboxBtn.title = sbOn
+                ? "ORS Sandbox ON — per-route pricing simulator. Click to return to the table."
+                : "ORS Sandbox OFF — table view. Click to switch to the pricing simulator."
+        }
     }
 
     /**
@@ -1567,6 +2637,7 @@ class RouteAssistantPanel {
     _renderRows() {
         this._renderStatusBar()
         this._renderTabBar()
+        this._renderChipBar()
         if (!this.hubIata) return
         if (!this.ffData) {
             this._renderEmpty(`No flightsfrom.com data cached for ${this.hubIata}. Click "Scan flightsfrom" above.`)
@@ -1606,6 +2677,20 @@ class RouteAssistantPanel {
         // mount on this hub) — render closures fall through silently.
         _decorateRowsWithDiffs(this.scoredRows, this._diffPrevSnapshot)
 
+        // Q1 chip: "Δ Changed" — drop rows whose `_diff` is empty. Has to
+        // run AFTER _decorateRowsWithDiffs because `_diff` doesn't exist
+        // on raw rows. When there's no baseline yet (first visit), every
+        // row is "unchanged" by definition — short-circuit to keep the
+        // first-mount UX informative instead of silently empty.
+        const onlyChanged = this.settings.filters && this.settings.filters.onlyChanged
+        if (onlyChanged && this._diffPrevSnapshot) {
+            this.scoredRows = this.scoredRows.filter(r => !!r._diff)
+            if (!this.scoredRows.length) {
+                this._renderEmpty("No routes have changed since your last visit. Toggle the Δ Changed chip off to see all rows.")
+                return
+            }
+        }
+
         // Watchlist — decorate `_starred` per row from the in-memory Set.
         // Lookup is `<HUB>-<DEST>` upper-cased; the store always stores
         // upper-case so a direct Set.has on the same key works.
@@ -1616,7 +2701,35 @@ class RouteAssistantPanel {
             r._starred = wlSet.has(k)
         }
 
+        // Active prompts — evaluate user-defined alert rules against the
+        // newly-decorated rows. Has to run AFTER `_decorateRowsWithDiffs`
+        // (rules read `row._diff.<field>`) AND AFTER the `_starred`
+        // decoration above (the "watchlist" scope filter relies on it).
+        // Fire-and-forget so render isn't blocked by the rules-store
+        // recordFired round-trip.
+        this._evaluateAndFireAlerts(this.scoredRows)
+
         const sorted = this._sortRows(this.scoredRows)
+
+        // H slice 1 — Wave View hands the sorted rows off to the Gantt
+        // renderer instead of drawing the table. We branch AFTER scoring
+        // + sorting so Wave View honours the same filters, the same view
+        // mode, and naturally promotes starred routes (they sort to the
+        // top via the watchlist comparator → land in the top-N).
+        if (this.settings && this.settings.waveView) {
+            this._renderWaveOverlay(sorted)
+            return
+        }
+
+        // Letter I slice 1 — ORS Sandbox replaces the table with a
+        // per-route pricing simulator. Mutually exclusive with Wave
+        // View; Wave wins because its branch runs first above.
+        const sbCfg = this.settings && this.settings.orsSandbox
+        if (sbCfg && sbCfg.enabled) {
+            this._renderOrsSandbox(sorted)
+            return
+        }
+
         this._drawTable(sorted)
     }
 
@@ -1626,12 +2739,41 @@ class RouteAssistantPanel {
         const maxDist  = numOrNull(f.maxDistanceKm)
         const statuses = f.statuses || {}
         const fleetFlyable = !!f.fleetFlyableOnly && this._fleetContext() !== null
+        // Q12 free-text search — case-insensitive substring match against
+        // IATA / city name / route note. Empty query passes through.
+        const rawQuery = (this.settings && this.settings.searchQuery) || ""
+        const query = String(rawQuery).trim().toLowerCase()
+        // Q1 quick-filter chips — content-shape gates orthogonal to status.
+        // The watchlist filter consults the same in-memory Set the panel
+        // uses to decorate rows so it stays correct between refreshes.
+        const watchlistOnly = !!f.watchlistOnly
+        const lossMakers    = !!f.lossMakers
+        const hasOverride   = !!f.hasOverride
+        const hasNote       = !!f.hasNote
+        // Note: `onlyChanged` is applied post-decoration in _renderRows
+        // because _diff doesn't exist on raw rows yet — see the filter
+        // call site for the actual gate.
+        const hubKey = String(this.hubIata || "").toUpperCase()
+        const wlSet = this._watchlist || new Set()
         return rows.filter(r => {
             if (statuses[r.status] === false) return false
             if (maxDist !== null && r.distanceKm !== null && r.distanceKm > maxDist) return false
             // Fleet-flyable filter: only meaningful when an aircraft is picked.
             // OOR rows (or rows where the spec couldn't be evaluated) are dropped.
             if (fleetFlyable && (r.aircraftFit === "oor" || r.aircraftFit === null)) return false
+            if (query) {
+                const iata = String(r.destIata || "").toLowerCase()
+                const name = String(r.destName || "").toLowerCase()
+                const note = String(r.routeNoteText || "").toLowerCase()
+                if (iata.indexOf(query) < 0 && name.indexOf(query) < 0 && note.indexOf(query) < 0) return false
+            }
+            if (watchlistOnly) {
+                const k = hubKey + "-" + String(r.destIata || "").toUpperCase()
+                if (!wlSet.has(k)) return false
+            }
+            if (lossMakers && (r.profitPerWeek === null || r.profitPerWeek >= 0)) return false
+            if (hasOverride && !r.override) return false
+            if (hasNote && !r.routeNoteText) return false
             // minScore is checked AFTER scoring, since score depends on the
             // visible set. We do it in _drawTable by post-filtering.
             return true
@@ -1675,7 +2817,21 @@ class RouteAssistantPanel {
         const fleetBanner = this._renderFleetBanner()
         if (fleetBanner) this.tableHost.append(fleetBanner)
         this.tableHost.append(this._buildLegend())
-        this.tableHost.append(this._buildTable(visible))
+        // Defensive try/catch: any runtime error in _buildTable would
+        // otherwise leave the table host empty (innerHTML was cleared
+        // above) and the user sees no rows + no clue why. Surface the
+        // error inline so reports can quote the message.
+        try {
+            this.tableHost.append(this._buildTable(visible))
+        } catch (e) {
+            console.error("[AES routeAssistant] _buildTable failed:", e)
+            const errBox = document.createElement("div")
+            errBox.style.cssText = "background:#7f1d1d;color:#fee2e2;padding:10px 14px;"
+                + "border-radius:4px;margin:8px 0;font-size:11px;line-height:1.4;"
+                + "font-family:ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap;"
+            errBox.textContent = "Table render failed:\n" + (e && e.stack ? e.stack : String(e))
+            this.tableHost.append(errBox)
+        }
 
         // Publish a slim top-routes snapshot for cross-feature consumers
         // (currently the Used Aircraft Scanner's route-fit metric). Capped
@@ -1688,6 +2844,895 @@ class RouteAssistantPanel {
         // current mount keeps showing "since last visit" against its own
         // baseline even though storage now holds the new state.
         _writeDiffSnapshot(this.hubIata, this.server, this.scoredRows)
+    }
+
+    /**
+     * H slice 1 — Wave View render path. Replaces the table with a
+     * Gantt timeline of the recommended schedule for the top-N scored
+     * rows, built via ScheduleBuilder + the user's selected preset.
+     *
+     * Read-only against ScheduleStore — slice 1 visualises only.
+     */
+    async _renderWaveOverlay(sorted) {
+        this.tableHost.innerHTML = ""
+
+        const wo = (this.settings && this.settings.waveOverlay) || {}
+        const topN = Math.max(1, Math.min(100, Number(wo.topN) || 20))
+
+        if (!this._wavePresets) {
+            this._wavePresets = await SchedulePresets.load()
+        }
+        const presets = (this._wavePresets && this._wavePresets.presets) || []
+        const pickedId = wo.lastPresetId
+            || (this._wavePresets && this._wavePresets.defaultPresetId)
+            || (presets[0] && presets[0].id)
+            || null
+        const preset = pickedId ? presets.find(p => p.id === pickedId) : null
+
+        this.tableHost.append(this._buildWaveHeader(preset, presets, topN))
+
+        if (!preset) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "margin:18px 0;padding:14px;border:1px dashed #4c1d95;"
+                + "background:rgba(124,58,237,0.06);border-radius:4px;color:#d8b4fe;"
+            empty.innerHTML = "<strong>No wave preset configured.</strong><br>"
+                + "<span style='color:#a78bfa;font-size:11px;'>"
+                + "Wave View needs at least one preset describing wave windows + composition counts. "
+                + "Open the AES dashboard → <em>Schedule Management</em> to create one.</span>"
+            this.tableHost.append(empty)
+            return
+        }
+
+        if (!this.selectedSpec) {
+            const banner = document.createElement("div")
+            banner.style.cssText = "margin:6px 0;padding:6px 10px;font-size:11px;"
+                + "background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.30);"
+                + "border-radius:3px;color:#fde68a;"
+            banner.textContent = "No aircraft picked — pick one in the panel header to size haul buckets and skip OOR routes."
+            this.tableHost.append(banner)
+        }
+
+        const buildSig = (preset.id || "?") + ":" + topN
+            + ":" + (this.selectedSpec ? this.selectedSpec.typeId : "none")
+            + ":" + (sorted ? sorted.length : 0)
+        if (!this._waveBuild
+            || this._waveBuild._sig !== buildSig
+            || this._waveBuildHub !== this.hubIata) {
+            this._waveBuild = RouteAssistantWaveOverlay.buildSchedule(preset, sorted, {
+                server:       this.server,
+                airlineCode:  (this.ownSchedule && this.ownSchedule.airline) || null,
+                hubIata:      this.hubIata,
+                selectedSpec: this.selectedSpec,
+                topN:         topN
+            })
+            this._waveBuild._sig = buildSig
+            this._waveBuildHub   = this.hubIata
+        }
+
+        if (this._waveBuild.validation && this._waveBuild.validation.length) {
+            const vbox = document.createElement("div")
+            vbox.style.cssText = "margin:8px 0;padding:8px 10px;"
+                + "background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.40);"
+                + "border-radius:3px;color:#fca5a5;font-size:11px;"
+            const h = document.createElement("strong")
+            h.textContent = "Preset \"" + preset.name + "\" has issues — fix in Schedule Management:"
+            h.style.cssText = "display:block;margin-bottom:4px;"
+            vbox.append(h)
+            for (const err of this._waveBuild.validation) {
+                const line = document.createElement("div")
+                line.textContent = "• " + err
+                vbox.append(line)
+            }
+            this.tableHost.append(vbox)
+            return
+        }
+
+        if (!sorted || !sorted.length) {
+            const hint = document.createElement("div")
+            hint.style.cssText = "margin:18px 0;padding:14px;color:#9ca3af;"
+                + "background:rgba(75,85,99,0.10);border-radius:4px;"
+            hint.textContent = "No scored routes available yet — run the demand seed and wait for distance enrichment first."
+            this.tableHost.append(hint)
+            return
+        }
+
+        const ganttHost = document.createElement("div")
+        ganttHost.style.marginTop = "4px"
+        this.tableHost.append(ganttHost)
+        RouteAssistantWaveOverlay.renderGantt(ganttHost, this._waveBuild, {
+            hubIata: this.hubIata,
+            onFlightClick: (flight) => {
+                const partner = (flight.direction === "inbound")
+                    ? flight.origin
+                    : flight.destination
+                if (this.hubIata && partner) {
+                    const url = "/app/com/scheduling/"
+                        + encodeURIComponent(this.hubIata) + encodeURIComponent(partner)
+                    window.open(url, "_blank", "noopener")
+                }
+            }
+        })
+    }
+
+    /**
+     * Wave View header strip — preset picker + top-N + aircraft display
+     * + re-run + edit-presets. Returns the assembled DOM node.
+     */
+    _buildWaveHeader(preset, presets, topN) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
+            + "padding:6px 8px;margin:4px 0 6px 0;font-size:11px;"
+            + "background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.25);"
+            + "border-radius:4px;"
+
+        const presetSel = document.createElement("select")
+        presetSel.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #374151;"
+            + "border-radius:3px;padding:2px 4px;font-size:11px;"
+        if (!presets.length) {
+            const o = document.createElement("option")
+            o.value = ""
+            o.textContent = "(no presets — create one in dashboard)"
+            presetSel.append(o)
+            presetSel.disabled = true
+        } else {
+            for (const p of presets) {
+                const o = document.createElement("option")
+                o.value = p.id
+                o.textContent = p.name + (p.hub ? " · " + p.hub : "")
+                if (preset && p.id === preset.id) o.selected = true
+                presetSel.append(o)
+            }
+        }
+        presetSel.addEventListener("change", async () => {
+            const id = presetSel.value
+            this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
+                {lastPresetId: id})
+            try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+            catch (e) { /* non-fatal */ }
+            this._waveBuild = null
+            this._renderRows()
+        })
+        const presetLbl = document.createElement("label")
+        presetLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
+        presetLbl.append(document.createTextNode("Preset:"), presetSel)
+        wrap.append(presetLbl)
+
+        const topInput = document.createElement("input")
+        topInput.type = "number"
+        topInput.min = "5"
+        topInput.max = "100"
+        topInput.step = "1"
+        topInput.value = String(topN)
+        topInput.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #374151;"
+            + "border-radius:3px;padding:2px 4px;font-size:11px;width:55px;"
+        topInput.addEventListener("change", async () => {
+            const n = Math.max(5, Math.min(100, Number(topInput.value) || 20))
+            topInput.value = String(n)
+            this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {}, {topN: n})
+            try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+            catch (e) { /* non-fatal */ }
+            this._waveBuild = null
+            this._renderRows()
+        })
+        const topLbl = document.createElement("label")
+        topLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
+        topLbl.append(document.createTextNode("Top N:"), topInput)
+        wrap.append(topLbl)
+
+        const acLbl = document.createElement("span")
+        acLbl.style.color = "#9ca3af"
+        const acName = this.selectedSpec
+            ? (this.selectedSpec.typeName || this.selectedSpec.name || "?")
+            : "(none)"
+        acLbl.innerHTML = "Aircraft: <strong style='color:#cbd5e1;'>" + escapeHtml(acName) + "</strong>"
+        wrap.append(acLbl)
+
+        const rerunBtn = document.createElement("button")
+        rerunBtn.textContent = "⟳ Re-run"
+        rerunBtn.title = "Re-build the Gantt against the current scored rows"
+        Object.assign(rerunBtn.style, smallBtnStyle())
+        rerunBtn.style.background = "#1e40af"
+        rerunBtn.addEventListener("click", () => {
+            this._waveBuild = null
+            this._renderRows()
+        })
+        wrap.append(rerunBtn)
+
+        const editLink = document.createElement("a")
+        editLink.href = "/app/enterprise/dashboard"
+        editLink.target = "_blank"
+        editLink.rel = "noopener"
+        editLink.textContent = "📅 Edit presets →"
+        editLink.style.cssText = "color:#93c5fd;text-decoration:none;font-size:11px;margin-left:auto;"
+        editLink.title = "Open the dashboard → Schedule Management to add or edit wave presets"
+        wrap.append(editLink)
+
+        return wrap
+    }
+
+    // ==================================================================
+    // Letter I slice 1 — ORS Sandbox (per-route pricing simulator).
+    // ==================================================================
+    //
+    // Replaces the table with a single-route projection sandbox: pick a
+    // route, drag price/frequency/comfort sliders, watch projected rank,
+    // share, pax/wk, revenue/wk, profit/wk update in real time. Sourced
+    // entirely from cached data (ORS connection lists + markets-page own
+    // pricing + demand-derivator outputs); no AS hits. Read-only.
+    //
+    // The model lives in `RouteAssistantOrsModel.project(...)`. This UI
+    // is a thin shell — assemble a route bundle from cache, push it into
+    // the model with the current scenario, render the result.
+
+    _renderOrsSandbox(sorted) {
+        this.tableHost.innerHTML = ""
+        const cfg = (this.settings && this.settings.orsSandbox) || {}
+
+        // Restore last-used route on first render after toggle-on.
+        if (!this._orsSandboxRoute && cfg.lastRouteIata) {
+            const restored = (sorted || []).find(r => String(r.destIata).toUpperCase() === String(cfg.lastRouteIata).toUpperCase())
+            if (restored) this._orsSandboxRoute = {hub: this.hubIata, dest: restored.destIata, _row: restored}
+        }
+
+        this.tableHost.append(this._buildOrsSandboxHeader(sorted))
+
+        if (!this._orsSandboxRoute) {
+            this.tableHost.append(this._buildOrsSandboxRoutePicker(sorted))
+            return
+        }
+
+        const row = this._orsSandboxRoute._row
+            || (sorted || []).find(r => String(r.destIata).toUpperCase() === String(this._orsSandboxRoute.dest).toUpperCase())
+        if (!row) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "margin:18px 0;padding:14px;border:1px dashed #475569;"
+                + "background:rgba(100,116,139,0.08);border-radius:4px;color:#cbd5e1;"
+            empty.textContent = "Selected route is not in the current view (filters may have hidden it). "
+                + "Pick another route or relax filters."
+            this.tableHost.append(empty)
+            return
+        }
+        this._orsSandboxRoute._row = row
+
+        const route = this._assembleOrsSandboxRoute(row)
+        if (!route.orsByClass || !Object.keys(route.orsByClass).length) {
+            this.tableHost.append(this._buildOrsSandboxNoOrsBanner(row))
+            return
+        }
+
+        // Per-route scenario — pick the saved entry for this exact route, OR
+        // the one-time legacy scenario (settings-store surfaces it via
+        // `_legacyLastScenario` for the route the user had open last
+        // pre-upgrade), OR neutral defaults.
+        const routeKey = String(this.hubIata).toUpperCase() + "-" + String(row.destIata).toUpperCase()
+        const savedForRoute = (cfg.lastScenarioByRoute && cfg.lastScenarioByRoute[routeKey]) || null
+        const legacyFallback = (!savedForRoute
+                                && cfg._legacyLastScenario
+                                && String(cfg.lastRouteIata || "").toUpperCase() === String(row.destIata).toUpperCase())
+            ? cfg._legacyLastScenario : null
+        const scenario = Object.assign({priceMultiplier: 1.0, frequency: null, comfortDelta: 0},
+                                       savedForRoute || legacyFallback || {})
+        // First render — kick off a synchronous compute so baseline/projected
+        // cards are populated before paint.
+        this._orsSandboxResult = RouteAssistantOrsModel.project({
+            route:              route,
+            scenario:           scenario,
+            modelParams:        Object.assign({}, cfg.modelParams || {},
+                {perRouteT: (cfg.perRouteTemperature || {})[routeKey]}),
+            economics:          this.settings.economics || {},
+            useRealDemandForLF: !!(this.settings.demandDepth && this.settings.demandDepth.useRealDemandForLF)
+        })
+
+        const body = document.createElement("div")
+        body.style.cssText = "display:grid;grid-template-columns:minmax(360px, 1fr) minmax(420px, 1.2fr);"
+            + "gap:14px;margin-top:10px;"
+        this._orsSandboxScenarioHost = this._buildOrsSandboxScenarioCard(route, scenario)
+        this._orsSandboxResultsHost  = this._buildOrsSandboxResultsCard(this._orsSandboxResult, route)
+        body.append(this._orsSandboxScenarioHost, this._orsSandboxResultsHost)
+        this.tableHost.append(body)
+
+        this.tableHost.append(this._buildOrsSandboxNotes(this._orsSandboxResult))
+    }
+
+    /**
+     * Header strip for the sandbox: title · route label · "Pick another"
+     * button · open-on-AS link. Always present, before the picker or body.
+     */
+    _buildOrsSandboxHeader(sorted) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;align-items:center;gap:10px;padding:8px 10px;"
+            + "background:rgba(100,116,139,0.10);border:1px solid rgba(100,116,139,0.35);"
+            + "border-radius:4px;color:#e5e7eb;font-size:12px;"
+        const title = document.createElement("strong")
+        title.textContent = "🧪 ORS Sandbox"
+        wrap.append(title)
+
+        const route = this._orsSandboxRoute
+        if (route && route.dest) {
+            const label = document.createElement("span")
+            label.textContent = " · " + String(this.hubIata || "").toUpperCase() + " → " + String(route.dest).toUpperCase()
+            label.style.color = "#cbd5e1"
+            wrap.append(label)
+
+            const link = document.createElement("a")
+            link.textContent = "↗ Open route in AS"
+            link.href = "/app/com/scheduling/" + String(this.hubIata || "").toUpperCase() + String(route.dest).toUpperCase()
+            link.target = "_blank"
+            link.style.cssText = "margin-left:6px;color:#60a5fa;text-decoration:none;font-size:11px;"
+            wrap.append(link)
+
+            const pick = document.createElement("button")
+            pick.textContent = "Pick another"
+            pick.style.cssText = "margin-left:auto;background:#1f2937;color:#cbd5e1;border:1px solid #475569;"
+                + "border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;"
+            pick.addEventListener("click", () => {
+                this._orsSandboxRoute = null
+                this._orsSandboxResult = null
+                this._render()
+            })
+            wrap.append(pick)
+        } else {
+            const hint = document.createElement("span")
+            hint.style.color = "#9ca3af"
+            hint.textContent = " · Pick a route to begin."
+            wrap.append(hint)
+        }
+
+        const help = document.createElement("span")
+        help.textContent = " · read-only · sourced from cache"
+        help.style.cssText = "color:#6b7280;font-size:10px;"
+        wrap.append(help)
+
+        return wrap
+    }
+
+    /**
+     * Route picker — dropdown of every visible row that has cached ORS
+     * data, sorted by score. Selecting a route stores it on
+     * `_orsSandboxRoute` and re-renders.
+     */
+    _buildOrsSandboxRoutePicker(sorted) {
+        const candidates = (sorted || []).filter(r => r.orsByClass && Object.keys(r.orsByClass).length)
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:14px;padding:14px;border:1px solid #475569;border-radius:4px;"
+            + "background:rgba(15,22,35,0.7);color:#e5e7eb;"
+        const title = document.createElement("div")
+        title.style.cssText = "font-size:12px;color:#cbd5e1;margin-bottom:8px;"
+        if (!candidates.length) {
+            title.innerHTML = "<strong>No routes have cached ORS data yet.</strong> " +
+                "Open Settings (⚙) → ORS Rank → Sync ORS rank for all visible routes, " +
+                "then return here to pick a route."
+            wrap.append(title)
+            return wrap
+        }
+        title.innerHTML = "<strong>Pick a route to simulate.</strong> " +
+            "Routes are sorted by current score. Only routes with cached ORS data are listed " +
+            "(<span style='color:#9ca3af;'>" + candidates.length + " of " + (sorted || []).length + " visible</span>)."
+        wrap.append(title)
+
+        const sel = document.createElement("select")
+        sel.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #475569;border-radius:3px;"
+            + "padding:4px 6px;font-size:12px;width:100%;max-width:520px;"
+        const placeholder = document.createElement("option")
+        placeholder.value = ""
+        placeholder.textContent = "— select a route —"
+        placeholder.selected = true
+        sel.append(placeholder)
+        for (const r of candidates) {
+            const opt = document.createElement("option")
+            opt.value = r.destIata
+            const score = (typeof r.score === "number") ? Math.round(r.score) : "—"
+            opt.textContent = String(r.destIata).toUpperCase() + " · " + (r.destName || "")
+                + "  (score " + score + ")"
+            sel.append(opt)
+        }
+        sel.addEventListener("change", () => {
+            const dest = sel.value
+            if (!dest) return
+            const row = candidates.find(r => r.destIata === dest)
+            if (!row) return
+            this._orsSandboxRoute = {hub: this.hubIata, dest: row.destIata, _row: row}
+            this._orsSandboxResult = null
+            // Persist last-used route.
+            const cfg = Object.assign({}, this.settings.orsSandbox || {})
+            cfg.lastRouteIata = row.destIata
+            this.settings.orsSandbox = cfg
+            RouteAssistantSettings.save({orsSandbox: cfg}).catch(() => {})
+            this._render()
+        })
+        wrap.append(sel)
+        return wrap
+    }
+
+    /**
+     * Banner shown when a route is picked but has no cached ORS data
+     * (rare — picker filters these out, but possible if cache expired
+     * between selection and render).
+     */
+    _buildOrsSandboxNoOrsBanner(row) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:14px;padding:14px;border:1px dashed #475569;border-radius:4px;"
+            + "background:rgba(100,116,139,0.08);color:#cbd5e1;font-size:12px;line-height:1.5;"
+        wrap.innerHTML = "<strong>No ORS data cached for this route.</strong><br>"
+            + "The sandbox needs at least one cabin class scraped from /app/info/ors. "
+            + "Open Settings (⚙) → ORS Rank → Sync ORS rank for all visible routes, "
+            + "then re-pick the route."
+        return wrap
+    }
+
+    /**
+     * Scenario controls card — three sliders (Y price multiplier, freq,
+     * comfort) + Calibrate-T affordance. Each slider's input handler
+     * persists the new scenario (debounced via storage save) and kicks
+     * the rAF-coalesced recompute.
+     */
+    _buildOrsSandboxScenarioCard(route, scenario) {
+        const card = document.createElement("div")
+        card.style.cssText = "padding:12px;border:1px solid rgba(100,116,139,0.35);border-radius:4px;"
+            + "background:rgba(15,22,35,0.45);color:#e5e7eb;font-size:12px;"
+        const h = document.createElement("div")
+        h.style.cssText = "color:#cbd5e1;margin-bottom:8px;"
+        h.innerHTML = "<strong>Scenario</strong> <span style='color:#6b7280;font-size:11px;'>"
+            + "— sliders re-project live</span>"
+        card.append(h)
+
+        const observedY = (route.ownPricing && route.ownPricing.prices && route.ownPricing.prices.Y) || null
+
+        // ----- Y price multiplier slider --------------------------------
+        const priceWrap = this._mkOrsSandboxRow("Y price",
+            observedY != null ? "$" + Math.round(observedY) + " baseline" : "no cached fare")
+        const priceSlider = document.createElement("input")
+        priceSlider.type = "range"
+        priceSlider.min = "0.30"
+        priceSlider.max = "3.00"
+        priceSlider.step = "0.01"
+        priceSlider.value = String(scenario.priceMultiplier || 1.0)
+        priceSlider.style.cssText = "width:100%;accent-color:#60a5fa;"
+        priceSlider.disabled = (observedY == null)
+        const priceReadout = document.createElement("span")
+        priceReadout.style.cssText = "color:#cbd5e1;font-variant-numeric:tabular-nums;font-size:11px;min-width:80px;text-align:right;"
+        const updatePriceReadout = () => {
+            const m = Number(priceSlider.value) || 1
+            const newY = observedY != null ? Math.round(observedY * m) : null
+            priceReadout.textContent = (newY != null ? "$" + newY + " " : "")
+                + "(" + m.toFixed(2) + "x)"
+        }
+        updatePriceReadout()
+        priceWrap.append(priceSlider, priceReadout)
+        card.append(priceWrap)
+
+        // C / F preview row (read-only proportional scaling).
+        const observedC = (route.ownPricing && route.ownPricing.prices && route.ownPricing.prices.C) || null
+        const observedF = (route.ownPricing && route.ownPricing.prices && route.ownPricing.prices.F) || null
+        if (observedC != null || observedF != null) {
+            const preview = document.createElement("div")
+            preview.style.cssText = "color:#9ca3af;font-size:10px;margin:2px 0 6px 8px;"
+            const cLabel = observedC != null ? "C: $" + Math.round(observedC) + " → $<span data-cf='C'>" + Math.round(observedC) + "</span>" : ""
+            const fLabel = observedF != null ? "F: $" + Math.round(observedF) + " → $<span data-cf='F'>" + Math.round(observedF) + "</span>" : ""
+            preview.innerHTML = [cLabel, fLabel].filter(Boolean).join("  ·  ")
+            card.append(preview)
+            this._orsSandboxCFPreview = preview
+        }
+
+        // ----- Frequency input ------------------------------------------
+        const baseFreq = Number(route.currentFrequency) || 0
+        const freqWrap = this._mkOrsSandboxRow("Frequency",
+            baseFreq ? baseFreq + "/wk current" : "no scheduled flights")
+        const freqInput = document.createElement("input")
+        freqInput.type = "number"
+        freqInput.min = "0"
+        freqInput.max = "200"
+        freqInput.step = "1"
+        freqInput.value = String(scenario.frequency != null ? scenario.frequency : baseFreq)
+        freqInput.style.cssText = "width:80px;background:#0f1623;color:#f3f4f6;border:1px solid #475569;"
+            + "border-radius:3px;padding:2px 4px;font-size:11px;"
+        const freqHint = document.createElement("span")
+        freqHint.style.cssText = "color:#6b7280;font-size:10px;margin-left:6px;"
+        freqHint.textContent = "/wk · LF effect only (slice 1)"
+        freqWrap.append(freqInput, freqHint)
+        card.append(freqWrap)
+
+        // ----- Comfort selector -----------------------------------------
+        const comfortWrap = this._mkOrsSandboxRow("Comfort",
+            "−2 budget … 0 standard … +2 premium")
+        const comfortSel = document.createElement("select")
+        comfortSel.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #475569;"
+            + "border-radius:3px;padding:2px 4px;font-size:11px;"
+        const cd = Number(scenario.comfortDelta) || 0
+        for (const v of [-2, -1, 0, 1, 2]) {
+            const o = document.createElement("option")
+            o.value = String(v)
+            const labels = {"-2": "−2 (budget)", "-1": "−1", "0": "0 (current)", "1": "+1", "2": "+2 (premium)"}
+            o.textContent = labels[String(v)]
+            if (v === cd) o.selected = true
+            comfortSel.append(o)
+        }
+        comfortWrap.append(comfortSel)
+        card.append(comfortWrap)
+
+        // ----- Live recompute wiring ------------------------------------
+        const onChange = () => this._recomputeOrsSandbox({
+            priceMultiplier: Number(priceSlider.value) || 1,
+            frequency:       Number(freqInput.value),
+            comfortDelta:    Number(comfortSel.value) || 0
+        })
+        priceSlider.addEventListener("input", () => { updatePriceReadout(); this._updateOrsSandboxCFPreview(observedC, observedF, Number(priceSlider.value) || 1); onChange() })
+        freqInput.addEventListener("input",   onChange)
+        comfortSel.addEventListener("change", onChange)
+
+        // ----- Calibrate T affordance + per-route T banner --------------
+        const calibrateRow = document.createElement("div")
+        calibrateRow.style.cssText = "margin-top:10px;padding-top:10px;border-top:1px solid rgba(100,116,139,0.30);"
+            + "display:flex;flex-direction:column;gap:6px;"
+        const tBanner = document.createElement("div")
+        tBanner.style.cssText = "color:#9ca3af;font-size:10px;"
+        const calBtn = document.createElement("button")
+        calBtn.textContent = "Calibrate T from this route's actual share"
+        calBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #475569;"
+            + "border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;align-self:flex-start;"
+        calBtn.addEventListener("click", () => this._calibrateOrsSandboxT(route, tBanner))
+
+        calibrateRow.append(calBtn, tBanner)
+        this._orsSandboxTBanner = tBanner
+        this._refreshOrsSandboxTBanner(route)
+        card.append(calibrateRow)
+
+        return card
+    }
+
+    /** Small label + sublabel + control container row. */
+    _mkOrsSandboxRow(label, sublabel) {
+        const row = document.createElement("div")
+        row.style.cssText = "margin:6px 0;display:flex;flex-direction:column;gap:2px;"
+        const lab = document.createElement("div")
+        lab.style.cssText = "color:#cbd5e1;font-size:11px;"
+        lab.innerHTML = "<strong>" + label + "</strong> "
+            + "<span style='color:#6b7280;font-weight:normal;font-size:10px;'>" + sublabel + "</span>"
+        row.append(lab)
+        const inner = document.createElement("div")
+        inner.style.cssText = "display:flex;align-items:center;gap:8px;"
+        row.append(inner)
+        // The caller appends its inputs to the inner div via row.append (last child).
+        // We expose `append` on the row that forwards to inner for ergonomics.
+        const origAppend = row.append.bind(row)
+        row.append = (...nodes) => { inner.append(...nodes) }
+        row.appendOuter = (...nodes) => origAppend(...nodes)
+        return row
+    }
+
+    _updateOrsSandboxCFPreview(observedC, observedF, mult) {
+        if (!this._orsSandboxCFPreview) return
+        const cEl = this._orsSandboxCFPreview.querySelector("[data-cf='C']")
+        const fEl = this._orsSandboxCFPreview.querySelector("[data-cf='F']")
+        if (cEl && observedC != null) cEl.textContent = String(Math.round(observedC * mult))
+        if (fEl && observedF != null) fEl.textContent = String(Math.round(observedF * mult))
+    }
+
+    _refreshOrsSandboxTBanner(route) {
+        if (!this._orsSandboxTBanner) return
+        const cfg = (this.settings && this.settings.orsSandbox) || {}
+        const key = String(this.hubIata || "").toUpperCase() + "-" + String(route.dest || "").toUpperCase()
+        const perRouteT = cfg.perRouteTemperature && cfg.perRouteTemperature[key]
+        const calibratedAt = cfg.perRouteTemperatureCalibratedAt && cfg.perRouteTemperatureCalibratedAt[key]
+        const globalT = (cfg.modelParams && cfg.modelParams.shareTemperature) || 25
+        if (perRouteT != null) {
+            // Surface calibration age. Markets drift — a 30-day-old T is
+            // worth re-running. Color the age badge amber/red as it crosses
+            // the staleness thresholds (30d / 90d).
+            let ageHtml = ""
+            if (calibratedAt) {
+                const ageDays = Math.max(0, Math.round((Date.now() - calibratedAt) / 86400000))
+                const stale   = ageDays >= 30
+                const ancient = ageDays >= 90
+                const ageColor = ancient ? "#fca5a5" : (stale ? "#fbbf24" : "#6b7280")
+                const suffix   = ancient ? " — recalibrate" : (stale ? " — consider recalibrating" : "")
+                ageHtml = " <span style='color:" + ageColor + ";'>· calibrated "
+                    + (ageDays === 0 ? "today" : ageDays + "d ago") + suffix + "</span>"
+            } else {
+                ageHtml = " <span style='color:#6b7280;'>· calibration age unknown</span>"
+            }
+            this._orsSandboxTBanner.innerHTML = "Using calibrated T = <strong>" + perRouteT + "</strong> "
+                + "<span style='color:#6b7280;'>for this route · global T = " + globalT + "</span>"
+                + ageHtml
+                + " <a href='#' data-action='reset-t' style='color:#fbbf24;text-decoration:none;'>[reset]</a>"
+            const resetLink = this._orsSandboxTBanner.querySelector("[data-action='reset-t']")
+            if (resetLink) resetLink.addEventListener("click", async (e) => {
+                e.preventDefault()
+                const next       = Object.assign({}, cfg.perRouteTemperature || {})
+                const nextStamps = Object.assign({}, cfg.perRouteTemperatureCalibratedAt || {})
+                delete next[key]
+                delete nextStamps[key]
+                this.settings.orsSandbox = Object.assign({}, cfg, {
+                    perRouteTemperature:             next,
+                    perRouteTemperatureCalibratedAt: nextStamps
+                })
+                await RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox}).catch(() => {})
+                this._orsSandboxResult = null
+                this._render()
+            })
+        } else {
+            this._orsSandboxTBanner.textContent = "Using global T = " + globalT
+                + " (sets the share/rating sensitivity; lower = sharper share-by-rank)"
+        }
+    }
+
+    /**
+     * Results card — three columns: baseline / projected / Δ for
+     * rating, rank, share, pax/wk, rev/wk, profit/wk.
+     */
+    _buildOrsSandboxResultsCard(result, route) {
+        const card = document.createElement("div")
+        card.style.cssText = "padding:12px;border:1px solid rgba(100,116,139,0.35);border-radius:4px;"
+            + "background:rgba(15,22,35,0.45);color:#e5e7eb;font-size:12px;"
+        const h = document.createElement("div")
+        h.style.cssText = "color:#cbd5e1;margin-bottom:8px;"
+        h.innerHTML = "<strong>Outcome</strong> "
+            + "<span style='color:#6b7280;font-size:11px;'>— baseline · projected · Δ</span>"
+        card.append(h)
+
+        const tbl = document.createElement("table")
+        tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:12px;"
+        const renderRow = (label, fmtKey, baseVal, projVal, deltaVal, tooltip) => {
+            const tr = document.createElement("tr")
+            const cells = []
+            const lab = document.createElement("td")
+            lab.style.cssText = "padding:3px 6px;color:#9ca3af;width:90px;"
+            lab.textContent = label
+            if (tooltip) lab.title = tooltip
+            cells.push(lab)
+            const fmt = this._formatOrsSandboxValue.bind(this)
+            for (const v of [baseVal, projVal]) {
+                const td = document.createElement("td")
+                td.style.cssText = "padding:3px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#e5e7eb;"
+                td.textContent = fmt(v, fmtKey)
+                cells.push(td)
+            }
+            const dtd = document.createElement("td")
+            dtd.style.cssText = "padding:3px 6px;text-align:right;font-variant-numeric:tabular-nums;width:80px;"
+            const dStr = fmt(deltaVal, fmtKey, true)
+            dtd.textContent = dStr
+            if (typeof deltaVal === "number" && isFinite(deltaVal)) {
+                dtd.style.color = deltaVal > 0 ? "#34d399" : (deltaVal < 0 ? "#f87171" : "#9ca3af")
+            } else {
+                dtd.style.color = "#6b7280"
+            }
+            cells.push(dtd)
+            for (const c of cells) tr.append(c)
+            return tr
+        }
+        const head = document.createElement("tr")
+        for (const t of ["", "Base", "Projected", "Δ"]) {
+            const th = document.createElement("th")
+            th.style.cssText = "padding:3px 6px;color:#6b7280;font-weight:normal;text-align:right;border-bottom:1px solid rgba(100,116,139,0.3);"
+            if (t === "") th.style.textAlign = "left"
+            th.textContent = t
+            head.append(th)
+        }
+        tbl.append(head)
+
+        const baseline = (result && result.baseline) || {}
+        const projected = (result && result.projected) || {}
+        const delta = (result && result.delta) || {}
+
+        // Rank — only show the most useful flavor (`nonstop` if any, else `any`).
+        const baseRank = (baseline.rank && (baseline.rank.nonstop != null ? baseline.rank.nonstop : baseline.rank.any)) || null
+        const projRank = (projected.rank && (projected.rank.nonstop != null ? projected.rank.nonstop : projected.rank.any)) || null
+        const rankDelta = (typeof baseRank === "number" && typeof projRank === "number") ? (projRank - baseRank) : null
+
+        tbl.append(renderRow("Rating",     "rating", baseline.rating,        projected.rating,        delta.rating, "Our top per-class rating from the cached connection list. Projection applies a linear-in-percent rating shift then clamps to ±50% of the baseline."))
+        tbl.append(renderRow("Rank",       "rank",   baseRank,               projRank,                rankDelta != null ? -rankDelta : null, "Rank in the ORS connection list for the primary class (nonstop preferred over any). Lower rank position = better, so Δ is sign-flipped here."))
+        tbl.append(renderRow("Share",      "share",  baseline.share,         projected.share,         delta.share, "Numeric-stable softmax over connection ratings, summed across our connections. Default temperature T=25; calibrate per-route from the markets-page leaderboard."))
+        tbl.append(renderRow("Pax/wk",     "pax",    baseline.paxPerWeek,    projected.paxPerWeek,    delta.paxPerWeek, "Demand pool × projected share. Pool comes from the markets-page historic chart; price-side elasticity (from demand-derivator) shifts the pool proportionally to (newPrice/observedPrice)^elasticity."))
+        tbl.append(renderRow("Revenue/wk", "money",  baseline.revenuePerWeek, projected.revenuePerWeek, delta.revenuePerWeek, "Estimator's revenue × frequency. Override paxLF = projected pax/(seats×freq), override yieldPerKm = newPriceY/distance."))
+        tbl.append(renderRow("Profit/wk",  "money",  baseline.profitPerWeek,  projected.profitPerWeek,  delta.profitPerWeek, "Estimator's profit × frequency. Costs unchanged; revenue moves with both price and projected pax."))
+
+        card.append(tbl)
+        return card
+    }
+
+    /** Format a number for the Outcome card by metric type. */
+    _formatOrsSandboxValue(v, key, isDelta) {
+        if (v == null || !isFinite(v)) return "—"
+        const sign = isDelta ? (v > 0 ? "+" : (v < 0 ? "" : "")) : ""
+        if (key === "rating") return sign + (Math.round(v * 10) / 10)
+        if (key === "rank")   return (sign === "+" ? "" : sign) + (v >= 0 ? "#" + Math.round(v) : Math.round(v))   // ranks shown as #N; deltas plain
+        if (key === "share")  return sign + (Math.round(v * 1000) / 10) + "%"
+        if (key === "pax")    return sign + Math.round(v)
+        if (key === "money")  return sign + "$" + Math.round(v).toLocaleString()
+        return sign + String(v)
+    }
+
+    /** Footer notes — every fallback / clamp / data-gap surfaced by the model. */
+    _buildOrsSandboxNotes(result) {
+        const notes = (result && result.notes) || []
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:10px;padding:8px 10px;background:rgba(15,22,35,0.45);"
+            + "border:1px solid rgba(100,116,139,0.25);border-radius:4px;color:#9ca3af;font-size:10px;"
+        if (!notes.length) {
+            wrap.textContent = "No model caveats."
+            return wrap
+        }
+        const heading = document.createElement("div")
+        heading.style.cssText = "color:#cbd5e1;margin-bottom:4px;"
+        heading.innerHTML = "<strong>Model notes (" + notes.length + ")</strong>"
+        wrap.append(heading)
+        const ul = document.createElement("ul")
+        ul.style.cssText = "margin:0;padding-left:18px;line-height:1.5;"
+        for (const n of notes) {
+            const li = document.createElement("li")
+            li.textContent = n
+            ul.append(li)
+        }
+        wrap.append(ul)
+        return wrap
+    }
+
+    /**
+     * Pull every cached field the model needs into a single bundle. Reads
+     * from the row decorations (`row.orsByClass`, `row.ownPricing`, etc.)
+     * + the panel's `_fleetContext` for the spec/economics half.
+     */
+    _assembleOrsSandboxRoute(row) {
+        if (!row) return {}
+        const ctx = (typeof this._fleetContext === "function") ? this._fleetContext() : null
+        const spec = (ctx && ctx.selectedSpec) || row.aircraftSpec || null
+        // Resolve currentFrequency from row.weeklyFlights or row.ownTotalFreq.
+        const currentFreq = row.ownTotalFreq != null ? row.ownTotalFreq
+            : (row.weeklyFlights != null ? row.weeklyFlights : 0)
+        // Our enterprise id — pulled from the carriers settings myEnterpriseIds (first entry).
+        let ourEnterpriseId = null
+        const myIds = (this.settings && this.settings.carriers && this.settings.carriers.myEnterpriseIds) || []
+        if (myIds.length) ourEnterpriseId = myIds[0]
+        return {
+            hub:                this.hubIata,
+            dest:               row.destIata,
+            distanceKm:         row.distanceKm,
+            ownPricing:         row.ownPricing ? {prices: row.ownPricing, defaults: row.ownPriceDefaults || null} : null,
+            orsByClass:         row.orsByClass || {},
+            marketSharePax:     row.marketSharePax || [],
+            ourEnterpriseId:    ourEnterpriseId,
+            ourFlightIds:       row.orsOurFlightIds || [],
+            ourCarrierPrefixes: row.orsOurCarrierPrefixes || [],
+            spec:               spec,
+            currentFrequency:   currentFreq,
+            paxDemandPool:      row.paxDemandPool != null ? row.paxDemandPool : null,
+            cargoDemandPool:    row.cargoDemandPool != null ? row.cargoDemandPool : null,
+            paxElasticity:      row.paxElasticity != null ? row.paxElasticity : null,
+            paxScore:           row.paxScore,
+            cargoScore:         row.cargoScore,
+            aircraftAge:        spec && spec.aircraftAge,
+            falloffPct:         (this.settings && this.settings.aircraft && this.settings.aircraft.falloffPct) || 10,
+            useDistanceFuel:    !!(this.settings && this.settings.economics && this.settings.economics.fuelPriceAutoEnabled),
+            fuelPriceASc:       row.fuelPriceASc != null ? row.fuelPriceASc : null
+        }
+    }
+
+    /**
+     * rAF-coalesced recompute. Cancels any pending frame and schedules a
+     * single project() + result-card swap on the next animation frame.
+     * Persists the new scenario to settings (debounced via storage).
+     */
+    _recomputeOrsSandbox(scenario) {
+        // Persist scenario opportunistically, keyed per-route. Storage saves
+        // coalesce naturally via the timer below. Drop the legacy global
+        // fields (`lastScenario`, `_legacyLastScenario`) on first save so
+        // they don't keep round-tripping after the migration.
+        const cfg = Object.assign({}, this.settings.orsSandbox || {})
+        delete cfg.lastScenario
+        delete cfg._legacyLastScenario
+        const route = this._orsSandboxRoute
+        if (route && route.dest) {
+            const routeKey = String(this.hubIata || "").toUpperCase() + "-" + String(route.dest).toUpperCase()
+            const map = Object.assign({}, cfg.lastScenarioByRoute || {})
+            map[routeKey] = Object.assign({priceMultiplier: 1.0, frequency: null, comfortDelta: 0}, scenario)
+            cfg.lastScenarioByRoute = map
+        }
+        this.settings.orsSandbox = cfg
+        // Fire-and-forget save — failure is non-fatal, we'll just not persist.
+        clearTimeout(this._orsSandboxSaveTimer)
+        this._orsSandboxSaveTimer = setTimeout(() => {
+            RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox}).catch(() => {})
+        }, 250)
+
+        if (this._orsSandboxRaf) cancelAnimationFrame(this._orsSandboxRaf)
+        this._orsSandboxRaf = requestAnimationFrame(() => {
+            this._orsSandboxRaf = 0
+            const route = this._orsSandboxRoute && this._orsSandboxRoute._row
+                ? this._assembleOrsSandboxRoute(this._orsSandboxRoute._row)
+                : null
+            if (!route) return
+            const key = String(this.hubIata || "").toUpperCase() + "-" + String(route.dest || "").toUpperCase()
+            const cfgNow = (this.settings && this.settings.orsSandbox) || {}
+            this._orsSandboxResult = RouteAssistantOrsModel.project({
+                route:              route,
+                scenario:           scenario,
+                modelParams:        Object.assign({}, cfgNow.modelParams || {},
+                    {perRouteT: (cfgNow.perRouteTemperature || {})[key]}),
+                economics:          this.settings.economics || {},
+                useRealDemandForLF: !!(this.settings.demandDepth && this.settings.demandDepth.useRealDemandForLF)
+            })
+            // Swap just the results card + notes — leaves the controls card alone
+            // (preserves slider drag focus + cursor position).
+            if (this._orsSandboxResultsHost && this._orsSandboxResultsHost.parentNode) {
+                const next = this._buildOrsSandboxResultsCard(this._orsSandboxResult, route)
+                this._orsSandboxResultsHost.parentNode.replaceChild(next, this._orsSandboxResultsHost)
+                this._orsSandboxResultsHost = next
+            }
+            // Notes footer is the last child of tableHost — replace it too.
+            const lastChild = this.tableHost.lastChild
+            if (lastChild && lastChild.previousElementSibling) {
+                const newNotes = this._buildOrsSandboxNotes(this._orsSandboxResult)
+                this.tableHost.replaceChild(newNotes, lastChild)
+            }
+        })
+    }
+
+    /**
+     * Solve T from the cached marketShare leaderboard observation for
+     * this route. Refuses calibration if marketShare is missing, the
+     * user's enterprise isn't in the leaderboard, or the freshness
+     * window between marketShare and ORS data is > 7 days.
+     */
+    async _calibrateOrsSandboxT(route, banner) {
+        const out = (msg, ok) => {
+            if (!banner) return
+            banner.style.color = ok ? "#34d399" : "#fbbf24"
+            banner.textContent = msg
+            setTimeout(() => this._refreshOrsSandboxTBanner(route), 6000)
+        }
+        const mkt = route.marketSharePax
+        const ourId = route.ourEnterpriseId
+        if (!mkt || !mkt.length) return out("Calibration unavailable — no market-share data cached for this route.", false)
+        if (!ourId) return out("Calibration unavailable — set your enterprise id in Settings → Carriers → Contractual partners.", false)
+        const ourRow = RouteAssistantOrsModel.findOurInLeaderboard(mkt, ourId)
+        if (!ourRow) return out("Your enterprise (id " + ourId + ") isn't in this route's leaderboard. Confirm Settings → Carriers → my enterprise IDs.", false)
+        const observedShare = (ourRow.sharePct != null) ? Number(ourRow.sharePct) / 100 : null
+        if (observedShare == null || !isFinite(observedShare)) return out("Calibration unavailable — leaderboard row has no share%.", false)
+
+        // Use the primary class connection list (Y first, then C, then F).
+        const byClass = route.orsByClass || {}
+        const primaryClass = byClass.ECONOMY || byClass.BUSINESS || byClass.FIRST
+        if (!primaryClass || !Array.isArray(primaryClass.connections) || !primaryClass.connections.length) {
+            return out("Calibration unavailable — no ORS connection list cached for any class.", false)
+        }
+
+        // Build the ratings array + ourIndices the same way the model does.
+        const conns = primaryClass.connections.slice(0, RouteAssistantOrsModel.MAX_FOR_SOFTMAX)
+        const ratings = conns.map(c => Number(c.rating) || 0)
+        const ourIndices = []
+        for (let i = 0; i < conns.length; i++) {
+            const legs = (conns[i].legs || []).filter(l => !l.isGround)
+            if (legs.length && legs.every(l => !!l.isOurs)) ourIndices.push(i)
+        }
+        if (!ourIndices.length) return out("Calibration unavailable — no own connections in the ORS data.", false)
+
+        const T = RouteAssistantOrsModel.calibrateTemperature({
+            allRatings:    ratings,
+            ourIndices:    ourIndices,
+            observedShare: observedShare
+        })
+        if (T == null || !isFinite(T)) return out("Calibration failed — solver did not converge.", false)
+
+        // Persist per-route T + the calibration timestamp so the results
+        // card can flag stale calibrations (markets drift; 30+ day-old
+        // calibrations should be re-run when new marketShare lands).
+        const cfg = Object.assign({}, this.settings.orsSandbox || {})
+        const map = Object.assign({}, cfg.perRouteTemperature || {})
+        const tsMap = Object.assign({}, cfg.perRouteTemperatureCalibratedAt || {})
+        const key = String(this.hubIata || "").toUpperCase() + "-" + String(route.dest || "").toUpperCase()
+        map[key] = T
+        tsMap[key] = Date.now()
+        cfg.perRouteTemperature = map
+        cfg.perRouteTemperatureCalibratedAt = tsMap
+        this.settings.orsSandbox = cfg
+        try { await RouteAssistantSettings.save({orsSandbox: cfg}) } catch (e) { /* non-fatal */ }
+        out("Calibrated T = " + T + " (from " + (Math.round(observedShare * 1000) / 10) + "% observed share). Re-projecting…", true)
+        if (typeof RouteAssistantToast !== "undefined") {
+            const routeKey = String(this.hubIata || "").toUpperCase() + "→" + String(route.dest || "").toUpperCase()
+            RouteAssistantToast.success("Calibrated T = " + T + " for " + routeKey, {duration: 5000})
+        }
+        this._orsSandboxResult = null
+        this._render()
     }
 
     /**
@@ -1810,27 +3855,102 @@ class RouteAssistantPanel {
         const cols = this._activeColumns()
 
         const table = document.createElement("table")
-        table.style.cssText = "width:100%;border-collapse:collapse;font-size:11px;"
+        // border-collapse: separate (with zero spacing) keeps the visual
+        // exactly the same as `collapse`, but makes `position: sticky` on
+        // table cells work reliably in Chrome — collapsed-border tables
+        // share borders between cells, which trips up the sticky offset
+        // calculation and causes the header row to render at the wrong
+        // vertical position (visible as data leaking through, even though
+        // the cell backgrounds are opaque).
+        table.style.cssText = "width:100%;border-collapse:separate;border-spacing:0;font-size:11px;"
 
         const thead = document.createElement("thead")
 
         // Group sub-header — collapses adjacent columns sharing a group key
         // into one <th colspan>. This relies on COLUMNS being ordered such
         // that columns of the same group are contiguous.
+        //
+        // Both header rows are `position: sticky` so they stay glued to the
+        // top of the body (the scroll container) during vertical scroll —
+        // when the user scrolls down through 100+ rows, the column labels
+        // remain visible and parallel to the data underneath. The two rows
+        // need explicit `top` offsets so they stack correctly: group row at
+        // 0, column-header row directly under it.
+
+        const STICKY_GROUP_BG = "#1f2937"   // panel background (opaque so rows scrolling under aren't visible through the header)
+        const STICKY_GROUP_TOP = 0
+        const STICKY_HEAD_TOP  = 22         // ~height of the group row at font-size:10px + padding 2px
+        // Compose a sticky-safe opaque background for a column tint. The
+        // COLUMN_GROUPS tints are rgba(…, 0.10–0.24) — fine for normal
+        // (non-sticky) cells where the panel bg shows through naturally,
+        // but transparent when sticky-positioned (data scrolling underneath
+        // is visible THROUGH the sticky cell). Pre-composite the tint over
+        // the opaque panel bg into a SOLID rgb() string so there's no
+        // alpha to bleed through. (An earlier attempt used
+        // `linear-gradient(tint, tint), bg`; in practice this still
+        // showed visible tearing in Chrome — a solid color is bulletproof.)
+        const PANEL_BG_RGB = [0x1f, 0x29, 0x37]   // matches STICKY_GROUP_BG = #1f2937
+        const opaqueTint = (tint) => {
+            if (!tint) return STICKY_GROUP_BG
+            const m = String(tint).match(/rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*(?:,\s*([0-9.]+)\s*)?\)/)
+            if (!m) return STICKY_GROUP_BG
+            const r = parseFloat(m[1]), g = parseFloat(m[2]), b = parseFloat(m[3])
+            const a = (m[4] === undefined) ? 1 : parseFloat(m[4])
+            const out = [
+                Math.round(r * a + PANEL_BG_RGB[0] * (1 - a)),
+                Math.round(g * a + PANEL_BG_RGB[1] * (1 - a)),
+                Math.round(b * a + PANEL_BG_RGB[2] * (1 - a))
+            ]
+            return "rgb(" + out[0] + ", " + out[1] + ", " + out[2] + ")"
+        }
+        // The first two data columns (score + destIata) are ALSO frozen
+        // sticky-left so the row identifier stays visible during horizontal
+        // scroll — without this, scrolling right hides which route a row
+        // represents. Approximate offsets (score ~46px wide, destIata
+        // starts immediately after); the table uses table-layout: auto so
+        // actual widths can drift, but the user-visible result is still
+        // "the dest column never goes off-screen". The boundary column
+        // gets a box-shadow so the freeze line is obvious.
+        const FROZEN_FIELDS = {score: 0, destIata: 46}
+        const FROZEN_LAST   = "destIata"
+        const stickyLeftCss = (field, baseZ) => {
+            if (!Object.prototype.hasOwnProperty.call(FROZEN_FIELDS, field)) return ""
+            const left   = FROZEN_FIELDS[field]
+            const shadow = (field === FROZEN_LAST) ? "box-shadow:2px 0 4px rgba(0,0,0,0.3);" : ""
+            return "position:sticky;left:" + left + "px;z-index:" + baseZ + ";" + shadow
+        }
         const groupRow = document.createElement("tr")
+        // Solid background on the row itself so any gaps between/around
+        // the TH cells (border-spacing, sub-pixel rounding, scroll
+        // overshoot) are filled with the panel bg instead of letting the
+        // tbody data row visible through. Without this the group-header
+        // strip can look "thin" — the labels are centered and the cell
+        // is opaque, but the row's TOP and BOTTOM edges may show data
+        // bleeding through during scroll.
+        groupRow.style.background = STICKY_GROUP_BG
         let groupTh = null
         let groupSpan = 0
         let prevGroup = null
+        const groupHeaders = []   // Track for mouseenter/mouseleave wiring (U15 group-header hover).
         for (const col of cols) {
             if (col.group !== prevGroup) {
                 if (groupTh) groupTh.colSpan = groupSpan
                 const def = RouteAssistantPanel.COLUMN_GROUPS[col.group] || {}
                 groupTh = document.createElement("th")
                 groupTh.textContent = def.label || ""
+                groupTh.dataset.group = col.group   // U15 — hover-highlight target
+                groupTh.dataset.groupHeader = "1"
+                // Single solid background for the whole group bar — the
+                // multi-tinted version (one colour per group) was visually
+                // noisy. Group identity is still readable via the labels
+                // themselves and the column-level tints below.
                 groupTh.style.cssText = "padding:2px 6px;font-size:10px;font-weight:600;color:#9ca3af;"
                     + "text-align:center;border-bottom:1px solid #374151;"
-                    + (def.headerTint ? `background:${def.headerTint};` : "")
+                    + "position:sticky;top:" + STICKY_GROUP_TOP + "px;z-index:3;"
+                    + "background:" + STICKY_GROUP_BG + ";"
+                    + "transition:color 120ms ease;"
                 groupRow.append(groupTh)
+                groupHeaders.push(groupTh)
                 prevGroup = col.group
                 groupSpan = 0
             }
@@ -1839,16 +3959,27 @@ class RouteAssistantPanel {
         if (groupTh) groupTh.colSpan = groupSpan
         thead.append(groupRow)
 
-        // Column header — clickable for sort.
+        // Column header — clickable for sort. Frozen columns get sticky-left
+        // (z-index 4) on top of the regular sticky-top (z-index 2) so they
+        // stay visible during both vertical AND horizontal scroll.
         const tr = document.createElement("tr")
+        // Solid row background — same reason as groupRow above. Cell tints
+        // still render on top of this via their own `background:` declarations.
+        tr.style.background = STICKY_GROUP_BG
         for (const col of cols) {
             const th = document.createElement("th")
             th.textContent = col.label + (this.sortField === col.field
                 ? (this.sortDir === 1 ? " ▲" : " ▼") : "")
-            const tint = (RouteAssistantPanel.COLUMN_GROUPS[col.group] || {}).tint
+            th.dataset.group = col.group   // U15 — column band marker
+            const tint    = (RouteAssistantPanel.COLUMN_GROUPS[col.group] || {}).tint
+            const frozen  = stickyLeftCss(col.field, 4)
             th.style.cssText = "padding:4px 6px;border-bottom:1px solid #374151;cursor:pointer;"
                 + "text-align:" + (col.align || "left") + ";white-space:nowrap;"
-                + (tint ? `background:${tint};` : "")
+                + (frozen
+                    ? "position:sticky;top:" + STICKY_HEAD_TOP + "px;left:" + FROZEN_FIELDS[col.field] + "px;z-index:4;"
+                      + ((col.field === FROZEN_LAST) ? "box-shadow:2px 0 4px rgba(0,0,0,0.3);" : "")
+                    : "position:sticky;top:" + STICKY_HEAD_TOP + "px;z-index:2;")
+                + "background:" + opaqueTint(tint) + ";"
             th.title = col.title || col.label
             th.addEventListener("click", () => {
                 if (this.sortField === col.field) this.sortDir = -this.sortDir
@@ -1860,15 +3991,41 @@ class RouteAssistantPanel {
         thead.append(tr)
         table.append(thead)
 
+        // U15 — group-header hover highlights every cell in that group's
+        // column band. Pure JS rather than CSS because there's no built-in
+        // selector for "every cell sharing a column-group attribute"; we
+        // toggle a class on each matching cell instead.
+        for (const gh of groupHeaders) {
+            const groupName = gh.dataset.group
+            gh.addEventListener("mouseenter", () => {
+                for (const el of table.querySelectorAll('[data-group="' + groupName + '"]')) {
+                    el.classList.add("aes-grp-hover")
+                }
+                gh.style.color = "#f3f4f6"
+            })
+            gh.addEventListener("mouseleave", () => {
+                for (const el of table.querySelectorAll('[data-group="' + groupName + '"]')) {
+                    el.classList.remove("aes-grp-hover")
+                }
+                gh.style.color = "#9ca3af"
+            })
+        }
+
         const tbody = document.createElement("tbody")
         for (const row of rows) {
             const trow = document.createElement("tr")
+            // Solid row background. Without this the row inherits the
+            // panel-root bg through nested transparent layers, and any
+            // sticky-positioned header above it can show data values
+            // bleeding through. Cell tints are still rendered on top of
+            // this row bg via cell-level `background:` declarations.
+            trow.style.background = STICKY_GROUP_BG
             trow.style.cursor = "context-menu"
             trow.title = (trow.title || "") + (trow.title ? "\n" : "")
                 + "Right-click to override LF / yield for this route."
             trow.addEventListener("contextmenu", (e) => {
                 e.preventDefault()
-                this._openOverrideEditor(row)
+                this._openRowContextMenu(row, e.clientX, e.clientY)
             })
             trow.addEventListener("click", (e) => {
                 if (!e.target || !e.target.closest) return
@@ -1884,14 +4041,41 @@ class RouteAssistantPanel {
                     e.preventDefault()
                     e.stopPropagation()
                     this._openServiceConfigPopover(row, svcTrig)
+                    return
+                }
+                const noteTrig = e.target.closest("[data-routenote-trigger='1']")
+                if (noteTrig) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    this._openRouteNotePopover(row, noteTrig)
                 }
             })
             for (const col of cols) {
                 const td = document.createElement("td")
+                td.dataset.group = col.group   // U15 — hover-highlight target
                 const tint = (RouteAssistantPanel.COLUMN_GROUPS[col.group] || {}).tint
+                // Frozen columns need an explicit opaque background so
+                // scrolling cells don't bleed through. Defaults to the
+                // panel bg when the group has no tint. The score column
+                // render closure overrides background for its colored
+                // score chip — that overrides this base, which is fine
+                // (the chip itself is opaque).
+                const isFrozen = Object.prototype.hasOwnProperty.call(FROZEN_FIELDS, col.field)
+                const stickyDecl = isFrozen
+                    ? "position:sticky;left:" + FROZEN_FIELDS[col.field] + "px;z-index:1;"
+                      + ((col.field === FROZEN_LAST) ? "box-shadow:2px 0 4px rgba(0,0,0,0.3);" : "")
+                    : ""
+                // Frozen cells need an opaque background (panel bg + tint
+                // composited) so data rows scrolling under don't bleed
+                // through. Non-frozen cells keep the raw tint — the panel
+                // bg shows through naturally, no tearing because the cell
+                // scrolls with the data.
+                const bgDecl = isFrozen
+                    ? "background:" + opaqueTint(tint) + ";"
+                    : (tint ? "background:" + tint + ";" : "")
                 td.style.cssText = "padding:3px 6px;border-bottom:1px solid #2a3444;"
                     + "text-align:" + (col.align || "left") + ";"
-                    + (tint ? `background:${tint};` : "")
+                    + bgDecl + stickyDecl
                 col.render(td, row)
                 trow.append(td)
             }
@@ -1908,7 +4092,19 @@ class RouteAssistantPanel {
      */
     _activeColumns() {
         const showAircraft = this._fleetContext() !== null
-        const compact = !!(this.settings && this.settings.compactView)
+        const userCompact = !!(this.settings && this.settings.compactView)
+        // Auto-compact: when the panel's effective width drops below
+        // ~1100px (laptop browsers, side-by-side windows, narrow Chromes),
+        // force compact mode regardless of the user's explicit toggle.
+        // Heavy expander-driven groups (Pricing, Actuals, Service, Markets,
+        // ORS, Demand depth) collapse to leave room for the essentials
+        // (Sc, Dest, Status, paxScore/cargoScore, Distance, Pax/Cargo
+        // demand, freq, profit). Sticky-left frozen columns (score +
+        // destIata) keep the row identifier visible during horizontal
+        // scroll inside whatever's still rendered.
+        const effectiveWidth = (this.root && this.root.offsetWidth) || window.innerWidth
+        const autoCompact = effectiveWidth < 1100
+        const compact = userCompact || autoCompact
         // Compact view forces all heavy expander-driven groups OFF in one
         // click. Per-group settings still apply when compact is OFF.
         const showPricing  = !compact && (!this.settings || !this.settings.pricing
@@ -1929,6 +4125,13 @@ class RouteAssistantPanel {
         const showDemand   = !compact && (!this.settings || !this.settings.demandDepth
             ? true
             : this.settings.demandDepth.showDemandColumns !== false)
+        // Per-class ORS columns (Y / C / F) need an extra gate on top of
+        // the ors-group gate. Compact view always hides them; user can
+        // also turn them off via the More-options checkbox even in full view.
+        const showOrsPerClass = !compact && (!this.settings || !this.settings.ors
+            ? true
+            : this.settings.ors.showPerClassColumns !== false)
+        const PER_CLASS_FIELDS = {orsClassY: 1, orsClassC: 1, orsClassF: 1}
         const viewMode = this._currentViewMode()
         return RouteAssistantPanel.COLUMNS.filter(c => {
             if (c.group === "aircraft"    && !showAircraft) return false
@@ -1938,6 +4141,7 @@ class RouteAssistantPanel {
             if (c.group === "competition" && !showMarkets)  return false
             if (c.group === "markets"     && !showMarkets)  return false
             if (c.group === "ors"         && !showOrs)      return false
+            if (PER_CLASS_FIELDS[c.field]  && !showOrsPerClass) return false
             if (c.group === "demand"      && !showDemand)   return false
             // Tabbed view filter — derive `modes` via _columnModes so
             // we don't have to tag every entry in the large COLUMNS
@@ -2212,6 +4416,20 @@ class RouteAssistantPanel {
         // computing every flavor of "our rank". Stores the full connection
         // list so any rank metric can be re-derived at render time.
         this._renderOrsRankSection()
+
+        // ----- ORS Sandbox (Letter I slice 1 — pricing simulator config)
+        // Tunable model parameters (α_price, α_comfort, default T) +
+        // per-route T overrides. The sandbox UI lives in the panel mode
+        // toggled via the 🧪 header button; this expander is for the
+        // model knobs only.
+        this._renderOrsSandboxSection()
+
+        // ----- Active prompts (alert rules)
+        // Per-row triggers — declarative "if this field crosses N, toast
+        // me on next mount". Rules persist in `routeAssistant:alertRules`
+        // and evaluate against the diff-decorated scoredRows on every
+        // _renderRows call.
+        this._renderAlertRulesSection()
 
         // ----- Economics — feeds the rough profit estimator
         const econHeader = document.createElement("div")
@@ -4059,42 +6277,190 @@ class RouteAssistantPanel {
     async _runBulkMarketScrape() {
         if (this._marketScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.marketAnalysis || {}
+        const ddCfg = this.settings.demandDepth || {}
         const concurrency = cfg.concurrency || 4
         const staggerMs   = cfg.staggerMs   || 800
 
         if (!this.marketsScraper) {
             this.marketsScraper = new RouteAssistantMarketsPageScraper(this.server, {})
         }
+        // Letter K — fold demand depth into the markets sync. We share the
+        // same orchestrator instance so the user gets historic per-payload +
+        // inventory data without a separate click. The dedicated Demand
+        // Depth bulk sync stays as a granular fallback.
+        if (!this.inventoryScraper) {
+            this.inventoryScraper = new RouteAssistantInventoryPageScraper(this.server, {
+                maxAgeDays: ddCfg.inventoryMaxAgeDays
+            })
+        }
+        const ddCoverage = ddCfg.classCoverage || "full"
+        const ddPayloads = (ddCoverage === "full")
+            ? RouteAssistantMarketsPageScraper.HISTORIC_PAYLOADS
+            : ["PAX", "CARGO"]
+        const ddConcurrency = ddCfg.concurrency || 3
+        const ddStaggerMs   = ddCfg.staggerMs   || 1200
 
         const pairs = this.rows.map(r => ({hub: this.hubIata, dest: r.destIata}))
         this._marketScrapeRunning = true
+        this._demandScrapeRunning = true
         this._renderSettings()
 
+        const setStatus = (msg) => {
+            if (this._marketStatusEl) this._marketStatusEl.textContent = msg
+            if (this._demandStatusEl) this._demandStatusEl.textContent = msg
+        }
+
         try {
+            // Phase 1: markets families (competitors / ownPricing / marketShare)
             await this.marketsScraper.bulkScrape(pairs, {
                 concurrency: concurrency,
                 staggerMs:   staggerMs,
                 onProgress:  (done, total) => {
-                    if (this._marketStatusEl) {
-                        this._marketStatusEl.textContent =
-                            "Syncing market analysis: " + done + "/" + total + "…"
-                    }
+                    setStatus("Syncing market analysis (families): " + done + "/" + total + "…")
                 }
             })
         } catch (e) {
             console.warn("[AES marketsScraper] bulk scrape failed", e)
         }
 
+        try {
+            // Phase 2: demand depth — per-payload historic
+            const payloadLabel = ddPayloads.join(", ")
+            await this.marketsScraper.bulkScrapeHistoric(pairs, {
+                payloads:    ddPayloads,
+                concurrency: ddConcurrency,
+                staggerMs:   ddStaggerMs,
+                onProgress:  (done, total) => {
+                    setStatus("Fetching demand-depth historic (" + payloadLabel + "): " + done + "/" + total + "…")
+                }
+            })
+        } catch (e) {
+            console.warn("[AES marketsScraper] historic bulk scrape failed", e)
+        }
+
+        try {
+            // Phase 3: inventory (RM tightness)
+            await this.inventoryScraper.bulkScrape(pairs, {
+                concurrency: ddConcurrency,
+                staggerMs:   ddStaggerMs,
+                onProgress:  (done, total) => {
+                    setStatus("Fetching inventory (RM tightness): " + done + "/" + total + "…")
+                }
+            })
+        } catch (e) {
+            console.warn("[AES inventoryScraper] bulk scrape failed", e)
+        }
+
+        const now = Date.now()
         this._marketScrapeRunning = false
-        this.settings.marketAnalysis.lastBulkScrapeAt = Date.now()
-        await RouteAssistantSettings.save({marketAnalysis: this.settings.marketAnalysis})
+        this._demandScrapeRunning = false
+        this.settings.marketAnalysis.lastBulkScrapeAt = now
+        this.settings.demandDepth.lastBulkScrapeAt    = now
+        await RouteAssistantSettings.save({
+            marketAnalysis: this.settings.marketAnalysis,
+            demandDepth:    this.settings.demandDepth
+        })
 
         await this._applyCachedMarkets()
         // Newly-cached ownPricing feeds the per-class yield resolution in the
         // service projection — re-apply so the Service columns reflect the
         // scraped fares without waiting for the next refresh.
         this._reapplyServiceProjection()
+        // Re-derive demand depth — markets historic and inventory both just
+        // landed, so the Pool / Avg$ / Elasticity / RM% columns light up
+        // automatically. Aggregator follows so the profit estimator can pick
+        // up the new real-demand inputs (gated by useRealDemandForLF).
+        await this._applyCachedDemand()
+        RouteAssistantAggregator.applyFleetContext(this.rows, this._fleetContext(), this._serviceContext())
+        setStatus("Sync complete.")
         this._render()
+    }
+
+    /**
+     * Letter K — auto-refresh markets + demand depth in the background when
+     * the cached data is stale. Mirrors `_enrichDistancesAsync`'s
+     * fire-and-forget pattern: kicks off after init() finishes its
+     * synchronous cache application.
+     *
+     * Skip cases:
+     *   - settings.marketAnalysis.autoRefreshOnMount === false
+     *   - hub or rows missing
+     *   - markets AND demand-depth both fresh (< staleThresholdDays old)
+     *   - user pressed Skip recently (lastAutoRefreshSkipAt within threshold)
+     *   - a sync is already running
+     */
+    _maybeAutoRefreshMarketsAndDemand() {
+        if (this._disposed) return
+        if (this._marketScrapeRunning || this._demandScrapeRunning) return
+        const cfg = (this.settings && this.settings.marketAnalysis) || {}
+        if (cfg.autoRefreshOnMount === false) return
+        if (!this.hubIata || !this.rows || !this.rows.length) return
+
+        const threshold = Math.max(1, cfg.staleThresholdDays || 14)
+        const thresholdMs = threshold * 86400000
+        const now = Date.now()
+        const lastMarkets = cfg.lastBulkScrapeAt
+        const lastDemand  = (this.settings.demandDepth && this.settings.demandDepth.lastBulkScrapeAt) || null
+        const lastSkip    = cfg.lastAutoRefreshSkipAt
+
+        if (lastSkip && (now - lastSkip) < thresholdMs) return
+        const isStale = (ts) => ts === null || ts === undefined || (now - ts) >= thresholdMs
+        if (!isStale(lastMarkets) && !isStale(lastDemand)) return
+
+        this._renderAutoRefreshBanner({lastMarkets: lastMarkets, lastDemand: lastDemand})
+
+        // Defer the actual scrape briefly so the user has time to hit Skip.
+        // 5s is long enough for a glance, short enough to feel "automatic".
+        setTimeout(() => {
+            if (this._autoRefreshSkipped || this._marketScrapeRunning || this._disposed) return
+            this._runBulkMarketScrape()
+        }, 5000)
+    }
+
+    /**
+     * Banner above the table announcing the upcoming auto-refresh + a Skip
+     * button. Auto-clears when the scrape begins or the user dismisses.
+     * Persists `lastAutoRefreshSkipAt` so the banner is suppressed for the
+     * same threshold window across mounts.
+     */
+    _renderAutoRefreshBanner(info) {
+        if (this._autoRefreshBanner || this._disposed) return
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.4);"
+            + "color:#c4b5fd;padding:6px 10px;border-radius:4px;margin:4px 0;font-size:11px;"
+            + "display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"
+        const fmt = ts => ts ? new Date(ts).toLocaleDateString() : "never"
+        const left = document.createElement("div")
+        left.innerHTML = "<strong>Auto-refresh starting in 5s</strong> "
+            + "<span style='color:#9ca3af;'>— Markets last sync: " + fmt(info.lastMarkets)
+            + " · Demand depth last sync: " + fmt(info.lastDemand) + "</span>"
+        wrap.append(left)
+        const skip = document.createElement("button")
+        skip.textContent = "Skip this refresh"
+        Object.assign(skip.style, smallBtnStyle())
+        skip.style.background = "#374151"
+        skip.addEventListener("click", async () => {
+            this._autoRefreshSkipped = true
+            this.settings.marketAnalysis.lastAutoRefreshSkipAt = Date.now()
+            await RouteAssistantSettings.save({marketAnalysis: this.settings.marketAnalysis})
+            if (wrap.parentNode) wrap.parentNode.removeChild(wrap)
+            this._autoRefreshBanner = null
+        })
+        wrap.append(skip)
+        if (this.statusBar && this.statusBar.parentNode) {
+            this.statusBar.parentNode.insertBefore(wrap, this.statusBar.nextSibling)
+        }
+        this._autoRefreshBanner = wrap
+
+        // Auto-clear when the scrape begins (ten seconds covers the 5s defer
+        // + a beat). _renderSettings on bulk start would also clobber this if
+        // it lived in settingsHost; we anchor on the panel root instead.
+        setTimeout(() => {
+            if (this._autoRefreshBanner === wrap && wrap.parentNode) {
+                wrap.parentNode.removeChild(wrap)
+            }
+            this._autoRefreshBanner = null
+        }, 10000)
     }
 
     // ---------- Demand depth (Letter K — markets historic + inventory + derivator) ----------
@@ -4311,6 +6677,390 @@ class RouteAssistantPanel {
         this.settingsHost.append(wrap)
     }
 
+    // ---------- ORS Sandbox (Letter I slice 1 — pricing simulator config) ----------
+
+    /**
+     * Settings drawer expander for ORS Sandbox tunables. Three numeric
+     * inputs (α_price, α_comfort, default T) + a "Reset all per-route
+     * Ts" button + a "Reset to defaults" button. The sandbox UI itself
+     * lives in the panel mode toggled via the 🧪 header button.
+     */
+    _renderOrsSandboxSection() {
+        const cfg = this.settings.orsSandbox = Object.assign({
+            enabled:       false,
+            lastRouteIata: null,
+            lastScenarioByRoute: {},
+            modelParams:   {ratingPriceElasticity: 8, ratingComfortLift: 5, shareTemperature: 25.0},
+            perRouteTemperature:             {},
+            perRouteTemperatureCalibratedAt: {}
+        }, this.settings.orsSandbox || {})
+        const params = cfg.modelParams = Object.assign(
+            {ratingPriceElasticity: 8, ratingComfortLift: 5, shareTemperature: 25.0},
+            cfg.modelParams || {}
+        )
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:10px;padding:6px 8px;"
+            + "background:rgba(100, 116, 139, 0.08);border:1px solid rgba(100, 116, 139, 0.35);"
+            + "border-radius:4px;"
+
+        const header = document.createElement("div")
+        header.style.cssText = "color:#cbd5e1;font-size:11px;margin-bottom:4px;"
+        header.innerHTML = "<strong>ORS Sandbox</strong> "
+            + "<span style='color:#9ca3af;font-weight:normal;'>— Pricing simulator (🧪 in panel header). "
+            + "Tunes how much projected rating shifts per ±100% price change (α<sub>price</sub>) and per "
+            + "service-level step (α<sub>comfort</sub>), plus the softmax temperature T that translates "
+            + "rating differences into share. Lower T = sharper share-by-rank.</span>"
+        wrap.append(header)
+
+        const status = document.createElement("div")
+        status.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;"
+        const perRouteCount = Object.keys(cfg.perRouteTemperature || {}).length
+        const lastRoute = cfg.lastRouteIata ? String(cfg.lastRouteIata).toUpperCase() : "—"
+        // Count how many calibrated Ts are >=30d old so the user knows when
+        // the calibration cache is decaying without opening each route.
+        let staleCount = 0
+        const stamps = cfg.perRouteTemperatureCalibratedAt || {}
+        const staleThreshold = Date.now() - 30 * 86400000
+        for (const k in (cfg.perRouteTemperature || {})) {
+            const ts = Number(stamps[k])
+            if (!isFinite(ts) || ts < staleThreshold) staleCount++
+        }
+        const staleSuffix = (perRouteCount && staleCount)
+            ? " (" + staleCount + " stale ≥30d)"
+            : ""
+        status.textContent = "Last route: " + lastRoute
+            + " · per-route Ts saved: " + perRouteCount + staleSuffix
+            + " · sandbox " + (cfg.enabled ? "ON" : "OFF")
+        wrap.append(status)
+
+        const ctrlRow = document.createElement("div")
+        ctrlRow.style.cssText = "display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:11px;"
+
+        const mkNumLabel = (text, val, min, max, step, onChange, tooltip) => {
+            const lab = document.createElement("label")
+            lab.style.cssText = "display:flex;gap:4px;align-items:center;color:#cbd5e1;"
+            if (tooltip) lab.title = tooltip
+            const inp = document.createElement("input")
+            inp.type = "number"
+            inp.min  = String(min)
+            inp.max  = String(max)
+            inp.step = String(step)
+            inp.value = String(val)
+            inp.style.cssText = "width:70px;background:#0f1623;color:#f3f4f6;border:1px solid #475569;"
+                + "border-radius:3px;padding:1px 4px;font-size:11px;"
+            inp.addEventListener("change", () => onChange(Number(inp.value)))
+            lab.append(document.createTextNode(text + " "))
+            lab.append(inp)
+            return lab
+        }
+
+        ctrlRow.append(mkNumLabel("α price", params.ratingPriceElasticity, 0, 50, 0.5,
+            async (v) => {
+                if (!isFinite(v)) return
+                this.settings.orsSandbox.modelParams.ratingPriceElasticity = v
+                await RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox})
+                this._orsSandboxResult = null
+                if (this.settings.orsSandbox.enabled) this._render()
+            },
+            "Rating points shifted per ±100% price change. Default 8 — defensible 0–30% deviation. Linear-in-percent."))
+
+        ctrlRow.append(mkNumLabel("α comfort", params.ratingComfortLift, 0, 30, 0.5,
+            async (v) => {
+                if (!isFinite(v)) return
+                this.settings.orsSandbox.modelParams.ratingComfortLift = v
+                await RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox})
+                this._orsSandboxResult = null
+                if (this.settings.orsSandbox.enabled) this._render()
+            },
+            "Rating points shifted per service-level step. Default 5; 5 stops total: −2 (budget) … 0 (current) … +2 (premium)."))
+
+        ctrlRow.append(mkNumLabel("Default T", params.shareTemperature, 1, 200, 0.5,
+            async (v) => {
+                if (!isFinite(v) || v <= 0) return
+                this.settings.orsSandbox.modelParams.shareTemperature = v
+                await RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox})
+                this._orsSandboxResult = null
+                if (this.settings.orsSandbox.enabled) this._render()
+            },
+            "Softmax temperature in rating points. Default 25 (numerically stable for AS rating range ~80–180). Sharp ≈ 15, smooth ≈ 40. Per-route Ts override this on the route they're calibrated for."))
+
+        const resetTsBtn = document.createElement("button")
+        resetTsBtn.textContent = "Reset all per-route Ts (" + perRouteCount + ")"
+        Object.assign(resetTsBtn.style, smallBtnStyle())
+        resetTsBtn.disabled = perRouteCount === 0
+        resetTsBtn.title = "Clears every saved per-route T. The Calibrate-T button on each route can re-populate as needed."
+        resetTsBtn.addEventListener("click", async () => {
+            if (!confirm("Clear all " + perRouteCount + " saved per-route temperatures?\n\nThe global T continues to apply to every route. Each route can re-calibrate via the sandbox's Calibrate-T button.")) return
+            this.settings.orsSandbox.perRouteTemperature             = {}
+            this.settings.orsSandbox.perRouteTemperatureCalibratedAt = {}
+            await RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox})
+            this._renderSettings()
+            this._orsSandboxResult = null
+            if (this.settings.orsSandbox.enabled) this._render()
+        })
+        ctrlRow.append(resetTsBtn)
+
+        const resetDefaultsBtn = document.createElement("button")
+        resetDefaultsBtn.textContent = "Reset model params to defaults"
+        Object.assign(resetDefaultsBtn.style, smallBtnStyle())
+        resetDefaultsBtn.title = "Restores α_price = 8, α_comfort = 5, default T = 25. Per-route Ts are NOT cleared by this button."
+        resetDefaultsBtn.addEventListener("click", async () => {
+            this.settings.orsSandbox.modelParams = {ratingPriceElasticity: 8, ratingComfortLift: 5, shareTemperature: 25.0}
+            await RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox})
+            this._renderSettings()
+            this._orsSandboxResult = null
+            if (this.settings.orsSandbox.enabled) this._render()
+        })
+        ctrlRow.append(resetDefaultsBtn)
+
+        wrap.append(ctrlRow)
+
+        const note = document.createElement("div")
+        note.style.cssText = "margin-top:6px;color:#6b7280;font-size:10px;line-height:1.5;"
+        note.innerHTML = "<strong>How it works:</strong> rating shift is linear in percent — clamped to ±50% of the baseline. "
+            + "Share is a numeric-stable softmax over the cached connection ratings, summed across our connections. "
+            + "Pax/wk = pool × share, with the pool adjusted by the demand-derivator's price elasticity when present. "
+            + "Revenue and profit are projected by feeding the new LF + yield into the existing profit estimator. "
+            + "Read-only — the sandbox never writes prices back to AS."
+        wrap.append(note)
+
+        this.settingsHost.append(wrap)
+    }
+
+    // ---------- Active prompts (alert rules) ----------
+
+    /**
+     * Settings drawer expander for alert rules. Lists existing rules
+     * with enable toggle + delete; an "Add rule" row with field /
+     * operator / threshold / scope / severity inputs. Saves through
+     * RouteAssistantAlertRulesStore.
+     */
+    _renderAlertRulesSection() {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:10px;padding:6px 8px;"
+            + "background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.30);"
+            + "border-radius:4px;"
+
+        const header = document.createElement("div")
+        header.style.cssText = "color:#fde68a;font-size:11px;margin-bottom:4px;"
+        header.innerHTML = "<strong>Active prompts</strong> "
+            + "<span style='color:#9ca3af;font-weight:normal;'>— Rules that fire a notification "
+            + "when a field crosses your threshold. Evaluated on every panel mount against the "
+            + "diff-decorated rows. Watchlist scope (default) only fires for ★-starred routes; "
+            + "All scope fires for every visible row. Cooldown (default 24h) suppresses repeats "
+            + "of the same rule+route within the window.</span>"
+        wrap.append(header)
+
+        const rules = this._alertRules || []
+        const status = document.createElement("div")
+        status.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;"
+        const enabledCount = rules.filter(r => r.enabled).length
+        status.textContent = "Rules: " + rules.length + " (" + enabledCount + " enabled)"
+        wrap.append(status)
+
+        // Existing rules list ----------------------------------------------
+        if (rules.length) {
+            const list = document.createElement("div")
+            list.style.cssText = "display:flex;flex-direction:column;gap:4px;margin-bottom:6px;"
+            for (const rule of rules) {
+                list.append(this._buildAlertRuleRow(rule))
+            }
+            wrap.append(list)
+        }
+
+        // Add-rule row ------------------------------------------------------
+        const addWrap = document.createElement("div")
+        addWrap.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;"
+            + "padding-top:4px;border-top:1px solid rgba(251,191,36,0.20);"
+        const addLabel = document.createElement("span")
+        addLabel.textContent = "Add rule:"
+        addLabel.style.color = "#fde68a"
+        addWrap.append(addLabel)
+
+        const fieldOpts = (typeof RouteAssistantAlertEvaluator !== "undefined")
+            ? RouteAssistantAlertEvaluator.availableFields()
+            : []
+        const fieldSel = document.createElement("select")
+        fieldSel.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #475569;border-radius:3px;padding:1px 4px;font-size:11px;max-width:200px;"
+        for (const f of fieldOpts) {
+            const o = document.createElement("option")
+            o.value = f.field
+            o.textContent = f.label
+            fieldSel.append(o)
+        }
+        addWrap.append(fieldSel)
+
+        const opSel = document.createElement("select")
+        opSel.style.cssText = fieldSel.style.cssText
+        for (const op of [
+            {value: "increased_by", label: "increased by"},
+            {value: "decreased_by", label: "decreased by"},
+            {value: "above",        label: "above"},
+            {value: "below",        label: "below"}
+        ]) {
+            const o = document.createElement("option")
+            o.value = op.value
+            o.textContent = op.label
+            opSel.append(o)
+        }
+        addWrap.append(opSel)
+
+        const thrInput = document.createElement("input")
+        thrInput.type = "number"
+        thrInput.step = "any"
+        thrInput.placeholder = "threshold"
+        thrInput.style.cssText = "width:90px;background:#0f1623;color:#f3f4f6;border:1px solid #475569;border-radius:3px;padding:1px 4px;font-size:11px;"
+        addWrap.append(thrInput)
+
+        const scopeSel = document.createElement("select")
+        scopeSel.style.cssText = fieldSel.style.cssText
+        for (const sc of [
+            {value: "watchlist", label: "watchlist only"},
+            {value: "all",       label: "all routes"}
+        ]) {
+            const o = document.createElement("option")
+            o.value = sc.value
+            o.textContent = sc.label
+            scopeSel.append(o)
+        }
+        addWrap.append(scopeSel)
+
+        const sevSel = document.createElement("select")
+        sevSel.style.cssText = fieldSel.style.cssText
+        for (const sv of [
+            {value: "warn",  label: "warn"},
+            {value: "info",  label: "info"},
+            {value: "error", label: "error"}
+        ]) {
+            const o = document.createElement("option")
+            o.value = sv.value
+            o.textContent = sv.label
+            sevSel.append(o)
+        }
+        addWrap.append(sevSel)
+
+        const addBtn = document.createElement("button")
+        addBtn.textContent = "+ Add"
+        Object.assign(addBtn.style, smallBtnStyle())
+        addBtn.style.background = "#92400e"
+        addBtn.style.color = "#fde68a"
+        addBtn.addEventListener("click", async () => {
+            const t = Number(thrInput.value)
+            if (!isFinite(t)) {
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.warn("Enter a numeric threshold first.")
+                }
+                return
+            }
+            try {
+                await RouteAssistantAlertRulesStore.add({
+                    field:    fieldSel.value,
+                    operator: opSel.value,
+                    threshold: t,
+                    scope:    scopeSel.value,
+                    severity: sevSel.value
+                })
+                await this._loadAlertRules()
+                this._alertFiredThisMount = new Set()  // re-evaluate against new rule next render
+                this._renderSettings()
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.success("Alert rule added.")
+                }
+            } catch (e) {
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.error("Couldn't add rule: " + (e && e.message ? e.message : e))
+                }
+            }
+        })
+        addWrap.append(addBtn)
+        wrap.append(addWrap)
+
+        this.settingsHost.append(wrap)
+    }
+
+    /** One row in the alert rules list — label + enable toggle + delete. */
+    _buildAlertRuleRow(rule) {
+        const row = document.createElement("div")
+        row.style.cssText = "display:flex;align-items:center;gap:8px;padding:3px 6px;"
+            + "background:rgba(15,22,35,0.45);border:1px solid rgba(251,191,36,0.20);"
+            + "border-radius:3px;font-size:11px;"
+        const enableCb = document.createElement("input")
+        enableCb.type = "checkbox"
+        enableCb.checked = !!rule.enabled
+        enableCb.title = "Toggle rule on/off"
+        enableCb.addEventListener("change", async () => {
+            try {
+                await RouteAssistantAlertRulesStore.update(rule.id, {enabled: enableCb.checked})
+                rule.enabled = enableCb.checked
+                this._alertFiredThisMount = new Set()
+            } catch (e) {
+                enableCb.checked = !enableCb.checked
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.error("Toggle failed: " + (e && e.message ? e.message : e))
+                }
+            }
+        })
+        row.append(enableCb)
+
+        const sevDot = document.createElement("span")
+        const sevColor = rule.severity === "error" ? "#f87171" : (rule.severity === "info" ? "#60a5fa" : "#fbbf24")
+        sevDot.textContent = "●"
+        sevDot.style.color = sevColor
+        sevDot.title = rule.severity
+        row.append(sevDot)
+
+        const label = document.createElement("span")
+        label.textContent = rule.label
+        label.style.color = "#e5e7eb"
+        label.style.flex = "1"
+        row.append(label)
+
+        const scopeChip = document.createElement("span")
+        scopeChip.textContent = rule.scope === "watchlist" ? "★ only" : "all"
+        scopeChip.style.cssText = "color:#9ca3af;font-size:10px;padding:1px 5px;border-radius:8px;"
+            + "background:rgba(100,116,139,0.15);"
+        row.append(scopeChip)
+
+        const cooldownChip = document.createElement("span")
+        cooldownChip.textContent = (rule.cooldownHours || 0) + "h"
+        cooldownChip.style.cssText = "color:#9ca3af;font-size:10px;"
+        cooldownChip.title = "Cooldown — same rule+route can't re-fire within this window."
+        row.append(cooldownChip)
+
+        const delBtn = document.createElement("button")
+        delBtn.textContent = "×"
+        delBtn.title = "Delete rule"
+        delBtn.style.cssText = "background:transparent;border:none;color:#9ca3af;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;"
+        delBtn.addEventListener("click", async () => {
+            await this._undoableSave({
+                label: "Deleted rule \"" + rule.label + "\"",
+                type:  "info",
+                perform: async () => {
+                    await RouteAssistantAlertRulesStore.remove(rule.id)
+                    await this._loadAlertRules()
+                    this._renderSettings()
+                },
+                restore: async () => {
+                    await RouteAssistantAlertRulesStore.add({
+                        field:        rule.field,
+                        operator:     rule.operator,
+                        threshold:    rule.threshold,
+                        scope:        rule.scope,
+                        severity:     rule.severity,
+                        enabled:      rule.enabled,
+                        cooldownHours: rule.cooldownHours,
+                        label:        rule.label
+                    })
+                    await this._loadAlertRules()
+                    this._renderSettings()
+                }
+            })
+        })
+        row.append(delBtn)
+        return row
+    }
+
     // ---------- ORS Rank (Tier 2b — Online Reservation System scraper) ----------
 
     /**
@@ -4326,6 +7076,12 @@ class RouteAssistantPanel {
         const cache = await RouteAssistantOrsScraper.bulkLoadCache(pairs, {
             maxAgeDays: cfg.rankMaxAgeDays
         })
+
+        // Resolve composite weights ONCE per refresh. Capacity-weighted
+        // method needs the picked aircraft's per-class seat config; fall
+        // back to the user's preset weights when no aircraft / no specs.
+        const weights = this._resolveOrsWeights()
+
         for (const r of this.rows) {
             const key = RouteAssistantOrsScraper._pairKey(this.hubIata, r.destIata)
             const rec = cache.get(key)
@@ -4333,19 +7089,57 @@ class RouteAssistantPanel {
             r.orsRecord = rec
             r.orsScrapedAt = rec.scrapedAt
             r.orsParams = rec.params
-            r.orsTotalConnections = rec.totalConnections
-            r.orsRankAny           = rec.rankAny
-            r.orsRankFirstLegOurs  = rec.rankFirstLegOurs
-            r.orsRankAllOurs       = rec.rankAllOurs
-            r.orsRankNonstop       = rec.rankNonstop
-            r.orsRankBookable      = rec.rankBookable
-            r.orsOurTopRating      = rec.ourTopRating
-            r.orsOurBestNonstopRating = rec.ourBestNonstopRating
-            r.orsTopCompetitorRating = rec.topCompetitorRating
-            r.orsRatingGapToTop    = rec.ratingGapToTop
-            r.orsConnections       = rec.connections
+            r.orsByClass = rec.byClass || {}
+            r.orsClassesScraped = rec.classesScraped || Object.keys(r.orsByClass)
             r.orsOurFlightIds      = rec.ourFlightIds
             r.orsOurCarrierPrefixes = rec.ourCarrierPrefixes
+
+            // Per-class metric snapshots — what the Y / C / F columns
+            // show. Each is the row's primaryColumn metric for that class.
+            const primaryCol = cfg.primaryColumn || "ratingGapToTop"
+            r.orsClassY = RouteAssistantPanel._resolveOrsPrimary(r.orsByClass.ECONOMY,  primaryCol)
+            r.orsClassC = RouteAssistantPanel._resolveOrsPrimary(r.orsByClass.BUSINESS, primaryCol)
+            r.orsClassF = RouteAssistantPanel._resolveOrsPrimary(r.orsByClass.FIRST,    primaryCol)
+
+            // Composite — every flat metric the existing columns read is
+            // computed from the per-class records using the user's combine
+            // method + weights. That way the existing columns Just Work
+            // without a schema change downstream.
+            const composite = RouteAssistantPanel._composeOrsAllMetrics(
+                r.orsByClass, cfg.combineMethod || "weighted", weights
+            )
+            r.orsRankAny           = composite.rankAny
+            r.orsRankFirstLegOurs  = composite.rankFirstLegOurs
+            r.orsRankAllOurs       = composite.rankAllOurs
+            r.orsRankNonstop       = composite.rankNonstop
+            r.orsRankBookable      = composite.rankBookable
+            r.orsOurTopRating      = composite.ourTopRating
+            r.orsOurBestNonstopRating = composite.ourBestNonstopRating
+            r.orsTopCompetitorRating  = composite.topCompetitorRating
+            r.orsRatingGapToTop    = composite.ratingGapToTop
+            // Total-connections rolls up by sum across scraped classes
+            // (a stable "we got data" signal for the status counter).
+            let total = 0, anyScraped = false
+            for (const cls in r.orsByClass) {
+                const cr = r.orsByClass[cls]
+                if (cr && typeof cr.totalConnections === "number") {
+                    total += cr.totalConnections
+                    anyScraped = true
+                }
+            }
+            r.orsTotalConnections = anyScraped ? total : null
+
+            // For the drill-in drawer fallback: union of all classes'
+            // connections so the "All" tab can render without re-iteration.
+            r.orsConnections = []
+            for (const cls of ["ECONOMY", "BUSINESS", "FIRST", "CARGO"]) {
+                const cr = r.orsByClass[cls]
+                if (cr && Array.isArray(cr.connections)) {
+                    for (const c of cr.connections) {
+                        r.orsConnections.push(Object.assign({_orsClass: cls}, c))
+                    }
+                }
+            }
 
             // Apply min-rating display threshold (display-only filter).
             const minRating = cfg.minRatingThresholdDisplay
@@ -4356,12 +7150,94 @@ class RouteAssistantPanel {
             }
 
             // Resolve the primary value the panel shows in the headline column.
-            r.orsPrimaryValue = RouteAssistantPanel._resolveOrsPrimary(rec, cfg.primaryColumn)
+            r.orsPrimaryValue = RouteAssistantPanel._resolveOrsPrimary(
+                {/* synthetic carrier-of-composite */
+                    rankAny:           r.orsRankAny,
+                    rankFirstLegOurs:  r.orsRankFirstLegOurs,
+                    rankAllOurs:       r.orsRankAllOurs,
+                    rankNonstop:       r.orsRankNonstop,
+                    rankBookable:      r.orsRankBookable,
+                    ourTopRating:      r.orsOurTopRating,
+                    ourBestNonstopRating: r.orsOurBestNonstopRating,
+                    ratingGapToTop:    r.orsRatingGapToTop
+                }, primaryCol
+            )
         }
         // Stash circuit-breaker timestamp + cooldown for the expander UI.
         RouteAssistantPanel._orsCircuitTrippedAt = cfg.circuitBreakerTrippedAt || null
         RouteAssistantPanel._orsCircuitCooldown  = cfg.circuitBreakerCooldownMs || 600000
         RouteAssistantPanel._orsPrimaryColumn    = cfg.primaryColumn || "ratingGapToTop"
+        RouteAssistantPanel._orsActiveWeights    = weights
+    }
+
+    /**
+     * Resolve the active class-weight vector based on the user's
+     * combineMethod + preset choice. Returns {ECONOMY, BUSINESS, FIRST}
+     * with values summing to ~1. Capacity-weighted derives from the picked
+     * aircraft's seat config; falls back to the Standard preset when no
+     * aircraft is selected or specs aren't cached.
+     */
+    _resolveOrsWeights() {
+        const cfg = (this.settings && this.settings.ors) || {}
+        const presets = (typeof RouteAssistantSettings !== "undefined"
+            && RouteAssistantSettings.ORS_WEIGHT_PRESETS) || {}
+
+        if (cfg.combineMethod === "capacityWeighted") {
+            // Try to derive from the picked aircraft's cabin config.
+            const fromAircraft = this._aircraftCapacityWeights()
+            if (fromAircraft) return fromAircraft
+            // Fall back to Standard preset.
+            return Object.assign({ECONOMY: 0.75, BUSINESS: 0.20, FIRST: 0.05},
+                (presets.standard && presets.standard.weights) || {})
+        }
+        if (cfg.combineMethod === "weighted") {
+            // Use whichever preset is selected, or stored classWeights for "custom".
+            const preset = cfg.weightPreset && presets[cfg.weightPreset]
+            if (cfg.weightPreset === "custom" || !preset || !preset.weights) {
+                return Object.assign({ECONOMY: 0.75, BUSINESS: 0.20, FIRST: 0.05},
+                    cfg.classWeights || {})
+            }
+            return Object.assign({}, preset.weights)
+        }
+        // min / max / avg don't use weights — the composer handles them.
+        // Return equal weights so the per-class projections still work.
+        return {ECONOMY: 1/3, BUSINESS: 1/3, FIRST: 1/3}
+    }
+
+    /**
+     * Derive class weights from the picked aircraft's cabin config.
+     * Returns null when no aircraft is picked OR the type spec / class
+     * mix can't be resolved (caller falls back to Standard preset).
+     *
+     * Resolution path:
+     *   1. Selected aircraft typeId (from aircraft picker) → spec lookup
+     *      via RouteAssistantTypeSpecsStore for total seats.
+     *   2. Service-config defaultClassMix for that type's categories.
+     *   3. Multiply: classSeats[i] = totalSeats × mixPct[i]
+     *   4. Normalise to sum 1.
+     */
+    _aircraftCapacityWeights() {
+        try {
+            const slot = this._fleetContext()
+            if (!slot) return null
+            const seats = (typeof slot.seats === "number" && slot.seats > 0) ? slot.seats : null
+            if (!seats) return null
+            // The service-profile store holds per-class mix percentages.
+            const sp = (this.settings && this.settings.serviceProfiles) || {}
+            const mix = sp.defaultClassMix || {}
+            const y = Number(mix.Y) || 0
+            const c = Number(mix.C) || 0
+            const f = Number(mix.F) || 0
+            const sum = y + c + f
+            if (sum <= 0) return null
+            return {
+                ECONOMY:  y / sum,
+                BUSINESS: c / sum,
+                FIRST:    f / sum
+            }
+        } catch (e) {
+            return null
+        }
     }
 
     /**
@@ -4374,11 +7250,17 @@ class RouteAssistantPanel {
         const cfg = this.settings.ors = Object.assign(
             {showColumns: true, concurrency: 2, staggerMs: 1500, lastBulkScrapeAt: null,
              rankMaxAgeDays: null,
-             defaultPayload: "ECONOMY", defaultDepartureH: 0, defaultArrivalH: 72,
+             classesToScrape: ["ECONOMY", "BUSINESS", "FIRST"],
+             defaultDepartureH: 0, defaultArrivalH: 72,
              defaultUseGround: true,
+             combineMethod: "capacityWeighted",
+             weightPreset:  "capacityWeighted",
+             classWeights:  {ECONOMY: 0.75, BUSINESS: 0.20, FIRST: 0.05},
+             primaryClass:  "ECONOMY",
              primaryColumn: "ratingGapToTop",
              showRankAnyColumn: true, showRankNonstopColumn: true,
              showRatingGapColumn: true, showCompetitorCountColumn: true,
+             showPerClassColumns: true,
              minRatingThresholdDisplay: null,
              airlineCarrierPrefixOverride: null,
              circuitBreakerTrippedAt: null, circuitBreakerCooldownMs: 600000},
@@ -4422,15 +7304,28 @@ class RouteAssistantPanel {
             + "font-size:11px;margin-bottom:6px;"
 
         const scanBtn = document.createElement("button")
-        scanBtn.textContent = this._orsScrapeRunning
-            ? "Syncing ORS…"
-            : "Sync ORS rank for all visible routes"
         Object.assign(scanBtn.style, smallBtnStyle())
         scanBtn.style.background = "#b45309"
         scanBtn.disabled = !!this._orsScrapeRunning || !this.hubIata
             || !(this.rows && this.rows.length) || tripped
         scanBtn.addEventListener("click", () => this._runBulkOrsScrape())
         topRow.append(scanBtn)
+
+        // Recompute the sync button's label live whenever the user toggles
+        // class checkboxes — wall-clock estimate scales with class count
+        // (each class = one extra GET → POST handshake per route).
+        this._orsRecomputeSyncLabel = () => {
+            if (this._orsScrapeRunning) { scanBtn.textContent = "Syncing ORS…"; return }
+            const classes = (this.settings && this.settings.ors && this.settings.ors.classesToScrape) || []
+            const n = classes.length || 1
+            const routes = (this.rows || []).length || 0
+            // Conservative: ~10 routes/min for 3 classes; scales linearly.
+            const minutes = Math.max(1, Math.ceil(routes / (30 / n)))
+            const labels = classes.map(c => c[0]).join("/") || "Y"
+            scanBtn.textContent = "Sync ORS rank for all visible routes ("
+                + labels + " · ~" + minutes + " min)"
+        }
+        this._orsRecomputeSyncLabel()
 
         const status = document.createElement("div")
         status.style.cssText = "color:#9ca3af;font-size:10px;flex:1;min-width:0;"
@@ -4459,22 +7354,35 @@ class RouteAssistantPanel {
         paramRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
             + "font-size:11px;margin-bottom:4px;"
 
-        const payloadSel = mkSelect([
-            {value: "ECONOMY",  label: "Y"},
-            {value: "BUSINESS", label: "C"},
-            {value: "FIRST",    label: "F"},
-            {value: "CARGO",    label: "Cargo"}
-        ])
-        payloadSel.value = cfg.defaultPayload
-        payloadSel.style.fontSize = "11px"
-        payloadSel.addEventListener("change", async () => {
-            this.settings.ors.defaultPayload = payloadSel.value
-            await RouteAssistantSettings.save({ors: this.settings.ors})
-        })
-        const payloadLbl = document.createElement("label")
-        payloadLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
-        payloadLbl.append(document.createTextNode("Payload:"), payloadSel)
-        paramRow.append(payloadLbl)
+        const classBox = document.createElement("span")
+        classBox.style.cssText = "display:flex;gap:6px;align-items:center;color:#9ca3af;"
+        classBox.append(document.createTextNode("Classes:"))
+        const classKeys = [
+            {key: "ECONOMY",  label: "Y", color: "#86efac"},
+            {key: "BUSINESS", label: "C", color: "#fde68a"},
+            {key: "FIRST",    label: "F", color: "#fca5a5"}
+        ]
+        const classCbs = {}
+        const updateSyncBtnLabel = () => {
+            if (this._orsRecomputeSyncLabel) this._orsRecomputeSyncLabel()
+        }
+        for (const cdef of classKeys) {
+            const cb = mkInput("checkbox", null)
+            cb.checked = (cfg.classesToScrape || []).indexOf(cdef.key) >= 0
+            classCbs[cdef.key] = cb
+            const lbl = document.createElement("label")
+            lbl.style.cssText = "display:flex;gap:3px;align-items:center;color:" + cdef.color + ";"
+            lbl.append(cb, document.createTextNode(cdef.label))
+            cb.addEventListener("change", async () => {
+                const next = classKeys.filter(k => classCbs[k.key].checked).map(k => k.key)
+                if (!next.length) { cb.checked = true; return }
+                this.settings.ors.classesToScrape = next
+                await RouteAssistantSettings.save({ors: this.settings.ors})
+                updateSyncBtnLabel()
+            })
+            classBox.append(lbl)
+        }
+        paramRow.append(classBox)
 
         const windowSel = mkSelect([
             {value: "tight",    label: "Tight 0–24h"},
@@ -4545,6 +7453,85 @@ class RouteAssistantPanel {
         paramRow.append(showLbl)
 
         wrap.append(paramRow)
+
+        // ----- Combine method + Preset (composite blending controls).
+        // The composite ORS column blends per-class metrics into one
+        // headline number; these controls drive the formula. Presets are
+        // listed in RouteAssistantSettings.ORS_WEIGHT_PRESETS.
+        const combineRow = document.createElement("div")
+        combineRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
+            + "font-size:11px;margin-bottom:4px;"
+
+        const combineSel = mkSelect([
+            {value: "capacityWeighted", label: "Capacity-weighted (auto)"},
+            {value: "weighted",         label: "Weighted (preset)"},
+            {value: "min",              label: "Min (worst class)"},
+            {value: "max",              label: "Max (best class)"},
+            {value: "avg",              label: "Equal average"}
+        ])
+        combineSel.value = cfg.combineMethod || "capacityWeighted"
+        combineSel.style.fontSize = "11px"
+        combineSel.addEventListener("change", async () => {
+            this.settings.ors.combineMethod = combineSel.value
+            await RouteAssistantSettings.save({ors: this.settings.ors})
+            await this._applyCachedOrs()
+            this._render()
+        })
+        const combineLbl = document.createElement("label")
+        combineLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#fcd34d;"
+        combineLbl.append(document.createTextNode("Combine:"), combineSel)
+        combineRow.append(combineLbl)
+
+        // Preset dropdown — populated from ORS_WEIGHT_PRESETS so adding
+        // playstyles in settings-store automatically surfaces them here.
+        const presets = (typeof RouteAssistantSettings !== "undefined"
+            && RouteAssistantSettings.ORS_WEIGHT_PRESETS) || {}
+        const presetOpts = []
+        for (const k in presets) {
+            presetOpts.push({value: k, label: presets[k].label || k})
+        }
+        const presetSel = mkSelect(presetOpts)
+        presetSel.value = cfg.weightPreset || "capacityWeighted"
+        presetSel.style.fontSize = "11px"
+        presetSel.addEventListener("change", async () => {
+            const next = presetSel.value
+            this.settings.ors.weightPreset = next
+            // Auto-set combineMethod to match the preset's intent:
+            //   "capacityWeighted" preset → capacityWeighted method
+            //   any fixed preset           → weighted method
+            //   "custom"                   → weighted (with stored classWeights)
+            if (next === "capacityWeighted") {
+                this.settings.ors.combineMethod = "capacityWeighted"
+                combineSel.value = "capacityWeighted"
+            } else {
+                this.settings.ors.combineMethod = "weighted"
+                combineSel.value = "weighted"
+                if (presets[next] && presets[next].weights) {
+                    this.settings.ors.classWeights = Object.assign({}, presets[next].weights)
+                }
+            }
+            await RouteAssistantSettings.save({ors: this.settings.ors})
+            await this._applyCachedOrs()
+            this._render()
+        })
+        const presetLbl = document.createElement("label")
+        presetLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#fcd34d;"
+        presetLbl.append(document.createTextNode("Preset:"), presetSel)
+        combineRow.append(presetLbl)
+
+        // Inline preset-description hint so user understands what they
+        // selected without opening More options.
+        const presetHint = document.createElement("span")
+        presetHint.style.cssText = "color:#6b7280;font-size:10px;font-style:italic;"
+        const updatePresetHint = () => {
+            const p = presets[presetSel.value]
+            presetHint.textContent = p ? "(" + p.description + ")" : ""
+        }
+        updatePresetHint()
+        presetSel.addEventListener("change", updatePresetHint)
+        combineRow.append(presetHint)
+
+        wrap.append(combineRow)
 
         // ----- Advanced disclosure (collapsed by default) — per-column
         // visibility toggles + carrier prefix override + display threshold.
@@ -4627,12 +7614,76 @@ class RouteAssistantPanel {
         overrideRow.append(thLbl)
 
         advBody.append(overrideRow)
+
+        // Per-class column visibility (Compact view always overrides this).
+        const perClassRow = document.createElement("div")
+        perClassRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
+            + "font-size:10px;color:#9ca3af;margin-top:4px;"
+        const pcCb = mkInput("checkbox", null)
+        pcCb.checked = cfg.showPerClassColumns !== false
+        const pcLbl = document.createElement("label")
+        pcLbl.style.cssText = "display:flex;gap:3px;align-items:center;"
+        pcLbl.append(pcCb, document.createTextNode("Show per-class columns (Y / C / F)"))
+        pcCb.addEventListener("change", async () => {
+            this.settings.ors.showPerClassColumns = pcCb.checked
+            await RouteAssistantSettings.save({ors: this.settings.ors})
+            this._render()
+        })
+        perClassRow.append(pcLbl)
+        advBody.append(perClassRow)
+
+        // Custom class weights — touching any of these flips Preset to
+        // "custom" and combineMethod to "weighted". Sum normalised on save.
+        const weightRow = document.createElement("div")
+        weightRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
+            + "font-size:10px;color:#9ca3af;margin-top:4px;"
+        weightRow.append(document.createTextNode("Custom weights:"))
+        const weightInputs = {}
+        for (const cls of ["ECONOMY", "BUSINESS", "FIRST"]) {
+            const initial = (cfg.classWeights && cfg.classWeights[cls] != null)
+                ? cfg.classWeights[cls] : 0
+            const inp = mkNumberInput(initial, {min: 0, max: 1, step: 0.05, width: "55px"})
+            weightInputs[cls] = inp
+            inp.addEventListener("change", async () => {
+                const w = {
+                    ECONOMY:  Number(weightInputs.ECONOMY.value)  || 0,
+                    BUSINESS: Number(weightInputs.BUSINESS.value) || 0,
+                    FIRST:    Number(weightInputs.FIRST.value)    || 0
+                }
+                const sum = w.ECONOMY + w.BUSINESS + w.FIRST
+                if (sum > 0) {
+                    w.ECONOMY  /= sum; w.BUSINESS /= sum; w.FIRST /= sum
+                } else {
+                    w.ECONOMY = 0.75; w.BUSINESS = 0.20; w.FIRST = 0.05
+                }
+                this.settings.ors.classWeights = w
+                this.settings.ors.weightPreset = "custom"
+                this.settings.ors.combineMethod = "weighted"
+                presetSel.value  = "custom"
+                combineSel.value = "weighted"
+                await RouteAssistantSettings.save({ors: this.settings.ors})
+                await this._applyCachedOrs()
+                this._render()
+            })
+            const cwLbl = document.createElement("label")
+            cwLbl.style.cssText = "display:flex;gap:3px;align-items:center;"
+            cwLbl.append(document.createTextNode(cls[0]), inp)
+            weightRow.append(cwLbl)
+        }
+        const weightHint = document.createElement("span")
+        weightHint.style.cssText = "color:#6b7280;font-size:10px;font-style:italic;"
+        weightHint.textContent = "(saved values normalised to sum 1.0)"
+        weightRow.append(weightHint)
+        advBody.append(weightRow)
+
         wrap.append(advBody)
 
         const note = document.createElement("div")
         note.style.cssText = "color:#6b7280;font-size:10px;margin-top:6px;line-height:1.4;"
-        note.innerHTML = "Pace: ~30 routes/min — ORS runs a routing solver. Per-route Wicket "
-            + "GET → POST. Circuit breaker on 3× consecutive 429/503 disables this for 10 min."
+        note.innerHTML = "Each ticked class adds one full GET → POST handshake per route. "
+            + "Pace estimate (button label) updates live as you toggle. Per-route Wicket "
+            + "session — classes can't share. Circuit breaker on 3× consecutive 429/503 "
+            + "disables sync for 10 min."
         wrap.append(note)
 
         this.settingsHost.append(wrap)
@@ -4660,23 +7711,45 @@ class RouteAssistantPanel {
         this._orsScrapeRunning = true
         this._renderSettings()
 
-        let halted = false, haltReason = null
+        // N1 progress toast — sticky, updates in place. Lets the user tab
+        // away from the panel during the 5+min scrape and watch the corner
+        // indicator instead of staring at the inline status line.
+        const progressHandle = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress("Syncing ORS rank…", {
+                id:   "ors-bulk-scrape",
+                type: "info"
+              })
+            : null
+
+        let halted = false, haltReason = null, doneCount = 0, totalCount = pairs.length
         try {
             const result = await this.orsScraper.bulkScrape(pairs, {
                 concurrency: concurrency,
                 staggerMs:   staggerMs,
                 scrapeParams: {
-                    payload:    cfg.defaultPayload,
-                    departureH: cfg.defaultDepartureH,
-                    arrivalH:   cfg.defaultArrivalH,
-                    useGround:  cfg.defaultUseGround,
+                    classesToScrape: cfg.classesToScrape,
+                    departureH:      cfg.defaultDepartureH,
+                    arrivalH:        cfg.defaultArrivalH,
+                    useGround:       cfg.defaultUseGround,
                     carrierOverride: cfg.airlineCarrierPrefixOverride
                 },
                 onProgress:  (p) => {
+                    doneCount  = p.done
+                    totalCount = p.total
                     if (this._orsStatusEl) {
                         let txt = "Syncing ORS rank: " + p.done + "/" + p.total + "…"
                         if (p.halted) txt = "⚠ Halted at " + p.done + "/" + p.total + ": " + p.reason
                         this._orsStatusEl.textContent = txt
+                    }
+                    if (progressHandle) {
+                        progressHandle.update({
+                            message:       p.halted
+                                ? ("⚠ ORS sync halted (" + p.done + "/" + p.total + ")")
+                                : "Syncing ORS rank…",
+                            progressPct:   p.total ? (100 * p.done / p.total) : 0,
+                            progressLabel: p.done + " / " + p.total + " routes"
+                                + (p.halted ? " · " + (p.reason || "halted") : "")
+                        })
                     }
                 }
             })
@@ -4684,6 +7757,12 @@ class RouteAssistantPanel {
             haltReason = result && result.reason
         } catch (e) {
             console.warn("[AES orsScraper] bulk scrape failed", e)
+            if (progressHandle) {
+                progressHandle.complete({
+                    type:    "error",
+                    message: "ORS sync failed: " + ((e && e.message) ? e.message : e)
+                })
+            }
         }
 
         this._orsScrapeRunning = false
@@ -4696,6 +7775,21 @@ class RouteAssistantPanel {
 
         await this._applyCachedOrs()
         this._render()
+
+        if (progressHandle) {
+            if (halted) {
+                progressHandle.complete({
+                    type:    "warn",
+                    message: "ORS sync halted: " + (haltReason || "rate limit hit")
+                            + " · " + doneCount + "/" + totalCount + " done"
+                })
+            } else {
+                progressHandle.complete({
+                    type:    "success",
+                    message: "ORS sync complete · " + totalCount + " routes"
+                })
+            }
+        }
     }
 
     /**
@@ -4704,7 +7798,12 @@ class RouteAssistantPanel {
      * shows its rank, rating, total price, total duration, and per-leg details.
      */
     _openOrsConnectionsDrawer(row) {
-        if (!row || !row.orsConnections || !row.orsConnections.length) return
+        if (!row) return
+        const byClass = row.orsByClass || {}
+        const hasAny = Object.keys(byClass).some(k => byClass[k]
+            && Array.isArray(byClass[k].connections) && byClass[k].connections.length)
+        if (!hasAny) return
+
         if (this._orsDrawer && this._orsDrawer.parentNode) {
             this._orsDrawer.parentNode.removeChild(this._orsDrawer)
         }
@@ -4726,7 +7825,7 @@ class RouteAssistantPanel {
         Object.assign(card.style, {
             background: "#1f2937", color: "#f3f4f6",
             border: "1px solid #b45309", borderRadius: "6px",
-            padding: "16px 18px", minWidth: "640px", maxWidth: "880px",
+            padding: "16px 18px", minWidth: "640px", maxWidth: "920px",
             maxHeight: "82vh", overflowY: "auto",
             boxShadow: "0 8px 30px rgba(0,0,0,0.5)",
             font: "12px/1.5 sans-serif"
@@ -4739,70 +7838,143 @@ class RouteAssistantPanel {
         const sub = document.createElement("div")
         sub.style.cssText = "color:#9ca3af;font-size:11px;margin-bottom:10px;"
         const params = row.orsParams || {}
-        sub.textContent = "Total connections: " + row.orsTotalConnections
-            + " · Payload: " + (params.payload || "—")
+        const classes = Array.isArray(row.orsClassesScraped) ? row.orsClassesScraped : Object.keys(byClass)
+        sub.textContent = "Classes scraped: " + (classes.join(", ") || "—")
             + " · Window: " + (params.departureH != null ? params.departureH : "—") + "h–"
                 + (params.arrivalH != null ? params.arrivalH : "—") + "h"
             + " · Ground: " + (params.useGround ? "on" : "off")
             + " · Scraped: " + (row.orsScrapedAt ? new Date(row.orsScrapedAt).toLocaleString() : "—")
         card.append(sub)
 
+        // Composite summary (across all classes via the user's chosen
+        // combine method — same numbers the panel columns show).
         const summary = document.createElement("div")
         summary.style.cssText = "color:#fcd34d;font-size:11px;margin-bottom:10px;"
             + "background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.30);"
             + "border-radius:3px;padding:6px 8px;"
-        summary.innerHTML = "<strong>Rank flavors:</strong> "
-            + "any=" + (row.orsRankAny != null ? row.orsRankAny : "—") + " · "
-            + "first-leg-ours=" + (row.orsRankFirstLegOurs != null ? row.orsRankFirstLegOurs : "—") + " · "
-            + "all-ours=" + (row.orsRankAllOurs != null ? row.orsRankAllOurs : "—") + " · "
-            + "nonstop=" + (row.orsRankNonstop != null ? row.orsRankNonstop : "—") + " · "
-            + "bookable=" + (row.orsRankBookable != null ? row.orsRankBookable : "—") + "<br>"
-            + "<strong>Ratings:</strong> ours=" + (row.orsOurTopRating != null ? row.orsOurTopRating : "—")
-            + " (best nonstop=" + (row.orsOurBestNonstopRating != null ? row.orsOurBestNonstopRating : "—") + ")"
-            + " · top competitor=" + (row.orsTopCompetitorRating != null ? row.orsTopCompetitorRating : "—")
-            + " · gap=" + (row.orsRatingGapToTop != null
-                ? (row.orsRatingGapToTop > 0 ? "+" + row.orsRatingGapToTop : row.orsRatingGapToTop)
-                : "—")
+        const fmtRank   = v => v != null ? "#" + v : "—"
+        const fmtRating = v => v != null ? Math.round(v) : "—"
+        const gap = row.orsRatingGapToTop
+        summary.innerHTML = "<strong>Composite:</strong> "
+            + "rankNonstop " + fmtRank(row.orsRankNonstop) + " · "
+            + "rankAny " + fmtRank(row.orsRankAny) + " · "
+            + "ourTopRating " + fmtRating(row.orsOurTopRating) + " · "
+            + "topCompetitor " + fmtRating(row.orsTopCompetitorRating) + " · "
+            + "gap " + (gap != null ? (gap > 0 ? "+" : "") + Math.round(gap) : "—")
         card.append(summary)
 
-        const list = document.createElement("table")
-        list.style.cssText = "width:100%;border-collapse:collapse;font-size:11px;"
-        list.innerHTML = "<thead><tr style='color:#9ca3af;text-align:left;'>"
-            + "<th style='padding:4px;'>#</th>"
-            + "<th style='padding:4px;'>Rating</th>"
-            + "<th style='padding:4px;'>Duration</th>"
-            + "<th style='padding:4px;'>Price</th>"
-            + "<th style='padding:4px;'>Status</th>"
-            + "<th style='padding:4px;'>Legs</th>"
-            + "</tr></thead>"
-        const tbody = document.createElement("tbody")
-        for (const conn of row.orsConnections) {
-            const tr = document.createElement("tr")
-            const ourLeg = (conn.legs || []).some(l => l.isOurs)
-            tr.style.background = ourLeg ? "rgba(245,158,11,0.08)" : "transparent"
-            tr.style.borderBottom = "1px solid #2a3444"
-            const legSummary = (conn.legs || []).map(l => {
-                if (l.isGround) return "<span style='color:#6b7280;'>↪ ground</span>"
-                const code = l.flightCode ? l.flightCode : "?"
-                const fmt = l.isOurs
-                    ? "<strong style='color:#fcd34d;'>" + escapeHtml(code) + "</strong>"
-                    : escapeHtml(code)
-                const rating = l.rating != null ? " r" + l.rating : ""
-                const cls = l.serviceClass ? " (" + l.serviceClass + ")" : ""
-                return fmt + rating + cls
-            }).join(" → ")
-            tr.innerHTML = "<td style='padding:4px;color:#9ca3af;'>" + (conn.idx + 1) + "</td>"
-                + "<td style='padding:4px;font-weight:bold;color:#fcd34d;'>"
+        // Tab strip — Y / C / F / All. Default = primaryClass.
+        const cfg = (this.settings && this.settings.ors) || {}
+        const primary = cfg.primaryClass || "ECONOMY"
+        const tabDefs = [
+            {key: "ECONOMY",  label: "Y (Economy)",  color: "#86efac"},
+            {key: "BUSINESS", label: "C (Business)", color: "#fde68a"},
+            {key: "FIRST",    label: "F (First)",    color: "#fca5a5"},
+            {key: "ALL",      label: "All",          color: "#fcd34d"}
+        ]
+        const tabBar = document.createElement("div")
+        tabBar.style.cssText = "display:flex;gap:0;border-bottom:1px solid #374151;margin-bottom:10px;"
+        const tabBtns = {}
+        const listHost = document.createElement("div")
+        const renderTab = (key) => {
+            for (const k in tabBtns) {
+                tabBtns[k].style.borderBottom = (k === key) ? "2px solid #fcd34d" : "2px solid transparent"
+                tabBtns[k].style.opacity = (k === key) ? "1" : "0.6"
+            }
+            listHost.innerHTML = ""
+            const conns = []
+            if (key === "ALL") {
+                for (const c of ["ECONOMY", "BUSINESS", "FIRST"]) {
+                    const cr = byClass[c]
+                    if (!cr || !Array.isArray(cr.connections)) continue
+                    for (const conn of cr.connections) conns.push(Object.assign({_orsClass: c}, conn))
+                }
+            } else {
+                const cr = byClass[key]
+                if (cr && Array.isArray(cr.connections)) {
+                    for (const conn of cr.connections) conns.push(Object.assign({_orsClass: key}, conn))
+                }
+            }
+            if (key !== "ALL") {
+                const cr = byClass[key]
+                const classSum = document.createElement("div")
+                classSum.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;"
+                if (!cr) {
+                    classSum.textContent = key + " not scraped — enable it in Classes checkboxes above and re-sync."
+                } else {
+                    classSum.textContent = key + ": " + (cr.totalConnections != null ? cr.totalConnections : 0) + " connections"
+                        + " · rankNonstop " + fmtRank(cr.rankNonstop)
+                        + " · ourTopRating " + fmtRating(cr.ourTopRating)
+                        + " · topCompetitor " + fmtRating(cr.topCompetitorRating)
+                        + " · gap " + (cr.ratingGapToTop != null ? (cr.ratingGapToTop > 0 ? "+" : "") + Math.round(cr.ratingGapToTop) : "—")
+                }
+                listHost.append(classSum)
+            }
+            const list = document.createElement("table")
+            list.style.cssText = "width:100%;border-collapse:collapse;font-size:11px;"
+            const showClassCol = (key === "ALL")
+            list.innerHTML = "<thead><tr style='color:#9ca3af;text-align:left;'>"
+                + "<th style='padding:4px;'>#</th>"
+                + (showClassCol ? "<th style='padding:4px;'>Cls</th>" : "")
+                + "<th style='padding:4px;'>Rating</th>"
+                + "<th style='padding:4px;'>Duration</th>"
+                + "<th style='padding:4px;'>Price</th>"
+                + "<th style='padding:4px;'>Status</th>"
+                + "<th style='padding:4px;'>Legs</th>"
+                + "</tr></thead>"
+            const tbody = document.createElement("tbody")
+            if (!conns.length) {
+                const tr = document.createElement("tr")
+                tr.innerHTML = "<td colspan='" + (showClassCol ? 7 : 6)
+                    + "' style='padding:8px;color:#6b7280;text-align:center;'>"
+                    + "(no connections in cache for this class)</td>"
+                tbody.append(tr)
+            }
+            for (const conn of conns) {
+                const tr = document.createElement("tr")
+                const ourLeg = (conn.legs || []).some(l => l.isOurs)
+                tr.style.background = ourLeg ? "rgba(245,158,11,0.08)" : "transparent"
+                tr.style.borderBottom = "1px solid #2a3444"
+                const legSummary = (conn.legs || []).map(l => {
+                    if (l.isGround) return "<span style='color:#6b7280;'>↪ ground</span>"
+                    const code = l.flightCode ? l.flightCode : "?"
+                    const fmt = l.isOurs
+                        ? "<strong style='color:#fcd34d;'>" + escapeHtml(code) + "</strong>"
+                        : escapeHtml(code)
+                    const rating = l.rating != null ? " r" + l.rating : ""
+                    const sc = l.serviceClass ? " (" + l.serviceClass + ")" : ""
+                    return fmt + rating + sc
+                }).join(" → ")
+                let cells = "<td style='padding:4px;color:#9ca3af;'>" + ((conn.idx != null ? conn.idx : 0) + 1) + "</td>"
+                if (showClassCol) {
+                    cells += "<td style='padding:4px;color:#fcd34d;'>" + (conn._orsClass || "—")[0] + "</td>"
+                }
+                cells += "<td style='padding:4px;font-weight:bold;color:#fcd34d;'>"
                     + (conn.rating != null ? conn.rating : "—") + "</td>"
-                + "<td style='padding:4px;font-family:monospace;'>" + (conn.totalDuration || "—") + "</td>"
-                + "<td style='padding:4px;'>" + (conn.totalPrice != null ? conn.totalPrice + " AS$" : "—") + "</td>"
-                + "<td style='padding:4px;color:" + (conn.bookable ? "#86efac" : "#fca5a5") + ";'>"
+                cells += "<td style='padding:4px;font-family:monospace;'>" + (conn.totalDuration || "—") + "</td>"
+                cells += "<td style='padding:4px;'>" + (conn.totalPrice != null ? conn.totalPrice + " AS$" : "—") + "</td>"
+                cells += "<td style='padding:4px;color:" + (conn.bookable ? "#86efac" : "#fca5a5") + ";'>"
                     + (conn.bookable ? "bookable" : "fully booked") + "</td>"
-                + "<td style='padding:4px;'>" + legSummary + "</td>"
-            tbody.append(tr)
+                cells += "<td style='padding:4px;'>" + legSummary + "</td>"
+                tr.innerHTML = cells
+                tbody.append(tr)
+            }
+            list.append(tbody)
+            listHost.append(list)
         }
-        list.append(tbody)
-        card.append(list)
+        for (const t of tabDefs) {
+            const btn = document.createElement("button")
+            btn.textContent = t.label
+            btn.style.cssText = "background:transparent;border:none;color:" + t.color
+                + ";padding:6px 10px;cursor:pointer;font:600 11px sans-serif;"
+                + "border-bottom:2px solid transparent;"
+            btn.addEventListener("click", () => renderTab(t.key))
+            tabBtns[t.key] = btn
+            tabBar.append(btn)
+        }
+        card.append(tabBar)
+        card.append(listHost)
+        renderTab(byClass[primary] ? primary : (Object.keys(byClass).find(k => byClass[k]) || "ALL"))
 
         const closeBtn = document.createElement("button")
         closeBtn.textContent = "Close"
@@ -5113,10 +8285,27 @@ class RouteAssistantPanel {
         clearBtn.disabled = !row.override
         if (clearBtn.disabled) clearBtn.style.opacity = "0.5"
         clearBtn.addEventListener("click", async () => {
-            await RouteAssistantRouteOverridesStore.remove(hubU, destU)
-            row.override = null
-            this.overrideMap.delete(pairKey)
-            this._recomputeProfit()
+            const prev = row.override ? Object.assign({}, row.override) : null
+            await this._undoableSave({
+                label: "Override cleared for " + hubU + "→" + destU,
+                type:  "info",
+                perform: async () => {
+                    await RouteAssistantRouteOverridesStore.remove(hubU, destU)
+                    row.override = null
+                    this.overrideMap.delete(pairKey)
+                    this._recomputeProfit()
+                },
+                restore: prev
+                    ? async () => {
+                        const restored = await RouteAssistantRouteOverridesStore.save(hubU, destU,
+                            {paxLF: prev.paxLF, cargoLF: prev.cargoLF, yieldPerKm: prev.yieldPerKm,
+                             cargoYieldPerKgKm: prev.cargoYieldPerKgKm, note: prev.note || ""})
+                        row.override = restored
+                        if (restored) this.overrideMap.set(pairKey, restored)
+                        this._recomputeProfit()
+                    }
+                    : null
+            })
             this._closeProfitPopover()
         })
 
@@ -5145,11 +8334,31 @@ class RouteAssistantPanel {
                 cargoYieldPerKgKm: numOrNull(cyldInput.value),
                 note:              existing.note || ""    // preserve any note set in full editor
             }
-            const saved = await RouteAssistantRouteOverridesStore.save(hubU, destU, fields)
-            row.override = saved
-            if (saved) this.overrideMap.set(pairKey, saved)
-            else       this.overrideMap.delete(pairKey)
-            this._recomputeProfit()
+            const prev = row.override ? Object.assign({}, row.override) : null
+            await this._undoableSave({
+                label: "Override saved for " + hubU + "→" + destU,
+                perform: async () => {
+                    const saved = await RouteAssistantRouteOverridesStore.save(hubU, destU, fields)
+                    row.override = saved
+                    if (saved) this.overrideMap.set(pairKey, saved)
+                    else       this.overrideMap.delete(pairKey)
+                    this._recomputeProfit()
+                },
+                restore: async () => {
+                    if (prev) {
+                        const restored = await RouteAssistantRouteOverridesStore.save(hubU, destU,
+                            {paxLF: prev.paxLF, cargoLF: prev.cargoLF, yieldPerKm: prev.yieldPerKm,
+                             cargoYieldPerKgKm: prev.cargoYieldPerKgKm, note: prev.note || ""})
+                        row.override = restored
+                        if (restored) this.overrideMap.set(pairKey, restored)
+                    } else {
+                        await RouteAssistantRouteOverridesStore.remove(hubU, destU)
+                        row.override = null
+                        this.overrideMap.delete(pairKey)
+                    }
+                    this._recomputeProfit()
+                }
+            })
             this._closeProfitPopover()
         })
 
@@ -5203,6 +8412,216 @@ class RouteAssistantPanel {
             this._profitPopover.parentNode.removeChild(this._profitPopover)
         }
         this._profitPopover = null
+    }
+
+    _openRouteNotePopover(row, anchorEl) {
+        if (!row || !this.hubIata) return
+        this._closeRouteNotePopover()
+        const hubU    = String(this.hubIata).toUpperCase()
+        const destU   = String(row.destIata).toUpperCase()
+        const pairKey = hubU + "-" + destU
+        const existingText = (row.routeNote && typeof row.routeNote.text === "string")
+            ? row.routeNote.text : ""
+        const updatedAt = (row.routeNote && row.routeNote.updatedAt) || null
+        const pop = document.createElement("div")
+        pop.tabIndex = -1
+        Object.assign(pop.style, {
+            position:     "fixed",
+            background:   "#1f2937",
+            color:        "#f3f4f6",
+            border:       "1px solid #475569",
+            borderRadius: "5px",
+            boxShadow:    "0 8px 25px rgba(0,0,0,0.55)",
+            padding:      "10px 12px",
+            zIndex:       "10002",
+            minWidth:     "320px",
+            font:         "11px/1.5 sans-serif"
+        })
+        const titleEl = document.createElement("strong")
+        titleEl.textContent = "Note · " + hubU + " → " + destU
+        titleEl.style.cssText = "color:#cbd5e1;display:block;margin-bottom:4px;font-size:12px;"
+        const sub = document.createElement("div")
+        sub.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:8px;"
+        sub.textContent = updatedAt
+            ? "Last updated " + new Date(updatedAt).toLocaleString()
+            : "Capture context — strategy thoughts, observations, things to watch."
+        const ta = document.createElement("textarea")
+        ta.value = existingText
+        ta.maxLength = RouteAssistantRouteNoteStore.MAX_TEXT_LEN
+        ta.rows = 5
+        ta.style.cssText = "width:100%;box-sizing:border-box;background:#0f1623;"
+            + "color:#f3f4f6;border:1px solid #374151;border-radius:3px;"
+            + "padding:5px;font-size:11px;font-family:inherit;resize:vertical;"
+        const counter = document.createElement("div")
+        counter.style.cssText = "color:#6b7280;font-size:10px;text-align:right;margin-top:2px;"
+        const btnRow = document.createElement("div")
+        btnRow.style.cssText = "display:flex;gap:6px;justify-content:flex-end;margin-top:8px;"
+        const cancelBtn = document.createElement("button")
+        cancelBtn.textContent = "Cancel"
+        Object.assign(cancelBtn.style, smallBtnStyle())
+        cancelBtn.style.background = "#475569"
+        cancelBtn.style.fontSize = "10px"
+        cancelBtn.style.padding = "2px 8px"
+        const deleteBtn = document.createElement("button")
+        deleteBtn.textContent = "Delete"
+        Object.assign(deleteBtn.style, smallBtnStyle())
+        deleteBtn.style.background = "#7f1d1d"
+        deleteBtn.style.fontSize = "10px"
+        deleteBtn.style.padding = "2px 8px"
+        const saveBtn = document.createElement("button")
+        saveBtn.textContent = "Save"
+        Object.assign(saveBtn.style, smallBtnStyle())
+        saveBtn.style.fontSize = "10px"
+        saveBtn.style.padding = "2px 8px"
+
+        // Save is disabled while the textarea is empty so that the only path
+        // to a deletion is the explicit Delete button — avoids the user
+        // accidentally Cmd-A-Backspace-Save'ing away an existing note.
+        // Delete is disabled when there's nothing to delete.
+        const updateButtonState = () => {
+            const len = ta.value.trim().length
+            counter.textContent = ta.value.length + " / " + RouteAssistantRouteNoteStore.MAX_TEXT_LEN
+            saveBtn.disabled = len === 0
+            saveBtn.style.opacity = saveBtn.disabled ? "0.5" : "1"
+            deleteBtn.disabled = !existingText
+            deleteBtn.style.opacity = deleteBtn.disabled ? "0.5" : "1"
+        }
+        updateButtonState()
+        ta.addEventListener("input", updateButtonState)
+        ta.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault()
+                if (!saveBtn.disabled) saveBtn.click()
+            }
+        })
+
+        // _renderRows rebuilds this.scoredRows from this.rows via
+        // Object.assign, so the source-of-truth update has to land on
+        // this.rows as well — mutating only the scoredRow we got passed
+        // in would be erased on the very next render.
+        const propagateNote = (record) => {
+            row.routeNote = record
+            row.routeNoteText = record ? record.text : null
+            if (this.rows) {
+                const baseRow = this.rows.find(r =>
+                    String(r.destIata || "").toUpperCase() === destU)
+                if (baseRow) {
+                    baseRow.routeNote = record
+                    baseRow.routeNoteText = record ? record.text : null
+                }
+            }
+            if (record) this.routeNoteMap.set(pairKey, record)
+            else        this.routeNoteMap.delete(pairKey)
+        }
+
+        // Single close path used by Cancel / outside-click / Escape. Confirms
+        // before discarding when the textarea diverges from existingText.
+        const requestClose = () => {
+            if (ta.value !== existingText
+                && !window.confirm("Discard unsaved note changes?")) return
+            this._closeRouteNotePopover()
+        }
+        cancelBtn.addEventListener("click", requestClose)
+        deleteBtn.addEventListener("click", async () => {
+            if (!existingText) return
+            // Capture the full prev record so Undo can restore not just the
+            // text but createdAt + updatedAt. The store's save() rewrites
+            // updatedAt unconditionally — we lose the original timestamp,
+            // but the user-facing text round-trips correctly.
+            const prevRecord = this.routeNoteMap.get(pairKey) || null
+            await this._undoableSave({
+                label: "Note deleted for " + hubU + "→" + destU,
+                type:  "info",
+                perform: async () => {
+                    await RouteAssistantRouteNoteStore.remove(hubU, destU)
+                    propagateNote(null)
+                    this._renderRows()
+                },
+                restore: prevRecord
+                    ? async () => {
+                        const restored = await RouteAssistantRouteNoteStore.save(hubU, destU,
+                            {text: prevRecord.text})
+                        propagateNote(restored)
+                        this._renderRows()
+                    }
+                    : null
+            })
+            this._closeRouteNotePopover()
+        })
+        saveBtn.addEventListener("click", async () => {
+            if (saveBtn.disabled) return
+            // Skip the round-trip when nothing changed — the underlying store
+            // would otherwise rewrite the record with a fresh updatedAt and
+            // falsely advance the "Last updated" line on the next open.
+            if (ta.value === existingText) {
+                this._closeRouteNotePopover()
+                return
+            }
+            const prevText = existingText
+            const newText  = ta.value
+            await this._undoableSave({
+                label: "Note saved for " + hubU + "→" + destU,
+                perform: async () => {
+                    const saved = await RouteAssistantRouteNoteStore.save(hubU, destU, {text: newText})
+                    propagateNote(saved)
+                    this._renderRows()
+                },
+                restore: async () => {
+                    if (!prevText) {
+                        // Previous state was empty → restore = remove the new save.
+                        await RouteAssistantRouteNoteStore.remove(hubU, destU)
+                        propagateNote(null)
+                    } else {
+                        const restored = await RouteAssistantRouteNoteStore.save(hubU, destU,
+                            {text: prevText})
+                        propagateNote(restored)
+                    }
+                    this._renderRows()
+                }
+            })
+            this._closeRouteNotePopover()
+        })
+        btnRow.append(cancelBtn, deleteBtn, saveBtn)
+        pop.append(titleEl, sub, ta, counter, btnRow)
+        document.body.append(pop)
+        this._routeNotePopover = pop
+        const r = anchorEl.getBoundingClientRect()
+        const popRect = pop.getBoundingClientRect()
+        const vh = window.innerHeight
+        const vw = window.innerWidth
+        let top = r.bottom + 6
+        if (top + popRect.height > vh - 8) top = Math.max(8, r.top - popRect.height - 6)
+        let left = r.left
+        if (left + popRect.width > vw - 8) left = vw - popRect.width - 8
+        if (left < 8) left = 8
+        pop.style.top  = top  + "px"
+        pop.style.left = left + "px"
+        ta.focus()
+        const onMouseDown = (e) => {
+            if (pop.contains(e.target)) return
+            if (e.target === anchorEl) return
+            requestClose()
+        }
+        const onKey = (e) => { if (e.key === "Escape") requestClose() }
+        setTimeout(() => {
+            document.addEventListener("mousedown", onMouseDown)
+            document.addEventListener("keydown",   onKey)
+        }, 0)
+        this._routeNotePopoverCleanup = () => {
+            document.removeEventListener("mousedown", onMouseDown)
+            document.removeEventListener("keydown",   onKey)
+        }
+    }
+
+    _closeRouteNotePopover() {
+        if (this._routeNotePopoverCleanup) {
+            try { this._routeNotePopoverCleanup() } catch (e) { /* noop */ }
+            this._routeNotePopoverCleanup = null
+        }
+        if (this._routeNotePopover && this._routeNotePopover.parentNode) {
+            this._routeNotePopover.parentNode.removeChild(this._routeNotePopover)
+        }
+        this._routeNotePopover = null
     }
 
     /**
@@ -6187,10 +9606,27 @@ RouteAssistantPanel.COLUMNS = [
             icons.push(`<a href="/app/info/airports/${encodeURIComponent(row.airportId)}"`
                 + ` target="_blank" rel="noopener" title="${escapeHtml(dest)} airport info">🛫</a>`)
         }
+        // Route-note 📝 — always rendered so the affordance is discoverable
+        // even on routes without a saved note. Subdued grey when empty,
+        // full color when present. Click opens the popover via the
+        // delegated row click handler ([data-routenote-trigger='1']).
+        const noteText = (row.routeNoteText && typeof row.routeNoteText === "string")
+            ? row.routeNoteText.trim() : ""
+        const notePreview = noteText.length > 80 ? noteText.slice(0, 80) + "…" : noteText
+        const noteTitle = noteText
+            ? "Edit note: " + notePreview
+            : "Add note for " + (hub || "?") + "→" + dest
+        const noteOpacity = noteText ? "1" : "0.45"
+        icons.push(`<span data-routenote-trigger="1"`
+            + ` title="${escapeHtml(noteTitle)}"`
+            + ` style="cursor:pointer;opacity:${noteOpacity};">📝</span>`)
         const iconRow = icons.length ? `<span class="aes-iata-icons">${icons.join("")}</span>` : ""
         td.innerHTML = iataHtml + pin + iconRow
             + (row.destName ? `<br><span style="color:#9ca3af;font-size:10px;">${escapeHtml(row.destName)}</span>` : "")
-        // Watchlist star — prepend so it reads as "[★] DEST 📌 📅 📦 🛫".
+        // Cell-wide tooltip surfaces the full note text when present, so
+        // hovering anywhere in the cell reveals it without the popover.
+        if (noteText) td.title = "Note: " + noteText
+        // Watchlist star — prepend so it reads as "[★] DEST 📌 📅 📦 🛫 📝".
         // Built as a real DOM button so the click handler can stop the
         // default <a> activation; rendering the inner content first via
         // innerHTML keeps the rest of the cell unchanged.
@@ -6698,50 +10134,76 @@ RouteAssistantPanel.COLUMNS = [
         td.style.color = "#fcd34d"
     }},
 
+    // ----- Per-class ORS columns (only render in non-Compact view AND
+    // when settings.ors.showPerClassColumns is on). Each shows the user's
+    // chosen primaryColumn metric for ONE cabin class. Same color rules as
+    // the composite ORS column. Hover/click tooltip notes which class.
+    {field: "orsClassY", label: "Y", group: "ors", align: "right", defaultDir: -1,
+     title: "Economy-class ORS metric (your selected primary metric, applied to byClass.ECONOMY).",
+     render(td, row) { _renderOrsClassCell(td, row, "Y", "orsClassY", "ECONOMY", "#86efac") }},
+    {field: "orsClassC", label: "C", group: "ors", align: "right", defaultDir: -1,
+     title: "Business-class ORS metric (your selected primary metric, applied to byClass.BUSINESS).",
+     render(td, row) { _renderOrsClassCell(td, row, "C", "orsClassC", "BUSINESS", "#fde68a") }},
+    {field: "orsClassF", label: "F", group: "ors", align: "right", defaultDir: -1,
+     title: "First-class ORS metric (your selected primary metric, applied to byClass.FIRST).",
+     render(td, row) { _renderOrsClassCell(td, row, "F", "orsClassF", "FIRST", "#fca5a5") }},
+
     // ----- Demand depth (Letter K — markets-historic + inventory derivation) -----
     {field: "paxDemandPool", label: "Pool", group: "demand", align: "right", defaultDir: -1,
      title: "Estimated pax bookings/week — average over the last N periods of the markets historic chart (PAX or summed Y+C+F).",
      render(td, row) {
+        td.title = RouteAssistantPanel._demandTooltip("paxDemandPool", row)
         if (row.paxDemandPool == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
         td.textContent = row.paxDemandPool.toLocaleString()
-        td.style.color = "#bae6fd"
+        td.style.color = RouteAssistantPanel._demandIsStale(row) ? "#9ca3af" : "#bae6fd"
         _appendDiffBadge(td, "paxDemandPool", row)
     }},
     {field: "cargoDemandPool", label: "C-Pool", group: "demand", align: "right", defaultDir: -1,
      title: "Estimated cargo demand/week (kg) — average over the last N periods of the CARGO historic chart.",
      render(td, row) {
+        td.title = RouteAssistantPanel._demandTooltip("cargoDemandPool", row)
         if (row.cargoDemandPool == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
         td.textContent = row.cargoDemandPool.toLocaleString()
-        td.style.color = "#bae6fd"
+        td.style.color = RouteAssistantPanel._demandIsStale(row) ? "#9ca3af" : "#bae6fd"
         _appendDiffBadge(td, "cargoDemandPool", row)
     }},
     {field: "paxElasticity", label: "Elast", group: "demand", align: "right",
      title: "Pax price elasticity — log-log regression slope of quantity~price across the historic window. Negative numbers (price up → quantity down). Closer to 0 = less price-sensitive (premium / monopoly). Below -2 = highly elastic (volatile route).",
      render(td, row) {
+        td.title = RouteAssistantPanel._demandTooltip("paxElasticity", row)
         if (row.paxElasticity == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
         td.textContent = row.paxElasticity.toFixed(2)
-        td.style.color = row.paxElasticity > -1 ? "#86efac" : "#fcd34d"
+        td.style.color = RouteAssistantPanel._demandIsStale(row)
+            ? "#9ca3af"
+            : (row.paxElasticity > -1 ? "#86efac" : "#fcd34d")
     }},
     {field: "cargoElasticity", label: "C-Elast", group: "demand", align: "right",
      title: "Cargo price elasticity — same regression as Elast but on the CARGO historic series.",
      render(td, row) {
+        td.title = RouteAssistantPanel._demandTooltip("cargoElasticity", row)
         if (row.cargoElasticity == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
         td.textContent = row.cargoElasticity.toFixed(2)
-        td.style.color = row.cargoElasticity > -1 ? "#86efac" : "#fcd34d"
+        td.style.color = RouteAssistantPanel._demandIsStale(row)
+            ? "#9ca3af"
+            : (row.cargoElasticity > -1 ? "#86efac" : "#fcd34d")
     }},
     {field: "paxAvgPrice", label: "Avg$", group: "demand", align: "right", defaultDir: -1,
      title: "Mean Y-class fare across the historic window. Useful sanity check on what the route has historically commanded.",
      render(td, row) {
+        td.title = RouteAssistantPanel._demandTooltip("paxAvgPrice", row)
         if (row.paxAvgPrice == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
         td.textContent = "AS$" + row.paxAvgPrice.toLocaleString()
-        td.style.color = "#a7f3d0"
+        td.style.color = RouteAssistantPanel._demandIsStale(row) ? "#9ca3af" : "#a7f3d0"
     }},
     {field: "rmTightness", label: "RM%", group: "demand", align: "right", defaultDir: -1,
      title: "Revenue-management tightness — sold/total seats averaged across forward departures (or per-class summary). 0.85+ = nearly full; <0.5 = lots of inventory left.",
      render(td, row) {
+        td.title = RouteAssistantPanel._demandTooltip("rmTightness", row)
         if (row.rmTightness == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
         td.textContent = (row.rmTightness * 100).toFixed(0) + "%"
-        td.style.color = row.rmTightness >= 0.85 ? "#86efac" : (row.rmTightness >= 0.5 ? "#fde68a" : "#fca5a5")
+        td.style.color = RouteAssistantPanel._demandIsStale(row)
+            ? "#9ca3af"
+            : (row.rmTightness >= 0.85 ? "#86efac" : (row.rmTightness >= 0.5 ? "#fde68a" : "#fca5a5"))
         _appendDiffBadge(td, "rmTightness", row)
     }}
 ]
@@ -6751,6 +10213,67 @@ RouteAssistantPanel._varianceWarnPct = 25
 // Updated in `_syncRenderContext` from settings.routeAssistant.carriers.showCarrierIntensity.
 // Defaults to true so first render before settings load shows the pill.
 RouteAssistantPanel._showCarrierIntensity = true
+// Updated in `_syncRenderContext` from settings.routeAssistant.marketAnalysis.staleThresholdDays.
+// Used by the demand-depth column render closures to grey-out stale cells.
+RouteAssistantPanel._demandStaleThresholdDays = 14
+
+/**
+ * Letter K — diagnostic tooltip for a demand-depth cell. Combines the
+ * static "what does this column mean" preamble with the row's actual
+ * status (data present? cache stale? derivation note? no cache yet?).
+ *
+ * Called by each demand-depth column's render closure. Always returns a
+ * multi-line string suitable for `td.title`.
+ */
+RouteAssistantPanel._demandTooltip = function(field, row) {
+    const PREAMBLE = {
+        paxDemandPool:   "Pool — estimated pax bookings/week, averaged across the last N periods of the markets historic chart (PAX or Y+C+F summed).",
+        cargoDemandPool: "C-Pool — estimated cargo demand/week (kg), averaged across the last N periods of the CARGO historic chart.",
+        paxElasticity:   "Elast — pax price elasticity, log-log regression slope of quantity~price across the historic window.\nNegative = price up → quantity down. >-1 = inelastic (premium / monopoly). <-2 = highly elastic (volatile).",
+        cargoElasticity: "C-Elast — cargo price elasticity, same regression on the CARGO historic series.",
+        paxAvgPrice:     "Avg$ — mean Y-class fare across the historic window. Sanity check on what the route has historically commanded.",
+        cargoAvgPrice:   "C-Avg$ — mean cargo fare across the historic window.",
+        rmTightness:     "RM% — revenue-management tightness, sold/total seats averaged across forward departures.\n0.85+ = nearly full; <0.5 = lots of inventory left."
+    }
+    const lines = [PREAMBLE[field] || field]
+    const value = row && row[field]
+    const hasData = value !== null && value !== undefined
+    if (!hasData) {
+        lines.push("")
+        if (row && row.demandNotes) {
+            lines.push("⚠ " + row.demandNotes)
+        } else {
+            lines.push("⚠ No demand-depth cache for this route.")
+        }
+        lines.push("Click \"Sync market analysis for all visible routes\" in the Market Analysis expander to populate.")
+        return lines.join("\n")
+    }
+    if (row.demandDerivedAt) {
+        const ageDays = Math.floor((Date.now() - row.demandDerivedAt) / 86400000)
+        const stale   = ageDays >= (RouteAssistantPanel._demandStaleThresholdDays || 14)
+        lines.push("")
+        if (ageDays === 0) {
+            lines.push("Last derived: today.")
+        } else {
+            lines.push("Last derived: " + ageDays + " day(s) ago" + (stale ? " — STALE." : "."))
+        }
+    }
+    if (row.demandNotes) {
+        lines.push("Note: " + row.demandNotes)
+    }
+    return lines.join("\n")
+}
+
+/**
+ * Letter K — true if a demand-depth row's derivation is older than the
+ * configured stale threshold. Used by render closures to grey-out the
+ * cell colour so users notice they should re-sync.
+ */
+RouteAssistantPanel._demandIsStale = function(row) {
+    if (!row || !row.demandDerivedAt) return false
+    const threshold = RouteAssistantPanel._demandStaleThresholdDays || 14
+    return (Date.now() - row.demandDerivedAt) >= threshold * 86400000
+}
 
 /**
  * Returns the list of view modes (subset of ["all","pax","cargo"]) in
@@ -6808,6 +10331,114 @@ RouteAssistantPanel._resolveOrsPrimary = function(rec, which) {
         case "ourBestNonstopRating": return rec.ourBestNonstopRating
         case "ratingGapToTop":
         default:                     return rec.ratingGapToTop
+    }
+}
+
+/**
+ * Compose all ORS metrics from a `byClass` map using the user's combine
+ * method + weights. Returns a flat record with the same shape the legacy
+ * single-class code produced — so the existing display columns Just Work.
+ *
+ * Per-metric semantics:
+ *   rank* — lower is better (composed average is rounded).
+ *   ourTopRating / ratingGapToTop — higher is better (composed average kept as float, rendered rounded).
+ *
+ * Combine methods:
+ *   weighted / capacityWeighted — Σ(metricᵢ × weight) / Σweight, skipping null metrics.
+ *   min — best (lowest) of the rank metrics, worst (lowest) of the rating metrics.
+ *   max — opposite.
+ *   avg — equal-weight average.
+ *
+ * Classes with null per-metric value are skipped (don't drag composite
+ * down). If ALL classes are null for a metric, composite = null.
+ */
+RouteAssistantPanel._composeOrsAllMetrics = function(byClass, method, weights) {
+    const METRICS = ["rankAny", "rankFirstLegOurs", "rankAllOurs", "rankNonstop", "rankBookable",
+                     "ourTopRating", "ourBestNonstopRating", "topCompetitorRating", "ratingGapToTop"]
+    const RANK_METRICS = {rankAny: 1, rankFirstLegOurs: 1, rankAllOurs: 1, rankNonstop: 1, rankBookable: 1}
+    const out = {}
+    const classes = ["ECONOMY", "BUSINESS", "FIRST"]
+    for (const m of METRICS) {
+        const samples = []
+        const ws = []
+        for (const cls of classes) {
+            const cr = byClass && byClass[cls]
+            if (!cr) continue
+            const v = cr[m]
+            if (v == null) continue
+            const w = (weights && weights[cls]) || 0
+            samples.push(v)
+            ws.push(w)
+        }
+        if (!samples.length) { out[m] = null; continue }
+        let value
+        if (method === "min") {
+            value = Math.min.apply(null, samples)
+        } else if (method === "max") {
+            value = Math.max.apply(null, samples)
+        } else if (method === "avg") {
+            value = samples.reduce((s, x) => s + x, 0) / samples.length
+        } else {
+            // weighted | capacityWeighted (weights resolved upstream)
+            const wsum = ws.reduce((s, x) => s + x, 0)
+            if (wsum > 0) {
+                let acc = 0
+                for (let i = 0; i < samples.length; i++) acc += samples[i] * ws[i]
+                value = acc / wsum
+            } else {
+                value = samples.reduce((s, x) => s + x, 0) / samples.length
+            }
+        }
+        // Round rank metrics; keep ratings as decimal (display layer rounds).
+        out[m] = RANK_METRICS[m] ? Math.round(value) : value
+    }
+    return out
+}
+
+/**
+ * Per-class ORS cell renderer used by the Y / C / F columns. Reads the
+ * row's pre-computed per-class metric (orsClassY / orsClassC / orsClassF)
+ * and colors it the same way the composite ORS column does.
+ */
+function _renderOrsClassCell(td, row, label, rowField, classKey, accent) {
+    if (row.orsHiddenByThreshold) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+    const v = row[rowField]
+    if (v == null) {
+        td.textContent = "—"
+        td.style.color = "#6b7280"
+        const cr = row.orsByClass && row.orsByClass[classKey]
+        if (cr === null) td.title = label + " was attempted but failed (parser miss or transient error)."
+        else if (!cr)    td.title = label + " not scraped — enable in Settings → ORS Rank → Classes."
+        else if (cr.totalConnections === 0) td.title = label + " has 0 connections on this route — no metric to compute."
+        else td.title = label + " — no rank computed (you don't fly this route in this class?)"
+        return
+    }
+    const which = RouteAssistantPanel._orsPrimaryColumn || "ratingGapToTop"
+    let display, color
+    if (which === "ratingGapToTop") {
+        const rounded = Math.round(v)
+        display = (rounded > 0 ? "+" : "") + rounded
+        color = rounded > 0 ? "#86efac" : (rounded < 0 ? "#fca5a5" : accent)
+    } else if (which === "rankAny" || which === "rankFirstLegOurs"
+            || which === "rankAllOurs" || which === "rankNonstop"
+            || which === "rankBookable") {
+        display = "#" + v
+        color = v <= 3 ? "#86efac" : (v <= 10 ? accent : "#fca5a5")
+    } else {
+        display = String(Math.round(v))
+        color = accent
+    }
+    td.textContent = display
+    td.style.color = color
+    td.style.fontWeight = "bold"
+    const cr = row.orsByClass && row.orsByClass[classKey]
+    if (cr) {
+        const lines = [label + " (" + classKey + "):"]
+        lines.push("  totalConnections: " + (cr.totalConnections != null ? cr.totalConnections : "—"))
+        lines.push("  rankNonstop: " + (cr.rankNonstop != null ? "#" + cr.rankNonstop : "—"))
+        lines.push("  ourTopRating: " + (cr.ourTopRating != null ? cr.ourTopRating : "—"))
+        lines.push("  topCompetitorRating: " + (cr.topCompetitorRating != null ? cr.topCompetitorRating : "—"))
+        td.title = lines.join("\n")
     }
 }
 
@@ -6930,11 +10561,9 @@ function sleep(ms) {
     return new Promise(r => setTimeout(r, ms))
 }
 
-function escapeHtml(s) {
-    return String(s == null ? "" : s)
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
-}
+// `escapeHtml` lives in helpers.js (loaded first in every /app + /action
+// content-script block) so wave-overlay.js can call it without depending on
+// panel.js parse order.
 
 // ---------- Diff against last visit ----------
 // Per-mount delta badges for daily-driver QoL. The render closures for the
@@ -7646,4 +11275,72 @@ function makeBanner(opts) {
     p.style.cssText = `margin:0;color:${c.body};font-size:11px;`
     box.append(h, p)
     return box
+}
+
+// ---------- Settings export / import ----------
+// JSON roundtrip for `settings.routeAssistant` + `settings.usedAircraftScanner`.
+// Wrap-format envelope is `{format: "aes-config", version, exportedAt, server,
+// routeAssistant, usedAircraftScanner}`. `format` is the contract import
+// validates against. Missing fields fall back to defaults via per-store
+// load() deep-merge.
+const AES_CONFIG_FORMAT = "aes-config"
+
+function _isPlainObject(v) {
+    return v !== null && typeof v === "object" && !Array.isArray(v)
+}
+
+// Paths that represent set-shaped multi-selects — order doesn't matter for
+// equality, only the set of elements does. Listed by trailing key segment so
+// the rule applies wherever the field shows up under the routeAssistant tree.
+const _DIFF_SET_PATH_KEYS = new Set(["classesToScrape"])
+
+function _arraysEqual(a, b) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+        if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) return false
+    }
+    return true
+}
+
+function _arrayEqualsAsSet(a, b) {
+    if (a.length !== b.length) return false
+    const aJ = a.map(v => JSON.stringify(v)).sort()
+    const bJ = b.map(v => JSON.stringify(v)).sort()
+    for (let i = 0; i < aJ.length; i++) if (aJ[i] !== bJ[i]) return false
+    return true
+}
+
+function _diffConfig(current, incoming, prefix) {
+    const changes = []
+    const cur = current || {}
+    const inc = incoming || {}
+    const keys = new Set([...Object.keys(cur), ...Object.keys(inc)])
+    for (const k of keys) {
+        const path = prefix ? prefix + "." + k : k
+        const a = cur[k]
+        const b = inc[k]
+        const aIsObj = a && typeof a === "object" && !Array.isArray(a)
+        const bIsObj = b && typeof b === "object" && !Array.isArray(b)
+        const aIsArr = Array.isArray(a)
+        const bIsArr = Array.isArray(b)
+        if (a === undefined && b !== undefined) changes.push({path, kind: "added", to: b})
+        else if (a !== undefined && b === undefined) changes.push({path, kind: "removed", from: a})
+        else if (aIsObj && bIsObj) for (const c of _diffConfig(a, b, path)) changes.push(c)
+        else if (aIsArr && bIsArr) {
+            const setLike = _DIFF_SET_PATH_KEYS.has(k)
+            const equal = setLike ? _arrayEqualsAsSet(a, b) : _arraysEqual(a, b)
+            if (!equal) changes.push({path, kind: "changed", from: a, to: b})
+        }
+        else if (JSON.stringify(a) !== JSON.stringify(b)) changes.push({path, kind: "changed", from: a, to: b})
+    }
+    return changes
+}
+
+function _formatDiffValue(v) {
+    if (v === null || v === undefined) return "—"
+    if (typeof v === "object") {
+        const json = JSON.stringify(v)
+        return json.length > 60 ? json.slice(0, 57) + "…" : json
+    }
+    return String(v)
 }

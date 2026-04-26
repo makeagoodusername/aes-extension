@@ -1,3 +1,11 @@
 .DS_Store
 *.log
 market-sample.html
+
+# Local scratch fixtures — saved AS pages used for parser development.
+# Stay on disk for the user's reference; never ship in the .crx.
+USA Stations.html
+created station after.html
+html - for smaller countries without reigions.html
+station alabama.html
+aircraft.txt

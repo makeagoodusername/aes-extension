@@ -81,7 +81,8 @@ class RouteAssistantOrsScraper {
 
     /**
      * Bulk-load cached records for a list of {hub, dest} pairs.
-     * Returns Map<pairKey, record>.
+     * Returns Map<pairKey, record>. Records are lazy-migrated to the
+     * `byClass` shape on read so legacy single-class caches keep working.
      */
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
@@ -93,13 +94,56 @@ class RouteAssistantOrsScraper {
         const out = await chrome.storage.local.get(keys)
         const map = new Map()
         for (const k in out) {
-            const rec = out[k]
+            let rec = out[k]
             if (!rec) continue
             if (RouteAssistantOrsScraper._isExpired(rec, maxAgeDays)) continue
+            rec = RouteAssistantOrsScraper._migrateOrsRecord(rec)
             const pair = k.substring(RouteAssistantOrsScraper.CACHE_PREFIX.length)
             map.set(pair, rec)
         }
         return map
+    }
+
+    /**
+     * Lazy-migrate a legacy single-class ORS record to the new byClass
+     * shape. Pure — does NOT write back to storage. The next scrape()
+     * for this route will overwrite the legacy record with the new shape.
+     *
+     * Legacy: {…, params: {payload, ...}, totalConnections, rankAny, …, connections}
+     * New:    {…, params: {departureH, arrivalH, useGround},
+     *          byClass: {<payload>: {totalConnections, rankAny, …, connections}},
+     *          classesScraped: [<payload>]}
+     */
+    static _migrateOrsRecord(rec) {
+        if (!rec || typeof rec !== "object") return rec
+        if (rec.byClass && typeof rec.byClass === "object") return rec
+        // Pre-byClass record. Wrap whatever single-class data exists into
+        // a byClass map keyed by the original payload.
+        const cls = (rec.params && rec.params.payload) || "ECONOMY"
+        const classRecord = {
+            scrapedAt:            rec.scrapedAt,
+            totalConnections:     rec.totalConnections != null ? rec.totalConnections : 0,
+            rankAny:              rec.rankAny           || null,
+            rankFirstLegOurs:     rec.rankFirstLegOurs  || null,
+            rankAllOurs:          rec.rankAllOurs       || null,
+            rankNonstop:          rec.rankNonstop       || null,
+            rankBookable:         rec.rankBookable      || null,
+            ourTopRating:         rec.ourTopRating         != null ? rec.ourTopRating         : null,
+            ourBestNonstopRating: rec.ourBestNonstopRating != null ? rec.ourBestNonstopRating : null,
+            topCompetitorRating:  rec.topCompetitorRating  != null ? rec.topCompetitorRating  : null,
+            ratingGapToTop:       rec.ratingGapToTop       != null ? rec.ratingGapToTop       : null,
+            connections:          Array.isArray(rec.connections) ? rec.connections : []
+        }
+        const newParams = {
+            departureH: rec.params && rec.params.departureH != null ? rec.params.departureH : 0,
+            arrivalH:   rec.params && rec.params.arrivalH   != null ? rec.params.arrivalH   : 72,
+            useGround:  rec.params ? rec.params.useGround !== false : true
+        }
+        return Object.assign({}, rec, {
+            params:         newParams,
+            byClass:        {[cls]: classRecord},
+            classesScraped: [cls]
+        })
     }
 
     static async saveRecord(hub, dest, fields) {
@@ -118,7 +162,8 @@ class RouteAssistantOrsScraper {
         const key = RouteAssistantOrsScraper.CACHE_PREFIX
             + RouteAssistantOrsScraper._pairKey(hub, dest)
         const out = await chrome.storage.local.get([key])
-        return out[key] || null
+        const rec = out[key]
+        return rec ? RouteAssistantOrsScraper._migrateOrsRecord(rec) : null
     }
 
     // ------------------------------------------------------------------
@@ -490,25 +535,109 @@ class RouteAssistantOrsScraper {
     // ------------------------------------------------------------------
 
     /**
-     * Run a single ORS scrape for one route. Returns the saved record or
-     * null on irrecoverable failure. Throws on circuit-breaker-relevant
-     * errors (HTTP 429/503/timeout) so bulkScrape can count them.
+     * Run an ORS scrape for one route across one or more cabin classes.
+     * Returns the saved record (with a `byClass` map keyed by ECONOMY /
+     * BUSINESS / FIRST / CARGO) or null on irrecoverable failure. Throws
+     * on circuit-breaker-relevant errors (HTTP 429/503/timeout) so
+     * bulkScrape can count them.
+     *
+     * Per-class failure isolation: an empty result (e.g. FIRST returns
+     * zero connections on a regional route with no F cabin) is STORED
+     * as {totalConnections: 0, …all nulls} rather than dropping the class.
+     * Only HTTP 429/503/timeout propagates to the caller's circuit breaker.
      */
     async scrape(hubIata, destIata, params) {
         const pair = RouteAssistantOrsScraper._pairKey(hubIata, destIata)
         if (this._sessionCache.has(pair)) return this._sessionCache.get(pair)
 
         params = params || {}
-        const payload      = params.payload      || "ECONOMY"
         const departureH   = params.departureH != null ? params.departureH : 0
         const arrivalH     = params.arrivalH   != null ? params.arrivalH   : 72
         const useGround    = params.useGround !== false
         const carrierOverride = params.carrierOverride || null
+        // Backwards-compat: if a single `payload` is passed (legacy callers),
+        // wrap into a single-element classesToScrape.
+        const classesToScrape = (Array.isArray(params.classesToScrape) && params.classesToScrape.length)
+            ? params.classesToScrape
+            : (params.payload ? [params.payload] : ["ECONOMY", "BUSINESS", "FIRST"])
 
-        const baseUrl = "https://" + this.server + ".airlinesim.aero"
-        const orsUrl  = baseUrl + "/app/info/ors"
+        // Resolve carrier prefixes + flight-number set ONCE — they're
+        // identical across classes and the schedule cache lookup is cheap
+        // but we may as well not repeat it.
+        let airline = null
+        try {
+            if (typeof AES !== "undefined" && AES.getAirlineIdentity) airline = AES.getAirlineIdentity()
+        } catch (e) { /* ignore */ }
+        const fnSet = await RouteAssistantOrsScraper.getOurFlightNumbers(this.server, airline)
+        const prefixes = await RouteAssistantOrsScraper.getOurCarrierPrefixes(
+            this.server, airline, carrierOverride
+        )
 
-        // Step 1 — GET to harvest Wicket session + form action.
+        const byClass = {}
+        const classesScraped = []
+        const allOurFlightIds = new Set()
+
+        for (let i = 0; i < classesToScrape.length; i++) {
+            const cls = classesToScrape[i]
+            const tag = pair + " " + cls + " (" + (i + 1) + "/" + classesToScrape.length + ")"
+            try {
+                const result = await this._scrapeOneClass(hubIata, destIata, {
+                    payload: cls, departureH, arrivalH, useGround
+                }, fnSet, prefixes)
+                if (result) {
+                    byClass[cls] = result.classRecord
+                    for (const id of result.ourFlightIds) allOurFlightIds.add(id)
+                    classesScraped.push(cls)
+                    console.log("[AES orsScraper] " + tag + " done — "
+                        + result.classRecord.totalConnections + " connections, "
+                        + "rankNonstop=" + (result.classRecord.rankNonstop != null
+                            ? "#" + result.classRecord.rankNonstop : "—"))
+                } else {
+                    // Non-rate-limit failure (parser miss, fetch fail). Class
+                    // is recorded as null so the migration helper / panel
+                    // can render "—" instead of treating it as untried.
+                    byClass[cls] = null
+                    console.warn("[AES orsScraper] " + tag + " — no result")
+                }
+            } catch (e) {
+                if (e && e._isRateLimit) throw e   // propagate to circuit breaker
+                console.warn("[AES orsScraper] " + tag + " threw", e)
+                byClass[cls] = null
+            }
+        }
+
+        const fields = {
+            params: {departureH, arrivalH, useGround},
+            ourFlightIds:       Array.from(allOurFlightIds),
+            ourCarrierPrefixes: prefixes,
+            byClass,
+            classesScraped
+        }
+        const saved = await RouteAssistantOrsScraper.saveRecord(hubIata, destIata, fields)
+        this._sessionCache.set(pair, saved)
+        this._consecutiveErrors = 0
+        return saved
+    }
+
+    /**
+     * Scrape one cabin class for one route. Pure helper extracted from
+     * the original single-class `scrape()`. Returns
+     *   {classRecord: {totalConnections, rankAny, …, connections[]},
+     *    ourFlightIds: [...]}
+     * or null on non-rate-limit failure. Throws on rate-limit errors.
+     */
+    async _scrapeOneClass(hubIata, destIata, params, fnSet, prefixes) {
+        const pair = RouteAssistantOrsScraper._pairKey(hubIata, destIata)
+        const payload     = params.payload
+        const departureH  = params.departureH
+        const arrivalH    = params.arrivalH
+        const useGround   = params.useGround
+        const baseUrl     = "https://" + this.server + ".airlinesim.aero"
+        const orsUrl      = baseUrl + "/app/info/ors"
+
+        // Step 1 — GET to harvest Wicket session + form action. Each class
+        // needs its own handshake (Wicket page-version IDs invalidate per
+        // POST; sharing the session across classes returns PageExpiredException).
         let initialHtml
         try {
             const resp = await fetch(orsUrl, {credentials: "include"})
@@ -516,19 +645,19 @@ class RouteAssistantOrsScraper {
                 if (resp.status === 429 || resp.status === 503) {
                     throw new RouteAssistantOrsScraper._RateLimitError(resp.status, "GET ors")
                 }
-                console.warn("[AES orsScraper] GET HTTP " + resp.status + " for " + pair)
+                console.warn("[AES orsScraper] GET HTTP " + resp.status + " for " + pair + " " + payload)
                 return null
             }
             initialHtml = await resp.text()
         } catch (e) {
             if (e && e._isRateLimit) throw e
-            console.warn("[AES orsScraper] GET fetch failed for " + pair, e)
+            console.warn("[AES orsScraper] GET fetch failed for " + pair + " " + payload, e)
             return null
         }
 
         const formAction = RouteAssistantOrsScraper.parseFormAction(initialHtml)
         if (!formAction) {
-            console.warn("[AES orsScraper] couldn't locate form action for " + pair
+            console.warn("[AES orsScraper] couldn't locate form action for " + pair + " " + payload
                 + " — page format may have changed")
             return null
         }
@@ -539,7 +668,7 @@ class RouteAssistantOrsScraper {
         })()
         const hiddenFields = RouteAssistantOrsScraper.parseHiddenFields(initialDoc, formId)
 
-        // Step 2 — resolve airport names + build POST body.
+        // Step 2 — POST the form for this class.
         const hubName  = await RouteAssistantOrsScraper.resolveAirportName(hubIata)
         const destName = await RouteAssistantOrsScraper.resolveAirportName(destIata)
         const radio    = RouteAssistantOrsScraper.PAYLOAD_RADIO[payload] || "radio0"
@@ -566,20 +695,22 @@ class RouteAssistantOrsScraper {
                 if (resp.status === 429 || resp.status === 503) {
                     throw new RouteAssistantOrsScraper._RateLimitError(resp.status, "POST ors")
                 }
-                console.warn("[AES orsScraper] POST HTTP " + resp.status + " for " + pair)
+                console.warn("[AES orsScraper] POST HTTP " + resp.status + " for " + pair + " " + payload)
                 return null
             }
             resultHtml = await resp.text()
         } catch (e) {
             if (e && e._isRateLimit) throw e
-            console.warn("[AES orsScraper] POST fetch failed for " + pair, e)
+            console.warn("[AES orsScraper] POST fetch failed for " + pair + " " + payload, e)
             return null
         }
 
-        // Watch for Wicket page-expiration silent fail.
+        // Watch for Wicket page-expiration silent fail — happens when the
+        // form session ID we harvested in Step 1 has been invalidated by
+        // another tab's interaction. Per-class handshakes (one Step 1 + 2
+        // pair per cabin) make this rare but it can still surface.
         if (/PageExpiredException/i.test(resultHtml)) {
-            console.warn("[AES orsScraper] PageExpiredException for " + pair
-                + " — wicket session went stale (should not happen with per-route handshake)")
+            console.warn("[AES orsScraper] PageExpiredException for " + pair + " " + payload)
             return null
         }
 
@@ -589,7 +720,7 @@ class RouteAssistantOrsScraper {
         const allConnections = parsed.connections.slice()
 
         const maxPages = Math.max(1, parsed.pagination ? parsed.pagination.totalPages : 1)
-        const safetyCap = 10   // hard cap so a parser bug can't loop us
+        const safetyCap = 10   // hard cap so a parser bug can't loop us indefinitely
         let page = 1
         let nextHref = parsed.pagination && parsed.pagination.nextHref
         while (nextHref && page < maxPages && page < safetyCap) {
@@ -601,7 +732,7 @@ class RouteAssistantOrsScraper {
                     if (r.status === 429 || r.status === 503) {
                         throw new RouteAssistantOrsScraper._RateLimitError(r.status, "GET page " + page)
                     }
-                    console.warn("[AES orsScraper] page " + page + " HTTP " + r.status + " for " + pair)
+                    console.warn("[AES orsScraper] page " + page + " HTTP " + r.status + " for " + pair + " " + payload)
                     break
                 }
                 const html = await r.text()
@@ -611,23 +742,15 @@ class RouteAssistantOrsScraper {
                 nextHref = parsed.pagination && parsed.pagination.nextHref
             } catch (e) {
                 if (e && e._isRateLimit) throw e
-                console.warn("[AES orsScraper] page " + page + " fetch failed for " + pair, e)
+                console.warn("[AES orsScraper] page " + page + " fetch failed for " + pair + " " + payload, e)
                 break
             }
         }
 
-        // Step 4 — derive carrier prefixes + flight-number set, compute ranks.
-        let airline = null
-        try {
-            if (typeof AES !== "undefined" && AES.getAirlineIdentity) airline = AES.getAirlineIdentity()
-        } catch (e) { /* ignore */ }
-        const fnSet = await RouteAssistantOrsScraper.getOurFlightNumbers(this.server, airline)
-        const prefixes = await RouteAssistantOrsScraper.getOurCarrierPrefixes(
-            this.server, airline, carrierOverride
-        )
+        // Step 4 — compute ranks for THIS class. Empty results (zero
+        // connections) are valid and produce all-null rank flavors.
         const ranks = RouteAssistantOrsScraper.computeRanks(allConnections, fnSet, prefixes)
 
-        // Add idx + collect our flight IDs.
         const ourFlightIds = []
         const compactConnections = []
         for (let i = 0; i < allConnections.length; i++) {
@@ -658,16 +781,10 @@ class RouteAssistantOrsScraper {
             })
         }
 
-        const fields = Object.assign({}, ranks, {
-            params: {payload, departureH, arrivalH, useGround},
-            ourFlightIds:       Array.from(new Set(ourFlightIds)),
-            ourCarrierPrefixes: prefixes,
-            connections:        compactConnections
+        const classRecord = Object.assign({scrapedAt: Date.now()}, ranks, {
+            connections: compactConnections
         })
-        const saved = await RouteAssistantOrsScraper.saveRecord(hubIata, destIata, fields)
-        this._sessionCache.set(pair, saved)
-        this._consecutiveErrors = 0
-        return saved
+        return {classRecord, ourFlightIds}
     }
 
     // Custom rate-limit error so the bulk runner can detect it.

@@ -22,19 +22,78 @@ class RouteAssistantSettings {
                 minScore:        null,
                 maxDistanceKm:   null,
                 statuses:        {NEW: true, OK: true, UNDER: true, OVER: true, OOR: true},
-                fleetFlyableOnly: false
+                fleetFlyableOnly: false,
+                // Q1 quick-filter chips — fast-path toggles paired with the
+                // status statuses{} above. All default false (off) so the
+                // existing behaviour is preserved for users on their first
+                // mount after the upgrade.
+                watchlistOnly:   false,   // restrict to ★-starred routes
+                lossMakers:      false,   // restrict to rows where profitPerWeek < 0
+                hasOverride:     false,   // restrict to rows with a saved override
+                hasNote:         false,   // restrict to rows with a saved route note
+                // "Only changed" innovation — when true, _applyFilters drops
+                // rows whose `_diff` shows no movement on any tracked field.
+                // Pairs with the existing diff-against-last-visit badges.
+                onlyChanged:     false
             },
+            // Q15 hub keyboard quick-swap — most-recent-first list of hubs
+            // the user has opened the panel on. Capped at 5; deduplicated
+            // case-insensitively. Surfaces as a chip row in the controls
+            // bar (clickable + Alt+1..5 keyboard navigation).
+            recentHubs: [],
             flightsfromMaxAgeDays: 7,
             distanceMaxAgeDays:    null,    // null = never expire; set to N to re-resolve entries older than N days
             collapsed: false,
             panelWidth: 1100,               // px, user-resizable via left-edge drag handle (clamp 600–3000)
             compactView: false,             // master toggle in the panel header — hides heavy column groups in one click
+            // Daily-driver QoL — Q12 free-text search. Survives across mounts.
+            // Filters table rows by IATA / city-name substring / route-note
+            // text (case-insensitive). Empty string disables filtering.
+            searchQuery: "",
             // Tabbed view selector (Pax / Cargo / All). Default "all"
             // preserves the existing combined table for users without a
             // strong mode preference. Tab switches column visibility
             // and the scoring-field set; the underlying row data is
             // shared across all three.
             viewMode: "all",
+            // H slice 1 — Wave View toggle. When ON, _renderRows hands
+            // the sorted scoredRows to RouteAssistantWaveOverlay which
+            // replaces the table with a Gantt-style timeline of the
+            // recommended schedule for the top-N rows.
+            waveView: false,
+            waveOverlay: {
+                lastPresetId:   null,    // user's last picked SchedulePresets id
+                topN:           20,      // 5..100 — how many scored rows feed the build
+                showWarnings:   true,    // gate the warnings panel below the Gantt
+                showUnplaced:   true     // gate the unplaced strip
+            },
+            // Letter I slice 1 — ORS Sandbox. New panel mode that replaces
+            // the table with a per-route projection sandbox (price /
+            // frequency / comfort sliders → projected rank, share, pax/wk,
+            // revenue/wk, profit/wk). Read-only against AS — the
+            // sandbox never writes prices back; that's Auto-Pricing T3.
+            // Mutual exclusion with waveView is enforced by the render
+            // branch order in panel.js (Wave View wins when both on).
+            orsSandbox: {
+                enabled:       false,    // top-level mode toggle
+                lastRouteIata: null,     // restore route on next mount
+                // Slider positions, persisted per-route. Switching to a route
+                // with no entry falls back to neutral defaults rather than
+                // inheriting the previous route's settings (which were almost
+                // always wrong for the new route).
+                lastScenarioByRoute: {}, // {<HUB>-<DEST>: {priceMultiplier, frequency, comfortDelta}}
+                modelParams: {
+                    ratingPriceElasticity: 8,    // rating points per ±100% price change
+                    ratingComfortLift:     5,    // rating points per service-level step
+                    shareTemperature:      25.0  // softmax T (rating points). Lower = sharper share-by-rank.
+                },
+                // Calibrated softmax T per route. Populated by the Calibrate
+                // button; the calibratedAt sibling map carries the timestamp
+                // so the results card can surface staleness (markets drift,
+                // 30-day-old calibrations should be re-run).
+                perRouteTemperature:             {},  // {<HUB>-<DEST>: T}
+                perRouteTemperatureCalibratedAt: {}   // {<HUB>-<DEST>: ms epoch}
+            },
             aircraft: {
                 mode:                null,    // null | "fleet" | "type" | "registration"
                 typeId:              null,    // when mode === "type"
@@ -86,13 +145,21 @@ class RouteAssistantSettings {
             // (per-payload) plus the inventory page's RM buckets.
             demandDepth: {
                 showDemandColumns:    true,    // gate the new column group
-                classCoverage:        "summary",   // "summary" (PAX+CARGO) | "full" (5 payloads)
-                useRealDemandForLF:   false,   // opt-in profit-estimator switch
+                // "full" by default (5 payloads — ECONOMY/BUSINESS/FIRST/PAX/CARGO).
+                // Per-class historic is needed for ORS-aware pricing simulation
+                // (Letter I, the next big-ticket build) and the user opted in.
+                // Existing users keep their persisted preference via deep-merge.
+                classCoverage:        "full",
+                // Default ON. The estimator silently falls back to paxScore-based
+                // LF when the demand-pool inputs are missing (profit-estimator.js
+                // line 119-121), so this is safe for routes without cached data.
+                // Existing users with persisted false stay false.
+                useRealDemandForLF:   true,
                 concurrency:          3,       // gentle — coexists with parallel ORS sync
                 staggerMs:            1200,
                 historicWindowPeriods: 12,     // last N weeks for the elasticity regression
                 lastBulkScrapeAt:     null,
-                historicMaxAgeDays:   null,    // markets historic — null = forever
+                historicMaxAgeDays:   14,      // 14-day cadence aligns with auto-refresh threshold below
                 inventoryMaxAgeDays:  3        // RM data is volatile; expire after 3d
             },
             yieldFeedback: {
@@ -153,15 +220,22 @@ class RouteAssistantSettings {
                 competitorMaxAgeDays: null,    // null = never expire
                 shareMaxAgeDays:      7,       // weekly cadence
                 historicMaxAgeDays:   null,
-                defaultPayloadChart:  "ECONOMY"   // PAX | ECONOMY | BUSINESS | FIRST | FREIGHT
+                defaultPayloadChart:  "ECONOMY",   // PAX | ECONOMY | BUSINESS | FIRST | FREIGHT
+                // Auto-refresh: when lastBulkScrapeAt exceeds staleThresholdDays,
+                // the panel kicks off a background sync on mount (Markets +
+                // demand depth, since the two are folded). User can dismiss via
+                // a Skip button, suppressed for the same threshold window.
+                autoRefreshOnMount:   true,
+                staleThresholdDays:   14,
+                lastAutoRefreshSkipAt: null
             },
             ors: {
                 // Tier 2b — ORS rank scraper for /app/info/ors. Submits the
-                // connection-search form per route, walks all result pages,
-                // computes every rank flavor + ratings. Per user direction
-                // (MAXIMISE OPTIONS): store all rank flavors + full connection
-                // list so the panel can re-derive any metric at render time
-                // without re-scraping.
+                // connection-search form per route (one query per cabin
+                // class), walks all result pages, computes per-class rank
+                // flavors + ratings, then projects a composite score using
+                // user-configurable class weights. Storage lives at
+                // `routeAssistant:ors:<HUB>-<DEST>.byClass.{ECONOMY,BUSINESS,FIRST}`.
                 showColumns:          true,
                 concurrency:          2,        // ORS = expensive AS solver, be gentle
                 staggerMs:            1500,
@@ -169,10 +243,26 @@ class RouteAssistantSettings {
                 rankMaxAgeDays:       null,
 
                 // Default scrape parameters (user-tunable in expander):
-                defaultPayload:       "ECONOMY", // ECONOMY | BUSINESS | FIRST | CARGO
+                classesToScrape:      ["ECONOMY", "BUSINESS", "FIRST"],   // 1-3, multi-select
                 defaultDepartureH:    0,         // 0..48
                 defaultArrivalH:      72,        // 24..72
                 defaultUseGround:     true,
+
+                // Composite combining — how the per-class metrics merge into
+                // the headline ORS score shown in the table.
+                //   capacityWeighted (default) — derive weights from picked
+                //     aircraft's cabin config; falls back to "standard"
+                //     preset when no aircraft / specs unknown.
+                //   weighted — fixed weights from `classWeights` (current preset).
+                //   min / max / avg — pessimistic / optimistic / equal blend.
+                combineMethod:        "capacityWeighted",
+                weightPreset:         "capacityWeighted",   // matches a key in ORS_WEIGHT_PRESETS
+                                                              // or "custom" when sliders are touched.
+                classWeights:         {ECONOMY: 0.75, BUSINESS: 0.20, FIRST: 0.05},   // Standard
+
+                // The "headline" class shown in compact view + drill-in
+                // default tab. Used when one class needs to stand for all.
+                primaryClass:         "ECONOMY",
 
                 // Display preferences — every rank flavor surfaceable.
                 primaryColumn:        "ratingGapToTop",
@@ -182,10 +272,11 @@ class RouteAssistantSettings {
                 showRankNonstopColumn:       true,
                 showRatingGapColumn:         true,
                 showCompetitorCountColumn:   true,
-                minRatingThresholdDisplay:   null,   // hide values where ourTopRating < N
+                showPerClassColumns:         true,    // Y / C / F per-class cols (auto-off in Compact view)
+                minRatingThresholdDisplay:   null,    // hide values where ourTopRating < N
 
                 // Carrier identification — flight-number set is primary, prefix is
-                // fallback. User can override comma-separated list e.g. "FGM,NYO".
+                // fallback. User can override comma-separated list e.g. "FN,NY".
                 airlineCarrierPrefixOverride: null,
 
                 // Circuit breaker telemetry. If trip is recent, bulk button is
@@ -253,9 +344,16 @@ class RouteAssistantSettings {
                                        ? block.panelWidth
                                        : defaults.panelWidth,
             compactView:           !!block.compactView,
+            searchQuery:           (typeof block.searchQuery === "string") ? block.searchQuery : defaults.searchQuery,
+            recentHubs:            Array.isArray(block.recentHubs)
+                                       ? block.recentHubs.filter(h => typeof h === "string" && /^[A-Z]{3}$/.test(h)).slice(0, 5)
+                                       : defaults.recentHubs,
             viewMode:              (block.viewMode === "pax" || block.viewMode === "cargo" || block.viewMode === "all")
                                        ? block.viewMode
                                        : defaults.viewMode,
+            waveView:              !!block.waveView,
+            waveOverlay:           Object.assign({}, defaults.waveOverlay,   block.waveOverlay   || {}),
+            orsSandbox:            RouteAssistantSettings._mergeOrsSandbox(defaults.orsSandbox, block.orsSandbox),
             aircraft:              Object.assign({}, defaults.aircraft,      block.aircraft      || {}),
             economics:             Object.assign({}, defaults.economics,     block.economics     || {}),
             pricing:               Object.assign({}, defaults.pricing,       block.pricing       || {}),
@@ -263,7 +361,7 @@ class RouteAssistantSettings {
             carriers:              Object.assign({}, defaults.carriers,        block.carriers        || {}),
             marketAnalysis:        Object.assign({}, defaults.marketAnalysis,  block.marketAnalysis  || {}),
             demandDepth:           Object.assign({}, defaults.demandDepth,     block.demandDepth     || {}),
-            ors:                   Object.assign({}, defaults.ors,             block.ors             || {}),
+            ors:                   RouteAssistantSettings._mergeOrs(defaults.ors, block.ors),
             watchlist:             Object.assign({}, defaults.watchlist,       block.watchlist       || {}),
             serviceProfiles:       RouteAssistantSettings._mergeServiceProfiles(defaults.serviceProfiles, block.serviceProfiles)
         }
@@ -309,6 +407,127 @@ class RouteAssistantSettings {
     }
 
     /**
+     * Deep-merge ors block — preserves nested classWeights/classesToScrape
+     * shape and lazy-renames the legacy `defaultPayload` field to
+     * `primaryClass` so existing user settings keep working.
+     */
+    static _mergeOrs(defaults, block) {
+        const out = Object.assign({}, defaults || {}, block || {})
+        // Lazy rename defaultPayload → primaryClass, then drop the legacy
+        // key so subsequent saves don't keep round-tripping a dead field.
+        if (block && block.defaultPayload && !block.primaryClass) {
+            out.primaryClass = block.defaultPayload
+        }
+        delete out.defaultPayload
+        // Ensure classesToScrape is an array of valid class names.
+        const VALID = {ECONOMY: 1, BUSINESS: 1, FIRST: 1, CARGO: 1}
+        if (Array.isArray(block && block.classesToScrape)) {
+            const filtered = block.classesToScrape.filter(c => VALID[c])
+            out.classesToScrape = filtered.length ? filtered : defaults.classesToScrape
+        }
+        // classWeights — merge with defaults so a partial save (e.g. only Y
+        // changed) doesn't drop C/F. Renormalise to sum to 1.0 so a stored
+        // partial like {ECONOMY: 1.00} doesn't end up as {1.00, 0.20, 0.05}
+        // (sum 1.25), which the composite scorer doesn't renormalise itself.
+        const merged = Object.assign({}, defaults.classWeights || {},
+            (block && block.classWeights) || {})
+        out.classWeights = RouteAssistantSettings._renormaliseWeights(merged, defaults.classWeights)
+        return out
+    }
+
+    /**
+     * Deep-merge orsSandbox so nested modelParams / lastScenarioByRoute /
+     * perRouteTemperature blocks gain new defaults without wiping user-
+     * tuned siblings. The two flat maps (lastScenarioByRoute,
+     * perRouteTemperature, perRouteTemperatureCalibratedAt) are preserved
+     * verbatim with type validation per entry.
+     *
+     * Migration: the legacy global `lastScenario` field is preserved on
+     * the output as `_legacyLastScenario` exactly once if `lastRouteIata`
+     * is set and `lastScenarioByRoute` has no entry for that route — the
+     * panel reads it as a one-time fallback so the user's last slider
+     * positions don't reset across the upgrade. Subsequent saves drop it.
+     */
+    static _mergeOrsSandbox(defaults, block) {
+        const def = defaults || {}
+        const b = block || {}
+        const out = {
+            enabled:       !!b.enabled,
+            lastRouteIata: typeof b.lastRouteIata === "string" ? b.lastRouteIata : def.lastRouteIata,
+            lastScenarioByRoute:             {},
+            modelParams:   Object.assign({}, def.modelParams || {}, b.modelParams || {}),
+            perRouteTemperature:             {},
+            perRouteTemperatureCalibratedAt: {}
+        }
+        // Validate per-route scenarios — every entry must be an object with
+        // numeric priceMultiplier / numeric-or-null frequency / numeric
+        // comfortDelta. Drop malformed records silently rather than crash.
+        const sbr = b.lastScenarioByRoute
+        if (sbr && typeof sbr === "object") {
+            for (const k in sbr) {
+                const v = sbr[k]
+                if (!v || typeof v !== "object") continue
+                const pm = Number(v.priceMultiplier)
+                const cd = Number(v.comfortDelta)
+                if (!isFinite(pm) || pm <= 0) continue
+                out.lastScenarioByRoute[k] = {
+                    priceMultiplier: pm,
+                    frequency:       (v.frequency == null ? null
+                                       : (isFinite(Number(v.frequency)) ? Number(v.frequency) : null)),
+                    comfortDelta:    isFinite(cd) ? cd : 0
+                }
+            }
+        }
+        // Per-route T — number, positive.
+        const ts = b.perRouteTemperature
+        if (ts && typeof ts === "object") {
+            for (const k in ts) {
+                const v = Number(ts[k])
+                if (isFinite(v) && v > 0) out.perRouteTemperature[k] = v
+            }
+        }
+        // calibratedAt — ms epoch, positive integer. Only kept for keys
+        // that also have a T entry (a stamp without a T is meaningless).
+        const cs = b.perRouteTemperatureCalibratedAt
+        if (cs && typeof cs === "object") {
+            for (const k in cs) {
+                if (out.perRouteTemperature[k] == null) continue
+                const v = Number(cs[k])
+                if (isFinite(v) && v > 0) out.perRouteTemperatureCalibratedAt[k] = v
+            }
+        }
+        // One-time legacy migration: surface the pre-per-route lastScenario
+        // for the route that was last open. Never persisted under this key
+        // — the panel reads it once on first render of `lastRouteIata` and
+        // promotes it into `lastScenarioByRoute` on the next save.
+        if (b.lastScenario && typeof b.lastScenario === "object" && b.lastRouteIata) {
+            out._legacyLastScenario = Object.assign({}, b.lastScenario)
+        }
+        return out
+    }
+
+    /**
+     * Renormalise a {ECONOMY, BUSINESS, FIRST, …} weights object so the
+     * non-negative entries sum to 1.0. If the input is degenerate (sum ≤ 0
+     * or all non-finite), fall back to `fallback` (typically the default
+     * weights). Negative entries are clamped to 0.
+     */
+    static _renormaliseWeights(weights, fallback) {
+        if (!weights || typeof weights !== "object") return Object.assign({}, fallback || {})
+        let sum = 0
+        const cleaned = {}
+        for (const k in weights) {
+            const v = Number(weights[k])
+            const safe = isFinite(v) && v > 0 ? v : 0
+            cleaned[k] = safe
+            sum += safe
+        }
+        if (sum <= 0) return Object.assign({}, fallback || {})
+        for (const k in cleaned) cleaned[k] = cleaned[k] / sum
+        return cleaned
+    }
+
+    /**
      * Partial update — pass only the keys you want to change.
      */
     static async save(partial) {
@@ -320,4 +539,30 @@ class RouteAssistantSettings {
         await chrome.storage.local.set({settings: settings})
         return next
     }
+}
+
+/**
+ * Multi-class ORS scoring weight presets — model different airline
+ * playstyles. Values are passenger-mix percentages (Y / C / F) tuned
+ * against typical real-world airline cabin configurations.
+ *
+ * "capacityWeighted" is special — weights are derived at composite-time
+ * from the picked aircraft's seat config, not from this table. The entry
+ * below is a fallback used when no aircraft is selected.
+ */
+RouteAssistantSettings.ORS_WEIGHT_PRESETS = {
+    "allEconomy":       {label: "All Economy",       weights: {ECONOMY: 1.00, BUSINESS: 0.00, FIRST: 0.00},
+                         description: "Pure leisure carrier, LCC, regional, Y-only fleet."},
+    "standard":         {label: "Standard",          weights: {ECONOMY: 0.75, BUSINESS: 0.20, FIRST: 0.05},
+                         description: "Most full-service narrowbody / domestic widebody — close to industry average."},
+    "twoClass":         {label: "Two-class",         weights: {ECONOMY: 0.60, BUSINESS: 0.40, FIRST: 0.00},
+                         description: "Modern long-haul without F (Lufthansa, BA, Air Canada style)."},
+    "businessHeavy":    {label: "Business-heavy",    weights: {ECONOMY: 0.40, BUSINESS: 0.50, FIRST: 0.10},
+                         description: "Premium business hubs, transcon (JFK-LAX, JFK-SFO style)."},
+    "premiumLongHaul":  {label: "Premium long-haul", weights: {ECONOMY: 0.30, BUSINESS: 0.40, FIRST: 0.30},
+                         description: "Flagship A380 / 777-300ER (Emirates, Singapore, Etihad)."},
+    "capacityWeighted": {label: "Capacity-weighted (auto)", weights: {ECONOMY: 0.75, BUSINESS: 0.20, FIRST: 0.05},
+                         description: "Derived from picked aircraft's cabin config. Falls back to Standard when no aircraft selected."},
+    "custom":           {label: "Custom",            weights: null,
+                         description: "Manually tuned via the per-class weight inputs in More options."}
 }

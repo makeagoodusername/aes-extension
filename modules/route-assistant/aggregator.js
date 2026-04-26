@@ -49,6 +49,7 @@ class RouteAssistantAggregator {
         const overrideMap         = (input && input.overrideMap) || null
         const yieldHistoryMap     = (input && input.yieldHistoryMap) || null
         const serviceConfigMap    = (input && input.serviceConfigMap) || null
+        const routeNoteMap        = (input && input.routeNoteMap) || null
         const serviceProfilesDef  = (input && input.serviceProfiles) || null
         const fleet               = (input && input.fleet) || null
         const ownByDest           = RouteAssistantAggregator._collectOwnFreq(input && input.ownSchedule, hubIata)
@@ -63,6 +64,7 @@ class RouteAssistantAggregator {
             const paxScore = demand ? demand.paxScore : null
             const distanceKm = typeof r.distanceKm === "number" ? r.distanceKm : null
             const override = overrideMap ? (overrideMap.get(hubIata + "-" + destIata) || null) : null
+            const routeNote = routeNoteMap ? (routeNoteMap.get(hubIata + "-" + destIata) || null) : null
 
             const row = {
                 destIata:      destIata,
@@ -78,6 +80,8 @@ class RouteAssistantAggregator {
                 ownCargoFreq:  own.cargoFreq || 0,
                 ownTotalFreq:  totalFreq,
                 override:         override,
+                routeNote:        routeNote,
+                routeNoteText:    (routeNote && typeof routeNote.text === "string") ? routeNote.text : null,
                 aircraftFit:      null,
                 blockHours:       null,
                 profitPerFlight:  null,

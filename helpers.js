@@ -210,13 +210,26 @@ class AES {
         // TODO: create separate function for cleaning currency values
         // value = value.trim()
         // const isExpectedFormat = Boolean(value.match(/^-?(\d+[.,]?)+ AS\$$/))
-        // 
+        //
         // if (!isExpectedFormat) {
         //     throw new Error("cleanInteger(): unexpected format for value")
         // }
-        
+
         // Match any character that’s no a digit or a dash
         const result = value.replaceAll(/[^\d-]/g, "")
         return parseInt(result, 10)
     }
+}
+
+/**
+ * HTML-escape a string for safe insertion via innerHTML. Coerces null/undefined
+ * to "" so callers can pass possibly-missing fields directly. Defined as a
+ * top-level helper so any module loaded after helpers.js (which is in the /app
+ * + /action content-script block — i.e. every page on airlinesim.aero) can use
+ * it without redefining its own copy.
+ */
+function escapeHtml(s) {
+    return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
 }
