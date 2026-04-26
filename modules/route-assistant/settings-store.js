@@ -193,6 +193,19 @@ class RouteAssistantSettings {
                 circuitBreakerTrippedAt: null,
                 circuitBreakerCooldownMs: 600000  // 10 min
             },
+            watchlist: {
+                // Daily-driver QoL — per-row star toggle persists in
+                // RouteAssistantWatchlistStore (single global key
+                // `routeAssistant:watchlist`). The two settings here gate
+                // the panel's *display* behaviour, not the storage:
+                //   floatStarredToTop — pin starred rows above unstarred
+                //     ones regardless of the user's chosen sort field.
+                //   showAlertBadges   — render a red dot next to the star
+                //     when the row's diff vs last visit shows a "worse"
+                //     change in any RA_WATCH_TRIGGERS field.
+                floatStarredToTop: true,
+                showAlertBadges:   true
+            },
             serviceProfiles: {
                 // Per-route Y/C/F class mix + service-level posture. Each
                 // route may pin its own override via the service-config
@@ -251,6 +264,7 @@ class RouteAssistantSettings {
             marketAnalysis:        Object.assign({}, defaults.marketAnalysis,  block.marketAnalysis  || {}),
             demandDepth:           Object.assign({}, defaults.demandDepth,     block.demandDepth     || {}),
             ors:                   Object.assign({}, defaults.ors,             block.ors             || {}),
+            watchlist:             Object.assign({}, defaults.watchlist,       block.watchlist       || {}),
             serviceProfiles:       RouteAssistantSettings._mergeServiceProfiles(defaults.serviceProfiles, block.serviceProfiles)
         }
         for (const key in defaults.scoring) {

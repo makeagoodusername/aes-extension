@@ -365,7 +365,13 @@ class AircraftFlightsTab {
                 continue
             }
 
-            flight.id = parseInt(url.match(/\d+/)[0])
+            // Pull the flightId out of the query string (`?id=12345`) — the
+            // legacy `url.match(/\d+/)[0]` picked up the "1" in `free1` from
+            // the hostname instead. Affects every consumer that joins
+            // <server>flightInfo<flightId>; pre-existing bug, fixed here as
+            // a prereq for the per-FN attribution slice.
+            const idMatch = url.match(/[?&]id=(\d+)/)
+            flight.id = idMatch ? parseInt(idMatch[1]) : null
             flight.flightNumber = flightNumber
 
             // Per-FN linkage (G slice 4) — preserve the FN→numeric-id map and

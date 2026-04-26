@@ -78,6 +78,14 @@ class RouteAssistantPanel {
         // delta even after _drawTable overwrites the storage record.
         this._diffPrevSnapshot   = null
         this._diffBaselineLoaded = false
+
+        // Watchlist (starred routes) — global Set<"HUB-DEST"> loaded once
+        // per refresh() from RouteAssistantWatchlistStore. The panel
+        // decorates each scoredRow with `_starred: bool` before sorting
+        // so the destIata render closure + `_sortRows` can react. Star
+        // toggles flip the in-memory Set immediately, persist async, then
+        // re-render — no need to await storage to update the UI.
+        this._watchlist = new Set()
     }
 
     async mount() {
@@ -180,6 +188,29 @@ class RouteAssistantPanel {
         if (!this.rows || !this.rows.length) return
         RouteAssistantAggregator.applyFleetContext(this.rows, this._fleetContext(), this._serviceContext())
         this._renderRows()
+    }
+
+    /**
+     * Toggle a route's starred state. Updates the in-memory Set immediately
+     * and re-renders so the user sees the flip without waiting on storage,
+     * then persists asynchronously through RouteAssistantWatchlistStore.
+     * Failures fall back to the persisted state on the next refresh.
+     */
+    async _toggleWatchlist(hub, dest) {
+        if (!hub || !dest) return
+        const key = String(hub).toUpperCase() + "-" + String(dest).toUpperCase()
+        const wasStarred = this._watchlist.has(key)
+        if (wasStarred) this._watchlist.delete(key)
+        else            this._watchlist.add(key)
+        this._renderRows()
+        try {
+            await RouteAssistantWatchlistStore.toggle(hub, dest)
+        } catch (e) {
+            console.warn("[AES routeAssistant] watchlist toggle failed:", e)
+            if (wasStarred) this._watchlist.add(key)
+            else            this._watchlist.delete(key)
+            this._renderRows()
+        }
     }
 
     // ---------- Skeleton ----------
@@ -441,6 +472,11 @@ class RouteAssistantPanel {
             this._diffBaselineLoaded = true
             this._diffBaselineHub = iata
         }
+
+        // Watchlist — global Set across all hubs. Loaded fresh every
+        // refresh so cross-tab toggles eventually surface (no chrome.storage
+        // listener wired for this key in v1; refresh is enough).
+        this._watchlist = await RouteAssistantWatchlistStore.load()
 
         this.ffData = await FlightsFromStore.loadAirport(iata)
         this.ownSchedule = await this._loadOwnSchedule()
@@ -1510,6 +1546,8 @@ class RouteAssistantPanel {
         RouteAssistantPanel._showCarrierIntensity = !carriers || carriers.showCarrierIntensity !== false
         const ors = this.settings && this.settings.ors
         RouteAssistantPanel._orsPrimaryColumn = (ors && ors.primaryColumn) || "ratingGapToTop"
+        const wl = this.settings && this.settings.watchlist
+        RouteAssistantPanel._showWatchTriggers = !wl || wl.showAlertBadges !== false
         // Reflect Compact-view state on the header button so the user sees
         // at a glance whether they're in Compact or Full mode.
         const compact = !!(this.settings && this.settings.compactView)
@@ -1568,6 +1606,16 @@ class RouteAssistantPanel {
         // mount on this hub) — render closures fall through silently.
         _decorateRowsWithDiffs(this.scoredRows, this._diffPrevSnapshot)
 
+        // Watchlist — decorate `_starred` per row from the in-memory Set.
+        // Lookup is `<HUB>-<DEST>` upper-cased; the store always stores
+        // upper-case so a direct Set.has on the same key works.
+        const wlSet = this._watchlist || new Set()
+        const hubKey = String(this.hubIata || "").toUpperCase()
+        for (const r of this.scoredRows) {
+            const k = hubKey + "-" + String(r.destIata || "").toUpperCase()
+            r._starred = wlSet.has(k)
+        }
+
         const sorted = this._sortRows(this.scoredRows)
         this._drawTable(sorted)
     }
@@ -1593,7 +1641,16 @@ class RouteAssistantPanel {
     _sortRows(rows) {
         const dir = this.sortDir
         const field = this.sortField
+        const wl = this.settings && this.settings.watchlist
+        const floatStars = !wl || wl.floatStarredToTop !== false
         return rows.slice().sort((a, b) => {
+            // Watchlist primary key — starred rows float above unstarred
+            // ones regardless of sort field. Within each group the user's
+            // chosen field+dir is honoured (the comparator below).
+            if (floatStars) {
+                const sa = !!a._starred, sb = !!b._starred
+                if (sa !== sb) return sa ? -1 : 1
+            }
             const va = a[field], vb = b[field]
             if (va === vb) return 0
             if (va === null || va === undefined || va === "") return 1
@@ -2596,12 +2653,29 @@ class RouteAssistantPanel {
         if (diag) {
             const liveCaptured = (this.rows || []).filter(r => r.liveAircraftType || r.liveDeparture).length
             const lines = []
-            const modeLine = diag.mode === "delta"
-                ? "delta-mode · " + (diag.tailsUsingDelta || 0) + "/" + diag.tailsUsed + " tails had a prior baseline"
-                : "cumulative-mode (lifetime average $/flt per tail)"
+            let modeLine
+            if (diag.attributionMode === "per-flight") {
+                modeLine = "per-flight (exact) · " + (diag.routesWithPerFlight || 0)
+                    + " route" + ((diag.routesWithPerFlight === 1) ? "" : "s")
+                    + " attributed exactly"
+                    + ((diag.routesFellBack > 0)
+                        ? " · " + diag.routesFellBack + " fell back to frequency"
+                        : "")
+            } else if (diag.mode === "delta") {
+                modeLine = "delta-mode · " + (diag.tailsUsingDelta || 0) + "/" + diag.tailsUsed
+                    + " tails had a prior baseline"
+            } else {
+                modeLine = "cumulative-mode (lifetime average $/flt per tail)"
+            }
             lines.push(diag.routesUpdated + " route" + (diag.routesUpdated === 1 ? "" : "s")
                 + " updated · " + diag.routesScanned + " scanned · "
                 + diag.tailsUsed + "/" + diag.tailsSeen + " tails contributed · " + modeLine)
+            if (diag.attributionMode === "per-flight" && diag.routesFellBack > 0) {
+                lines.push("⚠ " + diag.routesFellBack + " route" + (diag.routesFellBack === 1 ? "" : "s")
+                    + " had no measured flights. Visit each tail's flight-history page AND each "
+                    + "individual flight detail page to populate <server>flightInfo<id>; the "
+                    + "Aircraft history page's \"Extract finished flight profit\" button bulk-opens them.")
+            }
             if (diag.tailsMissingProfit > 0) {
                 const sample = (diag.tailsMissingList || []).slice(0, 6).join(", ")
                 lines.push("⚠ " + diag.tailsMissingProfit + " tail"
@@ -2643,12 +2717,17 @@ class RouteAssistantPanel {
         ctrlRow.append(showLbl)
 
         const modeSel = mkSelect([
-            {value: "frequency", label: "by frequency"},
-            {value: "distance",  label: "by distance × frequency"},
-            {value: "equal",     label: "split equally per route"}
+            {value: "per-flight", label: "per-flight (exact)"},
+            {value: "frequency",  label: "by frequency"},
+            {value: "distance",   label: "by distance × frequency"},
+            {value: "equal",      label: "split equally per route"}
         ])
         modeSel.value = cfg.attributionMode || "frequency"
         modeSel.style.fontSize = "11px"
+        modeSel.title = "per-flight = sums each finished flight's profit per route exactly "
+            + "(no frequency averaging). Requires the user to have visited each flight's "
+            + "detail page so the financials cache is populated. Routes with no per-flight "
+            + "data fall back to frequency-weighted attribution."
         modeSel.addEventListener("change", async () => {
             this.settings.yieldFeedback.attributionMode = modeSel.value
             await RouteAssistantSettings.save({yieldFeedback: this.settings.yieldFeedback})
@@ -3001,9 +3080,15 @@ class RouteAssistantPanel {
         this._renderSettings()
 
         if (result) {
-            const modeStr = result.mode === "delta"
-                ? "delta (" + (result.tailsUsingDelta || 0) + "/" + result.tailsUsed + " tails w/ baseline)"
-                : "cumulative"
+            let modeStr
+            if (result.attributionMode === "per-flight") {
+                modeStr = "per-flight (" + (result.routesWithPerFlight || 0) + " exact, "
+                    + (result.routesFellBack || 0) + " fell back)"
+            } else if (result.mode === "delta") {
+                modeStr = "delta (" + (result.tailsUsingDelta || 0) + "/" + result.tailsUsed + " tails w/ baseline)"
+            } else {
+                modeStr = "cumulative"
+            }
             const summary = "[AES yieldFeedback] snapshot: "
                 + result.routesUpdated + " routes updated · "
                 + result.tailsUsed + "/" + result.tailsSeen + " tails contributed · "
@@ -3373,6 +3458,10 @@ class RouteAssistantPanel {
         partnersStatus.textContent = "Configured: " + ((cfg.myEnterpriseIds || []).length)
             + " enterprise id(s) · last sync: " + lastPartnersTs
         partnersWrap.append(partnersStatus)
+        // Hold a reference so _runRefreshContractualPartners can update
+        // progress in this panel rather than in the green Carriers panel
+        // above (which the user might not be looking at).
+        this._partnersStatusEl = partnersStatus
 
         const inputRow = document.createElement("div")
         inputRow.style.cssText = "display:flex;gap:6px;align-items:center;font-size:11px;margin-bottom:6px;flex-wrap:wrap;"
@@ -3388,9 +3477,17 @@ class RouteAssistantPanel {
         idsInput.style.cssText = "flex:1;min-width:140px;background:#0f1623;border:1px solid #374151;color:#e5e7eb;padding:3px 6px;border-radius:3px;font-size:11px;font-family:monospace;"
         const persistIds = async () => {
             const parsed = idsInput.value.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean)
+            const before = (this.settings.carriers.myEnterpriseIds || []).join(",")
+            const after  = parsed.join(",")
+            if (before === after) return
             this.settings.carriers.myEnterpriseIds = parsed
             await RouteAssistantSettings.save({carriers: this.settings.carriers})
             await this._applyCachedContractualPartners()
+            // Rebuild the drawer so the Configured: count + Refresh
+            // button's disabled state pick up the new id list. _render()
+            // alone only redraws the table, so the drawer would otherwise
+            // keep showing stale "Configured: 0".
+            this._renderSettings()
             this._render()
         }
         idsInput.addEventListener("change", persistIds)
@@ -3403,8 +3500,11 @@ class RouteAssistantPanel {
             : "Refresh contractual partners"
         Object.assign(refreshBtn.style, smallBtnStyle())
         refreshBtn.style.background = "#7c3aed"
+        // Only disable while a scrape is in flight. An empty-IDs click
+        // is allowed through so the handler can surface the inline
+        // "enter an ID first" hint — avoids the silently-dead button
+        // problem when the user types but hasn't blurred the input yet.
         refreshBtn.disabled = !!this._partnersScrapeRunning
-            || !(cfg.myEnterpriseIds && cfg.myEnterpriseIds.length)
         refreshBtn.addEventListener("click", () => this._runRefreshContractualPartners())
         inputRow.append(refreshBtn)
         partnersWrap.append(inputRow)
@@ -3588,11 +3688,11 @@ class RouteAssistantPanel {
         if (this._partnersScrapeRunning) return
         const cfg = this.settings.carriers || {}
         const ids = (cfg.myEnterpriseIds || []).map(v => String(v).trim()).filter(Boolean)
+        const setStatus = (msg) => {
+            if (this._partnersStatusEl) this._partnersStatusEl.textContent = msg
+        }
         if (!ids.length) {
-            if (this._carrierStatusEl) {
-                this._carrierStatusEl.textContent =
-                    "Enter at least one of your own enterprise IDs first (Carriers expander)."
-            }
+            setStatus("⚠ Enter at least one of your own enterprise IDs first, then press Tab to commit.")
             return
         }
 
@@ -3604,19 +3704,27 @@ class RouteAssistantPanel {
 
         this._partnersScrapeRunning = true
         this._renderSettings()
+        // _renderSettings() rebuilt the drawer, which created a new
+        // partnersStatus DOM node — the local `setStatus` closure points
+        // at the OLD node. Re-resolve via the latest `this._partnersStatusEl`
+        // on every status update so the user actually sees the message.
+        const writeStatus = (msg) => {
+            if (this._partnersStatusEl) this._partnersStatusEl.textContent = msg
+        }
+        console.log("[AES partnersScraper] starting refresh for ids:", ids)
+        writeStatus("Refreshing " + ids.length + " enterprise(s)… (see DevTools console for per-id progress)")
 
+        let scrapeError = null
         try {
             await this.contractualPartnersScraper.bulkScrape(ids, {
                 concurrency: cfg.partnersConcurrency || 2,
                 staggerMs:   cfg.partnersStaggerMs   || 400,
                 onProgress:  (done, total) => {
-                    if (this._carrierStatusEl) {
-                        this._carrierStatusEl.textContent =
-                            "Refreshing contractual partners: " + done + "/" + total + "…"
-                    }
+                    writeStatus("Refreshing partners: " + done + "/" + total + "…")
                 }
             })
         } catch (e) {
+            scrapeError = e
             console.warn("[AES partnersScraper] bulk scrape failed", e)
         }
 
@@ -3625,6 +3733,22 @@ class RouteAssistantPanel {
         await RouteAssistantSettings.save({carriers: this.settings.carriers})
 
         await this._applyCachedContractualPartners()
+
+        // Summarise the result before _renderSettings() rebuilds the
+        // drawer — the next render reverts the status line back to
+        // "Configured: N · last sync: …" but the console log persists.
+        const totalPartners = this._partnersByEnterpriseId
+            ? this._partnersByEnterpriseId.size
+            : 0
+        if (scrapeError) {
+            console.warn("[AES partnersScraper] refresh finished with errors:", scrapeError)
+        } else {
+            console.log("[AES partnersScraper] refresh complete:",
+                ids.length, "enterprise(s),",
+                totalPartners, "distinct partner(s) cross-referenced")
+        }
+
+        this._renderSettings()
         this._render()
     }
 
@@ -4310,12 +4434,21 @@ class RouteAssistantPanel {
 
         const status = document.createElement("div")
         status.style.cssText = "color:#9ca3af;font-size:10px;flex:1;min-width:0;"
-        const totalRows = (this.rows || []).length
-        const dataRows  = (this.rows || []).filter(r => r.orsRankAny != null).length
+        const totalRows  = (this.rows || []).length
+        // Two distinct counters:
+        //   scrapedRows = routes successfully scraped (totalConnections != null)
+        //   ourRankRows = routes where we found OUR flights in the result list
+        // The two often diverge: a route is scraped but we have no flights
+        // there, so all rank flavors are null. Reporting only the second
+        // looked like the sync was failing on most routes.
+        const scrapedRows = (this.rows || []).filter(r => r.orsTotalConnections != null).length
+        const ourRankRows = (this.rows || []).filter(r => r.orsRankAny != null).length
         const lastScrape = cfg.lastBulkScrapeAt
             ? new Date(cfg.lastBulkScrapeAt).toLocaleString()
             : "never"
-        status.textContent = dataRows + "/" + totalRows + " routes · last sync: " + lastScrape
+        status.textContent = "Scraped " + scrapedRows + "/" + totalRows
+            + " · your rank in " + ourRankRows
+            + " · last sync: " + lastScrape
         topRow.append(status)
         this._orsStatusEl = status
 
@@ -6032,7 +6165,7 @@ RouteAssistantPanel.COLUMNS = [
         _appendDiffBadge(td, "score", row)
     }},
     {field: "destIata", label: "Dest", group: "computed",
-     title: "Click IATA → market analysis (per-route ORS, competitors). Small icons jump to scheduling / inventory / airport info. Right-click any row to override LF / yield.",
+     title: "Click IATA → market analysis (per-route ORS, competitors). Small icons jump to scheduling / inventory / airport info. Right-click any row to override LF / yield. Click the ☆ to star a route — starred routes float to the top and light a red dot when their numbers worsen since your last visit.",
      render(td, row) {
         const hub  = RouteAssistantPanel._currentHubIata || ""
         const dest = row.destIata
@@ -6057,6 +6190,11 @@ RouteAssistantPanel.COLUMNS = [
         const iconRow = icons.length ? `<span class="aes-iata-icons">${icons.join("")}</span>` : ""
         td.innerHTML = iataHtml + pin + iconRow
             + (row.destName ? `<br><span style="color:#9ca3af;font-size:10px;">${escapeHtml(row.destName)}</span>` : "")
+        // Watchlist star — prepend so it reads as "[★] DEST 📌 📅 📦 🛫".
+        // Built as a real DOM button so the click handler can stop the
+        // default <a> activation; rendering the inner content first via
+        // innerHTML keeps the rest of the cell unchanged.
+        td.prepend(_buildWatchlistStar(row, hub))
     }},
     {field: "status", label: "St", group: "computed",
      title: "Status flag — hover a cell for the rule; click to sort. A VAR+/VAR− pill is appended when the latest snapshot's Δ% exceeds the variance warn threshold.",
@@ -6645,6 +6783,13 @@ RouteAssistantPanel._orsPrimaryColumn = "ratingGapToTop"
 // Live reference to the active panel — render closures need it to open the
 // drill-in drawer on click without capturing `this`.
 RouteAssistantPanel._currentInstance = null
+// Watchlist alert-badge gate — set in `_syncRenderContext` from
+// settings.routeAssistant.watchlist.showAlertBadges. Read by
+// `_buildWatchlistStar` to decide whether to render the red dot suffix
+// next to the ★ on starred rows whose `_diff` shows worsening change.
+// The starred state itself is per-row (`row._starred`), set in
+// `_renderRows`, not exposed here.
+RouteAssistantPanel._showWatchTriggers = true
 
 /**
  * Resolve which numeric value the ORS primary column should display, based
@@ -6905,6 +7050,97 @@ function _formatDiffNumber(field, abs) {
  * wins — used by the Cmp column which displays competitorCount with an
  * airlineCount fallback).
  */
+// ---------- Watchlist (starred routes) ----------
+// Pair of helpers powering the ☆/★ button in the destIata cell. Storage
+// + Set lifecycle live in RouteAssistantWatchlistStore; everything below is
+// the panel-side render + trigger evaluation.
+//
+// RA_WATCH_TRIGGERS lists every (field, worseDir) pair that should light an
+// alert dot on a starred row. The fields here MUST also appear in
+// RA_DIFF_TRACKED (above) — the row's `_diff.<field>` scalar is what drives
+// the trigger. `worseDir` is the sign of the diff that counts as a bad
+// change: `+1` means an increase is bad (more competitors, tighter RM),
+// `-1` means a decrease is bad (lower demand, shrinking ORS gap).
+const RA_WATCH_TRIGGERS = [
+    {field: "paxScore",          worseDir: -1, label: "Pax demand fell"},
+    {field: "cargoScore",        worseDir: -1, label: "Cargo demand fell"},
+    {field: "airlineCount",      worseDir: +1, label: "Real-world competitor entered"},
+    {field: "competitorCount",   worseDir: +1, label: "AS competitor entered"},
+    {field: "rmTightness",       worseDir: +1, label: "RM tightness rose (less headroom)"},
+    {field: "orsRatingGapToTop", worseDir: -1, label: "ORS gap-to-top shrunk"}
+]
+
+/**
+ * Returns an array of fired trigger entries for `row`, each `{label, delta}`,
+ * by comparing the row's `_diff.<field>` scalars (set upstream by
+ * `_decorateRowsWithDiffs`) against `RA_WATCH_TRIGGERS`. Empty array when no
+ * triggers fired or when there's no diff baseline yet (first ever mount on
+ * this hub).
+ */
+function _evaluateWatchTriggers(row) {
+    const fired = []
+    if (!row || !row._diff) return fired
+    for (const t of RA_WATCH_TRIGGERS) {
+        const d = row._diff[t.field]
+        if (typeof d !== "number" || !isFinite(d) || d === 0) continue
+        if (Math.sign(d) !== t.worseDir) continue
+        fired.push({label: t.label, field: t.field, delta: d})
+    }
+    return fired
+}
+
+/**
+ * Build the leading ☆/★ button for the destIata cell. Clickable, calls
+ * `_currentInstance._toggleWatchlist(hub, dest)`. When the row is starred
+ * AND `_evaluateWatchTriggers` returns at least one trigger, suffix a small
+ * red dot whose `title=""` lists every fired trigger and its delta. The dot
+ * is gated on `_showWatchTriggers` so users can hide it via the
+ * `showAlertBadges` setting without losing the star itself.
+ */
+function _buildWatchlistStar(row, hub) {
+    const wrap = document.createElement("span")
+    wrap.style.cssText = "display:inline-flex;align-items:center;margin-right:3px;vertical-align:middle;"
+    const starred = !!row._starred
+    const btn = document.createElement("a")
+    btn.href = "#"
+    btn.textContent = starred ? "★" : "☆"
+    btn.style.cssText = "text-decoration:none;font-size:13px;line-height:1;cursor:pointer;"
+        + (starred ? "color:#fbbf24;" : "color:#6b7280;")
+    btn.title = starred
+        ? "Starred — pinned to top. Click to unstar."
+        : "Click to star this route — pins to top, lights an alert when its numbers worsen since your last visit."
+    btn.addEventListener("click", (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const inst = RouteAssistantPanel._currentInstance
+        if (!inst) return
+        inst._toggleWatchlist(hub || RouteAssistantPanel._currentHubIata || "", row.destIata)
+    })
+    wrap.append(btn)
+    if (starred && RouteAssistantPanel._showWatchTriggers !== false) {
+        const fired = _evaluateWatchTriggers(row)
+        if (fired.length) {
+            const dot = document.createElement("span")
+            dot.textContent = "•"
+            dot.style.cssText = "margin-left:2px;font-size:14px;line-height:1;"
+                + "color:#fca5a5;cursor:help;"
+            const stamp = row._diffSnapshotAt
+                ? new Date(row._diffSnapshotAt).toLocaleString()
+                : "previous panel mount"
+            const lines = ["Watch triggers since last visit:"]
+            for (const f of fired) {
+                const sign = f.delta > 0 ? "+" : "−"
+                const fmt  = _formatDiffNumber(f.field, Math.abs(f.delta))
+                lines.push("  • " + f.label + " (" + sign + fmt + ")")
+            }
+            lines.push("(baseline: " + stamp + ")")
+            dot.title = lines.join("\n")
+            wrap.append(dot)
+        }
+    }
+    return wrap
+}
+
 function _appendDiffBadge(td, field, row) {
     if (!td || !row || !row._diff) return
     const fields = Array.isArray(field) ? field : [field]

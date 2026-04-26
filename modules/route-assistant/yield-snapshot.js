@@ -74,7 +74,8 @@ class RouteAssistantYieldSnapshot {
         input = input || {}
         const server          = String(input.server || "").trim()
         const hubFilter       = input.hubIata ? String(input.hubIata).toUpperCase() : null
-        const attributionMode = (input.attributionMode === "distance" || input.attributionMode === "equal")
+        const requestedMode   = (input.attributionMode === "distance" || input.attributionMode === "equal"
+                                 || input.attributionMode === "per-flight")
             ? input.attributionMode : "frequency"
         const historyLimit    = input.historyLimit || 12
         const distanceMap     = (input.distanceMap instanceof Map) ? input.distanceMap : null
@@ -93,15 +94,63 @@ class RouteAssistantYieldSnapshot {
         // "frequency" because we use it to enrich the per-route numerator.
         const tailRoutes = RouteAssistantYieldSnapshot._buildTailRouteMap(priceRecs, distanceMap)
 
+        // Per-flight aggregator (G slice 4) — when `requestedMode === "per-flight"`,
+        // walks every tail's `flights[]` envelope and joins each finished/inflight
+        // entry with its <server>flightInfo<flightId> record for the AS$ profit.
+        // Aggregates by the envelope's own (originIata, destinationIata) pair —
+        // exact attribution, no frequency weighting, multi-leg FNs handled
+        // naturally because each leg's envelope carries its own route. Built
+        // unconditionally so the snapshot diagnostics can report what would
+        // have been available even when the user is on a different mode.
+        const perFlightMap = RouteAssistantYieldSnapshot._collectPerFlightProfits(
+            all, server, hubFilter, aircraftRecs
+        )
+
         const entries           = []
         const contributingTails = new Set()
         const seenTails         = new Set()
         const tailsMissingSet   = new Set()
         const hubsTouched       = new Set()
         const tailsUsingDelta   = new Set()
+        let routesWithPerFlight = 0
+        let routesFellBack      = 0
 
         for (const rec of priceRecs) {
             const routeKey = rec.hub + "-" + rec.dest
+
+            // Per-flight short-circuit. When the mode is "per-flight" AND the
+            // route has at least one measured flight (envelope + flightInfo
+            // both present), use the exact aggregate and skip the tail-based
+            // weighting entirely. Otherwise fall through to the legacy path.
+            const perFlight = (requestedMode === "per-flight")
+                ? (perFlightMap.get(routeKey) || null)
+                : null
+            if (perFlight && perFlight.count > 0) {
+                hubsTouched.add(rec.hub)
+                routesWithPerFlight++
+                for (const r of perFlight.tailRegs) {
+                    seenTails.add(r); contributingTails.add(r)
+                }
+                entries.push({
+                    hub:  rec.hub,
+                    dest: rec.dest,
+                    snapshot: {
+                        timestamp:             Date.now(),
+                        profitPerFlight:       Math.round(perFlight.profit / perFlight.count),
+                        profitPerWeek:         Math.round(perFlight.profit / perFlight.count
+                                                    * RouteAssistantYieldSnapshot._weeklyFreqOf(rec)),
+                        frequency:             perFlight.count,
+                        aircraftTypeNames:     Array.from(perFlight.typeNames),
+                        aircraftRegistrations: Array.from(perFlight.tailRegs),
+                        contributingTails:     perFlight.tailRegs.size,
+                        totalKnownTails:       perFlight.tailRegs.size,
+                        attributionMode:       "per-flight",
+                        contributingFlights:   perFlight.count,
+                        mode:                  "per-flight"
+                    }
+                })
+                continue
+            }
 
             // Per-route map<reg, weeklyFreq>. Multiple flightNumber rows can
             // share a registration; sum them up.
@@ -114,6 +163,12 @@ class RouteAssistantYieldSnapshot {
                     (tailFreqOnRoute.get(f.registration) || 0) + days)
             }
             if (!tailFreqOnRoute.size) continue
+            if (requestedMode === "per-flight") routesFellBack++
+
+            // For per-flight requests that fell back, run the per-tail
+            // weighting in plain "frequency" mode — distance/equal weights
+            // are the wrong default to lean on as a fallback.
+            const fallbackMode = (requestedMode === "per-flight") ? "frequency" : requestedMode
 
             let totalFreq         = 0
             let totalProfit       = 0
@@ -133,7 +188,7 @@ class RouteAssistantYieldSnapshot {
                 const tailPpf = stats.tailPpf  // already delta-aware (see _buildRegProfitMap)
                 if (stats.usedDelta) tailsUsingDelta.add(reg)
                 const weight  = RouteAssistantYieldSnapshot._weightForTail(
-                    reg, freq, routeKey, attributionMode, tailRoutes
+                    reg, freq, routeKey, fallbackMode, tailRoutes
                 )
                 totalFreq   += weight.frequency
                 totalProfit += tailPpf * weight.share
@@ -160,7 +215,7 @@ class RouteAssistantYieldSnapshot {
                     aircraftRegistrations: Array.from(regs),
                     contributingTails:     routeContribTails,
                     totalKnownTails:       totalKnownTails,
-                    attributionMode:       attributionMode,
+                    attributionMode:       fallbackMode,
                     mode:                  deltaMode ? "delta" : "cumulative"
                 }
             })
@@ -190,8 +245,88 @@ class RouteAssistantYieldSnapshot {
             snapshotAt:           Date.now(),
             snapshots:            updated,
             mode:                 deltaMode ? "delta" : "cumulative",
-            tailsUsingDelta:      tailsUsingDelta.size
+            tailsUsingDelta:      tailsUsingDelta.size,
+            attributionMode:      requestedMode,
+            routesWithPerFlight:  routesWithPerFlight,
+            routesFellBack:       routesFellBack,
+            perFlightAvailable:   perFlightMap.size  // routes where per-flight COULD have attributed
         }
+    }
+
+    /**
+     * Weekly frequency for a ticket-price record — sums days/wk across every
+     * `flightNumber` row in `rec.flights[]`. Used by per-flight attribution
+     * to project the per-flight $/flt up to a $/wk number that's directly
+     * comparable to the existing column.
+     */
+    static _weeklyFreqOf(rec) {
+        if (!rec || !Array.isArray(rec.flights)) return 0
+        let n = 0
+        for (const f of rec.flights) {
+            if (!f) continue
+            n += RouteAssistantYieldSnapshot._countActiveDays(f.frequencyDays) || 0
+        }
+        return n
+    }
+
+    /**
+     * Per-flight aggregator — walks every `<server>aircraftFlights<id>`
+     * record's `flights[]` envelope (G slice 4 wrote those) and joins each
+     * envelope with its `<server>flightInfo<flightId>` financial record.
+     *
+     * Aggregates per `{originIata, destinationIata}` route key (using the
+     * envelope's own origin/dest, not the schedule cache — multi-leg FNs are
+     * naturally handled because each leg's envelope carries its own route).
+     *
+     * Skips:
+     *   - Envelopes missing originIata/destinationIata (legacy cache, pre-slice 4)
+     *   - Envelopes whose status is not "finished"/"inflight" (no profit yet)
+     *   - Envelopes whose flightInfo record is missing (user hasn't visited
+     *     the flight detail page) — these don't contribute, but their tail
+     *     reg is recorded so the diag can report coverage gaps.
+     *
+     * Returns Map<"HUB-DEST", {profit, count, tailRegs:Set, typeNames:Set,
+     *                          fnIds:Set, missingFinancials}>.
+     */
+    static _collectPerFlightProfits(all, server, hubFilter, aircraftRecs) {
+        const out = new Map()
+        const tag = "flightInfo"
+        for (const rec of aircraftRecs) {
+            if (!rec || !Array.isArray(rec.flights)) continue
+            for (const env of rec.flights) {
+                if (!env || !env.originIata || !env.destinationIata) continue
+                if (env.status !== "finished" && env.status !== "inflight") continue
+                if (hubFilter && env.originIata !== hubFilter) continue
+                const flightInfoKey = server + tag + env.flightId
+                const fi = all[flightInfoKey]
+                const totalAmount = (fi && fi.money && fi.money.CM5)
+                    ? Number(fi.money.CM5.Total) : null
+                const routeKey = env.originIata + "-" + env.destinationIata
+                let slot = out.get(routeKey)
+                if (!slot) {
+                    slot = {
+                        profit: 0, count: 0,
+                        tailRegs: new Set(), typeNames: new Set(),
+                        fnIds: new Set(), missingFinancials: 0
+                    }
+                    out.set(routeKey, slot)
+                }
+                if (rec.registration) slot.tailRegs.add(rec.registration)
+                if (rec.equipment)    slot.typeNames.add(rec.equipment)
+                if (typeof env.flightNumberId === "number") slot.fnIds.add(env.flightNumberId)
+                if (totalAmount !== null && isFinite(totalAmount)) {
+                    slot.profit += totalAmount
+                    slot.count++
+                } else {
+                    slot.missingFinancials++
+                }
+            }
+        }
+        // Drop routes where every flight was missing financials — no signal.
+        for (const [k, slot] of out) {
+            if (slot.count === 0) out.delete(k)
+        }
+        return out
     }
 
     /**
