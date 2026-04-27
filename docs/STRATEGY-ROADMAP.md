@@ -956,11 +956,17 @@ Realistically across calendar with QA, game-world game-weeks needed for empirica
 
 ## Part VIII — What's already shipped on this branch
 
-1. `modules/strategy/context.js` (Slice 1) — `AesStrategy.snapshot()` synthesizing every read store.
-2. `modules/strategy/decide-routes.js` (Slice 2) — `AesStrategy.scoreRoutes(snapshot, weights?)` with composite scoring + rationale.
-3. `manifest.json` — `context.js` wired into dashboard + `/app/fleets*` content-script blocks. (`decide-routes.js` will be wired in the same commit that ships this expanded plan.)
+1. `modules/strategy/scoring-primitives.js` — shared math (flight-time, fuel, distance-factor, great-circle).
+2. `modules/strategy/context.js` (Slice 1) — `AesStrategy.snapshot()` synthesizing every read store.
+3. `modules/strategy/decide-routes.js` (Slice 2) — `AesStrategy.scoreRoutes(snapshot, weights?)` with composite scoring + rationale.
+4. `modules/strategy/route-creation.js` (Slice 3 + 6) — `AesStrategy.proposeRouteCreations(snapshot, scored, opts?)`.
+5. `modules/strategy/price-moves.js` (Slice 3 + 9) — `AesStrategy.proposePriceMoves(snapshot, opts?)` with deadband + max-move guardrails.
+6. `modules/strategy/service-moves.js` (Slice 3 + 7) — `AesStrategy.proposeServiceMoves(snapshot, opts?)`.
+7. `modules/strategy/crew-moves.js` (Slice 3 + 8) — `AesStrategy.proposeCrewMoves(snapshot, fleetPlan, opts?)`.
+8. `modules/strategy/allocate-fleet.js` (Slice 3) — `AesStrategy.allocateFleet(snapshot, scoredRoutes, opts?)` returns a complete `FleetPlan` with per-aircraft greedy round-trip filler, route creations, price moves, service moves, crew moves, and a summary.
+9. `manifest.json` — every strategy module wired into dashboard + `/app/fleets*` content-script blocks.
 
-These two slices are **read-only**. No POSTs happen. No data is written to storage by the strategy layer in PR-1. The engine is purely advisory until Slice 4 (PR-3) lands.
+All of these are **read-only**. No POSTs happen. No data is written to storage by the strategy layer in PRs 1+2. The engine is purely advisory until Slice 4 (PR-3) lands the apply pipeline.
 
 ---
 
