@@ -142,6 +142,8 @@
                 "modules/alliance/alliance-overview-scraper.js",
                 "modules/central-hub/tiles/alliance-tile.js",
                 "modules/central-hub/host.js",
+                "modules/strategy/context.js",
+                "modules/strategy/decide-routes.js",
                 "content_dashboard.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/enterprise/dashboard*"]
@@ -427,7 +429,9 @@
                 "modules/aircraft-flight-plan-dashboard/deep-link.js",
                 "modules/aircraft-flight-plan-dashboard/fleet-roster-view.js",
                 "modules/aircraft-flight-plan-dashboard/panel.js",
-                "modules/aircraft-flight-plan-dashboard/host.js"
+                "modules/aircraft-flight-plan-dashboard/host.js",
+                "modules/strategy/context.js",
+                "modules/strategy/decide-routes.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/fleets*"]
         }
