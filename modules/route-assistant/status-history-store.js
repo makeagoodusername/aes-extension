@@ -29,36 +29,64 @@ class RouteAssistantStatusHistoryStore {
     static PREFIX = "routeAssistant:statusHistory:"
     static MAX_TRANSITIONS = 20
 
-    static _key(hub, dest) {
+    static _legacyKey(hub, dest) {
         return RouteAssistantStatusHistoryStore.PREFIX
             + String(hub  || "").toUpperCase() + "-"
             + String(dest || "").toUpperCase()
+    }
+
+    static _key(hub, dest, accountId) {
+        const legacy = RouteAssistantStatusHistoryStore._legacyKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
     }
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
-    static async get(hub, dest) {
-        const key = RouteAssistantStatusHistoryStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+    static async get(hub, dest, opts) {
+        const acctId = RouteAssistantStatusHistoryStore._resolveAccountId(opts)
+        const scoped = RouteAssistantStatusHistoryStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantStatusHistoryStore._legacyKey(hub, dest)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const out = await chrome.storage.local.get(reqKeys)
+        return out[scoped] || out[legacy] || null
     }
 
     /**
      * Bulk read for a list of [hub, dest] pairs. Returns
      * `Map<pairKey, record>` where `pairKey` is "<HUB>-<DEST>" uppercased.
      */
-    static async getMany(pairs) {
+    static async getMany(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(([h, d]) => RouteAssistantStatusHistoryStore._key(h, d))
-        const out = await chrome.storage.local.get(keys)
+        const acctId = RouteAssistantStatusHistoryStore._resolveAccountId(opts)
+        const scopedKeys = []
+        const legacyKeys = []
+        const pairList   = []
+        for (const [h, d] of pairs) {
+            scopedKeys.push(RouteAssistantStatusHistoryStore._key(h, d, acctId))
+            legacyKeys.push(RouteAssistantStatusHistoryStore._legacyKey(h, d))
+            pairList.push(RouteAssistantStatusHistoryStore._pairKey(h, d))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out = await chrome.storage.local.get(reqKeys)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
-            if (!rec) continue
-            const pair = k.substring(RouteAssistantStatusHistoryStore.PREFIX.length)
-            map.set(pair, rec)
+        for (let i = 0; i < pairList.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
+            if (rec) map.set(pairList[i], rec)
         }
         return map
     }
@@ -70,15 +98,19 @@ class RouteAssistantStatusHistoryStore {
      * Returns the updated record, or null when no transition was recorded
      * (status unchanged or `toStatus` is empty).
      */
-    static async appendTransition(hub, dest, toStatus, atMs) {
+    static async appendTransition(hub, dest, toStatus, atMs, opts) {
         const hubU  = String(hub  || "").toUpperCase()
         const destU = String(dest || "").toUpperCase()
         if (!hubU || !destU) return null
         if (!toStatus || typeof toStatus !== "string") return null
         const at = (typeof atMs === "number" && isFinite(atMs)) ? atMs : Date.now()
+        const acctId = RouteAssistantStatusHistoryStore._resolveAccountId(opts)
 
-        const key = RouteAssistantStatusHistoryStore._key(hubU, destU)
-        const existing = (await chrome.storage.local.get([key]))[key] || null
+        const key = RouteAssistantStatusHistoryStore._key(hubU, destU, acctId)
+        const legacy = RouteAssistantStatusHistoryStore._legacyKey(hubU, destU)
+        const reqKeys = key === legacy ? [key] : [key, legacy]
+        const existingMap = await chrome.storage.local.get(reqKeys)
+        const existing = existingMap[key] || existingMap[legacy] || null
         const transitions = (existing && Array.isArray(existing.transitions))
             ? existing.transitions.slice()
             : []
@@ -118,9 +150,12 @@ class RouteAssistantStatusHistoryStore {
         return record.transitions[record.transitions.length - 1]
     }
 
-    static async remove(hub, dest) {
-        const key = RouteAssistantStatusHistoryStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+    static async remove(hub, dest, opts) {
+        const acctId = RouteAssistantStatusHistoryStore._resolveAccountId(opts)
+        const key = RouteAssistantStatusHistoryStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantStatusHistoryStore._legacyKey(hub, dest)
+        const toRemove = key === legacy ? [key] : [key, legacy]
+        await chrome.storage.local.remove(toRemove)
     }
 }
 

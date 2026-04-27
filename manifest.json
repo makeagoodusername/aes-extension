@@ -309,6 +309,7 @@
                 "modules/schedule-management/schedule-builder.js",
                 "modules/schedule-management/open-stations-modal.js",
                 "modules/aircraft-flight-plan/settings-extension.js",
+                "modules/aircraft-flight-plan/afp-settings-store.js",
                 "modules/aircraft-flight-plan/host.js",
                 "modules/aircraft-flight-plan/diagnostics.js",
                 "modules/aircraft-flight-plan/audit-log.js",
