@@ -168,17 +168,31 @@
     }
 
     /**
-     * Visual Flight Plan reader. Returns one entry per child of each
-     * `.day .blocks` div across Mon-Sun. Empty .blocks → []. The captured
-     * 6968 snapshot has empty .blocks for every day, so the per-block
-     * fields (depTimeLocal, destination, flightNumber) are best-effort
-     * and may need refinement against a populated aircraft.
+     * Visual Flight Plan reader. Walks `.day .blocks` Mon-Sun and emits
+     * one entry per `.block.flight` child (skipping the location /
+     * turnaround / ready slivers around each flight bar).
      *
-     * TODO(AFP-coord): verify per-block parsing against a populated
-     * Visual Flight Plan snapshot — the 6968 capture has empty .blocks
-     * across all seven days, so this parser hasn't been validated against
-     * the live shape of a flight bar. Slice C/E consumers should handle
-     * `null` flightNumber/destination gracefully until that verification.
+     * Time encoding: AS positions every block by CSS `margin-left` /
+     * `width` as a percentage of the 24h day. So a flight block with
+     * `margin-left: 25.0%` starts at 6:00 (25% × 1440min = 360min). The
+     * `<span class="start">` text inside is unreliable across short vs
+     * long bars (HHMM for long, just minutes for short), so we treat
+     * margin-left as the source of truth and round to the nearest minute.
+     *
+     * Origin / destination: the location bars sandwiching the flight bar
+     * carry the IATA in `<span class="outbound" title>` (the bar before)
+     * and `<span class="inbound" title>` (the bar after). We prefer the
+     * `title` attribute over textContent because AS sometimes wraps the
+     * label in extra elements.
+     *
+     * Each leg gets a synthetic 1-based `seq` ordered by (dayIdx, depTime)
+     * so callers (Track 6's ScheduleDiff) can refer to a current leg by
+     * an integer key the way ScheduleBuilder-produced legs do.
+     *
+     * Validated against the 13536 capture (CLAUDE/...:13536:0?6 flight
+     * plan.html) which has 14+ populated flights across Mon-Sun. The
+     * 6968 capture's empty .blocks paths still return []. See
+     * CLAUDE/handover-fragments/AFP-VFP-parser.md for the selector audit.
      */
     function readVisualFlightPlan() {
         const out = []
@@ -187,23 +201,133 @@
             const dayName = day.querySelector(".dayName")?.textContent?.trim() || null
             const blocks = day.querySelector(".blocks")
             if (!blocks) return
-            for (const block of blocks.children) {
-                const text = (block.textContent || "").trim()
-                const timeMatch = text.match(/\b(\d{2}:\d{2})\b/)
-                const iataMatch = text.match(/\b([A-Z]{3})\b/)
-                const fnLink = block.querySelector("a[href*='/numbers/']")
-                const flightNumber = fnLink ? (fnLink.textContent || "").trim() : null
-                out.push({
-                    dayIdx,
-                    dayName,
-                    depTimeLocal: timeMatch ? timeMatch[1] : null,
-                    destination:  iataMatch ? iataMatch[1] : null,
-                    flightNumber: flightNumber || null,
-                    raw: block
-                })
+            const children = Array.from(blocks.children)
+            for (let i = 0; i < children.length; i++) {
+                const block = children[i]
+                if (!block.classList || !block.classList.contains("flight")) continue
+                out.push(_readVfpFlightBlock(block, children, i, dayIdx, dayName))
             }
         })
+        out.sort((a, b) => {
+            if (a.dayIdx !== b.dayIdx) return a.dayIdx - b.dayIdx
+            const aMin = _hhmmToMin(a.depTimeLocal)
+            const bMin = _hhmmToMin(b.depTimeLocal)
+            return (aMin == null ? 1e9 : aMin) - (bMin == null ? 1e9 : bMin)
+        })
+        for (let s = 0; s < out.length; s++) out[s].seq = s + 1
         return out
+    }
+
+    /** Internal: extract one flight leg from a `.block.flight` element. */
+    function _readVfpFlightBlock(block, children, idx, dayIdx, dayName) {
+        const codeSpan = block.querySelector(".code")
+        const flightCode = codeSpan ? (codeSpan.textContent || "").trim() : null
+        const fnLink = block.querySelector("a[href*='/numbers/']")
+        let flightLink = null
+        let flightId = null
+        if (fnLink) {
+            const href = fnLink.getAttribute("href") || ""
+            // Hrefs are AS-relative like "../../../com/numbers/9135?segment=0";
+            // strip the query + leading dots so callers always see "/app/com/numbers/<id>".
+            const m = href.match(/numbers\/(\d+)/)
+            if (m) {
+                flightId = m[1]
+                flightLink = "/app/com/numbers/" + flightId
+            }
+        }
+
+        const startMin = _percentToMinutes(block.style.marginLeft)
+        const widthMin = _percentToMinutes(block.style.width)
+        const depTimeLocal = startMin == null ? null : _minToHHMM(startMin)
+        const arrTimeLocal = (startMin != null && widthMin != null)
+            ? _minToHHMM((startMin + widthMin) % 1440) : null
+        const durationMin  = widthMin != null ? Math.round(widthMin) : null
+
+        // Origin = `outbound` IATA from the `.block.location` immediately
+        // before the flight bar (or earlier if intervening turnaround
+        // blocks were emitted by AS). Destination = `inbound` IATA from
+        // the location bar AFTER the flight bar.
+        const origin = _findAdjacentIata(children, idx, -1, ".outbound")
+        const destination = _findAdjacentIata(children, idx, +1, ".inbound")
+
+        // Day-spanning markers: classList "started" without "ended" means
+        // bar runs into the next day; "ended" without "started" means it
+        // continues from the previous day. Track 6 diff treats both shapes
+        // as a single leg keyed off (origin, dest, depTime).
+        const cl = block.classList
+        const spansIntoNext = cl.contains("started") && !cl.contains("ended")
+        const spansFromPrev = cl.contains("ended")   && !cl.contains("started")
+
+        return {
+            seq: 0,                       // assigned after sort
+            dayIdx,
+            dayName,
+            depTimeLocal,
+            arrTimeLocal,
+            durationMin,
+            origin,
+            destination,
+            flightCode,                   // "79", "FGM 1" — suffix only, no airline prefix
+            flightNumber: flightCode,     // alias for callers expecting `flightNumber`
+            flightId,                     // numeric AS id, e.g. "9135"
+            flightLink,                   // "/app/com/numbers/9135"
+            spansIntoNext,
+            spansFromPrev,
+            raw: block
+        }
+    }
+
+    /** Internal: resolve a CSS percent ("25.0%") to minutes-of-day (0..1440). */
+    function _percentToMinutes(cssVal) {
+        if (!cssVal) return null
+        const n = parseFloat(String(cssVal))
+        if (!isFinite(n)) return null
+        return Math.round(n * 14.4)
+    }
+
+    /** Internal: format minute count (0..1439) as "HH:MM". */
+    function _minToHHMM(min) {
+        if (min == null || !isFinite(min)) return null
+        const m = ((min % 1440) + 1440) % 1440
+        const h  = Math.floor(m / 60)
+        const mm = m % 60
+        return (h < 10 ? "0" + h : String(h)) + ":" + (mm < 10 ? "0" + mm : String(mm))
+    }
+
+    /** Internal: parse "HH:MM" → minutes. */
+    function _hhmmToMin(s) {
+        if (!s || typeof s !== "string") return null
+        const m = s.match(/^(\d{1,2}):(\d{2})$/)
+        if (!m) return null
+        return parseInt(m[1], 10) * 60 + parseInt(m[2], 10)
+    }
+
+    /**
+     * Internal: walk neighbours of a flight block looking for a `.block.location`
+     * containing the requested IATA span. `direction` = -1 for previous siblings,
+     * +1 for next siblings. Stops at the first location bar found in each
+     * direction; returns the IATA via the span's `title` attr (preferred) with
+     * textContent as fallback.
+     */
+    function _findAdjacentIata(children, idx, direction, spanSelector) {
+        const step = direction < 0 ? -1 : 1
+        for (let j = idx + step; j >= 0 && j < children.length; j += step) {
+            const sib = children[j]
+            if (!sib.classList) continue
+            if (sib.classList.contains("location")) {
+                const span = sib.querySelector(spanSelector)
+                if (span) {
+                    const title = span.getAttribute("title")
+                    if (title && /^[A-Z]{3}$/.test(title.trim())) return title.trim()
+                    const txt = (span.textContent || "").trim()
+                    const m = txt.match(/\b([A-Z]{3})\b/)
+                    if (m) return m[1]
+                }
+                return null
+            }
+            // Skip turnaround / ready / odd-even background slivers.
+        }
+        return null
     }
 
     /**
