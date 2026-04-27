@@ -313,6 +313,10 @@
         const departureValid     = readCheckRowByCaption(tbody, /^Departure Time Validity$/i)
         const aircraftPerformance = readCheckRowByCaption(tbody, /^Aircraft performance$/i)
         const routeRestrictions  = readCheckRowByCaption(tbody, /^Route Restrictions$/i)
+        // The "Time window" row goes red when the round-trip + ground time
+        // exceeds the daily 24h slot. Same `.fa-check`/`.fa-times` icon
+        // convention as the other validation rows — no new detection logic.
+        const timeWindow         = readCheckRowByCaption(tbody, /^Time window$/i)
         const perAirport         = readPerAirport(tbody)
 
         const cells = []
@@ -328,7 +332,8 @@
                 fixedArrival:         !!segData.fixed[d],
                 departureTimeValid:   departureValid[d],
                 aircraftPerformanceOk: aircraftPerformance[d],
-                routeRestrictionsOk:  routeRestrictions[d]
+                routeRestrictionsOk:  routeRestrictions[d],
+                timeWindowOk:         timeWindow[d]
             })
         }
 

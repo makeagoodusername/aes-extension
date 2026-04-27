@@ -473,6 +473,21 @@
         const priceSelect   = form.querySelector("select[name='price']")
         const serviceSelect = form.querySelector("select[name='service']")
 
+        // Flight-number text input + AS's two server-side helpers ("find
+        // available" / "find first available"). The input's `name` is
+        // `number:number_body:input` (Wicket path); we anchor on `name$=`
+        // because the prefix component path can shift across renders.
+        const flightNumberInput =
+               form.querySelector("input[name='number:number_body:input']")
+            || form.querySelector("input[name$=':number_body:input']")
+            || form.querySelector("input[type='text'][maxlength='4'][name*='number']")
+        const flightNumberFindFirstBtn =
+               form.querySelector("a[href*='number~find~first']")
+            || form.querySelector("a[title='find first available']")
+        const flightNumberFindBtn =
+               form.querySelector("a[href*='number~find']:not([href*='number~find~first'])")
+            || form.querySelector("a[title='find available']")
+
         // Reverse-O/D link sits in the same form's .as-action-bar.
         // Match by href (toggle~stations) first, fall back to text.
         let reverseBtn = form.querySelector("a.btn.btn-default[href*='toggle~stations']")
@@ -490,6 +505,9 @@
             minsSelect,
             priceSelect,
             serviceSelect,
+            flightNumberInput,
+            flightNumberFindFirstBtn,
+            flightNumberFindBtn,
             submitBtn,
             reverseBtn
         }

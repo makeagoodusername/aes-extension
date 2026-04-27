@@ -24,12 +24,16 @@
  * AFP sidebar still uses the bus path (pre-fill only).
  *
  * Public API (window.AesAfpFormDriver):
+ *   setDayActive(dayIdx, enabled) → boolean
+ *   ensureNewTabActive()           → Promise<formCtx | null>
  *   findForm()                 → FormHandles | null  (delegates to Slice A)
  *   setOrigin(iata)            → boolean
  *   setDestination(iata)       → boolean
  *   setDepartureTime(hhmm)     → boolean
  *   setPricePercent(pct)       → boolean
  *   setService(value)          → boolean
+ *   setFlightNumber(text)      → boolean
+ *   findNextAvailableFlightNumber() → Promise<string|null>
  *   fill(leg)                  → {ok, set, missed}
  *   fillAndSubmit(leg)         → Promise<{ok, posting?, error?}>  (background-only)
  *   reverse()                  → boolean
@@ -233,11 +237,14 @@
         const d = _readDefaults()
         const ctxOrigin = (window.AesAfp && window.AesAfp.ctx && window.AesAfp.ctx.currentLocationIata) || null
         return {
-            origin:      l.origin      || ctxOrigin,
-            destination: l.destination || null,
-            depTime:     l.depTime     || d.defaultDepartureTime,
-            pricePct:    Number.isFinite(l.pricePct)            ? l.pricePct : d.defaultPricePct,
-            service:     (typeof l.service === "string")        ? l.service  : d.defaultService
+            origin:           l.origin      || ctxOrigin,
+            destination:      l.destination || null,
+            depTime:          l.depTime     || d.defaultDepartureTime,
+            pricePct:         Number.isFinite(l.pricePct)         ? l.pricePct         : d.defaultPricePct,
+            service:          (typeof l.service === "string")     ? l.service          : d.defaultService,
+            flightNumberText: (typeof l.flightNumberText === "string" && l.flightNumberText.length)
+                                ? l.flightNumberText.replace(/[^0-9]/g, "").slice(0, 4)
+                                : ""
         }
     }
 
@@ -284,6 +291,30 @@
     function setOrigin(iata)         { const f = findForm(); return _setSelectByIata(f && f.originSelect, iata) }
     function setDestination(iata)    { const f = findForm(); return _setSelectByIata(f && f.destSelect,   iata) }
 
+    /**
+     * Toggle the planning-matrix day-selection checkbox for a given day
+     * index (0=Mon … 6=Sun). Same selector planning-matrix-reader uses
+     * (line 139); inputs are document-ordered Mon→Sun.
+     *
+     * Dispatches a bubbling `change` event so AS's Wicket handler refreshes
+     * the matrix (Time window / Departure time validity rows repaint).
+     * Never POSTs — toggling a checkbox is a client-side mutation; the user
+     * still has to click "Apply schedule settings" to persist.
+     */
+    function setDayActive(dayIdx, enabled) {
+        if (typeof dayIdx !== "number" || dayIdx < 0 || dayIdx > 6) return false
+        const inputs = document.querySelectorAll(
+            "form input[type='checkbox'][name*='daySelection:'][name*=':ticked']")
+        const cb = inputs[dayIdx]
+        if (!cb) return false
+        const next = !!enabled
+        if (cb.checked === next) return true
+        cb.checked = next
+        cb.dispatchEvent(new Event("change", {bubbles: true}))
+        _diag("set-day-active", {dayIdx, enabled: next})
+        return true
+    }
+
     function setDepartureTime(hhmm) {
         const f = findForm()
         if (!f || !f.hoursSelect || !f.minsSelect) return false
@@ -303,6 +334,56 @@
         const f = findForm()
         if (!f || !f.serviceSelect) return false
         return _setSelectByValue(f.serviceSelect, String(value == null ? "" : value))
+    }
+
+    /** Write the integer flight-number suffix into AS's `<input
+     *  name="number:number_body:input">`. AS bound an `onblur` Wicket-Ajax
+     *  validator on the input; we dispatch input + change + blur so the
+     *  uniqueness check fires before the user clicks Submit (otherwise the
+     *  check only triggers when the user manually tabs out). Empty string
+     *  clears the input — equivalent to letting AS auto-assign. */
+    function setFlightNumber(text) {
+        const f = findForm()
+        if (!f || !f.flightNumberInput) return false
+        const inp = f.flightNumberInput
+        const cleaned = String(text == null ? "" : text).replace(/[^0-9]/g, "").slice(0, 4)
+        if (inp.value !== cleaned) {
+            inp.value = cleaned
+            try { inp.dispatchEvent(new Event("input",  {bubbles: true})) } catch (_) {}
+            try { inp.dispatchEvent(new Event("change", {bubbles: true})) } catch (_) {}
+            try { inp.dispatchEvent(new Event("blur",   {bubbles: true})) } catch (_) {}
+        }
+        _diag("commit-flight-number", {value: cleaned})
+        return true
+    }
+
+    /** Click AS's "find first available" anchor and read the input's value
+     *  back once the Wicket-Ajax response lands. AS already implements the
+     *  global per-airline next-available lookup server-side; we just drive
+     *  the existing UI control and harvest the result. Returns null if the
+     *  anchor isn't on the page (e.g. user is on Existing tab) or if AS
+     *  doesn't populate the input within ~2s. The promise never throws. */
+    const FIND_NEXT_POLL_MS  = 100
+    const FIND_NEXT_MAX_TRIES = 20  // 2s
+    async function findNextAvailableFlightNumber() {
+        const f = await _ensureNewTabActive()
+        if (!f || !f.flightNumberInput || !f.flightNumberFindFirstBtn) return null
+        const inp  = f.flightNumberInput
+        const before = inp.value || ""
+        try { f.flightNumberFindFirstBtn.click() }
+        catch (e) { _diag("find-next-error", {err: String(e)}); return null }
+        for (let i = 0; i < FIND_NEXT_MAX_TRIES; i++) {
+            await new Promise(r => setTimeout(r, FIND_NEXT_POLL_MS))
+            // Wicket replaces the input subtree on response — re-resolve.
+            const nf = findForm()
+            const ni = nf && nf.flightNumberInput
+            if (ni && ni.value && ni.value !== before) {
+                _diag("find-next-ok", {value: ni.value, waitedMs: (i + 1) * FIND_NEXT_POLL_MS})
+                return ni.value
+            }
+        }
+        _diag("find-next-timeout", {})
+        return null
     }
 
     async function fill(leg) {
@@ -331,6 +412,13 @@
         else                                                  missed.push("price")
         if (setService(norm.service))                         set.service     = norm.service
         else                                                  missed.push("service")
+        // Flight-number text input is optional — empty leaves AS to auto-
+        // assign on submit. Only flag as missed when the leg explicitly
+        // requested a number and the input wasn't on the page.
+        if (norm.flightNumberText) {
+            if (setFlightNumber(norm.flightNumberText)) set.flightNumberText = norm.flightNumberText
+            else                                        missed.push("flightNumberText")
+        }
 
         _lastLeg = norm
         const result = {ok: missed.length === 0, set: set, missed: missed}
@@ -459,6 +547,11 @@
         }
         tryValue(form.priceSelect,   (norm.pricePct == null || norm.pricePct === "") ? "" : String(norm.pricePct), "price")
         tryValue(form.serviceSelect, String(norm.service == null ? "" : norm.service),                              "service")
+
+        // Flight-number text input. Empty value is fine (AS auto-assigns).
+        if (form.flightNumberInput && form.flightNumberInput.name) {
+            result.body[form.flightNumberInput.name] = norm.flightNumberText || ""
+        }
 
         // Hidden Wicket fields are empty at page load but may be injected at
         // submit time (CSRF tokens). Surface what's there now for honesty.
@@ -600,11 +693,13 @@
             const time = set.depTime     || leg.depTime     || ""
             const pct  = (set.pricePct != null) ? set.pricePct : (leg.pricePct != null ? leg.pricePct : "")
             const svc  = (set.service != null && set.service !== "") ? "service " + set.service : "default service"
+            const fn   = (set.flightNumberText || leg.flightNumberText || "").toString()
+            const fnTxt = fn ? " · #" + fn : " · #auto"
             const partial = missed.length ? " (missed: " + missed.join(", ") + ")" : ""
             el.innerHTML = ""
             const summary = document.createElement("div")
             summary.style.color   = missed.length ? "#fde68a" : "#a7f3d0"
-            summary.textContent   = "Pre-filled: " + orig + " → " + dest + " · " + time + " · " + pct + "% · " + svc + partial
+            summary.textContent   = "Pre-filled: " + orig + " → " + dest + " · " + time + " · " + pct + "% · " + svc + fnTxt + partial
             const cta = document.createElement("div")
             cta.style.color       = "#fde68a"
             cta.style.marginTop   = "2px"
@@ -669,7 +764,10 @@
     // Public namespace.
     window.AesAfpFormDriver = {
         findForm, setOrigin, setDestination, setDepartureTime,
-        setPricePercent, setService, fill, fillAndSubmit, reverse, clear, dryRun
+        setPricePercent, setService, setFlightNumber, findNextAvailableFlightNumber,
+        setDayActive,
+        ensureNewTabActive: _ensureNewTabActive,
+        fill, fillAndSubmit, reverse, clear, dryRun
     }
 
     // Late-load guard: Slice A may not have published the bus yet (manifest

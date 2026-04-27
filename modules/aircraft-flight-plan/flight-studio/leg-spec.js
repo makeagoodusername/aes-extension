@@ -20,7 +20,7 @@
  *       legs:              LegSpec[],                  // ≥ 1
  *       createdAt:         <ms>,
  *       updatedAt:         <ms>,
- *       source:            "manual"|"paste"|"template"|"candidate"|"vfp-edit",
+ *       source:            "manual"|"paste"|"template"|"candidate"|"vfp-edit"|"auto-build",
  *       templateId?:       "<id>",
  *       dryRun:            true|false
  *   }
@@ -52,7 +52,7 @@
     if (window.AesAfpLegSpec) return
 
     const SCHEMA_VERSION = 1
-    const VALID_SOURCES  = new Set(["manual", "paste", "template", "candidate", "vfp-edit"])
+    const VALID_SOURCES  = new Set(["manual", "paste", "template", "candidate", "vfp-edit", "auto-build"])
     const VALID_MODES    = new Set(["dry-run", "pre-fill", "submit"])
 
     // ── id generation ─────────────────────────────────────────────────────
@@ -261,18 +261,23 @@
 
     /**
      * Convert one LegSpec to the leg shape `AesAfpFormDriver.fill()` and
-     * `dryRun()` accept — `{origin, destination, depTime, pricePct, service}`.
-     * Single-leg only; for multi-leg, the panel iterates and calls fill()
-     * per leg (S2 form-driver-x landing).
+     * `dryRun()` accept — `{origin, destination, depTime, pricePct, service,
+     * flightNumberText}`. Single-leg only; for multi-leg, the panel iterates
+     * and calls fill() per leg (S2 form-driver-x landing).
+     *
+     * `flightNumberText` is a spec-level field (one number per FlightSpec,
+     * not per leg) so the caller passes the parent spec's value as a second
+     * argument to thread it onto the leg shape the form-driver expects.
      */
-    function toFormDriverLeg(legSpec) {
+    function toFormDriverLeg(legSpec, flightNumberText) {
         const l = legSpec || {}
         return {
-            origin:      _asIata(l.origin),
-            destination: _asIata(l.destination),
-            depTime:     _asHHMM(l.depTimeLocal) || undefined,
-            pricePct:    _asPct(l.pricePct),
-            service:     typeof l.service === "string" ? l.service : ""
+            origin:           _asIata(l.origin),
+            destination:      _asIata(l.destination),
+            depTime:          _asHHMM(l.depTimeLocal) || undefined,
+            pricePct:         _asPct(l.pricePct),
+            service:          typeof l.service === "string" ? l.service : "",
+            flightNumberText: typeof flightNumberText === "string" ? flightNumberText : ""
         }
     }
 
@@ -284,14 +289,22 @@
      */
     function toBatchLegs(spec) {
         const s = _normalizeSpec(spec || {})
-        return s.legs.map((leg) => Object.assign({}, toFormDriverLeg(leg), {
-            seq:    leg.seq,
-            _studio: {
-                specId:           s.specId,
-                flightNumberText: s.flightNumberText || null,
-                source:           s.source
+        // The user types one flight number per spec; AS only honours it on
+        // the first leg's POST (the rest of the multi-leg POSTs hit the
+        // same form anew with the user's number ALREADY in use). Pass it
+        // to leg #1 only and let AS auto-assign the rest.
+        return s.legs.map((leg, idx) => Object.assign(
+            {},
+            toFormDriverLeg(leg, idx === 0 ? (s.flightNumberText || "") : ""),
+            {
+                seq:    leg.seq,
+                _studio: {
+                    specId:           s.specId,
+                    flightNumberText: s.flightNumberText || null,
+                    source:           s.source
+                }
             }
-        }))
+        ))
     }
 
     /**
@@ -386,6 +399,86 @@
         }
     }
 
+    /**
+     * Seed a fresh single-leg spec for the leg that follows `leg` in a wave.
+     * Used by Flight Studio's Continue → / ← Continue back buttons. Pure —
+     * no DOM, no async. Caller passes the already-computed total minutes
+     * delta (`flightTime + turnaround`); we apply the sign + IATA anchor
+     * based on direction.
+     *
+     * Forward  ("forward"  | default): FROM = prev.destination, TO = blank,
+     *                                  depTime = prev.dep + deltaMin.
+     * Backward ("backward")          : TO   = prev.origin,      FROM = blank,
+     *                                  depTime = prev.dep − deltaMin.
+     *
+     * Time wraps modulo 24 h — Flight Studio carries no calendar
+     * (`depTimeLocal: "HH:MM"` per the schema docblock above), so a backward
+     * press past 00:00 lands on the previous evening's clock face. The user
+     * names the day; we name the hour.
+     */
+    function nextSpecAfter(spec, leg, deltaMin, direction) {
+        const s    = _normalizeSpec(spec || {})
+        const prev = leg || s.legs[s.legs.length - 1] || {}
+        const fwd  = direction !== "backward"
+        const sign = fwd ? +1 : -1
+        const newDep = _addMinutesHHMM(prev.depTimeLocal, sign * (Number(deltaMin) || 0))
+        return createSpec({
+            server:           s.server,
+            aircraftId:       s.aircraftId,
+            origin:           fwd ? _asIata(prev.destination) : null,
+            destination:      fwd ? null : _asIata(prev.origin),
+            depTimeLocal:     newDep,
+            service:          typeof prev.service === "string" ? prev.service : "",
+            pricePct:         _asPct(prev.pricePct) != null ? _asPct(prev.pricePct) : 100,
+            flightNumberText: null,
+            source:           "manual",
+            dryRun:           s.dryRun !== false
+        })
+    }
+
+    /** Add `delta` minutes to an HH:MM string and return HH:MM, modulo 24 h.
+     *  Negative deltas wrap; malformed inputs return a safe "09:00". Internal
+     *  — panel.js consumes this only through `nextSpecAfter`. */
+    function _addMinutesHHMM(hhmm, delta) {
+        const t = _asHHMM(hhmm)
+        if (!t) return "09:00"
+        const [h, m] = t.split(":").map(Number)
+        let total = (h * 60 + m + Math.round(Number(delta) || 0)) % 1440
+        if (total < 0) total += 1440
+        const oh = Math.floor(total / 60)
+        const om = total % 60
+        return (oh < 10 ? "0" + oh : "" + oh) + ":" + (om < 10 ? "0" + om : "" + om)
+    }
+
+    /**
+     * Replace `spec.legs` with the flights returned by the auto-scheduler's
+     * Build. Preserves spec.specId, flightNumberText, nickname, note. Tags
+     * `source = "auto-build"` so the panel can distinguish auto-built specs
+     * from manual ones (e.g., to gate the "re-build" affordance).
+     *
+     * Build flights ship with `{seq, origin, destination, depTimeLocal,
+     * pricePct?, service?, ...}`; missing pricePct/service fall back to the
+     * user-default settings or hardcoded sane values.
+     */
+    function setLegsFromBuild(spec, buildFlights, settings) {
+        const s = _normalizeSpec(spec || {})
+        const cfg = settings || {}
+        const dpct = _asPct(cfg.defaultPricePct) != null ? _asPct(cfg.defaultPricePct) : 100
+        const dsvc = typeof cfg.defaultService === "string" ? cfg.defaultService : ""
+        const legs = (Array.isArray(buildFlights) ? buildFlights : []).map((f, i) => _normalizeLeg({
+            seq:          (Number.isFinite(f && f.seq) && f.seq > 0) ? f.seq : i + 1,
+            origin:       _asIata(f && f.origin),
+            destination:  _asIata(f && f.destination),
+            depTimeLocal: _asHHMM(f && (f.depTimeLocal || f.depTime)),
+            service:      typeof (f && f.service) === "string" ? f.service : dsvc,
+            pricePct:     _asPct(f && f.pricePct) != null ? _asPct(f.pricePct) : dpct
+        }, i))
+        return _normalizeSpec(Object.assign({}, s, {
+            legs:   legs.length ? legs : s.legs,
+            source: "auto-build"
+        }))
+    }
+
     // ── Namespace ────────────────────────────────────────────────────────
     window.AesAfpLegSpec = {
         SCHEMA_VERSION,
@@ -403,6 +496,8 @@
         addLeg,
         removeLeg,
         setLegField,
-        setSpecField
+        setSpecField,
+        setLegsFromBuild,
+        nextSpecAfter
     }
 })()

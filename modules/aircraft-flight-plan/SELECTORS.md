@@ -39,6 +39,9 @@ All scoped to the form root. Origin / destination use select2 v3; the rest are n
 | Purpose | Selector | Fallback | Notes |
 |---|---|---|---|
 | Reverse O/D | `a.btn.btn-default[href*='toggle~stations']` | text-match `/reverse/i` within form | `host.js:findNewFlightForm` already chains both |
+| Flight-number input | `input[name='number:number_body:input']` | `input[name$=':number_body:input']` then `input[type='text'][maxlength='4'][name*='number']` | 1–4 numeric chars; AS auto-assigns when blank on submit |
+| Find first available | `a[href*='number~find~first']` | `a[title='find first available']` | Wicket Ajax — populates the input subtree on click |
+| Find available | `a[href*='number~find']:not([href*='number~find~first'])` | `a[title='find available']` | Same Wicket Ajax shape; cycles through available numbers |
 
 ## Tabs (form visibility gate)
 
