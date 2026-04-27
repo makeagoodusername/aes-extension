@@ -134,6 +134,8 @@
                 "modules/central-hub/tiles/crew-management-tile.js",
                 "modules/central-hub/tiles/settings-tile.js",
                 "modules/central-hub/tiles/tools-tile.js",
+                "modules/alliance/alliance-overview-scraper.js",
+                "modules/central-hub/tiles/alliance-tile.js",
                 "modules/central-hub/host.js",
                 "content_dashboard.js"
             ],
@@ -147,6 +149,13 @@
                 "content_marketScan.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/aircraft/market*"]
+        },
+        {
+            "js": [
+                "modules/alliance/alliance-overview-scraper.js",
+                "modules/alliance/content-alliance.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/alliance*"]
         },
         {
             "js": [
