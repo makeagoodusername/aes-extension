@@ -256,6 +256,12 @@ class RouteAssistantSettings {
                     },
                     roundPolicy:           "nearest",  // "nearest" | "floor" | "ceil"
                     cooldownMinPerRoute:   60,         // 0 = disabled
+                    // Tier 3.2 — second-axis cooldown across ALL routes.
+                    // Prevents rapid-fire chains of writes (key-repeat,
+                    // misclick a saved scenario) from racing through 5 hubs
+                    // in 30 seconds. Per-route stays the primary throttle;
+                    // this is the floor-level safety net. 0 = disabled.
+                    cooldownMinGlobal:     5,
                     warnAboveDeltaPct:     5,          // preflight warning threshold
                     requireConfirmAboveDeltaPct: 15,   // additional confirm step for large changes (3.2)
                     pricingApplyLogLimit:  200,        // global timeline cap
@@ -478,11 +484,30 @@ class RouteAssistantSettings {
         }
     }
 
+    /**
+     * L2 — read namespaced first, fall back to legacy.
+     *
+     * Storage shape post-L2:
+     *   settings.routeAssistant                    (legacy — pre-L2)
+     *   settings.acct.<id>.routeAssistant          (namespaced — L2+)
+     *
+     * Reads prefer the namespaced slot when `currentAccountIdSync()` is
+     * set AND that slot is populated; otherwise fall back to the legacy
+     * slot (which holds either pre-L2 data or the per-area defaults
+     * after migration completes). Merges into defaults exactly as before
+     * — the only change is which sub-blob feeds the merge.
+     */
     static async load() {
         const data = await chrome.storage.local.get(["settings"])
         const settings = data.settings || {}
         const defaults = RouteAssistantSettings._defaults()
-        const block = settings.routeAssistant || {}
+        const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
+        let block = null
+        if (id && settings.acct && settings.acct[id] && typeof settings.acct[id] === "object") {
+            const ns = settings.acct[id].routeAssistant
+            if (ns && typeof ns === "object") block = ns
+        }
+        if (!block) block = settings.routeAssistant || {}
 
         // Top-level deep-fill, plus per-section deep-fill so each new field
         // arrives with its default without overwriting user-tuned siblings.
@@ -819,13 +844,26 @@ class RouteAssistantSettings {
 
     /**
      * Partial update — pass only the keys you want to change.
+     *
+     * L2 — writes land in `settings.acct.<id>.routeAssistant` once the
+     * page bootstrap has set `window.__aesAccountId`. Pre-bootstrap
+     * writes (or off-AS-page callers) fall back to the legacy
+     * `settings.routeAssistant` slot, identical to pre-L2 behaviour —
+     * which `load()` will then surface via the legacy fallback.
      */
     static async save(partial) {
         const data = await chrome.storage.local.get(["settings"])
         const settings = data.settings || {}
         const current = await RouteAssistantSettings.load()
         const next = Object.assign({}, current, partial || {})
-        settings.routeAssistant = next
+        const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
+        if (id) {
+            settings.acct = (settings.acct && typeof settings.acct === "object") ? settings.acct : {}
+            settings.acct[id] = (settings.acct[id] && typeof settings.acct[id] === "object") ? settings.acct[id] : {}
+            settings.acct[id].routeAssistant = next
+        } else {
+            settings.routeAssistant = next
+        }
         await chrome.storage.local.set({settings: settings})
         return next
     }

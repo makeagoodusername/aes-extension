@@ -234,7 +234,7 @@ function escapeHtml(s) {
         .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
 }
 
-// ── L1 account-registry bootstrap ──────────────────────────────────────
+// ── L1 + L2.2 account-registry bootstrap ───────────────────────────────
 //
 // Once the manifest content-script chain has loaded (deferred via
 // setTimeout 0 to clear the synchronous load phase), kick off the
@@ -243,13 +243,23 @@ function escapeHtml(s) {
 // and fires a single `aes:account:touch` message so background.js
 // upserts the registry. See modules/_shared/account-registry.js.
 //
-// Harmless when the registry module / background handler / manifest
-// entries aren't all wired yet — touchCurrent rejects silently and
-// the bootstrap exits, leaving __aesAccountId unset; acctKey() then
-// returns the legacy key shape per the §10 race-condition invariant.
+// After the touch resolves, run the L2.2 legacy-migration shim. It's
+// a no-op once `migrationVersion >= 1`; on first run it copies the
+// pre-L2 Class C/D legacy keys into the namespaced slot for the
+// active account (or flags `migrationPending` for multi-account users
+// — the L2.2.c modal handles those). Failures inside the shim are
+// caught and logged; the legacy-fallback path in every refactored
+// store keeps working until the next mount retries.
+//
+// Harmless when the registry module / migration shim / background
+// handler / manifest entries aren't all wired yet — each layer guards
+// for typeof undefined and silently bails.
 ;(function _aesL1ScheduleAccountBootstrap() {
-    setTimeout(function () {
+    setTimeout(async function () {
         if (typeof AesAccountRegistry === "undefined") return
-        AesAccountRegistry.bootstrapFromPage()
+        await AesAccountRegistry.bootstrapFromPage()
+        if (typeof AesMigrateLegacy !== "undefined") {
+            AesMigrateLegacy.runIfNeeded()
+        }
     }, 0)
 })()

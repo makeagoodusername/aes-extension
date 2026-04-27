@@ -52,6 +52,7 @@
                 "helpers.js",
                 "modules/_shared/account-registry.js",
                 "modules/_shared/account-scoped-key.js",
+                "modules/_shared/migrate-legacy.js",
                 "modules/_shared/settings-bridge.js",
                 "modules/_shared/fleet-roster.js",
                 "modules/_shared/aircraft-spec.js",

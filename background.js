@@ -844,3 +844,66 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   });
   return true;   // async response
 });
+
+// ── L2.2 — migration state setters ─────────────────────────────────────
+//
+// `migrate-legacy.js` runs the copy migration from content side and
+// reports completion / pending-multi-account state via these messages.
+// Both writes share the same `_aesAccountTouchQueue` serializer so they
+// can't race the touch handler — all writes to `aesAccounts` funnel
+// through one tail per HANDOVER §10 single-writer rule.
+
+function _aesMigrationSetVersionCore(req) {
+  return _aesAccountTouchQueue = _aesAccountTouchQueue
+    .catch(() => null)
+    .then(() => _aesMigrationSetVersionApply(req));
+}
+
+async function _aesMigrationSetVersionApply(req) {
+  const v = Number(req.version);
+  if (!isFinite(v) || v < 0) return {ok: false, error: 'invalid version'};
+  const data = await chrome.storage.local.get(['aesAccounts']);
+  const blob = data.aesAccounts || {};
+  const next = Object.assign({}, blob, {migrationVersion: v});
+  // Clearing pending whenever version moves forward — a successful
+  // migration supersedes any stale "pending" flag from an earlier run.
+  if (v >= 1 && next.migrationPending) delete next.migrationPending;
+  await chrome.storage.local.set({aesAccounts: next});
+  return {ok: true, version: v};
+}
+
+function _aesMigrationSetPendingCore(req) {
+  return _aesAccountTouchQueue = _aesAccountTouchQueue
+    .catch(() => null)
+    .then(() => _aesMigrationSetPendingApply(req));
+}
+
+async function _aesMigrationSetPendingApply(req) {
+  const data = await chrome.storage.local.get(['aesAccounts']);
+  const blob = data.aesAccounts || {};
+  const next = Object.assign({}, blob, {migrationPending: !!req.pending});
+  await chrome.storage.local.set({aesAccounts: next});
+  return {ok: true, pending: !!req.pending};
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'aes:migration:set-version') return false;
+  _aesMigrationSetVersionCore(msg).then(resp => {
+    try { sendResponse(resp); } catch (_) { /* noop */ }
+  }).catch(err => {
+    try { sendResponse({ok: false, error: (err && err.message) || String(err)}); }
+    catch (_) { /* noop */ }
+  });
+  return true;
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'aes:migration:set-pending') return false;
+  _aesMigrationSetPendingCore(msg).then(resp => {
+    try { sendResponse(resp); } catch (_) { /* noop */ }
+  }).catch(err => {
+    try { sendResponse({ok: false, error: (err && err.message) || String(err)}); }
+    catch (_) { /* noop */ }
+  });
+  return true;
+});

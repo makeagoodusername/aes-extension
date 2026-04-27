@@ -198,10 +198,23 @@ class AesAfpSettings {
      * block, but that's a side effect of its earlier lazy-init pattern,
      * not a contract — Slice F can skip it cleanly.
      */
+    /**
+     * L2 — read namespaced first, fall back to legacy.
+     *
+     * Storage shape post-L2:
+     *   settings.aircraftFlightPlan                  (legacy — pre-L2)
+     *   settings.acct.<id>.aircraftFlightPlan        (namespaced — L2+)
+     */
     static async load() {
         const data = await chrome.storage.local.get(["settings"])
         const settings = data.settings || {}
-        const block = settings.aircraftFlightPlan || {}
+        const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
+        let block = null
+        if (id && settings.acct && settings.acct[id] && typeof settings.acct[id] === "object") {
+            const ns = settings.acct[id].aircraftFlightPlan
+            if (ns && typeof ns === "object") block = ns
+        }
+        if (!block) block = settings.aircraftFlightPlan || {}
         return AesAfpSettings._mergeAircraftFlightPlan(AesAfpSettings._defaults(), block)
     }
 
@@ -265,7 +278,14 @@ class AesAfpSettings {
                 {studio:        mergedStudio}
             )
         )
-        settings.aircraftFlightPlan = next
+        const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
+        if (id) {
+            settings.acct = (settings.acct && typeof settings.acct === "object") ? settings.acct : {}
+            settings.acct[id] = (settings.acct[id] && typeof settings.acct[id] === "object") ? settings.acct[id] : {}
+            settings.acct[id].aircraftFlightPlan = next
+        } else {
+            settings.aircraftFlightPlan = next
+        }
         await chrome.storage.local.set({settings: settings})
         return next
     }
