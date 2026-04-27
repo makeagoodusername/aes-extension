@@ -1865,9 +1865,9 @@ class RouteAssistantPanel {
         const pairs = this.rows.map(r => ({hub: this.hubIata, dest: r.destIata}))
         const cfg = (this.settings && this.settings.pricing) || {}
         const maxAgeDays = cfg.priceMaxAgeDays
-        const cache = await RouteAssistantTicketPriceScraper.bulkLoadCache(pairs, {maxAgeDays: maxAgeDays})
+        const cache = await RouteAssistantSchedulePageScraper.bulkLoadCache(pairs, {maxAgeDays: maxAgeDays})
         for (const r of this.rows) {
-            const key = RouteAssistantTicketPriceScraper._pairKey(this.hubIata, r.destIata)
+            const key = RouteAssistantSchedulePageScraper._pairKey(this.hubIata, r.destIata)
             const rec = cache.get(key)
             if (!rec) continue
             // Tier 2 placeholders — wired up so columns stay reactive once
@@ -7440,7 +7440,7 @@ class RouteAssistantPanel {
 
     /**
      * Bulk-scrape ticket prices for every (hub, dest) pair in this.rows
-     * using RouteAssistantTicketPriceScraper. Updates the status line as
+     * using RouteAssistantSchedulePageScraper. Updates the status line as
      * progress arrives; on completion, re-loads the cache, persists
      * lastBulkScrapeAt, and re-renders so columns fill in.
      */
@@ -7451,7 +7451,7 @@ class RouteAssistantPanel {
         const staggerMs   = cfg.staggerMs   || 800
 
         if (!this.priceScraper) {
-            this.priceScraper = new RouteAssistantTicketPriceScraper(this.server, {
+            this.priceScraper = new RouteAssistantSchedulePageScraper(this.server, {
                 maxAgeDays: cfg.priceMaxAgeDays
             })
         }

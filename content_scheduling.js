@@ -101,7 +101,7 @@ function matchIata(text) {
  * route-assistant panel picks up the value on its next refresh.
  */
 function captureLivePriceIfRoutePage() {
-    if (typeof RouteAssistantTicketPriceScraper === "undefined") return
+    if (typeof RouteAssistantSchedulePageScraper === "undefined") return
     const m = /\/app\/com\/scheduling\/([A-Z]{3})([A-Z]{3})(?:[/?#]|$)/.exec(window.location.pathname)
     if (!m) return
     const hub  = m[1]
@@ -112,7 +112,7 @@ function captureLivePriceIfRoutePage() {
     // in practice without making the read feel laggy.
     setTimeout(() => {
         try {
-            const fields = RouteAssistantTicketPriceScraper.parseFromDoc(document)
+            const fields = RouteAssistantSchedulePageScraper.parseFromDoc(document)
             // Only persist if we actually parsed something useful, else
             // we'd overwrite a good cached record with all-nulls on a
             // Wicket sub-page that lacks the schedule table.
@@ -124,7 +124,7 @@ function captureLivePriceIfRoutePage() {
                 || fields.orsRank !== null
             )
             if (!haveSomething) return
-            RouteAssistantTicketPriceScraper.saveRecord(hub, dest, fields, "live").then(() => {
+            RouteAssistantSchedulePageScraper.saveRecord(hub, dest, fields, "live").then(() => {
                 console.log("[AES priceScraper] live-captured", hub + "→" + dest, fields)
             })
         } catch (e) {
