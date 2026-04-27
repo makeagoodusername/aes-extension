@@ -23,36 +23,64 @@ class RouteAssistantRouteNoteStore {
     static PREFIX = "routeAssistant:routeNote:"
     static MAX_TEXT_LEN = 500
 
-    static _key(hub, dest) {
+    static _legacyKey(hub, dest) {
         return RouteAssistantRouteNoteStore.PREFIX
             + String(hub  || "").toUpperCase() + "-"
             + String(dest || "").toUpperCase()
+    }
+
+    static _key(hub, dest, accountId) {
+        const legacy = RouteAssistantRouteNoteStore._legacyKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
     }
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
-    static async get(hub, dest) {
-        const key = RouteAssistantRouteNoteStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+    static async get(hub, dest, opts) {
+        const acctId = RouteAssistantRouteNoteStore._resolveAccountId(opts)
+        const scoped = RouteAssistantRouteNoteStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantRouteNoteStore._legacyKey(hub, dest)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const out = await chrome.storage.local.get(reqKeys)
+        return out[scoped] || out[legacy] || null
     }
 
     /**
      * Bulk read for a list of [hub, dest] pairs. Returns
      * Map<pairKey, record> where pairKey is "<HUB>-<DEST>".
      */
-    static async getMany(pairs) {
+    static async getMany(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(([h, d]) => RouteAssistantRouteNoteStore._key(h, d))
-        const out = await chrome.storage.local.get(keys)
+        const acctId = RouteAssistantRouteNoteStore._resolveAccountId(opts)
+        const scopedKeys = []
+        const legacyKeys = []
+        const pairList   = []
+        for (const [h, d] of pairs) {
+            scopedKeys.push(RouteAssistantRouteNoteStore._key(h, d, acctId))
+            legacyKeys.push(RouteAssistantRouteNoteStore._legacyKey(h, d))
+            pairList.push(RouteAssistantRouteNoteStore._pairKey(h, d))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out = await chrome.storage.local.get(reqKeys)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
-            if (!rec) continue
-            const pair = k.substring(RouteAssistantRouteNoteStore.PREFIX.length)
-            map.set(pair, rec)
+        for (let i = 0; i < pairList.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
+            if (rec) map.set(pairList[i], rec)
         }
         return map
     }
@@ -61,19 +89,23 @@ class RouteAssistantRouteNoteStore {
      * Persist a note. Empty or whitespace-only text removes the key.
      * Returns the stored record, or null when removed.
      */
-    static async save(hub, dest, fields) {
+    static async save(hub, dest, fields, opts) {
         const hubU  = String(hub  || "").toUpperCase()
         const destU = String(dest || "").toUpperCase()
         if (!hubU || !destU) return null
+        const acctId = RouteAssistantRouteNoteStore._resolveAccountId(opts)
 
         const cleaned = RouteAssistantRouteNoteStore._clean(fields || {})
         if (cleaned.text === undefined) {
-            await RouteAssistantRouteNoteStore.remove(hubU, destU)
+            await RouteAssistantRouteNoteStore.remove(hubU, destU, {accountId: acctId})
             return null
         }
 
-        const key = RouteAssistantRouteNoteStore._key(hubU, destU)
-        const existing = (await chrome.storage.local.get([key]))[key] || null
+        const key = RouteAssistantRouteNoteStore._key(hubU, destU, acctId)
+        const legacy = RouteAssistantRouteNoteStore._legacyKey(hubU, destU)
+        const reqKeys = key === legacy ? [key] : [key, legacy]
+        const existingMap = await chrome.storage.local.get(reqKeys)
+        const existing = existingMap[key] || existingMap[legacy] || null
         const now = Date.now()
         const record = {
             hub:       hubU,
@@ -86,9 +118,12 @@ class RouteAssistantRouteNoteStore {
         return record
     }
 
-    static async remove(hub, dest) {
-        const key = RouteAssistantRouteNoteStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+    static async remove(hub, dest, opts) {
+        const acctId = RouteAssistantRouteNoteStore._resolveAccountId(opts)
+        const key = RouteAssistantRouteNoteStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantRouteNoteStore._legacyKey(hub, dest)
+        const toRemove = key === legacy ? [key] : [key, legacy]
+        await chrome.storage.local.remove(toRemove)
     }
 
     /**

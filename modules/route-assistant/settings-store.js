@@ -393,11 +393,67 @@ class RouteAssistantSettings {
         }
     }
 
-    static async load() {
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
+    /**
+     * Slice L2 — one-shot, idempotent migration. Lifts the pre-L2 shared
+     * `settings.routeAssistant` / `settings.aircraftFlightPlan` blocks into
+     * `settings.byAccount[<acctId>]` for the current account AND mirrors
+     * them under `settings._legacy` as a read-only fallback for accounts
+     * that haven't visited yet (so a second airline opening a fresh tab
+     * still sees the pre-L2 settings instead of cold defaults).
+     *
+     * Marker: presence of `settings.byAccount` — once set, this is a no-op.
+     */
+    static _migrateLegacyToAccount(settings, accountId) {
+        if (!settings) settings = {}
+        if (settings.byAccount) return settings
+        const legacyRA  = settings.routeAssistant      || null
+        const legacyAFP = settings.aircraftFlightPlan  || null
+        const _legacy = Object.assign({}, settings._legacy || {})
+        if (legacyRA  && !_legacy.routeAssistant)     _legacy.routeAssistant     = legacyRA
+        if (legacyAFP && !_legacy.aircraftFlightPlan) _legacy.aircraftFlightPlan = legacyAFP
+        settings._legacy = _legacy
+        settings.byAccount = {}
+        if (accountId) {
+            const block = {}
+            if (legacyRA)  block.routeAssistant     = legacyRA
+            if (legacyAFP) block.aircraftFlightPlan = legacyAFP
+            if (Object.keys(block).length) settings.byAccount[accountId] = block
+        }
+        return settings
+    }
+
+    static _readBlock(settings, accountId, namespace) {
+        if (!settings) return {}
+        const byAcc = settings.byAccount || {}
+        if (accountId && byAcc[accountId] && byAcc[accountId][namespace]) {
+            return byAcc[accountId][namespace]
+        }
+        if (settings._legacy && settings._legacy[namespace]) {
+            return settings._legacy[namespace]
+        }
+        return settings[namespace] || {}
+    }
+
+    static async load(opts) {
+        const acctId = RouteAssistantSettings._resolveAccountId(opts)
         const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
+        let settings = data.settings || {}
+        if (!settings.byAccount && (settings.routeAssistant || settings.aircraftFlightPlan)) {
+            settings = RouteAssistantSettings._migrateLegacyToAccount(settings, acctId)
+            await chrome.storage.local.set({settings: settings})
+        }
         const defaults = RouteAssistantSettings._defaults()
-        const block = settings.routeAssistant || {}
+        const block = RouteAssistantSettings._readBlock(settings, acctId, "routeAssistant")
 
         // Top-level deep-fill, plus per-section deep-fill so each new field
         // arrives with its default without overwriting user-tuned siblings.
@@ -444,8 +500,24 @@ class RouteAssistantSettings {
         merged.filters.statuses = Object.assign({}, defaults.filters.statuses,
             (block.filters && block.filters.statuses) || {})
 
-        if (!settings.routeAssistant) {
-            settings.routeAssistant = merged
+        // First-write seed for the resolved account so subsequent loads
+        // hit the per-account block directly (and the deep-fill applied
+        // here is persisted for future reads).
+        const byAcc = settings.byAccount || {}
+        const seedKey = acctId || null
+        const seedNeeded = seedKey
+            ? !(byAcc[seedKey] && byAcc[seedKey].routeAssistant)
+            : !settings.routeAssistant
+        if (seedNeeded) {
+            if (seedKey) {
+                if (!settings.byAccount) settings.byAccount = {}
+                if (!settings.byAccount[seedKey]) settings.byAccount[seedKey] = {}
+                settings.byAccount[seedKey].routeAssistant = merged
+            } else {
+                // No accountId resolvable (off-AS-page bootstrap) — keep
+                // legacy top-level shape so reads still resolve.
+                settings.routeAssistant = merged
+            }
             await chrome.storage.local.set({settings: settings})
         }
         return merged
@@ -668,12 +740,24 @@ class RouteAssistantSettings {
     /**
      * Partial update — pass only the keys you want to change.
      */
-    static async save(partial) {
+    static async save(partial, opts) {
+        const acctId = RouteAssistantSettings._resolveAccountId(opts)
         const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
-        const current = await RouteAssistantSettings.load()
+        let settings = data.settings || {}
+        if (!settings.byAccount && (settings.routeAssistant || settings.aircraftFlightPlan)) {
+            settings = RouteAssistantSettings._migrateLegacyToAccount(settings, acctId)
+        }
+        const current = await RouteAssistantSettings.load({accountId: acctId})
         const next = Object.assign({}, current, partial || {})
-        settings.routeAssistant = next
+        if (acctId) {
+            if (!settings.byAccount) settings.byAccount = {}
+            if (!settings.byAccount[acctId]) settings.byAccount[acctId] = {}
+            settings.byAccount[acctId].routeAssistant = next
+        } else {
+            // Off-AS-page (no accountId resolvable) — preserve legacy
+            // top-level shape so the next load still finds the value.
+            settings.routeAssistant = next
+        }
         await chrome.storage.local.set({settings: settings})
         return next
     }
