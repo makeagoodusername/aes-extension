@@ -114,6 +114,22 @@
     }
 
     /**
+     * Backdate the cached Schedule's scrapedAt by 1h so consumers' isFresh
+     * checks fall through to a live read until the next AFP page scrape.
+     * Called on every batch settle (success / partial / abort / error).
+     */
+    function _markScheduleStale(ctx) {
+        try {
+            if (typeof AesAfpScheduleStore === "undefined") return
+            if (!ctx || !ctx.server || !ctx.aircraftId) return
+            AesAfpScheduleStore.markStale(ctx.server, ctx.aircraftId)
+                .catch(err => console.warn("[AES auto-7e] markStale failed", err))
+        } catch (e) {
+            console.warn("[AES auto-7e] markStale threw", e)
+        }
+    }
+
+    /**
      * Mirror a successful leg into the active draft so the Fleet Hub
      * overlay tab repaints via chrome.storage.onChanged within ~200ms.
      * Read-modify-write through the store helper so concurrent edits
@@ -188,14 +204,34 @@
         const ctxR = (p.ctx && typeof p.ctx === "object")
             ? p.ctx
             : ((window.AesAfp && AesAfp.ctx) || {})
-        const legs = Array.isArray(p.legs) ? p.legs : []
+        const rawLegs = Array.isArray(p.legs) ? p.legs : []
+        // Track 7 slice 7e — never delete or overwrite a locked leg.
+        // Locked = the AS UI surfaced an immutable marker on the .block.flight
+        // (e.g. system-managed legs we don't own). The diff engine routes
+        // unmatched locked legs to result.locked instead of result.delete;
+        // here we belt-and-braces filter them out of the apply payload too.
+        const skippedLocked = []
+        const legs = []
+        for (const leg of rawLegs) {
+            if (leg && leg.modifiers && leg.modifiers.locked === true) {
+                skippedLocked.push(leg)
+            } else {
+                legs.push(leg)
+            }
+        }
+        if (skippedLocked.length) {
+            console.warn("[AES auto-7e] apply-batch: skipped " + skippedLocked.length
+                + " locked leg(s) — they're owned by AS, not us")
+        }
         if (!ctxR.aircraftId) {
             const err = "start: missing ctx.aircraftId"
             _emit("error", {error: err})
             return {ok: false, error: err}
         }
         if (!legs.length) {
-            const err = "start: legs[] empty"
+            const err = skippedLocked.length
+                ? "start: legs[] empty after skipping " + skippedLocked.length + " locked leg(s)"
+                : "start: legs[] empty"
             _emit("error", {error: err})
             return {ok: false, error: err}
         }
@@ -287,6 +323,7 @@
                     if (lastErr) {
                         _state.lastError = lastErr.message || "runtime error"
                         _emit("error", {batchId: generatedBatchId, error: _state.lastError})
+                        _markScheduleStale(_state.ctx)
                         const out = {ok: false, error: _state.lastError, batchId: generatedBatchId,
                                      results: _state.results.slice(), total: _state.total}
                         _resetForNextBatch()
@@ -326,6 +363,7 @@
                     const out = Object.assign({},
                         resp || {ok: false},
                         {batchId: generatedBatchId, results: _state.results.slice()})
+                    _markScheduleStale(_state.ctx)
                     _resetForNextBatch()
                     resolve(out)
                 })
@@ -333,6 +371,7 @@
                 _state.lastError = (e && e.message) || String(e)
                 _state.finishedAt = Date.now()
                 _emit("error", {batchId: generatedBatchId, error: _state.lastError})
+                _markScheduleStale(_state.ctx)
                 const out = {ok: false, error: _state.lastError, batchId: generatedBatchId,
                              results: _state.results.slice(), total: _state.total}
                 _resetForNextBatch()

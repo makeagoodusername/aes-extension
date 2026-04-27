@@ -236,6 +236,10 @@
             "matches": ["https://*.airlinesim.aero/app/com/markets/*"]
         },
         {
+            "js": ["content_flightNumbers.js"],
+            "matches": ["https://*.airlinesim.aero/app/com/numbers/*"]
+        },
+        {
             "js": [
                 "modules/station-automation/storage.js",
                 "modules/station-automation/country-scraper.js",
@@ -280,7 +284,10 @@
                 "modules/aircraft-flight-plan/flight-log-store.js",
                 "modules/aircraft-flight-plan/maintenance-scraper.js",
                 "modules/aircraft-flight-plan/flight-log-scraper.js",
-                "modules/aircraft-flight-plan/wear-model.js"
+                "modules/aircraft-flight-plan/wear-model.js",
+                "modules/aircraft-flight-plan/schedule-store.js",
+                "modules/_shared/aircraft-context.js",
+                "modules/aircraft-flights/scheduled-decorator.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/fleets/aircraft/*/1*"]
         },
@@ -307,7 +314,13 @@
                 "modules/schedule-management/schedule-builder.js",
                 "modules/schedule-management/open-stations-modal.js",
                 "modules/aircraft-flight-plan/settings-extension.js",
+                "modules/aircraft-flight-plan/schedule-model.js",
+                "modules/aircraft-flight-plan/turnaround-popover-reader.js",
+                "modules/aircraft-flight-plan/planning-matrix-reader.js",
+                "modules/aircraft-flight-plan/vfp-reader.js",
+                "modules/aircraft-flight-plan/schedule-store.js",
                 "modules/aircraft-flight-plan/host.js",
+                "modules/aircraft-flight-plan/schedule-broadcaster.js",
                 "modules/aircraft-flight-plan/diagnostics.js",
                 "modules/aircraft-flight-plan/audit-log.js",
                 "modules/aircraft-flight-plan/spec-resolver.js",
@@ -321,6 +334,7 @@
                 "modules/aircraft-flight-plan/route-candidates.js",
                 "modules/aircraft-flight-plan/form-driver.js",
                 "modules/aircraft-flight-plan/active-draft-store.js",
+                "modules/_shared/aircraft-context.js",
                 "modules/aircraft-flight-plan/auto-scheduler/grid-state.js",
                 "modules/aircraft-flight-plan/auto-scheduler/objective.js",
                 "modules/aircraft-flight-plan/auto-scheduler/allocator.js",
@@ -328,8 +342,15 @@
                 "modules/aircraft-flight-plan/auto-scheduler/slot-optimizer.js",
                 "modules/aircraft-flight-plan/auto-scheduler/auto-apply-log.js",
                 "modules/aircraft-flight-plan/auto-scheduler/apply-batch.js",
+                "modules/aircraft-flight-plan/auto-scheduler/flight-deleter.js",
+                "modules/aircraft-flight-plan/auto-scheduler/locked-confirm-modal.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-apply-orchestrator.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-picker-modal.js",
                 "modules/aircraft-flight-plan/auto-scheduler/preview-panel.js",
                 "modules/aircraft-flight-plan/wave-applier.js",
+                "modules/aircraft-flight-plan/flight-studio/leg-spec.js",
+                "modules/aircraft-flight-plan/flight-studio/draft-store.js",
+                "modules/aircraft-flight-plan/flight-studio/panel.js",
                 "content_aircraftFlightPlan.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/fleets/aircraft/*/0*"]
@@ -388,6 +409,13 @@
                 "content_fleetManagement.js",
                 "modules/aircraft-flight-plan/state-store.js",
                 "modules/aircraft-flight-plan/active-draft-store.js",
+                "modules/aircraft-flight-plan/schedule-model.js",
+                "modules/aircraft-flight-plan/schedule-store.js",
+                "modules/_shared/aircraft-context.js",
+                "modules/aircraft-flight-plan/auto-scheduler/schedule-diff.js",
+                "modules/aircraft-flight-plan/auto-scheduler/locked-confirm-modal.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-apply-orchestrator.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-picker-modal.js",
                 "modules/aircraft-flight-plan/submit-bridge.js",
                 "modules/schedule-management/range-buckets.js",
                 "modules/schedule-management/presets-store.js",
