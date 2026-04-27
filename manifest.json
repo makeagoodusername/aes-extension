@@ -32,14 +32,32 @@
             "css": [
                 "css/design-tokens.css",
                 "css/components.css",
-                "css/content.css"
+                "css/content.css",
+                "css/skin/skin-global.css",
+                "css/skin/skin-finance.css",
+                "css/skin/skin-fleet.css",
+                "css/skin/skin-schedule.css",
+                "css/skin/skin-info.css",
+                "css/skin/skin-ops.css"
             ],
+            "js": [
+                "modules/site-skin/bootstrap.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/*", "https://*.airlinesim.aero/action/*"],
+            "run_at": "document_start"
+        },
+        {
             "js": [
                 "js/jquery-3.4.1.min.js",
                 "helpers.js",
                 "js/design-tokens.js",
                 "modules/aes-menu.js",
-                "modules/about-dialog.js"
+                "modules/about-dialog.js",
+                "modules/site-skin/keyboard-shortcuts.js",
+                "modules/site-skin/density-toggle.js",
+                "modules/site-skin/table-polish.js",
+                "modules/site-skin/click-to-copy.js",
+                "modules/site-skin/breadcrumb.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/*", "https://*.airlinesim.aero/action/*"]
         },
@@ -138,6 +156,7 @@
                 "modules/route-assistant/service-profile-scraper.js",
                 "modules/route-assistant/carriers-scraper.js",
                 "modules/route-assistant/enterprise-meta-scraper.js",
+                "modules/route-assistant/airport-overview-scraper.js",
                 "modules/route-assistant/contractual-partners-scraper.js",
                 "modules/route-assistant/watchlist-store.js",
                 "modules/schedule-management/range-buckets.js",
@@ -206,12 +225,143 @@
             "matches": ["https://*.airlinesim.aero/app/fleets/aircraft/*/1*"]
         },
         {
-            "js": ["content_fleetManagement.js"],
+            "js": [
+                "modules/route-assistant/settings-store.js",
+                "modules/route-assistant/fleet-store.js",
+                "modules/route-assistant/demand-store.js",
+                "modules/route-assistant/score.js",
+                "modules/route-assistant/distance-resolver.js",
+                "modules/route-assistant/type-specs-store.js",
+                "modules/route-assistant/route-overrides-store.js",
+                "modules/route-assistant/route-note-store.js",
+                "modules/route-assistant/watchlist-store.js",
+                "modules/route-assistant/wave-overlay.js",
+                "modules/route-assistant/toast-host.js",
+                "modules/flightsfrom/data-store.js",
+                "modules/aircraft-type-specs.js",
+                "modules/station-automation/storage.js",
+                "modules/station-automation/country-scraper.js",
+                "modules/schedule-management/range-buckets.js",
+                "modules/schedule-management/presets-store.js",
+                "modules/schedule-management/schedule-store.js",
+                "modules/schedule-management/schedule-builder.js",
+                "modules/schedule-management/open-stations-modal.js",
+                "modules/aircraft-flight-plan/settings-extension.js",
+                "modules/aircraft-flight-plan/host.js",
+                "modules/aircraft-flight-plan/diagnostics.js",
+                "modules/aircraft-flight-plan/audit-log.js",
+                "modules/aircraft-flight-plan/spec-resolver.js",
+                "modules/aircraft-flight-plan/route-candidates.js",
+                "modules/aircraft-flight-plan/form-driver.js",
+                "modules/aircraft-flight-plan/active-draft-store.js",
+                "modules/aircraft-flight-plan/auto-scheduler/grid-state.js",
+                "modules/aircraft-flight-plan/auto-scheduler/objective.js",
+                "modules/aircraft-flight-plan/auto-scheduler/allocator.js",
+                "modules/aircraft-flight-plan/auto-scheduler/slot-optimizer.js",
+                "modules/aircraft-flight-plan/wave-applier.js",
+                "content_aircraftFlightPlan.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/fleets/aircraft/*/0*"]
+        },
+        {
+            "js": [
+                "modules/route-assistant/settings-store.js",
+                "modules/accounting/snapshot-store.js",
+                "modules/accounting/sister-scraper.js",
+                "modules/accounting/income-scraper.js",
+                "modules/accounting/balance-scraper.js",
+                "modules/accounting/bank-scraper.js",
+                "modules/accounting/aggregator.js",
+                "modules/accounting/profitability-cuts.js",
+                "modules/accounting/reconciliation.js",
+                "modules/accounting/projector.js",
+                "modules/accounting/panel.js",
+                "content_finance_accounting.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/finance/accounting*"]
+        },
+        {
+            "js": [
+                "modules/accounting/snapshot-store.js",
+                "modules/accounting/sister-scraper.js",
+                "content_finance_leasing.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/finance/leasing*"]
+        },
+        {
+            "js": [
+                "modules/accounting/snapshot-store.js",
+                "modules/accounting/sister-scraper.js",
+                "content_finance_capital.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/finance/capital*"]
+        },
+        {
+            "js": [
+                "modules/accounting/snapshot-store.js",
+                "modules/accounting/sister-scraper.js",
+                "content_finance_assets.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/finance/assets*"]
+        },
+        {
+            "js": [
+                "modules/accounting/snapshot-store.js",
+                "modules/accounting/sister-scraper.js",
+                "content_finance_cashflow.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/action/enterprise/schedule*"]
+        },
+        {
+            "js": [
+                "content_fleetManagement.js",
+                "modules/aircraft-flight-plan/state-store.js",
+                "modules/aircraft-flight-plan/active-draft-store.js",
+                "modules/aircraft-flight-plan/submit-bridge.js",
+                "modules/schedule-management/range-buckets.js",
+                "modules/schedule-management/presets-store.js",
+                "modules/schedule-management/schedule-store.js",
+                "modules/schedule-management/schedule-builder.js",
+                "modules/station-automation/storage.js",
+                "modules/station-automation/status-strip.js",
+                "modules/schedule-management/open-stations-modal.js",
+                "modules/schedule-management/schedule-panel.js",
+                "modules/fleet-hub/aircraft-aggregator.js",
+                "modules/fleet-hub/inline-table.js",
+                "modules/fleet-hub/schedule-overlay.js",
+                "modules/fleet-hub/summary-strip.js",
+                "modules/fleet-hub/host.js",
+                "content_fleetHub.js",
+                "modules/route-assistant/settings-store.js",
+                "modules/route-assistant/demand-store.js",
+                "modules/route-assistant/distance-resolver.js",
+                "modules/route-assistant/type-specs-store.js",
+                "modules/route-assistant/route-overrides-store.js",
+                "modules/route-assistant/route-note-store.js",
+                "modules/route-assistant/watchlist-store.js",
+                "modules/route-assistant/score.js",
+                "modules/route-assistant/wave-overlay.js",
+                "modules/route-assistant/toast-host.js",
+                "modules/flightsfrom/data-store.js",
+                "modules/aircraft-type-specs.js",
+                "modules/aircraft-flight-plan/host.js",
+                "modules/aircraft-flight-plan/route-candidates.js",
+                "modules/aircraft-flight-plan/wave-applier.js",
+                "modules/aircraft-flight-plan-dashboard/settings-extension.js",
+                "modules/aircraft-flight-plan-dashboard/flight-number-apply-log.js",
+                "modules/aircraft-flight-plan-dashboard/flight-number-applier.js",
+                "modules/aircraft-flight-plan-dashboard/proxy-page-fetcher.js",
+                "modules/aircraft-flight-plan-dashboard/candidate-pipeline.js",
+                "modules/aircraft-flight-plan-dashboard/deep-link.js",
+                "modules/aircraft-flight-plan-dashboard/fleet-roster-view.js",
+                "modules/aircraft-flight-plan-dashboard/panel.js",
+                "modules/aircraft-flight-plan-dashboard/host.js"
+            ],
             "matches": ["https://*.airlinesim.aero/app/fleets*"]
         }
     ],
     "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlgUt+9pr5xsoJIdZtv2s/miPjNaUMf5NdIRH6wQzgWpGzMCwf46cUSL0FbpnIo6E9d6pITalABU8Dx72/isyas/da0EQNCQkYxhvu2YakUyUMyzKg0jPuxR+VyaEzDMVQKyVD1xZb/jjOkHXvGew/EHPw9BzCdhKRptRqo4gqdgifS0/xQFiqneA35Hhqwo9bh5zfhZpdMsssMHH3uGGm1f4Yeq+j2ZUtvf74v8pWR5+sVI/dFhTSpQaT60sWFYkPVwtpQ5jUwqm9vDyAH0obZxVtBqI5UkmjEJsCXmQW6QdC4+gRwTgrKc137SH+mUVRHfcXogMSa72+szX63pMUQIDAQAB",
-    "permissions": ["activeTab", "declarativeContent", "storage", "unlimitedStorage"],
+    "permissions": ["activeTab", "declarativeContent", "storage", "unlimitedStorage", "tabs"],
     "host_permissions": [
         "https://*.airlinesim.aero/*",
         "https://www.flightsfrom.com/*"
