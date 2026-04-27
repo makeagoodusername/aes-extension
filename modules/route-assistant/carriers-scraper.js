@@ -7,7 +7,7 @@
  * list of carriers operating between two airports, with each carrier's
  * weekly frequency and (when available) the aircraft types they fly.
  *
- * Two consumption paths mirror RouteAssistantTicketPriceScraper:
+ * Two consumption paths mirror RouteAssistantSchedulePageScraper:
  *
  *   1. `scrape(hub, dest)`              — direct cross-origin fetch +
  *                                         DOMParser. Single pair.
@@ -65,7 +65,7 @@ class RouteAssistantCarriersScraper {
     /**
      * Bulk-load cached records for a list of {hub, dest} pairs (or
      * [hub, dest] tuples). Returns Map<pairKey, record>. Mirrors
-     * RouteAssistantTicketPriceScraper.bulkLoadCache so the panel can
+     * RouteAssistantSchedulePageScraper.bulkLoadCache so the panel can
      * paint immediately on mount.
      */
     static async bulkLoadCache(pairs, opts) {
@@ -135,7 +135,7 @@ class RouteAssistantCarriersScraper {
 
     /**
      * Concurrent bulk scrape — same orchestration shape as
-     * RouteAssistantTicketPriceScraper.bulkScrape so the panel can
+     * RouteAssistantSchedulePageScraper.bulkScrape so the panel can
      * reuse the existing progress + stagger UI. Returns when every
      * pair has resolved.
      */
