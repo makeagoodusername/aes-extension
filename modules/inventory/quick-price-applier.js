@@ -57,6 +57,26 @@ class CentralInventoryQuickPriceApplier {
         this.dryRunOnly   = !!opts.dryRunOnly
         this.applyEnabled = opts.applyEnabled !== false
         this.verifyAfter  = opts.verifyAfter !== false
+        this.applyLog     = opts.applyLog || null
+    }
+
+    static fingerprint({hub, dest, classKey, newPrice}) {
+        const h = String(hub || "").toUpperCase()
+        const d = String(dest || "").toUpperCase()
+        const c = String(classKey || "")
+        const p = isFinite(newPrice) ? Math.round(Number(newPrice)) : ""
+        return h + "-" + d + "|" + c + "=" + p
+    }
+
+    async _writeLog(envelope) {
+        if (!this.applyLog || typeof this.applyLog.add !== "function") return envelope
+        try {
+            const saved = await this.applyLog.add(envelope)
+            if (saved && saved.id) envelope.logId = saved.id
+        } catch (e) {
+            console.warn("[AES inventoryQuickPriceApplier] apply-log write failed", e)
+        }
+        return envelope
     }
 
     static _baseUrl(server) {
@@ -197,14 +217,21 @@ class CentralInventoryQuickPriceApplier {
      * @returns {Promise<object>}
      */
     async apply(args) {
-        args = args || {}
+        const result = await this._applyInner(args || {})
+        return await this._writeLog(result)
+    }
+
+    async _applyInner(args) {
         const hub      = String(args.hub  || "").toUpperCase()
         const dest     = String(args.dest || "").toUpperCase()
         const server   = String(args.server || "")
         const classKey = args.classKey
         const newPrice = Number(args.newPrice)
+        const ts       = Date.now()
+        const source   = args.source || "tile"
+        const fingerprint = CentralInventoryQuickPriceApplier.fingerprint({hub, dest, classKey, newPrice})
 
-        const baseEnvelope = {hub, dest, classKey}
+        const baseEnvelope = {hub, dest, classKey, server, ts, source, fingerprint}
 
         if (CentralInventoryQuickPriceApplier.VALID_CLASS_KEYS.indexOf(classKey) < 0) {
             return Object.assign({}, baseEnvelope, {
