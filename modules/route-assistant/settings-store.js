@@ -65,7 +65,8 @@ class RouteAssistantSettings {
             // {id, name, createdAt, snapshot}. Apply via the existing
             // import-diff modal so the user previews changes first.
             strategyPresets: [],
-            // U7 + U3 — column visibility chooser + collapsible groups.
+            // U7 + U3 + U8 — column visibility chooser + collapsible
+            // groups + drag-reorder.
             //   hiddenFields:    Array<COLUMNS[].field> hidden in the
             //                    table. "score" + "destIata" are frozen
             //                    sticky-left and filtered out of any
@@ -75,9 +76,31 @@ class RouteAssistantSettings {
             //                    single "…" placeholder cell with a
             //                    chevron group-header. Empty = all
             //                    expanded — DO NOT seed with all keys.
+            //   columnOrder:     Array<COLUMNS[].field> in the user's
+            //                    preferred order. Frozen columns are
+            //                    NOT included (always lead). Fields not
+            //                    in the list keep declaration order
+            //                    appended afterwards. Empty = use
+            //                    declaration order verbatim.
             columnPrefs: {
                 hiddenFields:    [],
-                collapsedGroups: []
+                collapsedGroups: [],
+                columnOrder:     []
+            },
+            // Q16 — desktop notifications when long bulk-syncs finish.
+            //   enabled:           opt-in. Default off; OS may still
+            //                      require the user to grant a one-shot
+            //                      permission on the first ping.
+            //   longOpThreshold:   minimum route count for a sync to
+            //                      qualify. Below this (e.g. a 5-route
+            //                      Markets re-sync), no ping fires.
+            //   suppressWhenFocused: skip the ping when the AS tab is
+            //                      already in the foreground (the user
+            //                      can see the inline progress toast).
+            notifications: {
+                enabled:             false,
+                longOpThreshold:     30,
+                suppressWhenFocused: true
             },
             // Tabbed view selector (Pax / Cargo / All). Default "all"
             // preserves the existing combined table for users without a
@@ -504,6 +527,7 @@ class RouteAssistantSettings {
             demandDepth:           Object.assign({}, defaults.demandDepth,     block.demandDepth     || {}),
             ors:                   RouteAssistantSettings._mergeOrs(defaults.ors, block.ors),
             watchlist:             Object.assign({}, defaults.watchlist,       block.watchlist       || {}),
+            notifications:         Object.assign({}, defaults.notifications,   block.notifications   || {}),
             serviceProfiles:       RouteAssistantSettings._mergeServiceProfiles(defaults.serviceProfiles, block.serviceProfiles)
         }
         for (const key in defaults.scoring) {
@@ -714,7 +738,7 @@ class RouteAssistantSettings {
      * (the unknown key is simply ignored, no rows lost).
      */
     static _mergeColumnPrefs(defaults, block) {
-        const def = defaults || {hiddenFields: [], collapsedGroups: []}
+        const def = defaults || {hiddenFields: [], collapsedGroups: [], columnOrder: []}
         const b = block || {}
         const FROZEN = {score: 1, destIata: 1}
         const hidden = Array.isArray(b.hiddenFields)
@@ -723,7 +747,21 @@ class RouteAssistantSettings {
         const collapsed = Array.isArray(b.collapsedGroups)
             ? b.collapsedGroups.filter(g => typeof g === "string")
             : (def.collapsedGroups || []).slice()
-        return {hiddenFields: hidden, collapsedGroups: collapsed}
+        // U8 — strip frozen entries (they're always lead) + dedupe so
+        // a stale list with a duplicated field doesn't ghost-stack the
+        // column twice on render.
+        let order
+        if (Array.isArray(b.columnOrder)) {
+            const seen = new Set()
+            order = b.columnOrder.filter(f => {
+                if (typeof f !== "string" || FROZEN[f] || seen.has(f)) return false
+                seen.add(f)
+                return true
+            })
+        } else {
+            order = (def.columnOrder || []).slice()
+        }
+        return {hiddenFields: hidden, collapsedGroups: collapsed, columnOrder: order}
     }
 
     /**

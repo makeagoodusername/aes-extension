@@ -285,6 +285,34 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Q16 — fire a desktop notification when a long bulk-sync finishes.
+     * Gated by `settings.notifications.{enabled, longOpThreshold,
+     * suppressWhenFocused}`. Below threshold or when the AS tab is
+     * already in the foreground (and `suppressWhenFocused` is on), no
+     * ping fires. Delegated to background.js because content scripts
+     * can't reliably create system notifications in MV3.
+     */
+    _notifyLongOpDone(title, message, routeCount) {
+        const cfg = (this.settings && this.settings.notifications) || {}
+        if (!cfg.enabled) return
+        const threshold = (typeof cfg.longOpThreshold === "number" && cfg.longOpThreshold > 0)
+            ? cfg.longOpThreshold : 30
+        if (!isFinite(routeCount) || routeCount < threshold) return
+        if (cfg.suppressWhenFocused !== false
+            && typeof document !== "undefined" && document.visibilityState === "visible"
+            && document.hasFocus && document.hasFocus()) {
+            return
+        }
+        if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) return
+        try {
+            chrome.runtime.sendMessage(
+                {type: "aes:notify:long-op", title: title, message: message},
+                () => void (chrome.runtime && chrome.runtime.lastError)
+            )
+        } catch (e) { /* non-fatal */ }
+    }
+
+    /**
      * Toggle a route's starred state. Updates the in-memory Set immediately
      * and re-renders so the user sees the flip without waiting on storage,
      * then persists asynchronously through RouteAssistantWatchlistStore.
@@ -7703,6 +7731,7 @@ class RouteAssistantPanel {
             th.textContent = col.label + (this.sortField === col.field
                 ? (this.sortDir === 1 ? " ▲" : " ▼") : "")
             th.dataset.group = col.group   // U15 — column band marker
+            th.dataset.field = col.field   // U8 — drop-target lookup
             const tint    = (RouteAssistantPanel.COLUMN_GROUPS[col.group] || {}).tint
             const frozen  = stickyLeftCss(col.field, 4)
             th.style.cssText = "padding:4px 6px;border-bottom:1px solid #374151;cursor:pointer;"
@@ -7718,6 +7747,41 @@ class RouteAssistantPanel {
                 else { this.sortField = col.field; this.sortDir = col.defaultDir || -1 }
                 this._render()
             })
+            // U8 — drag-and-drop reorder. Frozen columns (score, destIata)
+            // stay locked left; everything else is draggable. The browser
+            // fires `click` after a drag-end only when the drag didn't
+            // exceed its drag threshold, so sort-on-click still works.
+            if (!frozen) {
+                th.draggable = true
+                th.addEventListener("dragstart", (e) => {
+                    e.dataTransfer.effectAllowed = "move"
+                    e.dataTransfer.setData("text/aes-col", col.field)
+                    th.style.opacity = "0.5"
+                })
+                th.addEventListener("dragend", () => {
+                    th.style.opacity = ""
+                    th.style.boxShadow = ""
+                })
+                th.addEventListener("dragover", (e) => {
+                    if (!e.dataTransfer.types || e.dataTransfer.types.indexOf("text/aes-col") < 0) return
+                    e.preventDefault()
+                    e.dataTransfer.dropEffect = "move"
+                    // Light-up the drop target with a left-edge accent so the
+                    // user sees where the column will land.
+                    th.style.boxShadow = "inset 3px 0 0 #a78bfa"
+                })
+                th.addEventListener("dragleave", () => {
+                    th.style.boxShadow = ""
+                })
+                th.addEventListener("drop", (e) => {
+                    th.style.boxShadow = ""
+                    const srcField = e.dataTransfer.getData("text/aes-col")
+                    if (!srcField || srcField === col.field) return
+                    e.preventDefault()
+                    e.stopPropagation()
+                    this._reorderColumn(srcField, col.field)
+                })
+            }
             tr.append(th)
         }
         thead.append(tr)
@@ -7966,7 +8030,61 @@ class RouteAssistantPanel {
         // can render the placeholder cell without recomputing membership.
         this._collapsedPlaceholderField = placeholderByGroup
         this._collapsedGroupSet = collapsed
-        return filtered
+        // U8 — apply user's column ordering. Frozen columns always come
+        // first in declaration order (score → destIata). Movable columns
+        // are pulled in `columnOrder` order; any not present in the saved
+        // order keep their declaration position appended afterwards
+        // (covers new columns introduced after the order was saved).
+        const order = Array.isArray(cp.columnOrder) ? cp.columnOrder : []
+        if (!order.length) return filtered
+        const frozenCols  = filtered.filter(c =>  FROZEN[c.field])
+        const movableCols = filtered.filter(c => !FROZEN[c.field])
+        const movableByField = {}
+        for (const c of movableCols) movableByField[c.field] = c
+        const reordered = []
+        const placed = new Set()
+        for (const f of order) {
+            const c = movableByField[f]
+            if (c && !placed.has(f)) { reordered.push(c); placed.add(f) }
+        }
+        for (const c of movableCols) {
+            if (!placed.has(c.field)) reordered.push(c)
+        }
+        return frozenCols.concat(reordered)
+    }
+
+    /**
+     * U8 — move column `srcField` so it lands immediately before
+     * `beforeField` (or to the end when `beforeField` is null). Builds a
+     * complete permutation from the currently-visible columns so newly-
+     * introduced columns inherit a stable ordering on the next render.
+     */
+    async _reorderColumn(srcField, beforeField) {
+        if (!srcField || srcField === beforeField) return
+        const FROZEN = {score: 1, destIata: 1}
+        if (FROZEN[srcField] || FROZEN[beforeField]) return
+        // Build the full current movable order (declaration order
+        // permuted by any prior columnOrder), then perform the move.
+        const visible = this._activeColumns()
+        const movable = visible.filter(c => !FROZEN[c.field]).map(c => c.field)
+        const fromIdx = movable.indexOf(srcField)
+        if (fromIdx < 0) return
+        movable.splice(fromIdx, 1)
+        if (beforeField === null || beforeField === undefined) {
+            movable.push(srcField)
+        } else {
+            const toIdx = movable.indexOf(beforeField)
+            if (toIdx < 0) movable.push(srcField)
+            else            movable.splice(toIdx, 0, srcField)
+        }
+        const cp = Object.assign({hiddenFields: [], collapsedGroups: [], columnOrder: []},
+            this.settings.columnPrefs || {})
+        cp.columnOrder = movable
+        cp.hiddenFields    = Array.isArray(cp.hiddenFields)    ? cp.hiddenFields.slice()    : []
+        cp.collapsedGroups = Array.isArray(cp.collapsedGroups) ? cp.collapsedGroups.slice() : []
+        this.settings.columnPrefs = cp
+        try { await RouteAssistantSettings.save({columnPrefs: cp}) } catch (e) { /* non-fatal */ }
+        this._renderRows()
     }
 
     /**
@@ -8209,8 +8327,21 @@ class RouteAssistantPanel {
         sep.style.cssText = "margin:10px 0 4px 0;font-size:11px;color:#9ca3af;"
         sep.textContent = "Routes (no demand scored until seeded):"
         this.tableHost.append(sep)
-        this.scoredRows = this.rows.map(r => Object.assign({score: null}, r))
+        // Apply the same filter chain as `_renderRows` so the chip bar
+        // above is functional in the pre-seed state. Without this the
+        // seed-prompt path renders every row regardless of the active
+        // chips (status / watchlist / loss-makers / override / note),
+        // which looks like the filter system is broken.
+        const filtered = this._applyFilters(this.rows)
+        this.scoredRows = filtered.map(r => Object.assign({score: null}, r))
         const sorted = this._sortRows(this.scoredRows)
+        if (!sorted.length) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "color:#9ca3af;font-size:11px;padding:8px 0;"
+            empty.textContent = "No routes match the current filters."
+            this.tableHost.append(empty)
+            return
+        }
         this.tableHost.append(this._buildTable(sorted))
     }
 
@@ -8502,6 +8633,9 @@ class RouteAssistantPanel {
         // and evaluate against the diff-decorated scoredRows on every
         // _renderRows call.
         this._renderAlertRulesSection()
+
+        // ----- Q16 — desktop notifications for long bulk-syncs.
+        this._renderNotificationsSection()
 
         // ----- Economics — feeds the rough profit estimator
         const econHeader = document.createElement("div")
@@ -10258,6 +10392,11 @@ class RouteAssistantPanel {
                     : "Carriers sync complete · " + lastTotal + " routes"
             })
         }
+        this._notifyLongOpDone(
+            failed ? "AES — carriers sync finished with errors" : "AES — carriers sync complete",
+            (failed ? "Some routes failed · " : "") + lastTotal + " routes synced from flightsfrom.com.",
+            lastTotal
+        )
     }
 
     /**
@@ -10878,6 +11017,11 @@ class RouteAssistantPanel {
                     : ("Markets + demand-depth sync complete · " + pairs.length + " routes")
             })
         }
+        this._notifyLongOpDone(
+            phaseFailed ? "AES — markets sync finished with errors" : "AES — markets sync complete",
+            (phaseFailed ? "Some routes failed · " : "") + pairs.length + " routes synced (markets + demand depth).",
+            pairs.length
+        )
 
         const now = Date.now()
         this._marketScrapeRunning = false
@@ -11171,6 +11315,11 @@ class RouteAssistantPanel {
                     : "Demand depth sync complete · " + pairs.length + " routes"
             })
         }
+        this._notifyLongOpDone(
+            failed ? "AES — demand depth finished with errors" : "AES — demand depth sync complete",
+            (failed ? "Some routes failed · " : "") + pairs.length + " routes synced (historic + inventory).",
+            pairs.length
+        )
     }
 
     /**
@@ -11631,6 +11780,124 @@ class RouteAssistantPanel {
         })
         addWrap.append(addBtn)
         wrap.append(addWrap)
+
+        this.settingsHost.append(wrap)
+    }
+
+    /**
+     * Q16 — opt-in desktop notifications when a 30+-route bulk-sync
+     * (markets / ORS / carriers / demand depth) finishes. Off by
+     * default since the OS-level prompt is jarring without context;
+     * the Test button lets the user verify the permission grant +
+     * the message format before flipping the toggle on.
+     */
+    _renderNotificationsSection() {
+        const cfg = this.settings.notifications = Object.assign(
+            {enabled: false, longOpThreshold: 30, suppressWhenFocused: true},
+            this.settings.notifications || {}
+        )
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:10px;padding:6px 8px;"
+            + "background:rgba(96,165,250,0.06);border:1px solid rgba(96,165,250,0.30);"
+            + "border-radius:4px;"
+
+        const header = document.createElement("div")
+        header.style.cssText = "color:#bfdbfe;font-size:11px;margin-bottom:4px;"
+        header.innerHTML = "<strong>Long-op desktop notifications</strong> "
+            + "<span style='color:#9ca3af;font-weight:normal;'>— Ping the OS when a bulk sync "
+            + "(markets / ORS / carriers / demand depth) finishes. Lets you tab away during "
+            + "5+ minute runs. Behind a threshold so quick re-syncs stay quiet.</span>"
+        wrap.append(header)
+
+        const row = document.createElement("div")
+        row.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:11px;color:#cbd5e1;"
+        const enableLab = document.createElement("label")
+        enableLab.style.cssText = "display:flex;gap:5px;align-items:center;cursor:pointer;"
+        const enableCb = document.createElement("input")
+        enableCb.type = "checkbox"
+        enableCb.checked = !!cfg.enabled
+        enableLab.append(enableCb, document.createTextNode("Enable"))
+        row.append(enableLab)
+
+        const thrLab = document.createElement("label")
+        thrLab.style.cssText = "display:flex;gap:5px;align-items:center;"
+        thrLab.append(document.createTextNode("Min routes:"))
+        const thrInput = mkNumberInput(cfg.longOpThreshold, {min: 1, max: 1000, step: 1, width: "60px"})
+        thrInput.title = "Below this route count no notification fires (small re-syncs stay quiet)."
+        thrLab.append(thrInput)
+        row.append(thrLab)
+
+        const focusLab = document.createElement("label")
+        focusLab.style.cssText = "display:flex;gap:5px;align-items:center;cursor:pointer;"
+        const focusCb = document.createElement("input")
+        focusCb.type = "checkbox"
+        focusCb.checked = cfg.suppressWhenFocused !== false
+        focusLab.append(focusCb, document.createTextNode("Skip when AS tab is focused"))
+        focusLab.title = "When the AS tab is in the foreground the inline progress toast is "
+            + "already visible — skip the OS-level ping in that case."
+        row.append(focusLab)
+
+        const testBtn = document.createElement("button")
+        testBtn.textContent = "Test ping"
+        testBtn.title = "Send a sample notification so you can verify the OS-level permission "
+            + "+ message format. Goes through the same background-script path the real bulk-op "
+            + "completion uses."
+        Object.assign(testBtn.style, smallBtnStyle())
+        testBtn.style.fontSize = "10px"
+        testBtn.style.padding = "2px 8px"
+        testBtn.style.background = "#2563eb"
+        row.append(testBtn)
+
+        wrap.append(row)
+
+        const persist = async () => {
+            cfg.enabled             = enableCb.checked
+            cfg.suppressWhenFocused = focusCb.checked
+            const v = parseFloat(thrInput.value)
+            cfg.longOpThreshold     = (isFinite(v) && v >= 1) ? Math.floor(v) : 30
+            this.settings.notifications = cfg
+            try { await RouteAssistantSettings.save({notifications: cfg}) } catch (e) { /* non-fatal */ }
+        }
+        enableCb.addEventListener("change", persist)
+        focusCb.addEventListener("change",  persist)
+        thrInput.addEventListener("change", persist)
+
+        testBtn.addEventListener("click", async () => {
+            await persist()
+            // Force the test ping to fire regardless of the enable/threshold/
+            // focus gates so the user can verify the path even with default
+            // settings. Calls the background dispatcher directly.
+            if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.error("chrome.runtime.sendMessage unavailable in this context.")
+                }
+                return
+            }
+            chrome.runtime.sendMessage(
+                {type: "aes:notify:long-op",
+                 title:   "AES — test notification",
+                 message: "If you can see this, long-op notifications are wired up correctly."},
+                (resp) => {
+                    const lastErr = chrome.runtime && chrome.runtime.lastError
+                    if (lastErr) {
+                        if (typeof RouteAssistantToast !== "undefined") {
+                            RouteAssistantToast.error("Test ping failed: " + lastErr.message)
+                        }
+                        return
+                    }
+                    if (resp && resp.ok === false) {
+                        if (typeof RouteAssistantToast !== "undefined") {
+                            RouteAssistantToast.error("Test ping rejected: " + (resp.error || "unknown"))
+                        }
+                        return
+                    }
+                    if (typeof RouteAssistantToast !== "undefined") {
+                        RouteAssistantToast.success("Test ping sent — check your OS notification tray.")
+                    }
+                }
+            )
+        })
 
         this.settingsHost.append(wrap)
     }
@@ -12446,6 +12713,13 @@ class RouteAssistantPanel {
                 })
             }
         }
+        this._notifyLongOpDone(
+            halted ? "AES — ORS sync halted" : "AES — ORS sync complete",
+            halted
+                ? ("Halted: " + (haltReason || "rate limit") + " · " + doneCount + "/" + totalCount + " routes done.")
+                : (totalCount + " routes scraped from /app/info/ors."),
+            totalCount
+        )
     }
 
     /**
@@ -14617,6 +14891,151 @@ class RouteAssistantPanel {
     }
 
     /**
+     * U6 — swap a single override cell for an <input> bound to one
+     * field of `row.override` (paxLF / yieldPerKm / cargoYieldPerKgKm).
+     * ⏎ saves, ⎋ cancels, blur saves, empty saves clear that one
+     * field while preserving the rest of the override (full-replace
+     * store is merged-with-existing here). Goes through
+     * `_undoableSave` so a misclick reverts in one toast click.
+     */
+    _beginInlineCellEdit(td, row, spec) {
+        if (!row || !this.hubIata || !td) return
+        // Cells are reused across renders — guard against double-edit
+        // on rapid double-clicks while a previous input is mounted.
+        if (td.dataset.aesInlineEditing === "1") return
+        td.dataset.aesInlineEditing = "1"
+        const hubU    = String(this.hubIata).toUpperCase()
+        const destU   = String(row.destIata || "").toUpperCase()
+        const pairKey = hubU + "-" + destU
+        const prevText = td.textContent
+        const prevColor = td.style.color
+        const prevBorder = td.style.borderBottom
+        const prevFontWeight = td.style.fontWeight
+        const ov = row.override || {}
+        const cur = (ov[spec.field] !== undefined && ov[spec.field] !== null && isFinite(ov[spec.field]))
+            ? Number(ov[spec.field]) : null
+
+        td.textContent = ""
+        td.style.borderBottom = ""
+        const input = mkNumberInput(cur, {
+            min:  spec.min,
+            max:  spec.max,
+            step: spec.step,
+            width: "62px"
+        })
+        input.placeholder = spec.placeholder || ""
+        input.style.fontVariantNumeric = "tabular-nums"
+        td.append(input)
+        input.focus()
+        input.select && input.select()
+
+        let done = false
+        const restore = (text, opts) => {
+            td.textContent = text
+            if (opts && opts.set !== undefined) {
+                td.style.color = "#a78bfa"
+                td.style.fontWeight = "600"
+                td.style.borderBottom = "1px dotted #6d28d9"
+            } else if (opts && opts.cleared) {
+                td.style.color = "#6b7280"
+                td.style.fontWeight = ""
+                td.style.borderBottom = "1px dotted #374151"
+            } else {
+                td.style.color = prevColor
+                td.style.fontWeight = prevFontWeight
+                td.style.borderBottom = prevBorder
+            }
+        }
+        const finish = () => {
+            done = true
+            delete td.dataset.aesInlineEditing
+            input.removeEventListener("keydown", onKey)
+            input.removeEventListener("blur",    onBlur)
+        }
+        const cancel = () => {
+            if (done) return
+            finish()
+            restore(prevText)
+        }
+        const commit = async () => {
+            if (done) return
+            const txt = input.value.trim()
+            const next = txt === "" ? null : Number(txt)
+            if (txt !== "" && (!isFinite(next) || (spec.min !== undefined && next < spec.min)
+                                              || (spec.max !== undefined && next > spec.max))) {
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.error("Out of range — " + spec.field + " must be "
+                        + spec.min + "–" + spec.max)
+                }
+                input.focus()
+                return
+            }
+            // No-op when the new value matches what was already there
+            // — saves a useless storage round-trip + no toast.
+            if ((cur === null && next === null)
+                || (cur !== null && next !== null && Math.abs(cur - next) < 1e-9)) {
+                cancel()
+                return
+            }
+            finish()
+            // Optimistic restore so the user sees the new value immediately;
+            // the async save below will repaint via _renderRows on success.
+            if (next === null) restore("—", {cleared: true})
+            else               restore(spec.format ? spec.format(next) : String(next), {set: true})
+
+            const prevOverride = row.override ? Object.assign({}, row.override) : null
+            const merged = Object.assign({}, prevOverride || {})
+            if (next === null) delete merged[spec.field]
+            else               merged[spec.field] = next
+
+            const propagateRow = (saved) => {
+                row.override = saved
+                if (this.rows) {
+                    const baseRow = this.rows.find(r =>
+                        String(r.destIata || "").toUpperCase() === destU)
+                    if (baseRow) baseRow.override = saved
+                }
+                if (saved) this.overrideMap.set(pairKey, saved)
+                else       this.overrideMap.delete(pairKey)
+            }
+
+            await this._undoableSave({
+                label: (next === null ? "Cleared " : "Set ")
+                    + spec.field + " for " + hubU + "→" + destU,
+                type:  "success",
+                perform: async () => {
+                    const saved = await RouteAssistantRouteOverridesStore.save(hubU, destU, merged)
+                    propagateRow(saved)
+                    this._recomputeProfit()
+                    this._renderRows()
+                },
+                restore: async () => {
+                    if (prevOverride) {
+                        const restoredRec = await RouteAssistantRouteOverridesStore.save(hubU, destU, prevOverride)
+                        propagateRow(restoredRec)
+                    } else {
+                        await RouteAssistantRouteOverridesStore.remove(hubU, destU)
+                        propagateRow(null)
+                    }
+                    this._recomputeProfit()
+                    this._renderRows()
+                }
+            })
+        }
+        const onKey = (e) => {
+            if (e.key === "Enter")  { e.preventDefault(); commit() }
+            else if (e.key === "Escape") { e.preventDefault(); cancel() }
+        }
+        const onBlur = () => {
+            // Defer slightly so a click on a different cell can fire
+            // its own dblclick before the blur swallows focus.
+            setTimeout(() => commit(), 0)
+        }
+        input.addEventListener("keydown", onKey)
+        input.addEventListener("blur",    onBlur)
+    }
+
+    /**
      * Open a modal letting the user pin paxLF / cargoLF / yieldPerKm /
      * cargoYieldPerKgKm / a free-text note for this route. Saves to
      * RouteAssistantRouteOverridesStore and updates the in-memory row +
@@ -15897,6 +16316,45 @@ class RouteAssistantPanel {
 
 // ---------- Static config ----------
 
+/**
+ * U6 — render a single override-aware inline-editable cell. Spec:
+ *   {field, min, max, step, format(value), placeholder}
+ * Override value lives at `row.override[field]` (paxLF / yieldPerKm /
+ * cargoYieldPerKgKm). Cell shows the formatted value in purple when set,
+ * em-dash when unset. Double-click hands off to the instance method
+ * `_beginInlineCellEdit` which swaps the cell for an <input>.
+ *
+ * Defined here (immediately after the class body, before COLUMNS) so the
+ * column render closures further down are guaranteed to find it.
+ */
+RouteAssistantPanel._renderOverrideCell = function(td, row, spec) {
+    const ov = row && row.override ? row.override : null
+    const v = ov && (ov[spec.field] !== undefined && ov[spec.field] !== null
+        && isFinite(ov[spec.field])) ? Number(ov[spec.field]) : null
+    if (v !== null) {
+        td.textContent = spec.format ? spec.format(v) : String(v)
+        td.style.color = "#a78bfa"
+        td.style.fontWeight = "600"
+        td.style.borderBottom = "1px dotted #6d28d9"
+    } else {
+        td.textContent = "—"
+        td.style.color = "#6b7280"
+        td.style.borderBottom = "1px dotted #374151"
+    }
+    td.style.cursor = "text"
+    td.style.userSelect = "none"
+    if (!td.title) td.title = "Double-click to edit · ⏎ save · ⎋ cancel · empty saves clear"
+    td.addEventListener("dblclick", (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const inst = RouteAssistantPanel._currentInstance
+        if (!inst) return
+        if (typeof inst._beginInlineCellEdit === "function") {
+            inst._beginInlineCellEdit(td, row, spec)
+        }
+    })
+}
+
 // Visual groups for the results table. Each column references one of these
 // keys; the table renders a sub-header row with grouped labels and tints
 // each cell to match. The intent is that a glance at a row's colour tells
@@ -15908,6 +16366,7 @@ RouteAssistantPanel.COLUMN_GROUPS = {
     real:     {label: "Real-world",  tint: "rgba(251, 191, 36, 0.10)",    headerTint: "rgba(251, 191, 36, 0.22)"},
     competition: {label: "Competition", tint: "rgba(132, 204, 22, 0.10)", headerTint: "rgba(132, 204, 22, 0.24)"},
     aircraft: {label: "Aircraft",    tint: "rgba(34, 197, 94, 0.10)",     headerTint: "rgba(34, 197, 94, 0.22)"},
+    overrides:{label: "Overrides",   tint: "rgba(167, 139, 250, 0.10)",   headerTint: "rgba(167, 139, 250, 0.24)"},
     pricing:  {label: "Live route data", tint: "rgba(244, 63, 94, 0.10)", headerTint: "rgba(244, 63, 94, 0.22)"},
     actuals:  {label: "Actuals",     tint: "rgba(168, 85, 247, 0.10)",    headerTint: "rgba(168, 85, 247, 0.24)"},
     service:  {label: "Service",     tint: "rgba(56, 189, 248, 0.10)",    headerTint: "rgba(56, 189, 248, 0.24)"},
@@ -16304,6 +16763,41 @@ RouteAssistantPanel.COLUMNS = [
         td.style.color = row.profitPerWeek >= 0 ? "#a3e635" : "#fca5a5"
         td.style.fontWeight = "bold"
         td.title = formatProfitBreakdown(row)
+    }},
+    // U6 — inline-edit override cells. Each shows the override value when
+    // set (purple, dotted-underline cursor:text), em-dash when unset.
+    // Double-click swaps content for an <input>; ⏎ saves through
+    // RouteAssistantRouteOverridesStore (merged with existing override),
+    // ⎋ cancels, blur saves. Empty input clears that single field.
+    {field: "overridePaxLF", label: "LFᵒ", group: "overrides", align: "right", defaultDir: -1,
+     title: "Pax load factor override (paxLF, 0–1) for this route. Double-click to edit inline; ⏎ saves, ⎋ cancels, empty saves clear. Blank cell = no override (uses demand-driven default).",
+     render(td, row) {
+        RouteAssistantPanel._renderOverrideCell(td, row, {
+            field: "paxLF",
+            min:    0, max: 1, step: 0.05,
+            format: (v) => v.toFixed(2),
+            placeholder: "0–1"
+        })
+    }},
+    {field: "overrideYield", label: "Yᵒ", group: "overrides", align: "right", defaultDir: -1,
+     title: "Pax yield override (yieldPerKm, AS$/pax-km) for this route. Double-click to edit inline; ⏎ saves, ⎋ cancels, empty saves clear. Blank cell = no override (uses configured base yield).",
+     render(td, row) {
+        RouteAssistantPanel._renderOverrideCell(td, row, {
+            field: "yieldPerKm",
+            min:    0, max: 10, step: 0.01,
+            format: (v) => v.toFixed(2),
+            placeholder: "AS$/pkm"
+        })
+    }},
+    {field: "overrideCargoYield", label: "CYᵒ", group: "overrides", align: "right", defaultDir: -1,
+     title: "Cargo yield override (cargoYieldPerKgKm, AS$/kg-km) for this route. Double-click to edit inline; ⏎ saves, ⎋ cancels, empty saves clear. Blank cell = no override (uses configured base cargo yield).",
+     render(td, row) {
+        RouteAssistantPanel._renderOverrideCell(td, row, {
+            field: "cargoYieldPerKgKm",
+            min:    0, max: 1, step: 0.0001,
+            format: (v) => v.toFixed(4),
+            placeholder: "AS$/kgkm"
+        })
     }},
     {field: "liveAircraftType", label: "Eq", group: "pricing",
      title: "Aircraft assigned to this route — captured from /app/com/scheduling/<HUB><DEST>. Type name links to the *individual tail's* flight-history page (visiting it captures the profit data the snapshot consumes). 📋 icon links to the generic spec page.",

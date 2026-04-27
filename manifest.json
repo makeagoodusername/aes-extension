@@ -188,6 +188,7 @@
                 "modules/route-assistant/fleet-store.js",
                 "modules/route-assistant/route-overrides-store.js",
                 "modules/route-assistant/route-note-store.js",
+                "modules/route-assistant/interline-store.js",
                 "modules/route-assistant/rating-observation-store.js",
                 "modules/route-assistant/rating-alpha-store.js",
                 "modules/route-assistant/status-history-store.js",
@@ -315,6 +316,7 @@
                 "modules/route-assistant/type-specs-store.js",
                 "modules/route-assistant/route-overrides-store.js",
                 "modules/route-assistant/route-note-store.js",
+                "modules/route-assistant/interline-store.js",
                 "modules/route-assistant/watchlist-store.js",
                 "modules/route-assistant/wave-overlay.js",
                 "modules/route-assistant/toast-host.js",
@@ -458,6 +460,7 @@
                 "modules/route-assistant/type-specs-store.js",
                 "modules/route-assistant/route-overrides-store.js",
                 "modules/route-assistant/route-note-store.js",
+                "modules/route-assistant/interline-store.js",
                 "modules/route-assistant/watchlist-store.js",
                 "modules/route-assistant/score.js",
                 "modules/route-assistant/wave-overlay.js",
@@ -519,7 +522,7 @@
         }
     ],
     "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlgUt+9pr5xsoJIdZtv2s/miPjNaUMf5NdIRH6wQzgWpGzMCwf46cUSL0FbpnIo6E9d6pITalABU8Dx72/isyas/da0EQNCQkYxhvu2YakUyUMyzKg0jPuxR+VyaEzDMVQKyVD1xZb/jjOkHXvGew/EHPw9BzCdhKRptRqo4gqdgifS0/xQFiqneA35Hhqwo9bh5zfhZpdMsssMHH3uGGm1f4Yeq+j2ZUtvf74v8pWR5+sVI/dFhTSpQaT60sWFYkPVwtpQ5jUwqm9vDyAH0obZxVtBqI5UkmjEJsCXmQW6QdC4+gRwTgrKc137SH+mUVRHfcXogMSa72+szX63pMUQIDAQAB",
-    "permissions": ["activeTab", "declarativeContent", "storage", "unlimitedStorage", "tabs"],
+    "permissions": ["activeTab", "declarativeContent", "storage", "unlimitedStorage", "tabs", "notifications"],
     "host_permissions": [
         "https://*.airlinesim.aero/*",
         "https://www.flightsfrom.com/*"
