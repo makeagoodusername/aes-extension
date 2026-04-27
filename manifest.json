@@ -126,6 +126,9 @@
                 "modules/central-hub/tiles/flightsfrom-tile.js",
                 "modules/accounting/snapshot-store.js",
                 "modules/central-hub/tiles/accounting-tile.js",
+                "modules/crew-management/staff-pilots-scraper.js",
+                "modules/crew-management/staff-pilots-applier.js",
+                "modules/central-hub/tiles/crew-management-tile.js",
                 "modules/central-hub/tiles/settings-tile.js",
                 "modules/central-hub/tiles/tools-tile.js",
                 "modules/central-hub/host.js",
@@ -228,6 +231,13 @@
         {
             "js": ["content_personelManagement.js"],
             "matches": ["https://*.airlinesim.aero/action/enterprise/staffOverview*"]
+        },
+        {
+            "js": [
+                "modules/crew-management/staff-pilots-scraper.js",
+                "modules/crew-management/content-staff-pilots.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/action/enterprise/staffPilots*"]
         },
         {
             "js": ["content_enterpriceOverview.js"],
