@@ -7,10 +7,11 @@
  * columns: a preset list/editor on the left, factor + composition controls
  * on the right, plus a build/history strip below.
  *
- * Foundation scope: presets CRUD + editor + a "Generate" button that runs
- * the builder against an empty route list (so users can validate their
- * preset structure end-to-end). Wiring the builder up to actual AS routes
- * lives in a follow-up.
+ * When `context.aircraftId` is provided (from the Fleet Hub overlay), the
+ * panel also renders a per-leg editor synced to AesAfpActiveDraftStore so
+ * the user's micro-edits flow bi-directionally with the AFP wave-applier
+ * sidebar on /app/fleets/aircraft/<id>/0. Without aircraftId (the original
+ * dashboard scope) the leg-list section is suppressed.
  */
 class SchedulePanel {
     constructor(rootEl, context) {
@@ -18,13 +19,54 @@ class SchedulePanel {
         this.context = context || {}
         this.block = null
         this.editingId = null
+        this.draft = null
+        this._draftListener = null
+        this._draftReloadTimer = null
+        this._legStatusBySeq = {}  // transient submit-queue state, not persisted
+        // Track 7 slice 7f — persisted Schedule for the overlay aircraft,
+        // loaded alongside draft and re-fetched when the broadcaster
+        // publishes a fresh scrape. Drives the Current-vs-Proposed diff
+        // summary above the legs table.
+        this.schedule = null
+        this._scheduleListener = null
+    }
+
+    /** Returns true when this panel is per-aircraft (overlay use) vs dashboard. */
+    _isOverlayMode() {
+        return !!(this.context.server && this.context.aircraftId)
     }
 
     async render() {
         this.block = await SchedulePresets.load()
-        this.editingId = this.block.defaultPresetId
-            || this.block.presets[0]?.id
-            || null
+        if (this._isOverlayMode()) {
+            // Track 7 slice 7f — load the persisted Schedule in parallel
+            // with the draft so the Current-vs-Proposed summary lights up
+            // on first paint when the AFP page has been visited recently.
+            const [draft, schedule] = await Promise.all([
+                AesAfpActiveDraftStore.load(
+                    this.context.server, this.context.aircraftId),
+                (typeof AesAfpScheduleStore !== "undefined")
+                    ? AesAfpScheduleStore.load(
+                          this.context.server, this.context.aircraftId).catch(() => null)
+                    : Promise.resolve(null)
+            ])
+            this.draft = draft
+            this.schedule = schedule || null
+            // Mirror remote preset selection into editingId when present
+            // — keeps the panel in sync with the AFP wave-applier's choice.
+            this.editingId = this.draft.presetId
+                || this.block.defaultPresetId
+                || this.block.presets[0]?.id
+                || null
+            this._attachDraftListener()
+            this._attachScheduleListener()
+        } else {
+            this.draft = null
+            this.schedule = null
+            this.editingId = this.block.defaultPresetId
+                || this.block.presets[0]?.id
+                || null
+        }
 
         this.root.innerHTML = ""
         this.root.append(this._buildHeader())
@@ -43,10 +85,39 @@ class SchedulePanel {
         right.append(this._buildEditorColumn())
 
         this.root.append(this._buildBuildBar())
+        if (this._isOverlayMode()) {
+            this.root.append(this._buildDraftLegsSection())
+        }
         this.root.append(this._buildOpenStationsBar())
         this.root.append(this._buildHistorySection())
 
         await this._refreshHistory()
+    }
+
+    /**
+     * Detach storage listener + status strip. The overlay's close path
+     * calls this; the dashboard mount doesn't need it (page navigation
+     * tears the panel down anyway).
+     */
+    dispose() {
+        if (this._draftListener) {
+            try { chrome.storage.onChanged.removeListener(this._draftListener) }
+            catch (_) { /* noop */ }
+            this._draftListener = null
+        }
+        if (this._scheduleListener) {
+            try { chrome.storage.onChanged.removeListener(this._scheduleListener) }
+            catch (_) { /* noop */ }
+            this._scheduleListener = null
+        }
+        if (this._draftReloadTimer) {
+            clearTimeout(this._draftReloadTimer)
+            this._draftReloadTimer = null
+        }
+        if (this._statusStrip) {
+            try { this._statusStrip.dispose() } catch (_) { /* noop */ }
+            this._statusStrip = null
+        }
     }
 
     _buildHeader() {
@@ -145,6 +216,10 @@ class SchedulePanel {
             li.append(name, meta)
             li.addEventListener("click", async () => {
                 this.editingId = preset.id
+                if (this._isOverlayMode()) {
+                    await AesAfpActiveDraftStore.setPreset(
+                        this.context.server, this.context.aircraftId, preset.id)
+                }
                 await this.render()
             })
             ul.append(li)
@@ -444,10 +519,25 @@ class SchedulePanel {
             const record = builder.build([])
             await ScheduleStore.save(record)
             await SchedulePresets.save({lastBuildId: record.scheduleId})
+            // Mirror into the per-aircraft active draft so the AFP wave
+            // applier can pick up the preset selection and any flights the
+            // empty-route foundation build did produce. setFlights clears
+            // the per-leg edit/apply/dismiss overlay since seq numbers are
+            // regenerated on each build.
+            if (this._isOverlayMode()) {
+                await AesAfpActiveDraftStore.setFlights(
+                    this.context.server, this.context.aircraftId, {
+                        hub:         preset.hub || this.context.hub || null,
+                        presetId:    preset.id,
+                        flights:     record.flights || [],
+                        generatedAt: Date.now()
+                    })
+            }
             const flightCount = record.flights.length
             const warnCount = record.warnings.length
             status.innerHTML = `<span class="good">Saved schedule ${record.scheduleId}</span> — ${flightCount} flights, ${warnCount} warning(s)`
             await this._refreshHistory()
+            await this.render()
         })
 
         bar.append(buildBtn, status)
@@ -623,5 +713,418 @@ class SchedulePanel {
             }
         })
         return input
+    }
+
+    // ── Active-draft sync (overlay mode only) ──────────────────────────
+
+    /**
+     * Subscribe to chrome.storage.onChanged for one storage key. Re-renders
+     * (debounced) when that key changes. Both the draft and the persisted
+     * Schedule listeners share the same debounce timer so back-to-back
+     * writes from the broadcaster don't repaint twice. Idempotent —
+     * caller passes a slot name (`draft` or `schedule`) and the listener
+     * is stored at `this._<slot>Listener`.
+     */
+    _attachStorageReloadListener(slot, key, label) {
+        const slotKey = "_" + slot + "Listener"
+        if (this[slotKey] || !this._isOverlayMode() || !key) return
+        const handler = (changes, area) => {
+            if (area !== "local") return
+            if (!Object.prototype.hasOwnProperty.call(changes, key)) return
+            if (this._draftReloadTimer) clearTimeout(this._draftReloadTimer)
+            this._draftReloadTimer = setTimeout(() => {
+                this._draftReloadTimer = null
+                this.render().catch(err =>
+                    console.warn("[AES schedule-panel] " + label + " repaint failed", err))
+            }, 200)
+        }
+        try {
+            chrome.storage.onChanged.addListener(handler)
+            this[slotKey] = handler
+        } catch (_) { this[slotKey] = null }
+    }
+
+    _attachDraftListener() {
+        this._attachStorageReloadListener("draft",
+            AesAfpActiveDraftStore._key(this.context.server, this.context.aircraftId),
+            "draft")
+    }
+
+    _attachScheduleListener() {
+        if (typeof AesAfpScheduleStore === "undefined") return
+        this._attachStorageReloadListener("schedule",
+            AesAfpScheduleStore._key(this.context.server, this.context.aircraftId),
+            "schedule")
+    }
+
+    /**
+     * Track 7 slice 7f — render the current-vs-proposed diff summary.
+     * Compares persisted schedule legs (current state in AS) against the
+     * draft's flights (proposed by the wave-applier) using the slice-6b
+     * matcher. Returns null when either side is missing — the consumer
+     * just doesn't append the row.
+     */
+    _buildScheduleDiffSummary() {
+        if (typeof AesAfpScheduleDiff === "undefined") return null
+        if (!this.schedule || !Array.isArray(this.schedule.legs)) return null
+        const proposed = (this.draft && Array.isArray(this.draft.flights))
+            ? this.draft.flights : []
+        if (!this.schedule.legs.length && !proposed.length) return null
+        let diff
+        if (this._diffCacheLegs === this.schedule.legs && this._diffCacheProposed === proposed) {
+            diff = this._diffCacheResult
+        } else {
+            try { diff = AesAfpScheduleDiff.compare(this.schedule.legs, proposed) }
+            catch (e) { console.warn("[AES schedule-panel] diff threw", e); return null }
+            this._diffCacheLegs = this.schedule.legs
+            this._diffCacheProposed = proposed
+            this._diffCacheResult = diff
+        }
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin:0 0 10px 0;padding:6px 10px;border:1px solid #d4d4d8;"
+            + "border-radius:4px;background:#f9fafb;font-size:12px;display:flex;"
+            + "align-items:center;gap:12px;flex-wrap:wrap;"
+        const lbl = document.createElement("strong")
+        lbl.textContent = "Current vs Proposed:"
+        wrap.append(lbl)
+
+        const ageMs = AesAfpScheduleStore.getStaleness(this.schedule)
+        const fresh = AesAfpScheduleStore.isFresh(this.schedule, 5 * 60 * 1000)
+        const age = isFinite(ageMs) ? this._sageLabel(ageMs) : "?"
+
+        const mkPill = (label, count, color, tip) => {
+            const span = document.createElement("span")
+            span.title = tip
+            span.style.cssText = "padding:2px 8px;border-radius:10px;font-weight:600;"
+                + "background:" + color + ";color:#fff;"
+            span.textContent = label + " " + count
+            return span
+        }
+        wrap.append(mkPill("keep",   diff.keep.length,   "#10803a",
+            "Legs in both — current schedule already matches proposal."))
+        wrap.append(mkPill("delete", diff.delete.length, "#b91c1c",
+            "Legs that will be removed when the proposal is applied."))
+        wrap.append(mkPill("add",    diff.add.length,    "#1f4cad",
+            "New legs the proposal will create."))
+        // The 7e locked bucket may or may not be present depending on the
+        // diff engine version. Render only when populated.
+        if (Array.isArray(diff.locked) && diff.locked.length) {
+            wrap.append(mkPill("locked", diff.locked.length, "#a16207",
+                "AS-locked legs we won't touch — surfaced separately so apply-batch skips them."))
+        }
+        const meta = document.createElement("span")
+        meta.style.cssText = "color:" + (fresh ? "#10803a" : "#a16207") + ";font-size:90%;margin-left:auto;"
+        meta.textContent = "schedule scraped " + age + " ago" + (fresh ? "" : " · stale")
+        wrap.append(meta)
+
+        // Slice 8c — handoff to AFP page where the full apply-batch lives
+        // (with the slice 6d locked-confirm pre-flight). Schedule-panel
+        // only has per-leg Apply buttons; users wanting to apply N legs
+        // at once need to land on the AFP page. We deep-link via the
+        // shared handoff store so they don't re-pick the preset.
+        if (this._isOverlayMode()
+                && proposed.length > 1
+                && typeof window.AesHandoffStore !== "undefined") {
+            const handoffBtn = document.createElement("button")
+            handoffBtn.type = "button"
+            handoffBtn.textContent = "Apply all in AFP →"
+            handoffBtn.title = "Open this aircraft's Flight Plan page with the wave preset"
+                + " preloaded so you can run the full apply-batch (with locked-leg"
+                + " confirmation) instead of clicking Apply per leg."
+            handoffBtn.style.cssText = "background:#7c2d12;color:#fed7aa;"
+                + "border:1px solid #9a3412;border-radius:3px;padding:2px 8px;"
+                + "font-size:11px;font-weight:600;cursor:pointer;margin-left:6px;"
+            handoffBtn.addEventListener("click", () => this._handoffToAfp())
+            wrap.append(handoffBtn)
+        }
+        return wrap
+    }
+
+    /**
+     * Slice 8c — write a wave-designer handoff record + open the AFP
+     * page in a new tab. The wave-applier on the other side consumes
+     * the handoff, pre-selects the preset, and auto-Generates so the
+     * user lands ready to apply-batch.
+     */
+    async _handoffToAfp() {
+        if (!this._isOverlayMode()) return
+        const ctx = this.context || {}
+        const aircraftId = ctx.aircraftId
+        const presetId = (this.draft && this.draft.presetId)
+            || (this._presets || []).find(p => p)
+            || null
+        if (!aircraftId || !presetId) {
+            if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.warn) {
+                try { RouteAssistantToast.warn("Cannot hand off: missing aircraftId or presetId.") }
+                catch (_) { /* noop */ }
+            }
+            return
+        }
+        try {
+            await window.AesHandoffStore.set({
+                aircraftId: aircraftId,
+                presetId:   typeof presetId === "string" ? presetId : presetId.id,
+                hub:        (this.draft && this.draft.hub) || ctx.hub || "",
+                generatedAt: Date.now(),
+                source:     "schedule-panel-overlay"
+            })
+        } catch (e) {
+            console.warn("[AES schedule-panel] handoff write failed", e)
+            return
+        }
+        const url = "/app/fleets/aircraft/" + encodeURIComponent(aircraftId) + "/0"
+        try { window.open(url, "_blank", "noopener") }
+        catch (e) { window.location.href = url }
+    }
+
+    _sageLabel(ms) {
+        if (!isFinite(ms) || ms < 0) return "?"
+        const s = Math.floor(ms / 1000)
+        if (s < 60)   return s + "s"
+        const m = Math.floor(s / 60)
+        if (m < 60)   return m + "m"
+        const h = Math.floor(m / 60)
+        if (h < 24)   return h + "h"
+        const d = Math.floor(h / 24)
+        return d + "d"
+    }
+
+    _buildDraftLegsSection() {
+        const wrap = document.createElement("div")
+        wrap.className = "as-panel"
+        wrap.style.marginTop = "12px"
+
+        const title = document.createElement("h4")
+        title.innerText = "Schedule legs"
+        wrap.append(title)
+
+        const note = document.createElement("p")
+        note.style.cssText = "color:#888; font-size:90%; margin:4px 0 10px 0;"
+        note.innerText = "Edits, applies and dismisses sync live with the per-aircraft "
+            + "Flight Plan page (P button). Apply opens that page in a hidden tab and "
+            + "submits the leg; status updates here when it completes."
+        wrap.append(note)
+
+        // Track 7 slice 7f — show keep/delete/add (and locked when 7e diff
+        // is loaded) counts so the user sees at a glance how the proposal
+        // differs from what AS currently has scheduled. Suppressed when no
+        // schedule is cached yet (no AFP page visit).
+        const diffSummary = this._buildScheduleDiffSummary()
+        if (diffSummary) wrap.append(diffSummary)
+
+        const flights = (this.draft && Array.isArray(this.draft.flights)) ? this.draft.flights : []
+        if (!flights.length) {
+            const empty = document.createElement("p")
+            empty.style.color = "#888"
+            empty.innerText = "No flight legs yet. Generate a wave plan on the per-aircraft "
+                + "Flight Plan page to populate this list, or generate above to set the "
+                + "preset and build the foundation."
+            wrap.append(empty)
+            return wrap
+        }
+
+        const table = document.createElement("table")
+        table.className = "table table-bordered table-condensed"
+        table.style.cssText = "margin-bottom:0; font-size:12px;"
+        const thead = document.createElement("thead")
+        thead.innerHTML = "<tr>"
+            + "<th style=\"width:48px;\">Wave</th>"
+            + "<th style=\"width:46px;\">Dir</th>"
+            + "<th>Origin</th>"
+            + "<th>Dest</th>"
+            + "<th style=\"width:96px;\">Dep time</th>"
+            + "<th style=\"width:84px;\">Price %</th>"
+            + "<th style=\"width:70px;\">Status</th>"
+            + "<th style=\"width:140px;\"></th>"
+            + "</tr>"
+        const tbody = document.createElement("tbody")
+        for (const f of flights) tbody.append(this._buildLegRow(f))
+        table.append(thead, tbody)
+        wrap.append(table)
+        return wrap
+    }
+
+    _buildLegRow(flight) {
+        const tr = document.createElement("tr")
+        const seq = flight.seq
+        const overlay = (this.draft.perLegEdits || {})[seq] || {}
+        const eff = Object.assign({}, flight, overlay)
+        const applied   = !!(this.draft.appliedLegs   || {})[seq]
+        const dismissed = !!(this.draft.dismissedLegs || {})[seq]
+        const transient = this._legStatusBySeq[seq] || null  // queued/submitting/error
+
+        if (dismissed) {
+            tr.style.cssText = "opacity:0.45;"
+        } else if (applied) {
+            tr.style.cssText = "background:#eaf6ea;"
+        }
+
+        const td = (txt) => { const c = document.createElement("td"); c.textContent = txt; return c }
+        tr.append(td(flight.waveLabel || flight.waveId || "—"))
+
+        const dir = (flight.direction || "").slice(0, 3)
+        const dirCell = td(dir)
+        dirCell.style.cssText = (flight.direction === "inbound")
+            ? "color:#10803a;font-weight:600;"
+            : "color:#1f4cad;font-weight:600;"
+        tr.append(dirCell)
+
+        tr.append(td(eff.origin || "—"))
+
+        // Destination — editable text input.
+        const destCell = document.createElement("td")
+        const destInput = this._legTextInput(eff.destination || "", (v) => {
+            const norm = String(v || "").toUpperCase().trim()
+            return this._patchLegEdit(seq, {destination: norm || null})
+        }, {maxLength: 4, style: "text-transform:uppercase;width:64px;"})
+        destCell.append(destInput)
+        tr.append(destCell)
+
+        // Departure time — HH:MM input.
+        const timeCell = document.createElement("td")
+        const timeInput = document.createElement("input")
+        timeInput.type = "time"
+        timeInput.className = "form-control input-sm"
+        timeInput.style.cssText = "width:90px;"
+        timeInput.value = eff.depTimeLocal || ""
+        timeInput.addEventListener("change", () => {
+            const v = timeInput.value
+            if (v && (typeof ScheduleFactors === "undefined" || ScheduleFactors.parseHHMM(v))) {
+                this._patchLegEdit(seq, {depTimeLocal: v})
+            }
+        })
+        timeCell.append(timeInput)
+        tr.append(timeCell)
+
+        // Price % — numeric.
+        const priceCell = document.createElement("td")
+        const priceInput = document.createElement("input")
+        priceInput.type = "number"
+        priceInput.className = "form-control input-sm"
+        priceInput.style.cssText = "width:72px;"
+        priceInput.value = (typeof eff.pricePct === "number") ? eff.pricePct : 100
+        priceInput.min = 0
+        priceInput.max = 200
+        priceInput.addEventListener("change", () => {
+            const v = parseInt(priceInput.value, 10)
+            this._patchLegEdit(seq, {pricePct: isNaN(v) ? 100 : v})
+        })
+        priceCell.append(priceInput)
+        tr.append(priceCell)
+
+        // Status pill.
+        const statusCell = document.createElement("td")
+        statusCell.style.cssText = "font-size:11px;"
+        if (transient === "submitting") {
+            statusCell.innerHTML = '<span style="color:#1f4cad;">submitting…</span>'
+        } else if (transient === "error") {
+            statusCell.innerHTML = '<span style="color:#a33;" title="Click Apply to retry.">error</span>'
+        } else if (applied) {
+            statusCell.innerHTML = '<span style="color:#10803a;">applied</span>'
+        } else if (dismissed) {
+            statusCell.innerHTML = '<span style="color:#888;">dismissed</span>'
+        } else {
+            statusCell.innerHTML = '<span style="color:#888;">pending</span>'
+        }
+        tr.append(statusCell)
+
+        // Actions: Apply, Dismiss / Restore.
+        const actionsCell = document.createElement("td")
+        actionsCell.style.cssText = "white-space:nowrap;"
+        if (!dismissed) {
+            const applyBtn = document.createElement("button")
+            applyBtn.type = "button"
+            applyBtn.className = "btn btn-primary btn-xs"
+            applyBtn.textContent = applied ? "Re-apply" : "Apply"
+            applyBtn.title = "Open the per-aircraft Flight Plan page in a hidden tab and submit this leg."
+            applyBtn.disabled = (transient === "submitting")
+            applyBtn.addEventListener("click", () => this._onLegApply(seq))
+            actionsCell.append(applyBtn)
+            actionsCell.append(document.createTextNode(" "))
+        }
+        const dismissBtn = document.createElement("button")
+        dismissBtn.type = "button"
+        dismissBtn.className = "btn btn-default btn-xs"
+        dismissBtn.textContent = dismissed ? "Restore" : "Dismiss"
+        dismissBtn.addEventListener("click", () => this._onLegDismissToggle(seq, !dismissed))
+        actionsCell.append(dismissBtn)
+        tr.append(actionsCell)
+
+        return tr
+    }
+
+    _legTextInput(value, onChange, opts) {
+        opts = opts || {}
+        const input = document.createElement("input")
+        input.type = "text"
+        input.className = "form-control input-sm"
+        input.value = value
+        if (opts.maxLength) input.maxLength = opts.maxLength
+        if (opts.style) input.setAttribute("style", opts.style)
+        input.addEventListener("change", () => onChange(input.value))
+        return input
+    }
+
+    async _patchLegEdit(seq, patch) {
+        if (!this._isOverlayMode()) return
+        await AesAfpActiveDraftStore.setEdit(
+            this.context.server, this.context.aircraftId, seq, patch)
+    }
+
+    async _onLegDismissToggle(seq, makeDismissed) {
+        if (!this._isOverlayMode()) return
+        await AesAfpActiveDraftStore.setDismissed(
+            this.context.server, this.context.aircraftId, seq,
+            makeDismissed ? Date.now() : null)
+    }
+
+    /**
+     * Submit one leg via the background-tab bridge. The wave-applier on the
+     * AFP page itself uses a different code path (in-page bus pre-fill,
+     * user clicks AS Submit) — this entry point is overlay-only.
+     */
+    async _onLegApply(seq) {
+        if (!this._isOverlayMode()) return
+        const record = this.draft || {}
+        const eff = AesAfpActiveDraftStore.effectiveLeg(record, seq)
+        if (!eff) return
+
+        const inbound = (eff.direction === "inbound")
+        const origin = inbound
+            ? (eff.origin || (record.hub || this.context.hub))
+            : (record.hub || this.context.hub || eff.origin)
+        const destination = inbound
+            ? (record.hub || this.context.hub || eff.origin)
+            : eff.destination
+
+        const leg = {
+            origin:       origin || null,
+            destination:  destination || null,
+            depTimeLocal: eff.depTimeLocal || null,
+            pricePct:     (typeof eff.pricePct === "number") ? eff.pricePct : 100,
+            service:      eff.service || null
+        }
+
+        this._legStatusBySeq[seq] = "submitting"
+        await this.render()
+
+        const resp = await AesAfpSubmitBridge.submitLegInBackground({
+            server:     this.context.server,
+            aircraftId: this.context.aircraftId,
+            hub:        record.hub || this.context.hub || null,
+            leg
+        })
+
+        if (resp && resp.ok) {
+            delete this._legStatusBySeq[seq]
+            await AesAfpActiveDraftStore.setApplied(
+                this.context.server, this.context.aircraftId, seq, Date.now())
+            // setApplied triggers storage.onChanged → render() via listener.
+        } else {
+            console.warn("[AES schedule-panel] leg apply failed", resp)
+            this._legStatusBySeq[seq] = "error"
+            await this.render()
+        }
     }
 }

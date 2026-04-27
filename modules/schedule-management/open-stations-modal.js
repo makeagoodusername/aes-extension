@@ -21,19 +21,36 @@
  */
 class OpenStationsModal {
     static SOURCE_LABELS = {
-        demand: {label: "demand", color: "#3b82f6"},
-        ff:     {label: "ff",     color: "#10b981"},
-        watch:  {label: "watch",  color: "#f59e0b"},
-        top:    {label: "top",    color: "#a855f7"},
+        demand:     {label: "demand",     color: "#3b82f6"},
+        ff:         {label: "ff",         color: "#10b981"},
+        watch:      {label: "watch",      color: "#f59e0b"},
+        top:        {label: "top",        color: "#a855f7"},
+        // Track 7 follow-up: candidates seeded directly by the AFP Route
+        // Builder's visible candidate panel (host.js's "Open stations…").
+        candidates: {label: "candidates", color: "#06b6d4"},
     }
 
-    constructor({server, airlineCode, currentHub} = {}) {
+    constructor({server, airlineCode, currentHub, seedIatas, seedSource} = {}) {
         if (!server || !airlineCode) {
             throw new Error("OpenStationsModal: server + airlineCode required")
         }
         this.server      = server
         this.airlineCode = airlineCode
         this.currentHub  = currentHub ? String(currentHub).toUpperCase() : null
+
+        // Track 7 follow-up: when a caller passes `seedIatas`, the modal
+        // bypasses its watchlist/top-routes/FlightsFrom/demand aggregation
+        // and just lists exactly those airports. Used by the AFP "Open
+        // stations…" button so the modal mirrors the visible candidate
+        // panel above it. The legacy aggregation flow stays available for
+        // callers that omit `seedIatas`.
+        this.seedIatas = (Array.isArray(seedIatas) && seedIatas.length)
+            ? Array.from(new Set(seedIatas
+                .map(s => String(s || "").toUpperCase())
+                .filter(s => /^[A-Z]{3}$/.test(s))))
+            : null
+        this.seedSource = (typeof seedSource === "string" && seedSource)
+            ? seedSource : "candidates"
 
         this._overlay   = null
         this._body      = null
@@ -74,68 +91,79 @@ class OpenStationsModal {
         this._candidates = new Map()
         this._selected = new Set()
 
-        await this._ensureCountriesCache()
-
-        const [topRoutes, watchMap, ffList, demandRecords, existingIatas] = await Promise.all([
-            this._loadTopRoutes(),
-            this._filters.useWatch  ? RouteAssistantWatchlistStore.loadAll() : Promise.resolve(new Map()),
-            this._filters.useFf     ? FlightsFromStore.listAirports()        : Promise.resolve([]),
-            this._filters.useDemand ? this._loadDemandRecords()              : Promise.resolve([]),
-            CountryScraper.loadExistingStationIatas(this.server).catch(() => new Set()),
+        const [, existingIatas] = await Promise.all([
+            this._ensureCountriesCache(),
+            CountryScraper.loadExistingStationIatas(this.server).catch(() => new Set())
         ])
         this._existingIatas = existingIatas || new Set()
 
-        if (this._filters.useTop && topRoutes && topRoutes.rows) {
-            for (const r of topRoutes.rows) {
-                if (!r || !r.destIata) continue
-                this._addCandidate(r.destIata, "top", {
-                    name:       r.destName || null,
-                    paxScore:   typeof r.paxScore   === "number" ? r.paxScore   : null,
-                    cargoScore: typeof r.cargoScore === "number" ? r.cargoScore : null,
-                })
+        if (this.seedIatas) {
+            // Seeded mode: skip the four aggregation sources. Each seed IATA
+            // becomes a candidate tagged with `this.seedSource` so the source
+            // chip on the row reflects where the list came from.
+            for (const iata of this.seedIatas) {
+                this._addCandidate(iata, this.seedSource, {})
             }
-        }
+        } else {
+            const [topRoutes, watchMap, ffList, demandRecords] = await Promise.all([
+                this._loadTopRoutes(),
+                this._filters.useWatch  ? RouteAssistantWatchlistStore.loadAll() : Promise.resolve(new Map()),
+                this._filters.useFf     ? FlightsFromStore.listAirports()        : Promise.resolve([]),
+                this._filters.useDemand ? this._loadDemandRecords()              : Promise.resolve([]),
+            ])
 
-        if (this._filters.useWatch) {
-            for (const key of watchMap.keys()) {
-                const dash = key.indexOf("-")
-                if (dash <= 0) continue
-                const hub  = key.slice(0, dash).toUpperCase()
-                const dest = key.slice(dash + 1).toUpperCase()
-                if (!/^[A-Z]{3}$/.test(dest)) continue
-                if (this._filters.currentHubOnlyWatch && this.currentHub && hub !== this.currentHub) continue
-                this._addCandidate(dest, "watch", {})
-            }
-        }
-
-        if (this._filters.useFf) {
-            const hubs = ffList.map(a => a.iata).filter(Boolean)
-            const records = await Promise.all(hubs.map(iata =>
-                FlightsFromStore.loadAirport(iata).catch(() => null)
-            ))
-            for (const rec of records) {
-                if (!rec || !rec.routes) continue
-                for (const r of rec.routes) {
+            if (this._filters.useTop && topRoutes && topRoutes.rows) {
+                for (const r of topRoutes.rows) {
                     if (!r || !r.destIata) continue
-                    this._addCandidate(r.destIata, "ff", {})
+                    this._addCandidate(r.destIata, "top", {
+                        name:       r.destName || null,
+                        paxScore:   typeof r.paxScore   === "number" ? r.paxScore   : null,
+                        cargoScore: typeof r.cargoScore === "number" ? r.cargoScore : null,
+                    })
                 }
             }
-        }
 
-        if (this._filters.useDemand) {
-            for (const rec of demandRecords) {
-                if (!rec || !rec.iata) continue
-                const pax = typeof rec.paxScore === "number" ? rec.paxScore : 0
-                const cargo = typeof rec.cargoScore === "number" ? rec.cargoScore : 0
-                if (pax < this._filters.paxMin) continue
-                if (cargo < this._filters.cargoMin) continue
-                this._addCandidate(rec.iata, "demand", {
-                    name:       rec.name      || null,
-                    airportId:  rec.airportId || null,
-                    countryId:  rec.countryId || null,
-                    paxScore:   typeof rec.paxScore   === "number" ? rec.paxScore   : null,
-                    cargoScore: typeof rec.cargoScore === "number" ? rec.cargoScore : null,
-                })
+            if (this._filters.useWatch) {
+                for (const key of watchMap.keys()) {
+                    const dash = key.indexOf("-")
+                    if (dash <= 0) continue
+                    const hub  = key.slice(0, dash).toUpperCase()
+                    const dest = key.slice(dash + 1).toUpperCase()
+                    if (!/^[A-Z]{3}$/.test(dest)) continue
+                    if (this._filters.currentHubOnlyWatch && this.currentHub && hub !== this.currentHub) continue
+                    this._addCandidate(dest, "watch", {})
+                }
+            }
+
+            if (this._filters.useFf) {
+                const hubs = ffList.map(a => a.iata).filter(Boolean)
+                const records = await Promise.all(hubs.map(iata =>
+                    FlightsFromStore.loadAirport(iata).catch(() => null)
+                ))
+                for (const rec of records) {
+                    if (!rec || !rec.routes) continue
+                    for (const r of rec.routes) {
+                        if (!r || !r.destIata) continue
+                        this._addCandidate(r.destIata, "ff", {})
+                    }
+                }
+            }
+
+            if (this._filters.useDemand) {
+                for (const rec of demandRecords) {
+                    if (!rec || !rec.iata) continue
+                    const pax = typeof rec.paxScore === "number" ? rec.paxScore : 0
+                    const cargo = typeof rec.cargoScore === "number" ? rec.cargoScore : 0
+                    if (pax < this._filters.paxMin) continue
+                    if (cargo < this._filters.cargoMin) continue
+                    this._addCandidate(rec.iata, "demand", {
+                        name:       rec.name      || null,
+                        airportId:  rec.airportId || null,
+                        countryId:  rec.countryId || null,
+                        paxScore:   typeof rec.paxScore   === "number" ? rec.paxScore   : null,
+                        cargoScore: typeof rec.cargoScore === "number" ? rec.cargoScore : null,
+                    })
+                }
             }
         }
 
@@ -271,7 +299,9 @@ class OpenStationsModal {
         header.style.cssText = "display:flex;align-items:center;padding:12px 16px;"
             + "border-bottom:1px solid #374151;gap:12px;"
         const title = document.createElement("h4")
-        title.textContent = "Open stations at scraped airports"
+        title.textContent = this.seedIatas
+            ? `Open ${this.seedIatas.length} candidate station${this.seedIatas.length === 1 ? "" : "s"}`
+            : "Open stations at scraped airports"
         title.style.cssText = "margin:0;font-size:15px;flex:1;color:#f3f4f6;"
         const closeX = document.createElement("button")
         closeX.type = "button"
@@ -313,6 +343,30 @@ class OpenStationsModal {
         const wrap = document.createElement("div")
         wrap.style.cssText = "padding:10px 16px;border-bottom:1px solid #374151;"
             + "display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center;font-size:12px;"
+
+        // Seeded mode: source toggles + pax/cargo thresholds are irrelevant
+        // (aggregation is bypassed). Show a one-liner explaining the source
+        // and skip straight to the "Hide already-open" toggle.
+        if (this.seedIatas) {
+            const note = document.createElement("div")
+            note.style.cssText = "color:#9ca3af;flex:1;"
+            note.textContent = `Showing the ${this.seedIatas.length} destination${this.seedIatas.length === 1 ? "" : "s"} from the AES Route Builder candidate panel. Toggle any off, then click Open.`
+            wrap.append(note)
+
+            const lab = document.createElement("label")
+            lab.style.cssText = "display:flex;align-items:center;gap:4px;cursor:pointer;color:#9ca3af;"
+            const cb = document.createElement("input")
+            cb.type = "checkbox"
+            cb.checked = this._filters.hideExisting
+            cb.addEventListener("change", () => {
+                this._filters.hideExisting = cb.checked
+                this._refresh().catch(err => console.error(err))
+            })
+            const span = document.createElement("span"); span.textContent = "Hide already-open"
+            lab.append(cb, span)
+            wrap.append(lab)
+            return wrap
+        }
 
         const sourceCb = (label, key) => {
             const lab = document.createElement("label")
