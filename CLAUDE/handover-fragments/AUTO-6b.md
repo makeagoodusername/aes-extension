@@ -186,6 +186,71 @@ DOM/jQuery dependencies.
   `add.length`) are identical because each "loss" on one current
   leg is exactly offset by a "gain" on the other.
 
+## Followup — configurable tolerance (shipped)
+
+The user retired three open questions from the original 6b handover
+in clarifications:
+
+- "moveTime classification toggle" was confusing; permanently dropped
+  — Phase-1's "treat O/D-match outside ±15 as delete+add" is now the
+  permanent behaviour, not a toggleable mode.
+- "Multi-segment aircraft" was a misread of `?segment=0`; the user
+  doesn't recognise the concept and both populated captures only
+  show `segment=0`. Permanently dropped.
+- "Tolerance" should NOT be a hard-coded constant. The user reads it
+  as a calibration knob tied to wave structure / desired outcome.
+
+**Followup change (one commit, no behavioural change for callers
+that don't pass an opt arg):** `compare(currentLegs, proposedLegs,
+opts)` now accepts a 3rd arg with shape `{toleranceMin?: number}`.
+A new `_resolveTolerance(opts)` picks the active value by
+precedence:
+
+1. `opts.toleranceMin` (caller wins) — must be finite, ≥ 0
+2. `window.AesAfpSettings.cached().aircraftFlightPlan.autoScheduler.diff.toleranceMin`
+   (sync read; only consulted when `cached()` is registered — a
+   hook a future slice can add for the apply pipeline to pre-warm)
+3. `TOLERANCE_MIN` constant (15)
+
+A defensive non-finite or negative value at any layer falls through
+to the next, so a misconfigured setting never breaks the diff.
+
+**Settings shape declared (no UI yet, awaiting slice F commit):**
+
+```js
+settings.aircraftFlightPlan.autoScheduler.diff = {
+    toleranceMin: 15
+}
+```
+
+The followup commit ships the *consumer* (`_resolveTolerance` reads
+`AesAfpSettings.cached?.()` defensively); the producer (`settings-extension.js`
+declaring the `diff.toleranceMin` field in its `_defaults`,
+`_mergeAircraftFlightPlan` deep-merge, and `save` deep-merge) sits as
+an uncommitted working-tree edit waiting for slice F (the file is
+still untracked in `git status` at the time of this followup —
+whoever commits it next picks up the addition cleanly because it's
+purely additive). Until that happens the consumer always falls
+through to the `TOLERANCE_MIN` default — which is identical to the
+declared setting default (15) — so the diff stays bit-for-bit
+compatible with slice 6b's pre-followup behaviour for any caller
+that doesn't pass the opt arg.
+
+**Smoke tests** extended from 30 → 34 assertions (all green under
+both browser load and a Node stub run). New cases:
+
+- `compare(c, p, {toleranceMin: 5})` — `±10 min` becomes a
+  delete+add instead of keep.
+- `compare(c, p, {toleranceMin: 60})` — `±30 min` becomes a keep.
+- `compare(c, p, {toleranceMin: 0})` — only exact-time matches
+  keep.
+- `compare(c, p, {toleranceMin: -1})` — falls back to default 15
+  (defensive against bad input).
+
+**Settings UI** — out of scope for the followup. Slice 6d's
+confirmation modal is the right place to expose a slider; the
+declared field gives 6d a stable settings target to wire.
+
 ## Open questions for the human
 
 - **Should keep prefer same-day matches?** If a proposed leg flies
@@ -195,12 +260,3 @@ DOM/jQuery dependencies.
   goes to delete). Adding a same-`dayIdx` preference would resolve
   this cleanly, but slice 6b sticks to the spec's `compare(current,
   proposed)` shape (no day awareness).
-- **Should moveTime ever populate in Phase-1 if the user opts in?**
-  A simple toggle `compare(c, p, {detectMoveTime: true})` would let
-  slice 6d preview "5 deletes + 5 adds" as "5 time-shifts" without
-  committing to the AS-side edit-flight POST. Defer until the
-  confirmation modal is built.
-- **Tolerance unit per direction?** A 15-min tolerance for inbound
-  arrivals is reasonable; for outbound departures the user might
-  want tighter ±5 min so a deliberate wave shift isn't masked as
-  "keep". Out of scope for slice 6b; surface in slice 6d settings.

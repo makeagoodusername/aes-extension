@@ -2,6 +2,7 @@
 
 /**
  * Track 6 slice 6b — schedule diff engine.
+ * Track 6 slice 6b-followup — configurable per-call tolerance.
  *
  * Pure compare function. No DOM, no chrome.storage, no AS knowledge —
  * the caller hands in two arrays of legs (current and proposed) and
@@ -10,7 +11,9 @@
  * Match rule for "keep":
  *   - same origin (3-letter IATA, case-sensitive)
  *   - same destination (3-letter IATA)
- *   - depTimeLocal within ±15 minutes (TOLERANCE_MIN)
+ *   - depTimeLocal within ±N minutes (default 15; per-call override
+ *     via the 3rd arg, or globally via
+ *     `settings.aircraftFlightPlan.autoScheduler.diff.toleranceMin`)
  *
  * Phase 1 simplification: when a current leg's origin+dest match a
  * proposed leg but the depTime delta is OUTSIDE ±15 min, this slice
@@ -42,15 +45,29 @@
  * PROPOSED side they go into `add`. This is the safe default: if we
  * can't reason about a leg, we conservatively wipe and rebuild.
  *
+ * Tolerance configurability (6b-followup):
+ *   compare(curr, prop, {toleranceMin: N}) — overrides the default 15
+ *   for THIS call. Falls back to
+ *   `settings.aircraftFlightPlan.autoScheduler.diff.toleranceMin`
+ *   when callable via `AesAfpSettings`. Caller's option always wins;
+ *   missing / non-finite / negative values fall back to default 15.
+ *   Note: settings read is sync — `compare` reads
+ *   `AesAfpSettings.cached?.()` (introduced for sync access by
+ *   the apply path) when present, otherwise the hard-coded default.
+ *   Callers that have an async settings handle should pass the value
+ *   in via the option arg.
+ *
  * Public API (window.AesAfpScheduleDiff):
- *   .compare(currentLegs, proposedLegs)
+ *   .compare(currentLegs, proposedLegs, opts?)
  *     → {keep:[{currentSeq, proposedSeq, deltaMin}],
  *        delete:[currentLeg], add:[proposedLeg], moveTime:[]}
+ *     opts: {toleranceMin?: number}
  *   .timeDeltaMin(aHHMM, bHHMM)
  *     → absolute minute-distance between two HH:MM strings, taking the
  *       midnight-wrap shorter side (e.g. 23:50 vs 00:10 → 20)
  *   .isMatchable(leg) → boolean
- *   .TOLERANCE_MIN  (15)
+ *   .TOLERANCE_MIN  (15) — read-only default; per-call override is
+ *                          how callers customise.
  */
 ;(function () {
     if (window.AesAfpScheduleDiff) return
@@ -63,11 +80,15 @@
      * Diff two leg arrays. Returns the four buckets described in the
      * module header. Both arguments default to [] on bad input — the
      * caller never has to pre-validate.
+     *
+     * `opts.toleranceMin` overrides the per-call match window. See
+     * `_resolveTolerance` for the precedence rules.
      */
-    function compare(currentLegs, proposedLegs) {
+    function compare(currentLegs, proposedLegs, opts) {
         const cur = Array.isArray(currentLegs)  ? currentLegs  : []
         const pro = Array.isArray(proposedLegs) ? proposedLegs : []
         const result = {keep: [], delete: [], add: [], moveTime: []}
+        const tol = _resolveTolerance(opts)
 
         if (!cur.length && !pro.length) return result
 
@@ -106,7 +127,7 @@
                 if (c.destination !== p.destination) continue
                 const d = timeDeltaMin(c.depTimeLocal, p.depTimeLocal)
                 if (d == null)            continue
-                if (d > TOLERANCE_MIN)    continue
+                if (d > tol)              continue
                 if (d < bestDelta) { bestDelta = d; bestIdx = i }
             }
             if (bestIdx >= 0) {
@@ -151,6 +172,41 @@
         if (typeof leg.destination !== "string" || !IATA_RE.test(leg.destination)) return false
         if (typeof leg.depTimeLocal !== "string" || !HHMM_RE.test(leg.depTimeLocal)) return false
         return true
+    }
+
+    /**
+     * Internal: resolve the tolerance window for one compare() call.
+     *
+     * Precedence:
+     *   1. opts.toleranceMin (caller wins) — finite, ≥ 0
+     *   2. AesAfpSettings.cached().aircraftFlightPlan.autoScheduler.diff.toleranceMin
+     *      (sync read; only used when AesAfpSettings exposes a cached
+     *      accessor — the apply pipeline pre-warms it)
+     *   3. TOLERANCE_MIN (15)
+     *
+     * Defensive: any non-finite or negative value at any layer falls
+     * through to the next one, so a misconfigured setting never breaks
+     * the diff.
+     */
+    function _resolveTolerance(opts) {
+        if (opts && typeof opts === "object") {
+            const v = opts.toleranceMin
+            if (typeof v === "number" && isFinite(v) && v >= 0) return v
+        }
+        try {
+            if (typeof window !== "undefined"
+             && window.AesAfpSettings
+             && typeof window.AesAfpSettings.cached === "function") {
+                const s = window.AesAfpSettings.cached()
+                const v = s
+                    && s.aircraftFlightPlan
+                    && s.aircraftFlightPlan.autoScheduler
+                    && s.aircraftFlightPlan.autoScheduler.diff
+                    && s.aircraftFlightPlan.autoScheduler.diff.toleranceMin
+                if (typeof v === "number" && isFinite(v) && v >= 0) return v
+            }
+        } catch (_) { /* fall through to default */ }
+        return TOLERANCE_MIN
     }
 
     /** Internal: parse "HH:MM" → 0..1439, or null on bad input. */
@@ -274,6 +330,34 @@
                 [{seq:11, origin:"JFK", destination:"LAX", depTimeLocal:"00:05"}])
             console.assert(wrap.keep.length === 1,
                 "[diff] 23:55 vs 00:05 (10 min across midnight) → keep")
+
+            // ── compare: per-call toleranceMin override (6b-followup)
+            const tightCur = [{seq:1, origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}]
+            const tightProp = [{seq:11, origin:"JFK", destination:"LAX", depTimeLocal:"06:10"}]
+            const tight = D.compare(tightCur, tightProp, {toleranceMin: 5})
+            console.assert(tight.keep.length === 0 && tight.delete.length === 1 && tight.add.length === 1,
+                "[diff] tolerance:5 — ±10min becomes delete+add")
+
+            const wide = D.compare(
+                [{seq:1, origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}],
+                [{seq:11, origin:"JFK", destination:"LAX", depTimeLocal:"06:30"}],
+                {toleranceMin: 60})
+            console.assert(wide.keep.length === 1,
+                "[diff] tolerance:60 — ±30min becomes keep")
+
+            const exact = D.compare(
+                [{seq:1, origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}],
+                [{seq:11, origin:"JFK", destination:"LAX", depTimeLocal:"06:01"}],
+                {toleranceMin: 0})
+            console.assert(exact.keep.length === 0 && exact.delete.length === 1 && exact.add.length === 1,
+                "[diff] tolerance:0 — only exact-time matches keep")
+
+            const bogus = D.compare(
+                [{seq:1, origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}],
+                [{seq:11, origin:"JFK", destination:"LAX", depTimeLocal:"06:14"}],
+                {toleranceMin: -1})
+            console.assert(bogus.keep.length === 1,
+                "[diff] tolerance:-1 — bad input falls through to default 15, ±14min keeps")
 
             console.log("[AES afp/auto-scheduler] schedule-diff smoke tests passed")
         } catch (e) {
