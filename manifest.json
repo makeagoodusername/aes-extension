@@ -269,6 +269,7 @@
                 "modules/aircraft-flight-plan/auto-scheduler/grid-state.js",
                 "modules/aircraft-flight-plan/auto-scheduler/objective.js",
                 "modules/aircraft-flight-plan/auto-scheduler/allocator.js",
+                "modules/aircraft-flight-plan/auto-scheduler/schedule-diff.js",
                 "modules/aircraft-flight-plan/auto-scheduler/slot-optimizer.js",
                 "modules/aircraft-flight-plan/auto-scheduler/preview-panel.js",
                 "modules/aircraft-flight-plan/wave-applier.js",
