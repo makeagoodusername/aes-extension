@@ -7,9 +7,10 @@
  * surfaced above unstarred rows and optionally flagged when its diff vs
  * last visit shows a "worse" change in any tracked field.
  *
- * Storage layout — single global key, non-directional:
+ * Storage layout — single blob, non-directional:
  *
- *   routeAssistant:watchlist  →
+ *   routeAssistant:watchlist  →                                    (legacy)
+ *   routeAssistant:watchlist:acct:<id>  →                          (L2+)
  *     {server, routes: {[<HUB>-<DEST>]: {addedAt, note?}}}
  *
  * Bound to a single record because watchlists are typically dozens of
@@ -20,9 +21,14 @@
  * `settings.routeAssistant.watchlist.showAlertBadges` is on) are exposed
  * as a static const so the panel can both walk them and render badges
  * without duplicating the list. Add tracked fields here when extending.
+ *
+ * L2 — namespaced key + legacy fallback. The blob lives entirely under
+ * one key per account, so reads and writes go through a small
+ * `_loadBlob` / `_saveBlob` pair that does the fallback dance.
  */
 class RouteAssistantWatchlistStore {
-    static CACHE_KEY = "routeAssistant:watchlist"
+    static LEGACY_KEY   = "routeAssistant:watchlist"
+    static SCOPE_PREFIX = "routeAssistant:watchlist"
 
     /**
      * Fields whose "worse" delta (per the Diff-against-last-visit feature)
@@ -46,14 +52,21 @@ class RouteAssistantWatchlistStore {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
+    static _key() {
+        return acctKey(RouteAssistantWatchlistStore.SCOPE_PREFIX, "")
+    }
+
+    static _legacyKey() {
+        return RouteAssistantWatchlistStore.LEGACY_KEY
+    }
+
     /**
      * Read the entire watchlist as a Map<routeKey, {addedAt, note?}>.
      * Returns an empty Map when the cache hasn't been written yet so
      * callers can iterate without null-checks.
      */
     static async loadAll() {
-        const out = await chrome.storage.local.get([RouteAssistantWatchlistStore.CACHE_KEY])
-        const blob = out[RouteAssistantWatchlistStore.CACHE_KEY] || null
+        const blob = await RouteAssistantWatchlistStore._loadBlob()
         const m = new Map()
         if (blob && blob.routes && typeof blob.routes === "object") {
             for (const k in blob.routes) m.set(k, blob.routes[k])
@@ -120,15 +133,27 @@ class RouteAssistantWatchlistStore {
     }
 
     static async _loadBlob() {
-        const out = await chrome.storage.local.get([RouteAssistantWatchlistStore.CACHE_KEY])
-        const blob = out[RouteAssistantWatchlistStore.CACHE_KEY] || null
-        return blob && blob.routes
+        const ns = RouteAssistantWatchlistStore._key()
+        const lg = RouteAssistantWatchlistStore._legacyKey()
+        let blob = null
+        if (ns === lg) {
+            const out = await chrome.storage.local.get([ns])
+            blob = out[ns] || null
+        } else {
+            const out = await chrome.storage.local.get([ns, lg])
+            blob = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+        }
+        return (blob && blob.routes)
             ? blob
             : {server: null, routes: {}, updatedAt: null}
     }
 
     static async _saveBlob(blob) {
         blob.updatedAt = Date.now()
-        await chrome.storage.local.set({[RouteAssistantWatchlistStore.CACHE_KEY]: blob})
+        const key = RouteAssistantWatchlistStore._key()
+        await chrome.storage.local.set({[key]: blob})
     }
+
+    /** L2 deprecated — preserve for any reader still doing key arithmetic. */
+    static get CACHE_KEY() { return RouteAssistantWatchlistStore.LEGACY_KEY }
 }

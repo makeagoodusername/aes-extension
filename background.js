@@ -820,8 +820,13 @@ async function _aesAccountTouchApply(req) {
     firstSeenAt:      (prior && prior.firstSeenAt) ? prior.firstSeenAt : now,
     lastSeenAt:       now
   };
+  // migrationVersion stays 0 until L2's migration shim copies legacy
+  // Class B/C/D keys into their `:acct:<id>:` namespaced form. Stores
+  // gate their legacy-fallback reads on (version < 1) so behaviour is
+  // safe across the rollout: pre-migration the legacy is canonical;
+  // post-migration the namespaced is canonical and legacy is dead-state.
   const next = {
-    migrationVersion: Number(blob.migrationVersion) || 1,
+    migrationVersion: Number(blob.migrationVersion) || 0,
     viewingAccountId: accountId,
     accounts
   };

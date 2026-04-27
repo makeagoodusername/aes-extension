@@ -10,7 +10,8 @@
  * uncommon in AS but cheap to support, and matches the schedule extractor's
  * directional record shape.
  *
- *   routeAssistant:override:<HUB>-<DEST>  →
+ *   routeAssistant:override:<HUB>-<DEST>  →                         (legacy)
+ *   routeAssistant:override:acct:<id>:<HUB>-<DEST>  →               (L2+)
  *     {hub, dest, paxLF?, cargoLF?, yieldPerKm?, cargoYieldPerKgKm?,
  *      note?, expiresAt?, createdAt, updatedAt}
  *
@@ -24,69 +25,131 @@
  * (skip applying its numeric fields) but keep the record in storage so
  * the user can see it expired in the editor and choose to renew or
  * clear. Records WITHOUT `expiresAt` never expire (default behaviour).
+ *
+ * L2 — full-replace + accountId round-trip (HANDOVER §10):
+ *   - `_key` routes through `acctKey()` so writes land in the
+ *     account-namespaced slot once `window.__aesAccountId` is set.
+ *   - `get` / `getMany` read the namespaced key first, then fall back
+ *     to the legacy key. Migration is additive; legacy stays live as
+ *     fallback through L7.
+ *   - `saveAt(accountId, …)` is the explicit-account API. Callers that
+ *     capture `prev` for Undo MUST also capture the accountId at write
+ *     time so a mid-session account-chip switch (L4+) doesn't restore
+ *     into the wrong account. `save()` is a thin wrapper that captures
+ *     `currentAccountIdSync()` and delegates.
+ *   - `remove` clears BOTH the namespaced AND legacy key — explicit
+ *     user removes are intentionally absolute, distinct from the
+ *     "additive migration never deletes legacy" invariant.
  */
 class RouteAssistantRouteOverridesStore {
-    static PREFIX = "routeAssistant:override:"
-
-    static _key(hub, dest) {
-        return RouteAssistantRouteOverridesStore.PREFIX
-            + String(hub  || "").toUpperCase() + "-"
-            + String(dest || "").toUpperCase()
-    }
+    static LEGACY_PREFIX = "routeAssistant:override:"
+    static SCOPE_PREFIX  = "routeAssistant:override"
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
+    static _key(hub, dest) {
+        return acctKey(RouteAssistantRouteOverridesStore.SCOPE_PREFIX,
+            RouteAssistantRouteOverridesStore._pairKey(hub, dest))
+    }
+
+    static _keyForAccount(accountId, hub, dest) {
+        const pair = RouteAssistantRouteOverridesStore._pairKey(hub, dest)
+        if (!accountId) return RouteAssistantRouteOverridesStore.LEGACY_PREFIX + pair
+        return RouteAssistantRouteOverridesStore.SCOPE_PREFIX + ":acct:" + accountId + ":" + pair
+    }
+
+    static _legacyKey(hub, dest) {
+        return RouteAssistantRouteOverridesStore.LEGACY_PREFIX
+            + RouteAssistantRouteOverridesStore._pairKey(hub, dest)
+    }
+
     /**
      * Returns the override record for a single (hub, dest) pair, or null.
+     * Reads namespaced first; falls back to legacy when namespaced is
+     * missing — covers pre-migration data and the bootstrap window.
      */
     static async get(hub, dest) {
-        const key = RouteAssistantRouteOverridesStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+        const ns = RouteAssistantRouteOverridesStore._key(hub, dest)
+        const lg = RouteAssistantRouteOverridesStore._legacyKey(hub, dest)
+        if (ns === lg) {
+            const out = await chrome.storage.local.get([ns])
+            return out[ns] || null
+        }
+        const out = await chrome.storage.local.get([ns, lg])
+        if (out[ns] !== undefined) return out[ns]
+        return out[lg] || null
     }
 
     /**
      * Bulk read for a list of [hub, dest] pairs. Returns
      * Map<pairKey, override> where pairKey is "<HUB>-<DEST>".
+     * Namespaced wins per pair; legacy fills gaps.
      */
     static async getMany(pairs) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(([h, d]) => RouteAssistantRouteOverridesStore._key(h, d))
-        const out = await chrome.storage.local.get(keys)
+        const nsKeys = []
+        const lgKeys = []
+        const pairKeys = []
+        for (const p of pairs) {
+            const [h, d] = Array.isArray(p) ? p : [p.hub, p.dest]
+            pairKeys.push(RouteAssistantRouteOverridesStore._pairKey(h, d))
+            nsKeys.push(RouteAssistantRouteOverridesStore._key(h, d))
+            lgKeys.push(RouteAssistantRouteOverridesStore._legacyKey(h, d))
+        }
+        const all = []
+        for (const k of nsKeys) all.push(k)
+        for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
+        const out = await chrome.storage.local.get(all)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
-            if (!rec) continue
-            const pair = k.substring(RouteAssistantRouteOverridesStore.PREFIX.length)
-            map.set(pair, rec)
+        for (let i = 0; i < pairs.length; i++) {
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            const rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+            if (rec) map.set(pairKeys[i], rec)
         }
         return map
     }
 
     /**
-     * Persist an override. Pass null/undefined for any field to clear it.
-     * Returns the stored record. Pass an empty fields object to clear the
-     * override entirely (delegates to remove()).
+     * Persist an override using the current account scope. Pass
+     * null/undefined for any field to clear it. Returns the stored
+     * record; pass an empty fields object to clear via remove().
+     *
+     * Captures `currentAccountIdSync()` once and delegates to
+     * `saveAt()`. Callers that need to restore an Undo capture under
+     * a specific accountId should call `saveAt()` directly.
      */
     static async save(hub, dest, fields) {
+        return RouteAssistantRouteOverridesStore.saveAt(
+            currentAccountIdSync(), hub, dest, fields
+        )
+    }
+
+    /**
+     * Persist an override under the explicitly named account. Use this
+     * for Undo restore where the accountId at write time may differ
+     * from the current chip. Pass `null` for accountId to write to the
+     * legacy key shape (pre-bootstrap or off-AS-page callers).
+     */
+    static async saveAt(accountId, hub, dest, fields) {
         const hubU  = String(hub  || "").toUpperCase()
         const destU = String(dest || "").toUpperCase()
         if (!hubU || !destU) return null
 
         const cleaned = RouteAssistantRouteOverridesStore._clean(fields || {})
         if (!RouteAssistantRouteOverridesStore._hasAnyValue(cleaned)) {
-            await RouteAssistantRouteOverridesStore.remove(hubU, destU)
+            await RouteAssistantRouteOverridesStore.removeAt(accountId, hubU, destU)
             return null
         }
 
-        const key = RouteAssistantRouteOverridesStore._key(hubU, destU)
+        const key = RouteAssistantRouteOverridesStore._keyForAccount(accountId, hubU, destU)
         const existing = (await chrome.storage.local.get([key]))[key] || null
         const now = Date.now()
-        // The editor shows every field, so save() takes the full new state:
-        // fields not in `cleaned` were intentionally cleared and must NOT
-        // carry over from `existing`. Only createdAt is preserved.
+        // Editor shows every field — fields not in `cleaned` were
+        // intentionally cleared and must NOT carry over from `existing`.
+        // Only createdAt is preserved.
         const record = Object.assign(
             {hub: hubU, dest: destU, createdAt: (existing && existing.createdAt) || now},
             cleaned,
@@ -96,9 +159,25 @@ class RouteAssistantRouteOverridesStore {
         return record
     }
 
+    /**
+     * Remove the override under the current account scope. Clears both
+     * the namespaced key AND the legacy key — explicit user removes
+     * are absolute, regardless of the additive-migration invariant.
+     */
     static async remove(hub, dest) {
-        const key = RouteAssistantRouteOverridesStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+        return RouteAssistantRouteOverridesStore.removeAt(
+            currentAccountIdSync(), hub, dest
+        )
+    }
+
+    static async removeAt(accountId, hub, dest) {
+        const hubU  = String(hub  || "").toUpperCase()
+        const destU = String(dest || "").toUpperCase()
+        if (!hubU || !destU) return
+        const ns = RouteAssistantRouteOverridesStore._keyForAccount(accountId, hubU, destU)
+        const lg = RouteAssistantRouteOverridesStore._legacyKey(hubU, destU)
+        const keys = (ns === lg) ? [ns] : [ns, lg]
+        await chrome.storage.local.remove(keys)
     }
 
     /**
@@ -169,4 +248,11 @@ class RouteAssistantRouteOverridesStore {
         const now = (typeof nowMs === "number" && isFinite(nowMs)) ? nowMs : Date.now()
         return (exp - now) / 86400000
     }
+
+    /**
+     * L2 deprecated — `PREFIX` is preserved for any reader still doing
+     * key-shape arithmetic. Prefer the explicit `_key` / `_legacyKey`
+     * helpers above.
+     */
+    static get PREFIX() { return RouteAssistantRouteOverridesStore.LEGACY_PREFIX }
 }
