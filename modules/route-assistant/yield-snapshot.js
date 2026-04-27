@@ -13,7 +13,7 @@
  *      flights) plus `equipment` and `registration`.
  *
  *   2. Reads every `routeAssistant:ticketPrice:*` record (written by
- *      `RouteAssistantTicketPriceScraper`) — those carry the assigned-tail
+ *      `RouteAssistantSchedulePageScraper`) — those carry the assigned-tail
  *      list per route. The intersection (tail × route) is the join we need.
  *
  *   3. For each tail T flying route R with weekly flights f(T,R), assumes
@@ -435,7 +435,7 @@ class RouteAssistantYieldSnapshot {
      * leaving a specific hub.
      */
     static _collectTicketPriceRecords(allStorage, hubFilter) {
-        const prefix = RouteAssistantTicketPriceScraper.CACHE_PREFIX
+        const prefix = RouteAssistantSchedulePageScraper.CACHE_PREFIX
         const out = []
         for (const key in allStorage) {
             if (key.indexOf(prefix) !== 0) continue

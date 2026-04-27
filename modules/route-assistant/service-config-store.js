@@ -20,7 +20,7 @@
  *      },
  *      note?, createdAt, updatedAt}
  *
- * Pair key is **directional** (matches RouteAssistantTicketPriceScraper +
+ * Pair key is **directional** (matches RouteAssistantSchedulePageScraper +
  * RouteAssistantRouteOverridesStore) — class mix and service level might
  * legitimately differ outbound vs inbound (e.g. business-heavy outbound,
  * leisure-heavy inbound).

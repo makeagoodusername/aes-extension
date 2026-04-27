@@ -2105,9 +2105,9 @@ class RouteAssistantPanel {
         const pairs = this.rows.map(r => ({hub: this.hubIata, dest: r.destIata}))
         const cfg = (this.settings && this.settings.pricing) || {}
         const maxAgeDays = cfg.priceMaxAgeDays
-        const cache = await RouteAssistantTicketPriceScraper.bulkLoadCache(pairs, {maxAgeDays: maxAgeDays})
+        const cache = await RouteAssistantSchedulePageScraper.bulkLoadCache(pairs, {maxAgeDays: maxAgeDays})
         for (const r of this.rows) {
-            const key = RouteAssistantTicketPriceScraper._pairKey(this.hubIata, r.destIata)
+            const key = RouteAssistantSchedulePageScraper._pairKey(this.hubIata, r.destIata)
             const rec = cache.get(key)
             if (!rec) continue
             // Tier 2 placeholders — wired up so columns stay reactive once
@@ -5175,6 +5175,86 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Slice 2 — explicit Save schedule CTA. Hands the current in-memory
+     * wave build to ScheduleStore so it surfaces in the dashboard's
+     * Schedule Management history. Slice 1's invariant ("read-only
+     * against ScheduleStore") survives because this is the SOLE write
+     * path — never auto-fired on render. The toast carries an Undo that
+     * removes the just-saved record.
+     *
+     * Refuses (with a non-blocking toast) when:
+     *   - no build is cached (hasn't run yet),
+     *   - the airline code isn't loaded,
+     *   - the preset has validation errors (would persist a broken plan),
+     *   - the build produced no flights (nothing to save).
+     */
+    async _saveWaveScheduleToStore() {
+        const build = this._waveBuild
+        const preset = build && build.preset
+        const toastFn = (typeof RouteAssistantToast !== "undefined") ? RouteAssistantToast : null
+        if (!build || !preset) {
+            if (toastFn) toastFn.warn("No build to save — pick a preset and let the Gantt run first.")
+            return
+        }
+        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        if (!airlineCode) {
+            if (toastFn) toastFn.warn("Airline not loaded — wait for fleet sync to finish.")
+            return
+        }
+        if (build.validation && build.validation.length) {
+            if (toastFn) toastFn.error("Preset has validation errors — fix them before saving.")
+            return
+        }
+        if (!build.flights || !build.flights.length) {
+            if (toastFn) toastFn.warn("Build has no flights — nothing to save.")
+            return
+        }
+
+        const wo = (this.settings && this.settings.waveOverlay) || {}
+        const pickedHub = (wo.lastHub && /^[A-Z]{3}$/i.test(wo.lastHub))
+            ? String(wo.lastHub).toUpperCase()
+            : this.hubIata
+
+        const record = ScheduleStore.newSchedule({
+            server:      this.server,
+            airlineCode: airlineCode,
+            presetId:    preset.id,
+            presetName:  preset.name,
+            hub:         pickedHub
+        })
+        record.flights = build.flights.slice()
+        record.warnings = (build.warnings || []).slice()
+
+        // Mirror ScheduleBuilder.build() and surface unplaced + shortfall
+        // as warnings on the persisted record so the dashboard's history
+        // pill reflects the full picture, not just factor violations.
+        for (const route of (build.unplaced || [])) {
+            record.warnings.push({
+                seq: 0, type: "routeUnplaced",
+                message: route.destination + " (" + route.distanceNm
+                    + "nm) — no wave with matching bucket capacity"
+            })
+        }
+        for (const key in (build.shortfall || {})) {
+            const [waveId, bucket] = key.split(":")
+            record.warnings.push({
+                seq: 0, type: "shortfall",
+                message: "wave " + waveId + " " + bucket + ": needs "
+                    + build.shortfall[key] + " more route(s) of this haul-length"
+            })
+        }
+
+        await this._undoableSave({
+            label: "Schedule saved · " + record.flights.length + " flights"
+                + (record.warnings.length ? " · " + record.warnings.length + " warning(s)" : ""),
+            perform: async () => { await ScheduleStore.save(record) },
+            restore: async () => {
+                await ScheduleStore.remove(record.server, record.airlineCode, record.scheduleId)
+            }
+        })
+    }
+
+    /**
      * Slice 8c — single-aircraft handoff. Picks one aircraft via the
      * fleet picker, writes the wave-designer handoff record, then opens
      * the aircraft's AFP page in a new tab. The wave-applier on the
@@ -5588,6 +5668,24 @@ class RouteAssistantPanel {
             this._renderRows()
         })
         wrap.append(connBtn)
+
+        // Slice 2 — Save schedule CTA. Lifts the slice-1 read-only
+        // invariant on the explicit-action path only: the click handler
+        // is the SOLE write into ScheduleStore. The header is built
+        // before the build runs on first render, so disabled-state
+        // signaling here would be stale; instead, _saveWaveScheduleToStore
+        // validates at click time and shows a non-blocking toast when the
+        // build isn't ready.
+        const saveBtn = document.createElement("button")
+        saveBtn.type = "button"
+        saveBtn.textContent = "💾 Save schedule"
+        saveBtn.title = "Persist the current wave build to ScheduleStore — appears in the dashboard's Schedule Management history. Toast offers Undo for 6 seconds."
+        Object.assign(saveBtn.style, smallBtnStyle())
+        saveBtn.style.background = "#065f46"
+        saveBtn.style.borderColor = "#065f46"
+        saveBtn.style.color = "#ecfdf5"
+        saveBtn.addEventListener("click", () => this._saveWaveScheduleToStore())
+        wrap.append(saveBtn)
 
         // Slice D — in-panel preset CRUD strip. Replaces the read-only
         // "📅 Edit presets →" link that dumped the user onto the dashboard.
@@ -8704,8 +8802,8 @@ class RouteAssistantPanel {
         const title = document.createElement("strong")
         title.textContent = "Tier 3 · Apply"
         const stage = document.createElement("span")
-        const stageLbl = apply.dryRunOnly ? "3.1 — dry-run only"
-            : (apply.enabled ? "3.2 — live writes ENABLED" : "3.2 — live writes disabled")
+        const stageLbl = apply.dryRunOnly ? "Dry-run only"
+            : (apply.enabled ? "LIVE writes ENABLED" : "Live writes disabled")
         stage.textContent = stageLbl
         stage.style.cssText = "font-size:10px;font-weight:normal;color:"
             + (apply.dryRunOnly ? "#fbbf24" : (apply.enabled ? "#34d399" : "#9ca3af"))
@@ -8716,12 +8814,32 @@ class RouteAssistantPanel {
         const rationale = document.createElement("div")
         rationale.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;line-height:1.4;"
         rationale.innerHTML = apply.dryRunOnly
-            ? "Slice 3.1: every Apply path runs the full preflight + body construction + audit log, but never POSTs. Use this to rehearse the workflow safely. Slice 3.2 will let you flip the gate."
+            ? "Dry-run only: every Apply path runs the full preflight + body construction + audit log, but never POSTs. Turn off the dry-run gate plus turn on Apply enabled below to commit real writes."
             : (apply.enabled
                 ? "<strong style='color:#34d399;'>LIVE.</strong> Apply will POST to the AS markets-page form. Each route has a "
-                    + apply.cooldownMinPerRoute + "-minute cooldown after a successful write."
-                : "Live writes are disabled. Flip the toggle below to enable; the dry-run gate must already be off (3.2+).")
+                    + apply.cooldownMinPerRoute + "-minute cooldown after a successful write. Successful applies show an Undo toast for 6 s."
+                : "Live writes are disabled. Flip the Apply enabled toggle below; the dry-run gate is already off.")
         block.append(rationale)
+
+        // Dry-run-only gate. Independent of Apply enabled — both must be in
+        // their permissive position (dryRunOnly=false AND enabled=true) for
+        // a real POST. Default flipped to false in 3.2; user can re-enable
+        // here for safe rehearsal.
+        const dryRow = document.createElement("div")
+        dryRow.style.cssText = "display:flex;gap:6px;align-items:center;font-size:11px;color:#c4b5fd;margin-bottom:4px;"
+        const dryCb = mkInput("checkbox", null)
+        dryCb.checked = !!apply.dryRunOnly
+        const dryLbl = document.createElement("label")
+        dryLbl.style.cssText = "display:flex;gap:4px;align-items:center;cursor:pointer;"
+        dryLbl.append(dryCb, document.createTextNode("Dry-run only (preflight + body, no POST)"))
+        dryCb.addEventListener("change", async () => {
+            apply.dryRunOnly = dryCb.checked
+            this.settings.pricing.apply = apply
+            try { await RouteAssistantSettings.save({pricing: this.settings.pricing}) } catch (e) { /* ignore */ }
+            this._render()
+        })
+        dryRow.append(dryLbl)
+        block.append(dryRow)
 
         // Apply-enabled kill switch.
         const enableRow = document.createElement("div")
@@ -8739,6 +8857,38 @@ class RouteAssistantPanel {
         })
         enableRow.append(enableLbl)
         block.append(enableRow)
+
+        // Circuit-breaker cooldown banner. Appears only while a recent
+        // 429/503 streak has tripped the breaker and the cooldown window
+        // hasn't expired. Reset clears trippedAt; the next apply runs
+        // without the gate.
+        const cooldownMs = isFinite(apply.circuitBreakerCooldownMs) ? apply.circuitBreakerCooldownMs : 600000
+        if (apply.circuitBreakerTrippedAt
+            && Date.now() - apply.circuitBreakerTrippedAt < cooldownMs) {
+            const remaining = Math.ceil((cooldownMs - (Date.now() - apply.circuitBreakerTrippedAt)) / 60000)
+            const banner = document.createElement("div")
+            banner.style.cssText = "background:#7f1d1d33;border:1px solid #b91c1c;border-radius:3px;"
+                + "padding:6px 8px;margin:4px 0;font-size:10px;color:#fecaca;display:flex;"
+                + "align-items:center;justify-content:space-between;gap:6px;"
+            const txt = document.createElement("div")
+            txt.innerHTML = "<strong>Circuit breaker tripped.</strong> Apply will short-circuit until cooldown expires (~"
+                + remaining + " min remaining). Reason: "
+                + (apply.circuitBreakerHaltReason || "consecutive AS rate-limit responses") + "."
+            const resetBtn = document.createElement("button")
+            resetBtn.textContent = "Reset breaker"
+            Object.assign(resetBtn.style, smallBtnStyle())
+            resetBtn.style.background = "#7f1d1d"
+            resetBtn.addEventListener("click", async () => {
+                if (!confirm("Reset the pricing-apply circuit breaker? Only do this if you understand why AS was rate-limiting (e.g. you've waited a few minutes).")) return
+                apply.circuitBreakerTrippedAt  = null
+                apply.circuitBreakerHaltReason = null
+                this.settings.pricing.apply = apply
+                try { await RouteAssistantSettings.save({pricing: this.settings.pricing}) } catch (e) { /* ignore */ }
+                this._render()
+            })
+            banner.append(txt, resetBtn)
+            block.append(banner)
+        }
 
         // Default scope.
         const scopeWrap = document.createElement("div")
@@ -8889,17 +9039,51 @@ class RouteAssistantPanel {
     _getPricingApplier() {
         const cfg = (this.settings && this.settings.pricing && this.settings.pricing.apply) || {}
         return new RouteAssistantPricingApplier(this.server, {
-            dryRunOnly:           cfg.dryRunOnly !== false,
-            applyEnabled:         !!cfg.enabled,
-            cooldownMinPerRoute:  cfg.cooldownMinPerRoute,
-            warnAboveDeltaPct:    cfg.warnAboveDeltaPct,
-            applyLog:             this._getPricingApplyLog()
+            dryRunOnly:               cfg.dryRunOnly !== false,
+            applyEnabled:             !!cfg.enabled,
+            cooldownMinPerRoute:      cfg.cooldownMinPerRoute,
+            warnAboveDeltaPct:        cfg.warnAboveDeltaPct,
+            applyLog:                 this._getPricingApplyLog(),
+            circuitBreakerThreshold:  cfg.circuitBreakerThreshold,
+            circuitBreakerCooldownMs: cfg.circuitBreakerCooldownMs,
+            circuitBreakerTrippedAt:  cfg.circuitBreakerTrippedAt,
+            onBreakerTrip:            (reason, trippedAt) => this._persistPricingBreakerTrip(reason, trippedAt),
+            onBreakerReset:           () => this._persistPricingBreakerReset()
         })
     }
 
     /**
+     * Persist a breaker trip back to settings so every RA panel instance
+     * (and the next page load) honours the cooldown until it expires or
+     * the user clicks Reset in the settings expander.
+     */
+    async _persistPricingBreakerTrip(reason, trippedAt) {
+        if (!this.settings || !this.settings.pricing || !this.settings.pricing.apply) return
+        this.settings.pricing.apply.circuitBreakerTrippedAt  = trippedAt
+        this.settings.pricing.apply.circuitBreakerHaltReason = String(reason || "")
+        try {
+            if (typeof RouteAssistantSettings !== "undefined") {
+                await RouteAssistantSettings.save(this.settings)
+            }
+        } catch (e) { console.warn("[AES pricing] breaker-trip persist failed", e) }
+    }
+
+    /** Mirror image — clears the trip state on the first successful apply. */
+    async _persistPricingBreakerReset() {
+        if (!this.settings || !this.settings.pricing || !this.settings.pricing.apply) return
+        if (!this.settings.pricing.apply.circuitBreakerTrippedAt) return
+        this.settings.pricing.apply.circuitBreakerTrippedAt  = null
+        this.settings.pricing.apply.circuitBreakerHaltReason = null
+        try {
+            if (typeof RouteAssistantSettings !== "undefined") {
+                await RouteAssistantSettings.save(this.settings)
+            }
+        } catch (e) { console.warn("[AES pricing] breaker-reset persist failed", e) }
+    }
+
+    /**
      * Bulk-scrape ticket prices for every (hub, dest) pair in this.rows
-     * using RouteAssistantTicketPriceScraper. Updates the status line as
+     * using RouteAssistantSchedulePageScraper. Updates the status line as
      * progress arrives; on completion, re-loads the cache, persists
      * lastBulkScrapeAt, and re-renders so columns fill in.
      */
@@ -8910,7 +9094,7 @@ class RouteAssistantPanel {
         const staggerMs   = cfg.staggerMs   || 800
 
         if (!this.priceScraper) {
-            this.priceScraper = new RouteAssistantTicketPriceScraper(this.server, {
+            this.priceScraper = new RouteAssistantSchedulePageScraper(this.server, {
                 maxAgeDays: cfg.priceMaxAgeDays
             })
         }
@@ -14668,7 +14852,7 @@ class RouteAssistantPanel {
 
         const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
         const dryRunOnly = apply.dryRunOnly !== false
-        const stage = dryRunOnly ? "Dry-run only (Tier 3.1)" : (apply.enabled ? "LIVE writes" : "Live writes disabled")
+        const stage = dryRunOnly ? "Dry-run only" : (apply.enabled ? "LIVE writes" : "Live writes disabled")
         const stageColor = dryRunOnly ? "#fbbf24" : (apply.enabled ? "#34d399" : "#9ca3af")
 
         const close = () => this._closePricingApplyModal()
@@ -14850,7 +15034,9 @@ class RouteAssistantPanel {
         applyBtn.disabled    = !liveAvailable
         applyBtn.title       = liveAvailable
             ? "POST new prices to AS"
-            : "Tier 3.1: Apply is gated. Disable apply.dryRunOnly + enable apply.enabled (Tier 3.2+) to commit a write."
+            : (dryRunOnly
+                ? "Dry-run gate is on. Settings → Auto-Pricing → Tier 3 · Apply: turn off \"Dry-run only\" to commit a write."
+                : "Apply enabled is off. Settings → Auto-Pricing → Tier 3 · Apply: flip \"Apply enabled\" to commit a write.")
         applyBtn.style.cssText = "background:" + (liveAvailable ? "#7c3aed" : "#374151") + ";"
             + "color:" + (liveAvailable ? "#fff" : "#9ca3af") + ";"
             + "border:1px solid " + (liveAvailable ? "#6d28d9" : "#475569") + ";"
@@ -14860,7 +15046,7 @@ class RouteAssistantPanel {
         actionRow.append(cancelBtn, dryBtn, applyBtn)
         dialog.append(actionRow)
 
-        const collectArgs = (forcedDryRun) => {
+        const collectArgs = (forcedDryRun, lastApplyAt) => {
             const prices = {}
             for (const cls of ["Y", "C", "F", "Cargo"]) {
                 const v = parseInt(inputs[cls].value, 10)
@@ -14874,23 +15060,74 @@ class RouteAssistantPanel {
                     scope, source, sandboxScenario, projectedDelta,
                     reason: (reasonInput.value || "").trim() || null,
                     dryRun: !!forcedDryRun,
-                    submitButton: apply.submitButton || "submit-prices"
+                    submitButton: apply.submitButton || "submit-prices",
+                    lastApplyAt: lastApplyAt || null
                 }
             }
         }
 
-        const renderResult = (result) => {
+        const fetchLastApplyAt = async () => {
+            try {
+                const log = this._getPricingApplyLog()
+                if (log && typeof log.getLastSuccessAt === "function") {
+                    return await log.getLastSuccessAt(hub, dest)
+                }
+            } catch (e) { console.warn("[AES pricing] getLastSuccessAt failed", e) }
+            return null
+        }
+
+        const renderResult = (result, applierUsed) => {
             preflightHost.innerHTML = ""
             if (result.preflight) preflightHost.append(this._buildTier3PreflightView(result.preflight))
             if (result.bodyPreview) bodyPre.textContent = result.bodyPreview
             this._refreshAllOpenTier3LogPreviews()
             const msg = (result.status === "dry-run" ? "Dry-run logged · " : (result.status + " · "))
                 + hub + "→" + dest
+            const successWithUndo = (result.status === "verified" || result.status === "posted")
+                && result.prevPrices && Object.keys(result.prevPrices).length > 0
             if (typeof RouteAssistantToast !== "undefined") {
-                if (result.status === "failed" || result.status === "aborted") {
+                if (result.error && result.error.code === "rateLimit") {
+                    const n = result.error.consecutiveErrors || 1
+                    const minsCooling = Math.round((this.settings.pricing.apply.circuitBreakerCooldownMs || 600000) / 60000)
+                    if (result.error.breakerTripped) {
+                        RouteAssistantToast.warn("Pricing apply halted: HTTP " + result.error.httpStatus
+                            + " ×" + n + " in a row · cooling " + minsCooling + " min")
+                    } else {
+                        RouteAssistantToast.error(msg + " — rateLimit (HTTP " + result.error.httpStatus + ", " + n + "× in a row)")
+                    }
+                } else if (result.error && result.error.code === "breakerCooldown") {
+                    RouteAssistantToast.warn("Pricing apply skipped — circuit breaker cooldown ("
+                        + (result.error.remainingMin || "?") + " min remaining)")
+                } else if (result.status === "failed" || result.status === "aborted") {
                     RouteAssistantToast.error(msg + " — " + (result.error && result.error.code))
                 } else if (result.status === "dry-run") {
                     RouteAssistantToast.info(msg)
+                } else if (successWithUndo) {
+                    RouteAssistantToast.success(msg, {
+                        duration: 6000,
+                        action: {
+                            label: "Undo",
+                            fn: async () => {
+                                try {
+                                    const undoApplier = applierUsed || this._getPricingApplier()
+                                    const undoResult = await undoApplier.apply(hub, dest, result.prevPrices, {
+                                        scope:        result.scope,
+                                        source:       "undo",
+                                        reason:       "Undo of " + (result.logId || result.fingerprint || "previous apply"),
+                                        submitButton: result.submitButton,
+                                        lastApplyAt:  null
+                                    })
+                                    if (undoResult.status === "verified" || undoResult.status === "posted") {
+                                        RouteAssistantToast.info("Reverted " + hub + "→" + dest)
+                                    } else {
+                                        RouteAssistantToast.error("Undo failed: " + ((undoResult.error && undoResult.error.code) || undoResult.status))
+                                    }
+                                } catch (e) {
+                                    RouteAssistantToast.error("Undo threw: " + (e && e.message || e))
+                                }
+                            }
+                        }
+                    })
                 } else if (result.status === "verified") {
                     RouteAssistantToast.success(msg)
                 } else {
@@ -14930,10 +15167,10 @@ class RouteAssistantPanel {
             dryBtn.disabled = true
             dryBtn.textContent = "Running…"
             try {
-                const a = collectArgs(true)
+                const a = collectArgs(true, null)
                 const applier = this._getPricingApplier()
                 const result = await applier.apply(a.hub, a.dest, a.prices, a.opts)
-                renderResult(result)
+                renderResult(result, applier)
             } catch (e) {
                 preflightHost.innerHTML = ""
                 preflightHost.append(this._buildTier3FlashRow("error", "Dry-run threw: " + (e && e.message || e)))
@@ -14948,10 +15185,11 @@ class RouteAssistantPanel {
             applyBtn.disabled = true
             applyBtn.textContent = "Applying…"
             try {
-                const a = collectArgs(false)
+                const lastApplyAt = await fetchLastApplyAt()
+                const a = collectArgs(false, lastApplyAt)
                 const applier = this._getPricingApplier()
                 const result = await applier.apply(a.hub, a.dest, a.prices, a.opts)
-                renderResult(result)
+                renderResult(result, applier)
                 if (result.status === "verified" || result.status === "posted") {
                     setTimeout(close, 600)
                 }

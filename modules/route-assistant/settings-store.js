@@ -218,7 +218,7 @@ class RouteAssistantSettings {
                 // default to false; Tier 3.3 adds the silent-auto loop.
                 apply: {
                     enabled:               false,   // top-level kill switch — false = no writes regardless of dryRunOnly
-                    dryRunOnly:            true,    // 3.1 hard gate; 3.2 default flips to false
+                    dryRunOnly:            false,   // 3.2 default; user can re-enable via Settings → Auto-Pricing toggle
                     defaultScope: {
                         airportPair:         true,
                         flightNumbers:       true,
@@ -233,7 +233,16 @@ class RouteAssistantSettings {
                     perRouteApplyLogLimit: 20,
                     submitButton:          "submit-prices",  // submit-prices | p::submit | submit-settings
                     showRecentApplies:     true,       // gate the "Recent applies" list under the expander
-                    recentApplyPreviewCount: 10
+                    recentApplyPreviewCount: 10,
+                    // Tier 3.2 — circuit breaker mirroring ors-scraper.js. Three
+                    // consecutive 429/503 responses persist trippedAt; while
+                    // Date.now() − trippedAt < cooldownMs, apply() short-circuits
+                    // to an aborted record without GET/POST. Reset on first
+                    // verified write or via the settings banner button.
+                    circuitBreakerThreshold:  3,
+                    circuitBreakerCooldownMs: 600000,  // 10 min
+                    circuitBreakerTrippedAt:  null,    // ms epoch; null = breaker armed
+                    circuitBreakerHaltReason: null
                 },
 
                 // Pre-staged for Tier 3.3 silent-auto loop. Both must be

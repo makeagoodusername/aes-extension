@@ -14,9 +14,12 @@
  *     → ScheduleBuilder(preset, ctx).evaluateFlights(placements)
  *     → renderGantt(host, build, opts)
  *
- * Slice 1 is read-only against ScheduleStore. The build runs in-memory
- * only; nothing persists. Slice 2 will add an explicit "Save schedule"
- * CTA that hands the build to ScheduleStore.save().
+ * The overlay itself stays read-only against ScheduleStore — buildSchedule
+ * runs in-memory and never writes. Slice 2 lifted persistence into the
+ * panel via an explicit "💾 Save schedule" CTA in the header strip
+ * (`RouteAssistantPanel._saveWaveScheduleToStore`); that click handler is
+ * the SOLE write path. Don't add a save call inside this module — the
+ * panel's invariant ledger names that boundary explicitly.
  */
 class RouteAssistantWaveOverlay {
 

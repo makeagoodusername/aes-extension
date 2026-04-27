@@ -11,7 +11,7 @@
  *   routeAssistant:yieldHistory:<HUB>-<DEST>
  *     → {hub, dest, snapshots: [...], lastSnapshotAt}
  *
- * Pair key is **directional** (matches RouteAssistantTicketPriceScraper).
+ * Pair key is **directional** (matches RouteAssistantSchedulePageScraper).
  * Profit + frequency differ by direction, so HUB→DEST and DEST→HUB get
  * independent history.
  *

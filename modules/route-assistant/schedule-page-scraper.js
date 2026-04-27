@@ -33,13 +33,13 @@
  * tighten the selectors. Returns `null` per-field rather than throwing,
  * so a partial parse still produces a usable cache record.
  */
-class RouteAssistantTicketPriceScraper {
+class RouteAssistantSchedulePageScraper {
     static CACHE_PREFIX = "routeAssistant:ticketPrice:"
 
     constructor(server, opts) {
-        if (!server) throw new Error("RouteAssistantTicketPriceScraper: server required")
+        if (!server) throw new Error("RouteAssistantSchedulePageScraper: server required")
         this.server = server
-        this.maxAgeDays = RouteAssistantTicketPriceScraper._normaliseMaxAge(opts && opts.maxAgeDays)
+        this.maxAgeDays = RouteAssistantSchedulePageScraper._normaliseMaxAge(opts && opts.maxAgeDays)
         this._sessionCache = new Map()
     }
 
@@ -65,18 +65,18 @@ class RouteAssistantTicketPriceScraper {
      */
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
-        const maxAgeDays = RouteAssistantTicketPriceScraper._normaliseMaxAge(opts && opts.maxAgeDays)
+        const maxAgeDays = RouteAssistantSchedulePageScraper._normaliseMaxAge(opts && opts.maxAgeDays)
         const keys = pairs.map(p => {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantTicketPriceScraper.CACHE_PREFIX + RouteAssistantTicketPriceScraper._pairKey(a, b)
+            return RouteAssistantSchedulePageScraper.CACHE_PREFIX + RouteAssistantSchedulePageScraper._pairKey(a, b)
         })
         const out = await chrome.storage.local.get(keys)
         const map = new Map()
         for (const k in out) {
             const rec = out[k]
             if (!rec) continue
-            if (RouteAssistantTicketPriceScraper._isExpired(rec, maxAgeDays)) continue
-            const pair = k.substring(RouteAssistantTicketPriceScraper.CACHE_PREFIX.length)
+            if (RouteAssistantSchedulePageScraper._isExpired(rec, maxAgeDays)) continue
+            const pair = k.substring(RouteAssistantSchedulePageScraper.CACHE_PREFIX.length)
             map.set(pair, rec)
         }
         return map
@@ -87,8 +87,8 @@ class RouteAssistantTicketPriceScraper {
      * source="live"; the fetch path calls it via scrape().
      */
     static async saveRecord(hub, dest, fields, source) {
-        const pair = RouteAssistantTicketPriceScraper._pairKey(hub, dest)
-        const key = RouteAssistantTicketPriceScraper.CACHE_PREFIX + pair
+        const pair = RouteAssistantSchedulePageScraper._pairKey(hub, dest)
+        const key = RouteAssistantSchedulePageScraper.CACHE_PREFIX + pair
         const rec = Object.assign({
             hub:       String(hub || "").toUpperCase(),
             dest:      String(dest || "").toUpperCase(),
@@ -100,8 +100,8 @@ class RouteAssistantTicketPriceScraper {
     }
 
     static async loadRecord(hub, dest) {
-        const key = RouteAssistantTicketPriceScraper.CACHE_PREFIX
-            + RouteAssistantTicketPriceScraper._pairKey(hub, dest)
+        const key = RouteAssistantSchedulePageScraper.CACHE_PREFIX
+            + RouteAssistantSchedulePageScraper._pairKey(hub, dest)
         const out = await chrome.storage.local.get([key])
         return out[key] || null
     }
@@ -112,7 +112,7 @@ class RouteAssistantTicketPriceScraper {
      * (with null fields) so the panel knows the route was attempted.
      */
     async scrape(hubIata, destIata) {
-        const pair = RouteAssistantTicketPriceScraper._pairKey(hubIata, destIata)
+        const pair = RouteAssistantSchedulePageScraper._pairKey(hubIata, destIata)
         if (this._sessionCache.has(pair)) return this._sessionCache.get(pair)
 
         const url = "https://" + this.server + ".airlinesim.aero/app/com/scheduling/"
@@ -124,8 +124,8 @@ class RouteAssistantTicketPriceScraper {
                 return null
             }
             const html = await resp.text()
-            const fields = RouteAssistantTicketPriceScraper.parseFromHtml(html)
-            const rec = await RouteAssistantTicketPriceScraper.saveRecord(hubIata, destIata, fields, "fetch")
+            const fields = RouteAssistantSchedulePageScraper.parseFromHtml(html)
+            const rec = await RouteAssistantSchedulePageScraper.saveRecord(hubIata, destIata, fields, "fetch")
             this._sessionCache.set(pair, rec)
             return rec
         } catch (e) {
@@ -137,7 +137,7 @@ class RouteAssistantTicketPriceScraper {
     static parseFromHtml(html) {
         if (!html) return {ourPrice: null, ourYield: null, orsRank: null, fareClasses: null}
         const doc = new DOMParser().parseFromString(html, "text/html")
-        return RouteAssistantTicketPriceScraper.parseFromDoc(doc)
+        return RouteAssistantSchedulePageScraper.parseFromDoc(doc)
     }
 
     /**

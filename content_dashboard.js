@@ -3277,7 +3277,8 @@ async function displayUsedAircraftScanner() {
     const familyGrid = new MarketScanFamilyGrid(gridContainer.get(0), {
         onChange:    function() { runValidation(); },
         concurrency: block.concurrency,
-        staggerMs:   block.staggerMs
+        staggerMs:   block.staggerMs,
+        typeFamilyOverrides: block.typeFamilyOverrides
     });
 
     // ====== Disclosure helpers ======
@@ -3685,6 +3686,31 @@ async function displayUsedAircraftScanner() {
     // Subscribe to controller updates
     ctrl.listeners = []; // reset listeners attached in a previous render
     ctrl.onUpdate(function(session) { renderState(session); });
+
+    // Refresh deal-context (route-fit, fleet, economics) when the RA panel
+    // republishes topRoutes. RA writes BOTH the global key and a per-hub key
+    // on every render → debounce so a single panel render = one refresh.
+    if (window._aesTopRoutesListener) {
+        chrome.storage.onChanged.removeListener(window._aesTopRoutesListener);
+        window._aesTopRoutesListener = null;
+    }
+    let topRoutesDebounce = null;
+    const topRoutesListener = (changes, area) => {
+        if (area !== "local") return;
+        if (!changes["routeAssistant:topRoutes"]) return;
+        if (topRoutesDebounce) clearTimeout(topRoutesDebounce);
+        topRoutesDebounce = setTimeout(async () => {
+            try {
+                const fresh = await loadDealContext(server);
+                resultsRenderer.setContext(fresh);
+                renderState(ctrl.session);
+            } catch (e) {
+                console.warn("[AES UsedAircraftScanner] topRoutes refresh failed:", e);
+            }
+        }, 250);
+    };
+    chrome.storage.onChanged.addListener(topRoutesListener);
+    window._aesTopRoutesListener = topRoutesListener;
 
     // Initial paint
     refreshPresetSelect();

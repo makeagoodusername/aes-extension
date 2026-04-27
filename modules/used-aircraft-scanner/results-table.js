@@ -427,8 +427,8 @@ class MarketScanResultsTable {
         lines.push("Profit/day:     AS$" + fmt(b.paxRev) + " + AS$" + fmt(b.cargoRev)
             + " − AS$" + fmt(b.opCost) + " = AS$" + fmt(b.profitPerDay))
         lines.push("")
-        lines.push("Block hours/day are a fixed assumption (DAILY_BLOCK_HOURS = " + b.hours
-            + "). Tuned for 'earliest sensible payback' across mixed fleets.")
+        lines.push("Block hours/day = " + b.hours + "h (by family category — regional 8h, "
+            + "narrowbody 12h, widebody 14h). Tuned for 'earliest sensible payback'.")
         return lines.join("\n")
     }
 

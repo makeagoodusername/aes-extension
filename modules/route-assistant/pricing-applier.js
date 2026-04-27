@@ -135,6 +135,20 @@ class RouteAssistantPricingApplier {
         this.cooldownMinPerRoute = isFinite(opts.cooldownMinPerRoute) ? Math.max(0, opts.cooldownMinPerRoute) : 60
         this.warnAboveDeltaPct  = isFinite(opts.warnAboveDeltaPct) ? Math.max(0, opts.warnAboveDeltaPct) : 5
         this.applyLog           = opts.applyLog || null
+        // Tier 3.2 — circuit breaker. Threshold/cooldown/trippedAt are read
+        // from settings on every apply via the opts the panel threads in;
+        // we keep an instance counter so consecutive failures within one
+        // panel session add up across calls without a settings round-trip.
+        this.circuitBreakerThreshold  = isFinite(opts.circuitBreakerThreshold)
+            ? Math.max(1, opts.circuitBreakerThreshold)
+            : 3
+        this.circuitBreakerCooldownMs = isFinite(opts.circuitBreakerCooldownMs)
+            ? Math.max(0, opts.circuitBreakerCooldownMs)
+            : 600000
+        this.circuitBreakerTrippedAt  = isFinite(opts.circuitBreakerTrippedAt) ? opts.circuitBreakerTrippedAt : null
+        this.onBreakerTrip            = typeof opts.onBreakerTrip  === "function" ? opts.onBreakerTrip  : null
+        this.onBreakerReset           = typeof opts.onBreakerReset === "function" ? opts.onBreakerReset : null
+        this._consecutiveErrors       = 0
     }
 
     static _pairKey(hub, dest) {
@@ -439,12 +453,30 @@ class RouteAssistantPricingApplier {
             dryRun
         }
 
+        // Step 0 — circuit-breaker cooldown gate. Skip in dry-run; the
+        // breaker exists to throttle real POST traffic, dry-run is a pure
+        // GET + parse and is safe to run while AS is rate-limiting us.
+        if (!dryRun && this.circuitBreakerTrippedAt && this.circuitBreakerCooldownMs > 0) {
+            const elapsed = Date.now() - this.circuitBreakerTrippedAt
+            if (elapsed < this.circuitBreakerCooldownMs) {
+                const remaining = Math.ceil((this.circuitBreakerCooldownMs - elapsed) / 60000)
+                return await this._completeAsAborted(baseEnvelope, {
+                    code:         "breakerCooldown",
+                    message:      "Circuit breaker tripped — cooling down (" + remaining + " min remaining). Reset in Settings → Auto-Pricing.",
+                    remainingMin: remaining
+                })
+            }
+        }
+
         // Step 1 — GET the markets page so we have a fresh form context.
         const url = RouteAssistantPricingApplier._markUrl(this.server, hub, dest)
         let html = null
         let formContext = null
         try {
             const resp = await fetch(url, {credentials: "include"})
+            if (resp.status === 429 || resp.status === 503) {
+                return await this._handleRateLimit(baseEnvelope, "GET", resp.status)
+            }
             if (!resp.ok) {
                 return await this._completeAsFailure(baseEnvelope, {
                     code:    "fetchFailed",
@@ -548,6 +580,9 @@ class RouteAssistantPricingApplier {
                 body:        body.toString()
             })
             httpStatus = resp.status
+            if (resp.status === 429 || resp.status === 503) {
+                return await this._handleRateLimit(baseEnvelope, "POST", resp.status)
+            }
             respHtml = await resp.text()
             if (!resp.ok) {
                 return await this._completeAsFailure(baseEnvelope, {
@@ -708,11 +743,13 @@ class RouteAssistantPricingApplier {
     }
 
     async _completeAsVerified(envelope) {
+        this._resetBreakerCounter()
         const final = Object.assign({}, envelope, {status: "verified"})
         return await this._writeLog(final)
     }
 
     async _completeAsPostedUnverified(envelope) {
+        this._resetBreakerCounter()
         const final = Object.assign({}, envelope, {
             status: "posted",
             warning: "POST returned 200 but post-write verification didn't match expected prices."
@@ -728,6 +765,51 @@ class RouteAssistantPricingApplier {
     async _completeAsAborted(envelope, reason) {
         const final = Object.assign({}, envelope, {status: "aborted", error: reason})
         return await this._writeLog(final)
+    }
+
+    /**
+     * 429/503 path. Increments the consecutive-error counter, trips the
+     * breaker (persisting trippedAt via onBreakerTrip) when threshold is
+     * met, and writes a "rateLimit" failure entry to the apply log so the
+     * audit trail captures the rejection. The error envelope carries the
+     * counter so the modal can surface "halted: HTTP 429 ×3" copy.
+     */
+    async _handleRateLimit(envelope, where, status) {
+        this._consecutiveErrors += 1
+        const tripped = this._consecutiveErrors >= this.circuitBreakerThreshold
+        if (tripped) {
+            this.circuitBreakerTrippedAt = Date.now()
+            const reason = "HTTP " + status + " ×" + this._consecutiveErrors + " in a row at " + where
+            if (this.onBreakerTrip) {
+                try { await this.onBreakerTrip(reason, this.circuitBreakerTrippedAt) }
+                catch (e) { console.warn("[AES pricingApplier] onBreakerTrip threw", e) }
+            }
+        }
+        return await this._completeAsFailure(envelope, {
+            code:               "rateLimit",
+            message:            "AS responded HTTP " + status + " on " + where + ". Consecutive errors: " + this._consecutiveErrors + ".",
+            httpStatus:         status,
+            consecutiveErrors:  this._consecutiveErrors,
+            breakerTripped:     tripped
+        })
+    }
+
+    /**
+     * Called on every non-rate-limit terminal path. Resets the consecutive
+     * counter and, if the breaker was previously tripped, fires
+     * onBreakerReset so the panel can null circuitBreakerTrippedAt in
+     * settings — the next apply runs without the cooldown gate.
+     */
+    _resetBreakerCounter() {
+        if (this._consecutiveErrors === 0 && !this.circuitBreakerTrippedAt) return
+        this._consecutiveErrors = 0
+        if (this.circuitBreakerTrippedAt && this.onBreakerReset) {
+            this.circuitBreakerTrippedAt = null
+            try { this.onBreakerReset() }
+            catch (e) { console.warn("[AES pricingApplier] onBreakerReset threw", e) }
+        } else if (this.circuitBreakerTrippedAt) {
+            this.circuitBreakerTrippedAt = null
+        }
     }
 
     async _writeLog(record) {

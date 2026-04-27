@@ -8,7 +8,7 @@
  * (current + default + slider ranges), the market-share leaderboard for both
  * pax and cargo, and 25 weeks of historic capacity + price chart data.
  *
- * Two consumption paths (mirroring ticket-price-scraper.js):
+ * Two consumption paths (mirroring schedule-page-scraper.js):
  *
  *   1. Live-read — `parseFromDoc(document)` runs against the current markets
  *      page DOM when the user navigates to it (via content_markets.js).
@@ -795,7 +795,7 @@ class RouteAssistantMarketsPageScraper {
     }
 
     // ------------------------------------------------------------------
-    // Bulk-scrape orchestrator (mirror of ticket-price-scraper.js 322–363)
+    // Bulk-scrape orchestrator (mirror of schedule-page-scraper.js 322–363)
     // ------------------------------------------------------------------
 
     /**

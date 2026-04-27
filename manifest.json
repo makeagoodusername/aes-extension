@@ -191,7 +191,7 @@
                 "modules/route-assistant/status-history-store.js",
                 "modules/route-assistant/fuel-price-scraper.js",
                 "modules/route-assistant/fuel-burn-estimator.js",
-                "modules/route-assistant/ticket-price-scraper.js",
+                "modules/route-assistant/schedule-page-scraper.js",
                 "modules/route-assistant/markets-page-scraper.js",
                 "modules/route-assistant/inventory-page-scraper.js",
                 "modules/route-assistant/demand-derivator.js",
