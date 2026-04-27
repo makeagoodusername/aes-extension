@@ -220,7 +220,12 @@
                 "modules/aircraft-flights/aircraft-statistics-panel.js",
                 "modules/aircraft-flights/extraction-button.js",
                 "modules/aircraft-flights/info-panel.js",
-                "modules/data-models/flight-data.js"
+                "modules/data-models/flight-data.js",
+                "modules/aircraft-flight-plan/maintenance-store.js",
+                "modules/aircraft-flight-plan/flight-log-store.js",
+                "modules/aircraft-flight-plan/maintenance-scraper.js",
+                "modules/aircraft-flight-plan/flight-log-scraper.js",
+                "modules/aircraft-flight-plan/wear-model.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/fleets/aircraft/*/1*"]
         },
@@ -251,6 +256,13 @@
                 "modules/aircraft-flight-plan/diagnostics.js",
                 "modules/aircraft-flight-plan/audit-log.js",
                 "modules/aircraft-flight-plan/spec-resolver.js",
+                "modules/aircraft-flight-plan/maintenance-store.js",
+                "modules/aircraft-flight-plan/flight-log-store.js",
+                "modules/aircraft-flight-plan/maintenance-scraper.js",
+                "modules/aircraft-flight-plan/flight-log-scraper.js",
+                "modules/aircraft-flight-plan/wear-model.js",
+                "modules/aircraft-flight-plan/maintenance-budget.js",
+                "modules/aircraft-flight-plan/maintenance-widget.js",
                 "modules/aircraft-flight-plan/route-candidates.js",
                 "modules/aircraft-flight-plan/form-driver.js",
                 "modules/aircraft-flight-plan/active-draft-store.js",
@@ -258,6 +270,7 @@
                 "modules/aircraft-flight-plan/auto-scheduler/objective.js",
                 "modules/aircraft-flight-plan/auto-scheduler/allocator.js",
                 "modules/aircraft-flight-plan/auto-scheduler/slot-optimizer.js",
+                "modules/aircraft-flight-plan/auto-scheduler/preview-panel.js",
                 "modules/aircraft-flight-plan/wave-applier.js",
                 "content_aircraftFlightPlan.js"
             ],
