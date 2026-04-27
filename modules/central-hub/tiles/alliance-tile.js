@@ -256,7 +256,7 @@ class CentralHubAllianceTile extends window.CentralHubTile {
 if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
     window.CentralHubTileRegistry.register({
         id:       "alliance",
-        section:  "tools",
+        section:  "operations",
         priority: 40,
         factory:  () => new CentralHubAllianceTile()
     })

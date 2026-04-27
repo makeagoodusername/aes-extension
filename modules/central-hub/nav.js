@@ -1,19 +1,25 @@
 "use strict"
 
 /**
- * CentralHubNav — left-rail section list. Renders four section headers
- * (Fleet & Aircraft, Routes & Schedule, Finance, Tools & Settings); each
- * holds a list of tile titles populated by the shell after tiles mount.
+ * CentralHubNav — left-rail section list. Renders five section headers
+ * (Fleet & Aircraft, Routes & Schedule, Operations, Finance, Tools &
+ * Settings); each holds a list of tile titles populated by the shell
+ * after tiles mount.
+ *
+ * Operations groups AS-mutating workflows scoped to the enterprise
+ * (service profiles, crew, station automation, alliance) — distinct
+ * from Routes which is route-scoped data + planning.
  *
  * Click a section header → onSectionChange(section).
  * Click a tile link    → onTileSelect(tileId).
  */
 class CentralHubNav {
     static SECTIONS = [
-        {id: "fleet",   label: "Fleet & Aircraft"},
-        {id: "routes",  label: "Routes & Schedule"},
-        {id: "finance", label: "Finance"},
-        {id: "tools",   label: "Tools & Settings"}
+        {id: "fleet",      label: "Fleet & Aircraft"},
+        {id: "routes",     label: "Routes & Schedule"},
+        {id: "operations", label: "Operations"},
+        {id: "finance",    label: "Finance"},
+        {id: "tools",      label: "Tools & Settings"}
     ]
 
     constructor(opts) {

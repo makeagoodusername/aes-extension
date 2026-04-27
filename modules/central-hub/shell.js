@@ -54,7 +54,7 @@ class CentralHubShell {
             routeManagement:       "routes",
             competitorMonitoring:  "routes",
             aircraftProfitability: "fleet",
-            stationAutomation:     "routes",
+            stationAutomation:     "operations",
             usedAircraftScanner:   "fleet",
             scheduleManagement:    "routes",
             flightsFrom:           "routes",

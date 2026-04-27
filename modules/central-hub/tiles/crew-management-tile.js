@@ -230,7 +230,7 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
 if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
     window.CentralHubTileRegistry.register({
         id:       "crew-management",
-        section:  "tools",
+        section:  "operations",
         priority: 30,
         factory:  () => new CentralHubCrewManagementTile()
     })

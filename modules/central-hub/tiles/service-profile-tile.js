@@ -645,7 +645,7 @@ class CentralHubServiceProfileTile extends window.CentralHubTile {
 if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
     window.CentralHubTileRegistry.register({
         id: "service-profile",
-        section: "routes",
+        section: "operations",
         priority: 10,
         factory: () => new CentralHubServiceProfileTile()
     })

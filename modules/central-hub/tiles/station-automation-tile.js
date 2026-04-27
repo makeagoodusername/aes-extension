@@ -130,8 +130,8 @@ class CentralHubStationAutomationTile extends window.CentralHubTile {
 if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
     window.CentralHubTileRegistry.register({
         id: "station-automation",
-        section: "routes",
-        priority: 30,
+        section: "operations",
+        priority: 20,
         factory: () => new CentralHubStationAutomationTile()
     })
 }
