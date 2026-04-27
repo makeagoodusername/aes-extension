@@ -40,7 +40,17 @@
  *   page that doesn't SSR.
  */
 class RouteAssistantCarriersScraper {
-    static CACHE_PREFIX = "routeAssistant:carriers:"
+    /**
+     * L3 — Class B refactor: per-account scoping via `acctKey()`.
+     * Carriers data depends on which carriers are tagged "ours" via
+     * the partners cache — different airlines on the same hub have
+     * different competitive landscapes.
+     */
+    static LEGACY_PREFIX = "routeAssistant:carriers:"
+    static SCOPE_PREFIX  = "routeAssistant:carriers"
+
+    /** L3 deprecated — preserve for any reader still doing key arithmetic. */
+    static get CACHE_PREFIX() { return RouteAssistantCarriersScraper.LEGACY_PREFIX }
 
     constructor(opts) {
         this.maxAgeDays = RouteAssistantCarriersScraper._normaliseMaxAge(opts && opts.maxAgeDays)
@@ -49,6 +59,16 @@ class RouteAssistantCarriersScraper {
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
+    }
+
+    static _key(hub, dest) {
+        return acctKey(RouteAssistantCarriersScraper.SCOPE_PREFIX,
+            RouteAssistantCarriersScraper._pairKey(hub, dest))
+    }
+
+    static _legacyKey(hub, dest) {
+        return RouteAssistantCarriersScraper.LEGACY_PREFIX
+            + RouteAssistantCarriersScraper._pairKey(hub, dest)
     }
 
     static _normaliseMaxAge(v) {
@@ -64,32 +84,39 @@ class RouteAssistantCarriersScraper {
 
     /**
      * Bulk-load cached records for a list of {hub, dest} pairs (or
-     * [hub, dest] tuples). Returns Map<pairKey, record>. Mirrors
-     * RouteAssistantSchedulePageScraper.bulkLoadCache so the panel can
-     * paint immediately on mount.
+     * [hub, dest] tuples). Returns Map<pairKey, record>. Reads
+     * namespaced first, falls back to legacy.
      */
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
         const maxAgeDays = RouteAssistantCarriersScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = pairs.map(p => {
+        const nsKeys = []
+        const lgKeys = []
+        const pairKeys = []
+        for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantCarriersScraper.CACHE_PREFIX + RouteAssistantCarriersScraper._pairKey(a, b)
-        })
-        const out = await chrome.storage.local.get(keys)
+            pairKeys.push(RouteAssistantCarriersScraper._pairKey(a, b))
+            nsKeys.push(RouteAssistantCarriersScraper._key(a, b))
+            lgKeys.push(RouteAssistantCarriersScraper._legacyKey(a, b))
+        }
+        const all = []
+        for (const k of nsKeys) all.push(k)
+        for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
+        const out = await chrome.storage.local.get(all)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+        for (let i = 0; i < pairs.length; i++) {
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            const rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
             if (!rec) continue
             if (RouteAssistantCarriersScraper._isExpired(rec, maxAgeDays)) continue
-            const pair = k.substring(RouteAssistantCarriersScraper.CACHE_PREFIX.length)
-            map.set(pair, rec)
+            map.set(pairKeys[i], rec)
         }
         return map
     }
 
     static async saveRecord(hub, dest, fields, source) {
-        const pair = RouteAssistantCarriersScraper._pairKey(hub, dest)
-        const key = RouteAssistantCarriersScraper.CACHE_PREFIX + pair
+        const key = RouteAssistantCarriersScraper._key(hub, dest)
         const rec = Object.assign({
             hub:       String(hub || "").toUpperCase(),
             dest:      String(dest || "").toUpperCase(),

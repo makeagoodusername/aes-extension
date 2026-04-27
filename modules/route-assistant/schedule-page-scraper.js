@@ -34,7 +34,17 @@
  * so a partial parse still produces a usable cache record.
  */
 class RouteAssistantSchedulePageScraper {
-    static CACHE_PREFIX = "routeAssistant:ticketPrice:"
+    /**
+     * L3 — Class B refactor: scrape output (own pricing + frequency
+     * details) belongs to the airline that flew it, so per-account
+     * scoping prevents one account's prices leaking into another's
+     * profit estimator.
+     */
+    static LEGACY_PREFIX = "routeAssistant:ticketPrice:"
+    static SCOPE_PREFIX  = "routeAssistant:ticketPrice"
+
+    /** L3 deprecated — preserve for any reader still doing key arithmetic. */
+    static get CACHE_PREFIX() { return RouteAssistantSchedulePageScraper.LEGACY_PREFIX }
 
     constructor(server, opts) {
         if (!server) throw new Error("RouteAssistantSchedulePageScraper: server required")
@@ -45,6 +55,16 @@ class RouteAssistantSchedulePageScraper {
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
+    }
+
+    static _key(hub, dest) {
+        return acctKey(RouteAssistantSchedulePageScraper.SCOPE_PREFIX,
+            RouteAssistantSchedulePageScraper._pairKey(hub, dest))
+    }
+
+    static _legacyKey(hub, dest) {
+        return RouteAssistantSchedulePageScraper.LEGACY_PREFIX
+            + RouteAssistantSchedulePageScraper._pairKey(hub, dest)
     }
 
     static _normaliseMaxAge(v) {
@@ -66,18 +86,27 @@ class RouteAssistantSchedulePageScraper {
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
         const maxAgeDays = RouteAssistantSchedulePageScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = pairs.map(p => {
+        const nsKeys = []
+        const lgKeys = []
+        const pairKeys = []
+        for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantSchedulePageScraper.CACHE_PREFIX + RouteAssistantSchedulePageScraper._pairKey(a, b)
-        })
-        const out = await chrome.storage.local.get(keys)
+            pairKeys.push(RouteAssistantSchedulePageScraper._pairKey(a, b))
+            nsKeys.push(RouteAssistantSchedulePageScraper._key(a, b))
+            lgKeys.push(RouteAssistantSchedulePageScraper._legacyKey(a, b))
+        }
+        const all = []
+        for (const k of nsKeys) all.push(k)
+        for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
+        const out = await chrome.storage.local.get(all)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+        for (let i = 0; i < pairs.length; i++) {
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            const rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
             if (!rec) continue
             if (RouteAssistantSchedulePageScraper._isExpired(rec, maxAgeDays)) continue
-            const pair = k.substring(RouteAssistantSchedulePageScraper.CACHE_PREFIX.length)
-            map.set(pair, rec)
+            map.set(pairKeys[i], rec)
         }
         return map
     }
@@ -87,8 +116,7 @@ class RouteAssistantSchedulePageScraper {
      * source="live"; the fetch path calls it via scrape().
      */
     static async saveRecord(hub, dest, fields, source) {
-        const pair = RouteAssistantSchedulePageScraper._pairKey(hub, dest)
-        const key = RouteAssistantSchedulePageScraper.CACHE_PREFIX + pair
+        const key = RouteAssistantSchedulePageScraper._key(hub, dest)
         const rec = Object.assign({
             hub:       String(hub || "").toUpperCase(),
             dest:      String(dest || "").toUpperCase(),
@@ -100,10 +128,15 @@ class RouteAssistantSchedulePageScraper {
     }
 
     static async loadRecord(hub, dest) {
-        const key = RouteAssistantSchedulePageScraper.CACHE_PREFIX
-            + RouteAssistantSchedulePageScraper._pairKey(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+        const ns = RouteAssistantSchedulePageScraper._key(hub, dest)
+        const lg = RouteAssistantSchedulePageScraper._legacyKey(hub, dest)
+        if (ns === lg) {
+            const out = await chrome.storage.local.get([ns])
+            return out[ns] || null
+        }
+        const out = await chrome.storage.local.get([ns, lg])
+        if (out[ns] !== undefined) return out[ns]
+        return out[lg] || null
     }
 
     /**

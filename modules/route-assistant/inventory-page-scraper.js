@@ -26,7 +26,16 @@
  * keeping concurrency conservative.
  */
 class RouteAssistantInventoryPageScraper {
-    static CACHE_PREFIX = "routeAssistant:inventory:"
+    /**
+     * L3 — Class B refactor: per-account scoping. Inventory rows
+     * (RM tightness, sold/booked seats) belong to whichever airline
+     * is logged in when the scrape ran.
+     */
+    static LEGACY_PREFIX = "routeAssistant:inventory:"
+    static SCOPE_PREFIX  = "routeAssistant:inventory"
+
+    /** L3 deprecated — preserve for any reader still doing key arithmetic. */
+    static get CACHE_PREFIX() { return RouteAssistantInventoryPageScraper.LEGACY_PREFIX }
 
     constructor(server, opts) {
         if (!server) throw new Error("RouteAssistantInventoryPageScraper: server required")
@@ -47,6 +56,16 @@ class RouteAssistantInventoryPageScraper {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
+    static _key(hub, dest) {
+        return acctKey(RouteAssistantInventoryPageScraper.SCOPE_PREFIX,
+            RouteAssistantInventoryPageScraper._pairKey(hub, dest))
+    }
+
+    static _legacyKey(hub, dest) {
+        return RouteAssistantInventoryPageScraper.LEGACY_PREFIX
+            + RouteAssistantInventoryPageScraper._pairKey(hub, dest)
+    }
+
     static _normaliseMaxAge(v) {
         const n = Number(v)
         return isFinite(n) && n > 0 ? n : null
@@ -61,25 +80,33 @@ class RouteAssistantInventoryPageScraper {
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
         const maxAgeDays = RouteAssistantInventoryPageScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = pairs.map(p => {
+        const nsKeys = []
+        const lgKeys = []
+        const pairKeys = []
+        for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantInventoryPageScraper.CACHE_PREFIX + RouteAssistantInventoryPageScraper._pairKey(a, b)
-        })
-        const out = await chrome.storage.local.get(keys)
+            pairKeys.push(RouteAssistantInventoryPageScraper._pairKey(a, b))
+            nsKeys.push(RouteAssistantInventoryPageScraper._key(a, b))
+            lgKeys.push(RouteAssistantInventoryPageScraper._legacyKey(a, b))
+        }
+        const all = []
+        for (const k of nsKeys) all.push(k)
+        for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
+        const out = await chrome.storage.local.get(all)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+        for (let i = 0; i < pairs.length; i++) {
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            const rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
             if (!rec) continue
             if (RouteAssistantInventoryPageScraper._isExpired(rec, maxAgeDays)) continue
-            const pair = k.substring(RouteAssistantInventoryPageScraper.CACHE_PREFIX.length)
-            map.set(pair, rec)
+            map.set(pairKeys[i], rec)
         }
         return map
     }
 
     static async saveRecord(hub, dest, fields, source) {
-        const pair = RouteAssistantInventoryPageScraper._pairKey(hub, dest)
-        const key  = RouteAssistantInventoryPageScraper.CACHE_PREFIX + pair
+        const key = RouteAssistantInventoryPageScraper._key(hub, dest)
         const rec = Object.assign({
             hub:       String(hub || "").toUpperCase(),
             dest:      String(dest || "").toUpperCase(),

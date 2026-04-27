@@ -45,7 +45,15 @@
  * for 10 min.
  */
 class RouteAssistantOrsScraper {
-    static CACHE_PREFIX = "routeAssistant:ors:"
+    /**
+     * L3 — Class B refactor: namespaced via `acctKey()`. ORS rank +
+     * connection lists depend on which airline is "ours" (the rank
+     * column reports our position in the leaderboard), so per-account
+     * scoping prevents one account's vantage point leaking into
+     * another's projections.
+     */
+    static LEGACY_PREFIX = "routeAssistant:ors:"
+    static SCOPE_PREFIX  = "routeAssistant:ors"
 
     static PAYLOAD_RADIO = {
         ECONOMY:  "radio0",
@@ -68,6 +76,19 @@ class RouteAssistantOrsScraper {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
+    static _key(hub, dest) {
+        return acctKey(RouteAssistantOrsScraper.SCOPE_PREFIX,
+            RouteAssistantOrsScraper._pairKey(hub, dest))
+    }
+
+    static _legacyKey(hub, dest) {
+        return RouteAssistantOrsScraper.LEGACY_PREFIX
+            + RouteAssistantOrsScraper._pairKey(hub, dest)
+    }
+
+    /** L3 deprecated — preserve for any reader still doing key arithmetic. */
+    static get CACHE_PREFIX() { return RouteAssistantOrsScraper.LEGACY_PREFIX }
+
     static _normaliseMaxAge(v) {
         const n = Number(v)
         return isFinite(n) && n > 0 ? n : null
@@ -87,19 +108,28 @@ class RouteAssistantOrsScraper {
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
         const maxAgeDays = RouteAssistantOrsScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = pairs.map(p => {
+        const nsKeys = []
+        const lgKeys = []
+        const pairKeys = []
+        for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantOrsScraper.CACHE_PREFIX + RouteAssistantOrsScraper._pairKey(a, b)
-        })
-        const out = await chrome.storage.local.get(keys)
+            pairKeys.push(RouteAssistantOrsScraper._pairKey(a, b))
+            nsKeys.push(RouteAssistantOrsScraper._key(a, b))
+            lgKeys.push(RouteAssistantOrsScraper._legacyKey(a, b))
+        }
+        const all = []
+        for (const k of nsKeys) all.push(k)
+        for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
+        const out = await chrome.storage.local.get(all)
         const map = new Map()
-        for (const k in out) {
-            let rec = out[k]
+        for (let i = 0; i < pairs.length; i++) {
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            let rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
             if (!rec) continue
             if (RouteAssistantOrsScraper._isExpired(rec, maxAgeDays)) continue
             rec = RouteAssistantOrsScraper._migrateOrsRecord(rec)
-            const pair = k.substring(RouteAssistantOrsScraper.CACHE_PREFIX.length)
-            map.set(pair, rec)
+            map.set(pairKeys[i], rec)
         }
         return map
     }
@@ -147,8 +177,7 @@ class RouteAssistantOrsScraper {
     }
 
     static async saveRecord(hub, dest, fields) {
-        const pair = RouteAssistantOrsScraper._pairKey(hub, dest)
-        const key = RouteAssistantOrsScraper.CACHE_PREFIX + pair
+        const key = RouteAssistantOrsScraper._key(hub, dest)
         const rec = Object.assign({
             hub:       String(hub || "").toUpperCase(),
             dest:      String(dest || "").toUpperCase(),
@@ -159,10 +188,16 @@ class RouteAssistantOrsScraper {
     }
 
     static async loadRecord(hub, dest) {
-        const key = RouteAssistantOrsScraper.CACHE_PREFIX
-            + RouteAssistantOrsScraper._pairKey(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        const rec = out[key]
+        const ns = RouteAssistantOrsScraper._key(hub, dest)
+        const lg = RouteAssistantOrsScraper._legacyKey(hub, dest)
+        let rec = null
+        if (ns === lg) {
+            const out = await chrome.storage.local.get([ns])
+            rec = out[ns] || null
+        } else {
+            const out = await chrome.storage.local.get([ns, lg])
+            rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+        }
         return rec ? RouteAssistantOrsScraper._migrateOrsRecord(rec) : null
     }
 
@@ -569,6 +604,20 @@ class RouteAssistantOrsScraper {
             if (typeof AES !== "undefined" && AES.getAirlineIdentity) airline = AES.getAirlineIdentity()
         } catch (e) { /* ignore */ }
         const fnSet = await RouteAssistantOrsScraper.getOurFlightNumbers(this.server, airline)
+        // Orchestrator path — the route-sync orchestrator harvests fresh flight
+        // numbers from the schedule-page scrape that just ran for this route
+        // and unions them in here. Without this, a freshly-scraped route whose
+        // flights aren't in the legacy `<server><airline>schedule` cache yet
+        // tags every leg as "not ours" and rank flavors come back null.
+        const fnOverride = params.ourFlightNumbersOverride
+        if (fnOverride) {
+            const iter = fnOverride instanceof Set
+                ? fnOverride
+                : (Array.isArray(fnOverride) ? fnOverride : [])
+            for (const fn of iter) {
+                if (fn) fnSet.add(String(fn).trim())
+            }
+        }
         const prefixes = await RouteAssistantOrsScraper.getOurCarrierPrefixes(
             this.server, airline, carrierOverride
         )

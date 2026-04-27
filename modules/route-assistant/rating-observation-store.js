@@ -10,7 +10,8 @@
  * (`α_price`) that replaces the global default in the ORS Sandbox model.
  *
  * Storage:
- *   routeAssistant:ratingObservations:<HUB>-<DEST>
+ *   routeAssistant:ratingObservations:<HUB>-<DEST>                  (legacy)
+ *   routeAssistant:ratingObservations:acct:<id>:<HUB>-<DEST>        (L3+)
  *     → {hub, dest, observations: [{
  *           at:                    <ms>,
  *           prices:                {Y, C, F},
@@ -24,37 +25,44 @@
  *
  * Pair key is **directional** — fares and ratings are direction-specific.
  *
- * Lifecycle:
- *   - `add` is read-modify-write under one storage call. Concurrent writes
- *     from a bulk ORS scrape are serialised by the scraper's concurrency=2
- *     plus stagger; race-tolerant for our usage.
- *   - Observations older than `MAX_AGE_MS` are pruned on every read.
- *   - The newest `MAX_OBS` observations are kept (FIFO trim).
- *   - Records with empty observation arrays after pruning are removed
- *     so storage doesn't fill with tombstones.
+ * L3 — Class B refactor: namespaced via `acctKey()`. Observations are
+ * scoped per account because the model fits a regression on the user's
+ * own pricing/rating combinations — mixing across accounts blends two
+ * different airlines' service-mix decisions and produces meaningless
+ * elasticity estimates.
  */
 class RouteAssistantRatingObservationStore {
-    static PREFIX     = "routeAssistant:ratingObservations:"
+    static LEGACY_PREFIX = "routeAssistant:ratingObservations:"
+    static SCOPE_PREFIX  = "routeAssistant:ratingObservations"
     static MAX_OBS    = 50
     static MAX_AGE_MS = 90 * 86400000
-
-    static _key(hub, dest) {
-        return RouteAssistantRatingObservationStore.PREFIX
-            + String(hub  || "").toUpperCase() + "-"
-            + String(dest || "").toUpperCase()
-    }
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
-    /**
-     * Returns `{hub, dest, observations: [...]}` or null. Pruned on read.
-     */
+    static _key(hub, dest) {
+        return acctKey(RouteAssistantRatingObservationStore.SCOPE_PREFIX,
+            RouteAssistantRatingObservationStore._pairKey(hub, dest))
+    }
+
+    static _legacyKey(hub, dest) {
+        return RouteAssistantRatingObservationStore.LEGACY_PREFIX
+            + RouteAssistantRatingObservationStore._pairKey(hub, dest)
+    }
+
+    /** Returns `{hub, dest, observations: [...]}` or null. Pruned on read. */
     static async get(hub, dest) {
-        const key = RouteAssistantRatingObservationStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        const rec = out[key] || null
+        const ns = RouteAssistantRatingObservationStore._key(hub, dest)
+        const lg = RouteAssistantRatingObservationStore._legacyKey(hub, dest)
+        let rec = null
+        if (ns === lg) {
+            const out = await chrome.storage.local.get([ns])
+            rec = out[ns] || null
+        } else {
+            const out = await chrome.storage.local.get([ns, lg])
+            rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+        }
         if (!rec) return null
         rec.observations = RouteAssistantRatingObservationStore._prune(rec.observations || [])
         return rec
@@ -67,27 +75,38 @@ class RouteAssistantRatingObservationStore {
      */
     static async getMany(pairs) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(p => {
+        const nsKeys = []
+        const lgKeys = []
+        const pairKeys = []
+        for (const p of pairs) {
             const [h, d] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantRatingObservationStore._key(h, d)
-        })
-        const out = await chrome.storage.local.get(keys)
+            pairKeys.push(RouteAssistantRatingObservationStore._pairKey(h, d))
+            nsKeys.push(RouteAssistantRatingObservationStore._key(h, d))
+            lgKeys.push(RouteAssistantRatingObservationStore._legacyKey(h, d))
+        }
+        const all = []
+        for (const k of nsKeys) all.push(k)
+        for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
+        const out = await chrome.storage.local.get(all)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+        for (let i = 0; i < pairs.length; i++) {
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            const rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
             if (!rec) continue
             const pruned = RouteAssistantRatingObservationStore._prune(rec.observations || [])
             if (!pruned.length) continue
-            const pair = k.substring(RouteAssistantRatingObservationStore.PREFIX.length)
-            map.set(pair, Object.assign({}, rec, {observations: pruned}))
+            map.set(pairKeys[i], Object.assign({}, rec, {observations: pruned}))
         }
         return map
     }
 
     /**
      * Append one observation. Read-modify-write — pulls the existing
-     * record (if any), prunes by age, appends the new entry, FIFO-trims
-     * to `MAX_OBS`, and writes back. Silently no-ops on invalid input.
+     * record (if any, with legacy fallback so pre-L3 history seeds the
+     * namespaced record on the next observation), prunes by age, appends
+     * the new entry, FIFO-trims to `MAX_OBS`, and writes back to the
+     * namespaced slot. Silently no-ops on invalid input.
      */
     static async add(hub, dest, observation) {
         if (!RouteAssistantRatingObservationStore._isValidObservation(observation)) return
@@ -95,12 +114,14 @@ class RouteAssistantRatingObservationStore {
         const destU = String(dest || "").toUpperCase()
         if (!hubU || !destU) return
 
-        const key = RouteAssistantRatingObservationStore._key(hubU, destU)
-        const existing = (await chrome.storage.local.get([key]))[key] || null
+        const ns = RouteAssistantRatingObservationStore._key(hubU, destU)
+        const lg = RouteAssistantRatingObservationStore._legacyKey(hubU, destU)
+        const reads = (ns === lg) ? [ns] : [ns, lg]
+        const out = await chrome.storage.local.get(reads)
+        const existing = out[ns] !== undefined ? out[ns] : (out[lg] || null)
         const prior = existing && Array.isArray(existing.observations) ? existing.observations : []
         const pruned = RouteAssistantRatingObservationStore._prune(prior)
         pruned.push(observation)
-        // FIFO cap — newest MAX_OBS retained.
         const capped = pruned.length > RouteAssistantRatingObservationStore.MAX_OBS
             ? pruned.slice(pruned.length - RouteAssistantRatingObservationStore.MAX_OBS)
             : pruned
@@ -111,37 +132,75 @@ class RouteAssistantRatingObservationStore {
             observations: capped,
             updatedAt:    Date.now()
         }
-        await chrome.storage.local.set({[key]: record})
+        await chrome.storage.local.set({[ns]: record})
     }
 
     static async clear(hub, dest) {
-        const key = RouteAssistantRatingObservationStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+        const ns = RouteAssistantRatingObservationStore._key(hub, dest)
+        const lg = RouteAssistantRatingObservationStore._legacyKey(hub, dest)
+        const keys = (ns === lg) ? [ns] : [ns, lg]
+        await chrome.storage.local.remove(keys)
     }
 
     /**
-     * Wipe every observation record across all routes. Used by the
-     * settings-drawer "Reset all observations" button.
+     * Wipe every observation record for the CURRENT account, plus any
+     * legacy records (which can't unambiguously be assigned to another
+     * account post-L3). Other accounts' namespaced records are preserved.
      */
     static async clearAll() {
+        const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
+        const myNs = id ? RouteAssistantRatingObservationStore.SCOPE_PREFIX + ":acct:" + id + ":" : null
         const all = await chrome.storage.local.get(null)
-        const toRemove = Object.keys(all).filter(k => k.startsWith(RouteAssistantRatingObservationStore.PREFIX))
+        const toRemove = []
+        for (const k of Object.keys(all)) {
+            if (!k.startsWith(RouteAssistantRatingObservationStore.LEGACY_PREFIX)) continue
+            if (myNs && k.startsWith(myNs)) {
+                toRemove.push(k)
+            } else if (k.indexOf(":acct:") === -1) {
+                // Legacy (no :acct: marker) — clear it too.
+                toRemove.push(k)
+            }
+            // else: another account's namespaced — skip.
+        }
         if (toRemove.length) await chrome.storage.local.remove(toRemove)
         return toRemove.length
     }
 
     /**
-     * Count total observations across every cached route — used by the
-     * settings-drawer status line.
-     * Returns `{routes, observations}`.
+     * Count total observations across this account's records (namespaced
+     * for the current account, plus legacy as fallback). Other accounts'
+     * data is excluded.
      */
     static async count() {
+        const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
+        const myNs = id ? RouteAssistantRatingObservationStore.SCOPE_PREFIX + ":acct:" + id + ":" : null
         const all = await chrome.storage.local.get(null)
+        const cutoff = Date.now() - RouteAssistantRatingObservationStore.MAX_AGE_MS
+        const seenSuffix = new Set()
         let routes = 0
         let observations = 0
-        const cutoff = Date.now() - RouteAssistantRatingObservationStore.MAX_AGE_MS
-        for (const k in all) {
-            if (!k.startsWith(RouteAssistantRatingObservationStore.PREFIX)) continue
+
+        // Pass 1 — namespaced for current account.
+        if (myNs) {
+            for (const k of Object.keys(all)) {
+                if (!k.startsWith(myNs)) continue
+                const rec = all[k]
+                if (!rec || !Array.isArray(rec.observations)) continue
+                const fresh = rec.observations.filter(o => o && typeof o.at === "number" && o.at >= cutoff)
+                if (!fresh.length) continue
+                seenSuffix.add(k.substring(myNs.length))
+                routes += 1
+                observations += fresh.length
+            }
+        }
+        // Pass 2 — legacy fallback for suffixes the current account hasn't
+        // yet written. Skip entries that are clearly another account's
+        // namespaced via the :acct: marker.
+        for (const k of Object.keys(all)) {
+            if (!k.startsWith(RouteAssistantRatingObservationStore.LEGACY_PREFIX)) continue
+            if (k.indexOf(":acct:") !== -1) continue
+            const suffix = k.substring(RouteAssistantRatingObservationStore.LEGACY_PREFIX.length)
+            if (seenSuffix.has(suffix)) continue
             const rec = all[k]
             if (!rec || !Array.isArray(rec.observations)) continue
             const fresh = rec.observations.filter(o => o && typeof o.at === "number" && o.at >= cutoff)
@@ -174,6 +233,9 @@ class RouteAssistantRatingObservationStore {
         if (fresh.length <= RouteAssistantRatingObservationStore.MAX_OBS) return fresh
         return fresh.slice(fresh.length - RouteAssistantRatingObservationStore.MAX_OBS)
     }
+
+    /** L3 deprecated — preserve for any reader still doing key arithmetic. */
+    static get PREFIX() { return RouteAssistantRatingObservationStore.LEGACY_PREFIX }
 }
 
 if (typeof module !== "undefined" && module.exports) {

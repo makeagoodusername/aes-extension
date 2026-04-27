@@ -49,11 +49,38 @@
  * any subset of families, so the split costs no extra round trip.
  */
 class RouteAssistantMarketsPageScraper {
-    static CACHE_PREFIXES = {
+    /**
+     * L3 — Class B refactor: per-family namespacing via `acctKey()`.
+     * Markets-page records depend on which airline is "ours" (own
+     * pricing rows, our slice of the leaderboard), so per-account
+     * scoping prevents cross-account contamination.
+     */
+    static LEGACY_PREFIXES = {
         competitors: "routeAssistant:markets:competitors:",
         ownPricing:  "routeAssistant:markets:ownPricing:",
         marketShare: "routeAssistant:markets:marketShare:",
         historic:    "routeAssistant:markets:historic:"
+    }
+    static SCOPE_PREFIXES = {
+        competitors: "routeAssistant:markets:competitors",
+        ownPricing:  "routeAssistant:markets:ownPricing",
+        marketShare: "routeAssistant:markets:marketShare",
+        historic:    "routeAssistant:markets:historic"
+    }
+
+    /** L3 deprecated — preserve for any reader still doing key arithmetic. */
+    static get CACHE_PREFIXES() { return RouteAssistantMarketsPageScraper.LEGACY_PREFIXES }
+
+    static _key(family, hub, dest) {
+        const scope = RouteAssistantMarketsPageScraper.SCOPE_PREFIXES[family]
+        if (!scope) return null
+        return acctKey(scope, RouteAssistantMarketsPageScraper._pairKey(hub, dest))
+    }
+
+    static _legacyKey(family, hub, dest) {
+        const prefix = RouteAssistantMarketsPageScraper.LEGACY_PREFIXES[family]
+        if (!prefix) return null
+        return prefix + RouteAssistantMarketsPageScraper._pairKey(hub, dest)
     }
 
     static FAMILIES = ["competitors", "ownPricing", "marketShare", "historic"]
@@ -93,24 +120,25 @@ class RouteAssistantMarketsPageScraper {
             ? opts.families
             : RouteAssistantMarketsPageScraper.FAMILIES
         const maxAge = (opts && opts.maxAge) || {}
-        const keys = []
-        const keyMeta = []   // parallel: [{pair, family, key}]
+        const allKeys = []
+        const keyMeta = []   // parallel: [{pair, family, ns, lg}]
         for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
             const pair = RouteAssistantMarketsPageScraper._pairKey(a, b)
             for (const fam of families) {
-                const prefix = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam]
-                if (!prefix) continue
-                const key = prefix + pair
-                keys.push(key)
-                keyMeta.push({pair, family: fam, key})
+                const ns = RouteAssistantMarketsPageScraper._key(fam, a, b)
+                const lg = RouteAssistantMarketsPageScraper._legacyKey(fam, a, b)
+                if (!ns || !lg) continue
+                if (allKeys.indexOf(ns) < 0) allKeys.push(ns)
+                if (allKeys.indexOf(lg) < 0) allKeys.push(lg)
+                keyMeta.push({pair, family: fam, ns, lg})
             }
         }
-        if (!keys.length) return new Map()
-        const out = await chrome.storage.local.get(keys)
+        if (!allKeys.length) return new Map()
+        const out = await chrome.storage.local.get(allKeys)
         const map = new Map()
         for (const meta of keyMeta) {
-            let rec = out[meta.key]
+            let rec = out[meta.ns] !== undefined ? out[meta.ns] : (out[meta.lg] || null)
             if (!rec) continue
             const ageDays = RouteAssistantMarketsPageScraper._normaliseMaxAge(maxAge[meta.family])
             if (RouteAssistantMarketsPageScraper._isExpired(rec, ageDays)) continue
@@ -160,7 +188,6 @@ class RouteAssistantMarketsPageScraper {
      * pricing fieldset present on a sub-page).
      */
     static async saveAllRecords(hub, dest, parsed, source) {
-        const pair = RouteAssistantMarketsPageScraper._pairKey(hub, dest)
         const ts = Date.now()
         const base = {
             hub:       String(hub || "").toUpperCase(),
@@ -171,17 +198,21 @@ class RouteAssistantMarketsPageScraper {
         const writes = {}
         const saved = {}
         // Read the existing historic record so a fresh single-payload
-        // scrape doesn't wipe out previously-cached payloads. We write
-        // the union under `byPayload`.
+        // scrape doesn't wipe out previously-cached payloads. Reads via
+        // namespaced + legacy fallback so a pre-L3 record seeds the
+        // namespaced slot on the next save.
         let prevHistoric = null
         if (parsed && parsed.historic) {
-            const histKey = RouteAssistantMarketsPageScraper.CACHE_PREFIXES.historic + pair
-            const cur = await chrome.storage.local.get([histKey])
-            prevHistoric = cur && cur[histKey] ? RouteAssistantMarketsPageScraper._migrateHistoricRecord(cur[histKey]) : null
+            const histNs = RouteAssistantMarketsPageScraper._key("historic", hub, dest)
+            const histLg = RouteAssistantMarketsPageScraper._legacyKey("historic", hub, dest)
+            const reads = (histNs === histLg) ? [histNs] : [histNs, histLg]
+            const cur = await chrome.storage.local.get(reads)
+            const raw = cur[histNs] !== undefined ? cur[histNs] : (cur[histLg] || null)
+            prevHistoric = raw ? RouteAssistantMarketsPageScraper._migrateHistoricRecord(raw) : null
         }
         for (const fam of RouteAssistantMarketsPageScraper.FAMILIES) {
             if (!parsed || !parsed[fam]) continue
-            const key = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam] + pair
+            const key = RouteAssistantMarketsPageScraper._key(fam, hub, dest)
             let payload = parsed[fam]
             if (fam === "historic") {
                 // Letter K — coerce parser output into the byPayload map
@@ -231,15 +262,20 @@ class RouteAssistantMarketsPageScraper {
      * — present families only.
      */
     static async loadAll(hub, dest) {
-        const pair = RouteAssistantMarketsPageScraper._pairKey(hub, dest)
-        const keys = RouteAssistantMarketsPageScraper.FAMILIES.map(
-            f => RouteAssistantMarketsPageScraper.CACHE_PREFIXES[f] + pair
-        )
-        const out = await chrome.storage.local.get(keys)
-        const result = {}
+        const allKeys = []
+        const meta = []
         for (const fam of RouteAssistantMarketsPageScraper.FAMILIES) {
-            const k = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam] + pair
-            if (out[k]) result[fam] = out[k]
+            const ns = RouteAssistantMarketsPageScraper._key(fam, hub, dest)
+            const lg = RouteAssistantMarketsPageScraper._legacyKey(fam, hub, dest)
+            if (allKeys.indexOf(ns) < 0) allKeys.push(ns)
+            if (allKeys.indexOf(lg) < 0) allKeys.push(lg)
+            meta.push({fam, ns, lg})
+        }
+        const out = await chrome.storage.local.get(allKeys)
+        const result = {}
+        for (const m of meta) {
+            const rec = out[m.ns] !== undefined ? out[m.ns] : (out[m.lg] || null)
+            if (rec) result[m.fam] = rec
         }
         return result
     }

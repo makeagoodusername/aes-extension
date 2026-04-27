@@ -45,14 +45,31 @@
  */
 class AesMigrateLegacy {
     /**
-     * Per-route-key prefixes (Class C). Each prefix has trailing colon;
-     * the suffix after the colon is the per-route key (e.g. "JFK-LAX").
+     * Per-route-key prefixes (Class C + Class B). Each prefix has
+     * trailing colon; the suffix after the colon is the per-route key
+     * (e.g. "JFK-LAX"). The migration treats Class B and Class C the
+     * same — both belong to the active account once registered.
      */
     static PER_ROUTE_PREFIXES = [
+        // Class C — private state
         "routeAssistant:override:",
         "routeAssistant:routeNote:",
         "routeAssistant:ratingAlpha:",
-        "routeAssistant:statusHistory:"
+        "routeAssistant:statusHistory:",
+        // Class B — account-perspective observations (L3)
+        "routeAssistant:ors:",
+        "routeAssistant:ticketPrice:",
+        "routeAssistant:carriers:",
+        "routeAssistant:inventory:",
+        "routeAssistant:yieldHistory:",
+        "routeAssistant:sandboxBacktest:",
+        "routeAssistant:ratingObservations:",
+        // Class B — markets-page families (4 prefixes share `:markets:`
+        // root but each is its own per-route key family).
+        "routeAssistant:markets:competitors:",
+        "routeAssistant:markets:ownPricing:",
+        "routeAssistant:markets:marketShare:",
+        "routeAssistant:markets:historic:"
     ]
 
     /**
