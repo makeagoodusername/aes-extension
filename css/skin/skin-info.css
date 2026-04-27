@@ -1,0 +1,327 @@
+/* ===========================================================
+   skin-info.css — /app/info/* and /action/info/* (airports, enterprises,
+   flight info, county pages).
+   =========================================================== */
+
+body.aes-skin[data-aes-page="airports"] .table,
+body.aes-skin[data-aes-page="enterprises"] .table,
+body.aes-skin[data-aes-page="flight-info"] .table {
+    font-variant-numeric: tabular-nums;
+}
+
+/* IATA / ICAO codes render mono — AS often wraps them in <strong> in the
+   info pages or in a span with no class. The page's own selectors are
+   inconsistent, so we apply mono to short uppercase strings inside <th>
+   via the existing .aes-mono utility when JS adds it (no-op otherwise). */
+
+/* Country / region info pages have a dense list of airports with
+   consistent column widths — keep cells comfortable. */
+body.aes-skin[data-aes-page="airports"] .table > tbody > tr > td:first-child {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+}
+
+/* ===========================================================
+   Competitor Intelligence module — on-page panels for
+   /app/info/airports/* and /app/info/enterprises/*.
+   =========================================================== */
+
+.aes-competitor-airport-panel,
+.aes-competitor-enterprise-panel {
+    margin: var(--aes-sp-4) 0;
+    padding: var(--aes-sp-3);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    background: var(--aes-bone);
+    font-variant-numeric: tabular-nums;
+}
+
+.aes-competitor-heading {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--aes-sp-2);
+    margin-bottom: var(--aes-sp-3);
+}
+.aes-competitor-heading h3 {
+    margin: 0;
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-h3);
+    font-weight: var(--aes-fw-bold);
+    flex: 1 1 auto;
+}
+.aes-competitor-actions {
+    display: flex;
+    gap: var(--aes-sp-2);
+    align-items: center;
+    margin-left: auto;
+}
+
+.aes-competitor-freshness-pills {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--aes-sp-1);
+    align-items: center;
+}
+.aes-competitor-freshness-pill {
+    display: inline-block;
+    padding: 2px var(--aes-sp-2);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+    color: var(--aes-bone-fg);
+    background: var(--aes-slate);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+}
+.aes-competitor-freshness-pill--green { background: var(--aes-moss); }
+.aes-competitor-freshness-pill--amber { background: var(--aes-amber); }
+.aes-competitor-freshness-pill--red   { background: var(--aes-crimson); }
+.aes-competitor-freshness-ago {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    color: var(--aes-slate);
+    margin-left: var(--aes-sp-2);
+}
+
+.aes-competitor-button-bulk,
+.aes-competitor-button-abort {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-medium);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+    cursor: pointer;
+    transition: background var(--aes-tr-fast);
+}
+.aes-competitor-button-bulk:hover,
+.aes-competitor-button-abort:hover {
+    background: var(--aes-rust-deep);
+}
+.aes-competitor-button-bulk:disabled,
+.aes-competitor-button-abort:disabled {
+    background: var(--aes-bone-3);
+    color: var(--aes-slate);
+    cursor: not-allowed;
+}
+.aes-competitor-button-abort {
+    background: var(--aes-crimson);
+}
+
+.aes-competitor-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--aes-sp-2);
+}
+.aes-competitor-progress__bar {
+    width: 200px;
+    height: 16px;
+    accent-color: var(--aes-rust);
+}
+.aes-competitor-progress__label {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    color: var(--aes-oxide-2);
+}
+
+.aes-competitor-status-line {
+    margin: 0 0 var(--aes-sp-3);
+    color: var(--aes-oxide-2);
+    font-size: var(--aes-fs-body);
+}
+.aes-competitor-parser-notes {
+    color: var(--aes-amber);
+    font-size: var(--aes-fs-small);
+}
+
+.aes-competitor-carriers-table,
+.aes-competitor-routes-table {
+    font-variant-numeric: tabular-nums;
+}
+.aes-competitor-carriers-table tr.aes-is-ours {
+    background: var(--aes-moss-soft) !important;
+}
+.aes-competitor-avatar {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+}
+.aes-competitor-iata {
+    font-family: var(--aes-font-mono);
+    color: var(--aes-slate);
+    margin-left: var(--aes-sp-1);
+}
+.aes-competitor-link-view,
+.aes-competitor-link-tt {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-small);
+}
+
+.aes-competitor-profile-card {
+    display: flex;
+    gap: var(--aes-sp-4);
+    margin-bottom: var(--aes-sp-4);
+    align-items: flex-start;
+}
+.aes-competitor-banner {
+    max-height: 64px;
+    max-width: 240px;
+    object-fit: contain;
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+    background: var(--aes-bone-2);
+}
+.aes-competitor-profile-meta h4 {
+    margin: 0 0 var(--aes-sp-2);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-lead);
+    font-weight: var(--aes-fw-bold);
+}
+.aes-competitor-facts {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    color: var(--aes-oxide-2);
+}
+.aes-competitor-facts li {
+    font-size: var(--aes-fs-body);
+    padding: 2px 0;
+}
+
+.aes-competitor-fleet-summary,
+.aes-competitor-hubs-block,
+.aes-competitor-routes-block {
+    margin-top: var(--aes-sp-4);
+}
+.aes-competitor-fleet-summary h4,
+.aes-competitor-hubs-block h4,
+.aes-competitor-routes-block h4 {
+    margin: 0 0 var(--aes-sp-2);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-lead);
+    font-weight: var(--aes-fw-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+}
+.aes-competitor-dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: var(--aes-sp-1) var(--aes-sp-3);
+    margin: 0;
+}
+.aes-competitor-dl dt {
+    color: var(--aes-slate);
+    font-size: var(--aes-fs-small);
+}
+.aes-competitor-dl dd {
+    margin: 0;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-body);
+}
+
+.aes-competitor-hub-group {
+    border-top: var(--aes-bw-1) dashed var(--aes-paper-rule);
+    padding: var(--aes-sp-2) 0;
+}
+.aes-competitor-hub-group__country {
+    cursor: pointer;
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-medium);
+}
+.aes-competitor-hub-group__count {
+    color: var(--aes-slate);
+    font-family: var(--aes-font-mono);
+}
+.aes-competitor-hub-list {
+    list-style: none;
+    margin: var(--aes-sp-2) 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: var(--aes-sp-1) var(--aes-sp-3);
+}
+.aes-competitor-hub-list li {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-body);
+    color: var(--aes-oxide-2);
+}
+.aes-competitor-hub-list li strong {
+    font-weight: var(--aes-fw-bold);
+    color: var(--aes-oxide);
+}
+
+.aes-competitor-routes-tabs {
+    display: flex;
+    gap: var(--aes-sp-1);
+    margin-bottom: var(--aes-sp-2);
+}
+.aes-competitor-tab {
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    cursor: pointer;
+}
+.aes-competitor-tab.aes-is-active {
+    background: var(--aes-oxide);
+    color: var(--aes-bone-fg);
+    border-color: var(--aes-oxide);
+}
+.aes-competitor-tab:disabled {
+    color: var(--aes-slate);
+    cursor: not-allowed;
+}
+
+.aes-competitor-hint {
+    color: var(--aes-slate);
+    font-size: var(--aes-fs-small);
+    font-style: italic;
+}
+
+.aes-competitor-settings {
+    margin-bottom: var(--aes-sp-3);
+    padding: var(--aes-sp-2);
+    background: var(--aes-bone-2);
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+    font-size: var(--aes-fs-small);
+}
+.aes-competitor-settings summary {
+    cursor: pointer;
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-medium);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide-2);
+}
+.aes-competitor-settings-form {
+    margin-top: var(--aes-sp-2);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--aes-sp-2);
+}
+.aes-competitor-settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--aes-sp-2);
+}
+.aes-competitor-settings-row input[type="number"] {
+    width: 80px;
+    font-family: var(--aes-font-mono);
+}
+.aes-competitor-settings-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: var(--aes-sp-2);
+}
+.aes-competitor-settings-status {
+    color: var(--aes-slate);
+    font-size: var(--aes-fs-micro);
+}

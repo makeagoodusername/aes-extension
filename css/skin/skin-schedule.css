@@ -1,0 +1,26 @@
+/* ===========================================================
+   skin-schedule.css — /app/com/scheduling/<HUB> and enterprise schedule tab.
+
+   The Route Assistant panel mounts on these pages with its own dark theme
+   under #aes-route-assistant. Every rule in this file must NOT cascade
+   into that root — we explicitly exclude it.
+   =========================================================== */
+
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .table > tbody > tr > td {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Make the scheduling form's day-of-week chips slightly punchier so the
+   active selection doesn't blend into the background. */
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .btn-group .btn.active {
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+    border-color: var(--aes-rust);
+}
+
+/* Inventory & schedule editor textareas often hold raw timetables — keep
+   them mono regardless of density. */
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) textarea.form-control {
+    font-family: var(--aes-font-mono);
+    line-height: var(--aes-lh-tight);
+}
