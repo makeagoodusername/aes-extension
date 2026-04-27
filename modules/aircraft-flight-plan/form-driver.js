@@ -128,13 +128,11 @@
         }
     }
 
-    /** Inject a page-world helper once. Content scripts run in an isolated
-     *  world where `window.jQuery` is undefined, so the select2 chip never
-     *  repaints from here — and Wicket's pipeline re-reads the chip on
-     *  submit. The injected helper listens for `aes:afp:commit-select` on
-     *  document and runs `$(sel).select2("val", value, true)` in the page's
-     *  own jQuery, which both updates the chip and fires Wicket's onchange
-     *  Ajax. Idempotent: a flag on document.documentElement gates re-injection. */
+    /** Legacy page-world bridge (unused). Kept only because manifest.json
+     *  registers modules/aircraft-flight-plan/page-bridge.js in MAIN world;
+     *  removing the listener over there is a cosmetic cleanup. The current
+     *  _commitSelect path doesn't dispatch the bridge event, so no Wicket
+     *  Ajax fires from us. */
     function _ensurePageBridge() {
         if (document.documentElement.dataset.aesAfpBridge === "1") return
         document.documentElement.dataset.aesAfpBridge = "1"
@@ -177,59 +175,36 @@
         } catch (_) { /* CSP may block; main-world bridge in manifest covers it */ }
     }
 
-    /** Commit a value + repaint the select2 chip via the page-world bridge.
-     *  Setting sel.value alone is insufficient — Wicket and select2 v3 both
-     *  drive their state from jQuery events, which only the page's jQuery
-     *  fires. Falls back to a native change dispatch if the bridge isn't
-     *  reachable (extension reload mid-session, etc). */
+    /** Update the visible select2 v3 chip text without firing any change event.
+     *  AS uses Wicket DropDownChoice with AjaxFormComponentUpdatingBehavior on
+     *  "change" — every fired change triggers a server round-trip that
+     *  re-renders the form panel. fill() commits 6 selects, so firing change
+     *  on each races 6 round-trips and the last response replaces the DOM,
+     *  clobbering the others. We sidestep all of that: the form POST on
+     *  Submit serializes <select>.value directly, so updating sel.value plus
+     *  the chip's <span class="select2-chosen"> text (sibling of the select,
+     *  inside #s2id_<select.id>) is sufficient AND visually correct. */
+    function _updateSelect2Chip(sel) {
+        if (!sel || !sel.id) return
+        const container = document.getElementById("s2id_" + sel.id)
+        if (!container) return
+        const chip = container.querySelector(".select2-chosen")
+        if (!chip) return
+        const opt = sel.options[sel.selectedIndex]
+        chip.textContent = opt ? opt.text : ""
+    }
+
+    /** Commit a value WITHOUT firing change. See _updateSelect2Chip rationale. */
     function _commitSelect(sel, value) {
-        _ensurePageBridge()
+        if (!sel) return false
         sel.value = value
-        try {
-            sel.setAttribute("data-aes-pending-value", String(value))
-            sel.dispatchEvent(new Event("aes:afp:commit-select", {bubbles: true}))
-            _diag("commit-select", {
-                name:  sel.name,
-                value,
-                label: sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : null,
-                path:  "page-bridge"
-            })
-            return true
-        } catch (_) { /* fall through to legacy path */ }
-        const $ = window.jQuery
-        let path = "native"
-        if ($) {
-            try {
-                const $sel = $(sel)
-                if (typeof $sel.select2 === "function") {
-                    const v = _detectSelect2Version()
-                    try {
-                        if (v === "v3") {
-                            $sel.select2("val", value, true)
-                        } else if (v === "v4") {
-                            $sel.val(value).trigger("change")
-                        } else {
-                            try { $sel.select2("val", value, true) } catch (_) { /* probe v3 */ }
-                            $sel.val(value).trigger("change")
-                        }
-                        path = "select2-" + (v || "unknown")
-                    } catch (e) {
-                        _diag("commit-select-error", {name: sel.name, value, version: v, err: String(e)})
-                        path = "select2-fallback"
-                    }
-                }
-                $sel.trigger("change")
-                _diag("commit-select", {
-                    name:  sel.name,
-                    value,
-                    label: sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : null,
-                    path
-                })
-                return true
-            } catch (_) { /* jQuery itself threw — fall through to native */ }
-        }
-        sel.dispatchEvent(new Event("change", {bubbles: true}))
-        _diag("commit-select", {name: sel.name, value, path: "native"})
+        _updateSelect2Chip(sel)
+        _diag("commit-select", {
+            name:  sel.name,
+            value,
+            label: sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : null,
+            path:  "no-change"
+        })
         return true
     }
 
