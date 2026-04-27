@@ -1,0 +1,16 @@
+/* ===========================================================
+   skin-ops.css — /app/ops/* (stations, ground services).
+   Mostly inherits from skin-global.css; only page-specific quirks here.
+   =========================================================== */
+
+body.aes-skin[data-aes-page="ops"] .table > tbody > tr > td {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Station status badges in ops/stations* are usually inside the first
+   non-link column — keep them mono so OPEN / CLOSED / PENDING line up. */
+body.aes-skin[data-aes-page="ops"] .table > tbody > tr > td:nth-child(2) {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+}

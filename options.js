@@ -17,11 +17,47 @@ var airlines = [];
 var types = [];
 var data;
 
+const SKIN_KEY = "aes_skin_enabled";
+const DENSITY_KEY = "aes_skin_density";
+
+function wireSiteSkinSettings() {
+    const checkbox = document.getElementById("aes-skin-enabled");
+    const radios = document.querySelectorAll('input[name="aes-skin-density"]');
+    if (!checkbox || !radios.length) return;
+
+    chrome.storage.sync.get([SKIN_KEY, DENSITY_KEY], function (items) {
+        // Default skin = on, density = comfortable. Match defaults in
+        // modules/site-skin/bootstrap.js so users never see mismatched UI.
+        const enabled = items[SKIN_KEY] !== false;
+        const density = items[DENSITY_KEY] === "compact" ? "compact" : "comfortable";
+        checkbox.checked = enabled;
+        radios.forEach(r => { r.checked = (r.value === density); });
+    });
+
+    checkbox.addEventListener("change", function () {
+        chrome.storage.sync.set({ [SKIN_KEY]: !!checkbox.checked });
+    });
+    radios.forEach(r => r.addEventListener("change", function () {
+        if (r.checked) chrome.storage.sync.set({ [DENSITY_KEY]: r.value });
+    }));
+
+    chrome.storage.onChanged.addListener(function (changes, area) {
+        if (area !== "sync") return;
+        if (changes[SKIN_KEY])    checkbox.checked = changes[SKIN_KEY].newValue !== false;
+        if (changes[DENSITY_KEY]) {
+            const v = changes[DENSITY_KEY].newValue === "compact" ? "compact" : "comfortable";
+            radios.forEach(r => { r.checked = (r.value === v); });
+        }
+    });
+}
+
 $(function () {
     // Stamp the version number.
     const m = chrome.runtime.getManifest();
     const stamp = document.getElementById("aes-version-stamp");
     if (stamp) stamp.textContent = "v" + (m.version_name || m.version);
+
+    wireSiteSkinSettings();
 
     chrome.storage.local.get(null, function (items) {
         data = items;

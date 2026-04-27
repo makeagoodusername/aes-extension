@@ -3,8 +3,8 @@
     "name": "AirlineSim Enhancement Suite",
     "short_name": "AES",
     "description": "Great quality of live improvements for AirlineSim",
-    "version": "0.6.9",
-    "version_name": "0.6.9-beta",
+    "version": "0.6.10",
+    "version_name": "0.6.10-beta",
     "author": "aes@hello.moiety.me",
     "homepage_url": "https://github.com/ZoeBijl/airlinesim-enhancement-suite/",
     "update_url": "https://github.com/ZoeBijl/airlinesim-enhancement-suite/releases",
@@ -223,6 +223,18 @@
                 "modules/station-automation/storage.js",
                 "modules/station-automation/status-strip.js",
                 "modules/schedule-management/open-stations-modal.js",
+                "modules/aircraft-flight-plan/schedule-store.js",
+                "modules/_shared/aircraft-context.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-apply-orchestrator.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-picker-modal.js",
+                "modules/route-assistant/view-table.js",
+                "modules/route-assistant/view-waves.js",
+                "modules/route-assistant/view-sandbox.js",
+                "modules/route-assistant/view-heatmap.js",
+                "modules/route-assistant/mode-tabs.js",
+                "modules/route-assistant/wave-editor.js",
+                "modules/route-assistant/wave-overrides-store.js",
+                "modules/route-assistant/inspector.js",
                 "modules/route-assistant/panel.js",
                 "content_scheduling.js"
             ],
@@ -234,6 +246,10 @@
                 "content_markets.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/com/markets/*"]
+        },
+        {
+            "js": ["content_flightNumbers.js"],
+            "matches": ["https://*.airlinesim.aero/app/com/numbers/*"]
         },
         {
             "js": [
@@ -280,7 +296,10 @@
                 "modules/aircraft-flight-plan/flight-log-store.js",
                 "modules/aircraft-flight-plan/maintenance-scraper.js",
                 "modules/aircraft-flight-plan/flight-log-scraper.js",
-                "modules/aircraft-flight-plan/wear-model.js"
+                "modules/aircraft-flight-plan/wear-model.js",
+                "modules/aircraft-flight-plan/schedule-store.js",
+                "modules/_shared/aircraft-context.js",
+                "modules/aircraft-flights/scheduled-decorator.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/fleets/aircraft/*/1*"]
         },
@@ -298,6 +317,7 @@
                 "modules/route-assistant/wave-overlay.js",
                 "modules/route-assistant/toast-host.js",
                 "modules/flightsfrom/data-store.js",
+                "modules/flightsfrom/scan-controller.js",
                 "modules/aircraft-type-specs.js",
                 "modules/station-automation/storage.js",
                 "modules/station-automation/country-scraper.js",
@@ -307,7 +327,13 @@
                 "modules/schedule-management/schedule-builder.js",
                 "modules/schedule-management/open-stations-modal.js",
                 "modules/aircraft-flight-plan/settings-extension.js",
+                "modules/aircraft-flight-plan/schedule-model.js",
+                "modules/aircraft-flight-plan/turnaround-popover-reader.js",
+                "modules/aircraft-flight-plan/planning-matrix-reader.js",
+                "modules/aircraft-flight-plan/vfp-reader.js",
+                "modules/aircraft-flight-plan/schedule-store.js",
                 "modules/aircraft-flight-plan/host.js",
+                "modules/aircraft-flight-plan/schedule-broadcaster.js",
                 "modules/aircraft-flight-plan/diagnostics.js",
                 "modules/aircraft-flight-plan/audit-log.js",
                 "modules/aircraft-flight-plan/spec-resolver.js",
@@ -321,6 +347,7 @@
                 "modules/aircraft-flight-plan/route-candidates.js",
                 "modules/aircraft-flight-plan/form-driver.js",
                 "modules/aircraft-flight-plan/active-draft-store.js",
+                "modules/_shared/aircraft-context.js",
                 "modules/aircraft-flight-plan/auto-scheduler/grid-state.js",
                 "modules/aircraft-flight-plan/auto-scheduler/objective.js",
                 "modules/aircraft-flight-plan/auto-scheduler/allocator.js",
@@ -328,11 +355,24 @@
                 "modules/aircraft-flight-plan/auto-scheduler/slot-optimizer.js",
                 "modules/aircraft-flight-plan/auto-scheduler/auto-apply-log.js",
                 "modules/aircraft-flight-plan/auto-scheduler/apply-batch.js",
+                "modules/aircraft-flight-plan/auto-scheduler/flight-deleter.js",
+                "modules/aircraft-flight-plan/auto-scheduler/locked-confirm-modal.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-apply-orchestrator.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-picker-modal.js",
                 "modules/aircraft-flight-plan/auto-scheduler/preview-panel.js",
                 "modules/aircraft-flight-plan/wave-applier.js",
+                "modules/aircraft-flight-plan/flight-studio/leg-spec.js",
+                "modules/aircraft-flight-plan/flight-studio/draft-store.js",
+                "modules/aircraft-flight-plan/flight-studio/panel.js",
                 "content_aircraftFlightPlan.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/fleets/aircraft/*/0*"]
+        },
+        {
+            "js": ["modules/aircraft-flight-plan/page-bridge.js"],
+            "matches": ["https://*.airlinesim.aero/app/fleets/aircraft/*/0*"],
+            "world": "MAIN",
+            "run_at": "document_start"
         },
         {
             "js": [
@@ -388,6 +428,13 @@
                 "content_fleetManagement.js",
                 "modules/aircraft-flight-plan/state-store.js",
                 "modules/aircraft-flight-plan/active-draft-store.js",
+                "modules/aircraft-flight-plan/schedule-model.js",
+                "modules/aircraft-flight-plan/schedule-store.js",
+                "modules/_shared/aircraft-context.js",
+                "modules/aircraft-flight-plan/auto-scheduler/schedule-diff.js",
+                "modules/aircraft-flight-plan/auto-scheduler/locked-confirm-modal.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-apply-orchestrator.js",
+                "modules/aircraft-flight-plan/auto-scheduler/fleet-picker-modal.js",
                 "modules/aircraft-flight-plan/submit-bridge.js",
                 "modules/schedule-management/range-buckets.js",
                 "modules/schedule-management/presets-store.js",
@@ -414,6 +461,7 @@
                 "modules/route-assistant/wave-overlay.js",
                 "modules/route-assistant/toast-host.js",
                 "modules/flightsfrom/data-store.js",
+                "modules/flightsfrom/scan-controller.js",
                 "modules/aircraft-type-specs.js",
                 "modules/aircraft-flight-plan/host.js",
                 "modules/aircraft-flight-plan/route-candidates.js",
@@ -429,6 +477,41 @@
                 "modules/aircraft-flight-plan-dashboard/host.js"
             ],
             "matches": ["https://*.airlinesim.aero/app/fleets*"]
+        },
+        {
+            "js": [
+                "modules/route-assistant/settings-store.js",
+                "modules/route-assistant/airport-overview-scraper.js",
+                "modules/route-assistant/enterprise-meta-scraper.js",
+                "modules/route-assistant/markets-page-scraper.js",
+                "modules/competitor-intel/settings-store.js",
+                "modules/competitor-intel/competitor-store.js",
+                "modules/competitor-intel/aggregator.js",
+                "modules/competitor-intel/enterprise-scraper.js",
+                "modules/competitor-intel/bulk-scanner.js",
+                "modules/competitor-intel/airport-panel.js",
+                "modules/competitor-intel/airport-host.js",
+                "content_competitorIntelAirport.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/info/airports/*"]
+        },
+        {
+            "js": [
+                "modules/route-assistant/settings-store.js",
+                "modules/route-assistant/airport-overview-scraper.js",
+                "modules/route-assistant/enterprise-meta-scraper.js",
+                "modules/route-assistant/markets-page-scraper.js",
+                "modules/competitor-intel/settings-store.js",
+                "modules/competitor-intel/competitor-store.js",
+                "modules/competitor-intel/aggregator.js",
+                "modules/competitor-intel/enterprise-scraper.js",
+                "modules/competitor-intel/bulk-scanner.js",
+                "modules/competitor-intel/airport-host.js",
+                "modules/competitor-intel/enterprise-panel.js",
+                "modules/competitor-intel/enterprise-host.js",
+                "content_competitorIntelEnterprise.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/info/enterprises/*"]
         }
     ],
     "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlgUt+9pr5xsoJIdZtv2s/miPjNaUMf5NdIRH6wQzgWpGzMCwf46cUSL0FbpnIo6E9d6pITalABU8Dx72/isyas/da0EQNCQkYxhvu2YakUyUMyzKg0jPuxR+VyaEzDMVQKyVD1xZb/jjOkHXvGew/EHPw9BzCdhKRptRqo4gqdgifS0/xQFiqneA35Hhqwo9bh5zfhZpdMsssMHH3uGGm1f4Yeq+j2ZUtvf74v8pWR5+sVI/dFhTSpQaT60sWFYkPVwtpQ5jUwqm9vDyAH0obZxVtBqI5UkmjEJsCXmQW6QdC4+gRwTgrKc137SH+mUVRHfcXogMSa72+szX63pMUQIDAQAB",

@@ -1,0 +1,24 @@
+/* ===========================================================
+   skin-fleet.css — /app/fleets and aircraft detail pages.
+   =========================================================== */
+
+body.aes-skin[data-aes-page="fleet"] .table > tbody > tr > td {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Aircraft registration / tail number cells render mono. AS marks them
+   with a class on the link wrapper; if not present, fall back to the
+   first-column cell on fleet listing tables. */
+body.aes-skin[data-aes-page="fleet"] .table a[href*="/fleets/aircraft/"],
+body.aes-skin[data-aes-page="fleet"] td.aircraft-registration,
+body.aes-skin[data-aes-page="fleet"] td.aes-mono {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* fleet-hub injected columns already use .aes-badge — make sure they
+   don't pick up the host .badge override (that ships via skin-global).
+   .aes-badge has higher specificity so this is mostly a safety net. */
+body.aes-skin[data-aes-page="fleet"] .table .aes-badge {
+    text-transform: uppercase;
+}

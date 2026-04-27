@@ -111,6 +111,23 @@
             _renderEmpty(host, "Wave overlay not loaded."); return
         }
 
+        // Result-section header so the rendered Gantt has an obvious anchor
+        // (users had no visual cue that the Generate button's output landed
+        // here). Counts come from the build itself; falls back gracefully
+        // when fields are missing.
+        const flightCount = (build.flights || []).length
+        const waveCount   = new Set((build.flights || [])
+            .map(f => f && f.waveId).filter(v => v != null)).size
+        const presetName  = (build.preset && build.preset.name) || "(unnamed preset)"
+        const headerEl = document.createElement("div")
+        headerEl.style.cssText = "font-size:11px;font-weight:600;color:#cbd5e1;"
+            + "padding:4px 6px;margin-bottom:4px;"
+            + "background:#0f1623;border-left:3px solid #1d4ed8;border-radius:2px;"
+        headerEl.textContent = "Generated wave plan — " + presetName
+            + " · " + flightCount + " flight" + (flightCount === 1 ? "" : "s")
+            + (waveCount ? " · " + waveCount + " wave" + (waveCount === 1 ? "" : "s") : "")
+        host.appendChild(headerEl)
+
         const ganttHost = document.createElement("div")
         ganttHost.className = "aes-afp-wave-gantt"
         host.appendChild(ganttHost)
@@ -192,6 +209,30 @@
         root.className = "aes-afp-wave-root"
         root.style.cssText = "margin-top:10px;padding-top:8px;border-top:1px solid #1f2937;"
 
+        // Section title + one-line help so users understand what the
+        // preset/Generate flow does without having to dig into the manual.
+        const sectionHead = document.createElement("div")
+        sectionHead.style.cssText = "display:flex;align-items:baseline;gap:8px;margin-bottom:2px;"
+        const sectionTitle = document.createElement("span")
+        sectionTitle.textContent = "Wave plan"
+        sectionTitle.style.cssText = "font-weight:600;color:#cbd5e1;font-size:11px;"
+        sectionHead.appendChild(sectionTitle)
+        const help = document.createElement("span")
+        help.style.cssText = "font-size:10px;color:#6b7280;line-height:1.4;"
+        help.appendChild(document.createTextNode(
+            "Build a multi-leg schedule from the candidates above × a saved preset. "
+        ))
+        const presetsLink = document.createElement("a")
+        presetsLink.href = "/app/com/scheduling"
+        presetsLink.target = "_blank"
+        presetsLink.rel = "noopener"
+        presetsLink.textContent = "Manage presets"
+        presetsLink.style.cssText = "color:#60a5fa;text-decoration:underline;"
+        help.appendChild(presetsLink)
+        help.appendChild(document.createTextNode("."))
+        sectionHead.appendChild(help)
+        root.appendChild(sectionHead)
+
         _toolbarEl = document.createElement("div")
         _toolbarEl.className = "aes-afp-wave-toolbar"
         _toolbarEl.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px;"
@@ -214,8 +255,22 @@
         _renderStatus()
         // Re-mount path: if we already have a build, re-render it into the
         // newly-acquired _buildEl so the user's Gantt survives Wicket's
-        // sidebar re-render.
+        // sidebar re-render. Otherwise show the placeholder so the area
+        // explains what would land here.
         if (_state.lastBuild) renderPreview(_buildEl, _state.lastBuild)
+        else _renderBuildPlaceholder(_buildEl)
+    }
+
+    /** Placeholder shown in _buildEl before the user runs Generate, so the
+     *  area isn't a confusing empty void below the toolbar. */
+    function _renderBuildPlaceholder(host) {
+        if (!host) return
+        host.innerHTML = ""
+        const ph = document.createElement("div")
+        ph.style.cssText = "padding:10px;border:1px dashed #374151;border-radius:4px;"
+            + "color:#9ca3af;font-size:11px;font-style:italic;text-align:center;"
+        ph.textContent = "No wave plan yet. Pick a preset above and click Generate."
+        host.appendChild(ph)
     }
 
     function _renderToolbar() {
@@ -316,6 +371,104 @@
             || "Build a wave plan from the current candidates and preset."
         btn.addEventListener("click", () => { if (_generateEnabled()) _onGenerate() })
         _toolbarEl.appendChild(btn)
+
+        // Slice 8a — Fleet apply CTA. Visible only when a build exists +
+        // both fleet modules loaded. Disabled when the build is stale or
+        // empty so the user doesn't dispatch an obviously broken payload.
+        if (typeof window.AesAfpFleetPickerModal !== "undefined"
+                && typeof window.AesAfpFleetApplyOrchestrator !== "undefined") {
+            const flightCount = _state.lastBuild
+                && Array.isArray(_state.lastBuild.flights)
+                ? _state.lastBuild.flights.length : 0
+            const fleetEnabled = !!_state.lastBuild && flightCount > 0 && !_state.buildStale
+            const fleetBtn = document.createElement("button")
+            fleetBtn.type = "button"
+            fleetBtn.textContent = "Apply to fleet…"
+            fleetBtn.disabled = !fleetEnabled
+            fleetBtn.style.cssText = "background:" + (fleetEnabled ? "#7c2d12" : "#374151") + ";"
+                + "color:" + (fleetEnabled ? "#fed7aa" : "#9ca3af") + ";"
+                + "border:1px solid " + (fleetEnabled ? "#9a3412" : "#374151") + ";"
+                + "border-radius:3px;padding:3px 9px;font-size:11px;font-weight:600;"
+                + "cursor:" + (fleetEnabled ? "pointer" : "not-allowed") + ";"
+            fleetBtn.title = !_state.lastBuild
+                ? "Generate a wave plan first."
+                : _state.buildStale
+                    ? "Wave plan is stale — regenerate before fleet apply."
+                    : flightCount + " leg(s) will fan out to every selected aircraft."
+            fleetBtn.addEventListener("click", () => {
+                if (fleetEnabled) _onApplyToFleet()
+            })
+            _toolbarEl.appendChild(fleetBtn)
+        }
+    }
+
+    /**
+     * Slice 8a — open the fleet picker, then orchestrate per-aircraft
+     * apply across the picked aircraft using the current build's flights.
+     *
+     * Same legs go to every aircraft (the picker's range-fit filter
+     * keeps only fit-eligible aircraft visible). The orchestrator owns
+     * the serial loop + audit logging; this function just plumbs the
+     * picker → orchestrator handoff and surfaces a tiny progress toast.
+     */
+    async function _onApplyToFleet() {
+        if (!_state.lastBuild) return
+        const flights = (_state.lastBuild.flights) || []
+        if (!flights.length) return
+        const preset = _state.lastBuild.preset
+            || (_state.presets || []).find(p => p && p.id === _state.selectedPresetId)
+            || null
+        const ctx = (window.AesAfp && AesAfp.ctx) || {}
+        const hub = String(ctx.currentLocationIata || "").toUpperCase()
+
+        let pick
+        try {
+            pick = await window.AesAfpFleetPickerModal.open({
+                preset:        preset,
+                hub:           hub,
+                title:         "Apply wave plan to fleet",
+                server:        ctx.server || "",
+                airlineCode:   ctx.airlineCode || ""
+            })
+        } catch (e) {
+            console.warn("[AFP-8a] fleet picker threw", e)
+            if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.error) {
+                RouteAssistantToast.error("Fleet picker failed: " + ((e && e.message) || e))
+            }
+            return
+        }
+        if (!pick || pick.cancelled || !pick.aircraftIds || !pick.aircraftIds.length) return
+
+        const runs = pick.aircraftIds.map(aircraftId => ({
+            aircraftId: aircraftId,
+            legs:       flights.slice(),
+            hub:        hub
+        }))
+        if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.info) {
+            try { RouteAssistantToast.info("Fleet apply: " + runs.length + " aircraft × "
+                + flights.length + " legs queued.") } catch (_) { /* noop */ }
+        }
+        try {
+            const result = await window.AesAfpFleetApplyOrchestrator.start({
+                runs:   runs,
+                ctx:    {server: ctx.server || ""},
+                source: "wave-applier-fleet"
+            })
+            if (typeof RouteAssistantToast !== "undefined") {
+                const tone = result.aborted ? "warn" : (result.totalFailed ? "warn" : "success")
+                const fn = (tone === "warn") ? RouteAssistantToast.warn : RouteAssistantToast.success
+                if (typeof fn === "function") {
+                    fn.call(RouteAssistantToast, "Fleet apply " + (result.aborted ? "aborted" : "done")
+                        + " — " + (result.totalSucceeded || 0) + " ok / "
+                        + (result.totalFailed || 0) + " failed across " + runs.length + " aircraft.")
+                }
+            }
+        } catch (e) {
+            console.warn("[AFP-8a] fleet orchestrator threw", e)
+            if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.error) {
+                RouteAssistantToast.error("Fleet apply threw: " + ((e && e.message) || e))
+            }
+        }
     }
 
     function _renderStatus() {
@@ -721,6 +874,54 @@
         _renderRoot()
         _attachDraftListener()
         _hydrateFromDraft()
+        _maybeConsumeHandoff()
+    }
+
+    /**
+     * Slice 8c — read the cross-page handoff (set by route-assistant
+     * Wave Designer's "Open in flight plan…" CTA), pre-select the
+     * matching preset, and auto-Generate so the user lands on a
+     * populated Gantt without re-picking.
+     *
+     * Race-safe: requires both ctx:ready AND presets loaded. Called
+     * from _onCtxReady AND _loadPresets's resolve, whichever runs second
+     * is the one that actually triggers consume. Also checks the
+     * handoff is for THIS aircraft (consume() short-circuits otherwise).
+     */
+    async function _maybeConsumeHandoff() {
+        if (!_state.ctxReady || !_state.presetsLoaded) return
+        if (typeof window.AesHandoffStore === "undefined") return
+        const ctx = (window.AesAfp && AesAfp.ctx) || {}
+        if (!ctx.aircraftId) return
+        // Ensure we only consume once per mount lifecycle.
+        if (_state._handoffConsumed) return
+        _state._handoffConsumed = true
+        let rec
+        try { rec = await window.AesHandoffStore.consume(ctx.aircraftId) }
+        catch (e) { console.warn("[AFP-8c] handoff consume threw", e); return }
+        if (!rec) return
+        // Find the preset; if missing (deleted between handoff and arrival),
+        // surface a hint and bail.
+        const preset = (_state.presets || []).find(p => p && p.id === rec.presetId)
+        if (!preset) {
+            if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.warn) {
+                try { RouteAssistantToast.warn("Wave Designer handoff: preset "
+                    + rec.presetId + " no longer exists.") } catch (_) { /* noop */ }
+            }
+            return
+        }
+        _state.selectedPresetId = preset.id
+        _markBuildStale()
+        _renderToolbar()
+        _renderStatus()
+        if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.info) {
+            try { RouteAssistantToast.info("Loaded from Wave Designer — "
+                + (preset.name || "preset") + ". Generating…") } catch (_) { /* noop */ }
+        }
+        // Auto-generate so the user lands on a Gantt, not a blank toolbar.
+        if (_generateEnabled()) {
+            try { _onGenerate() } catch (e) { console.warn("[AFP-8c] auto-generate threw", e) }
+        }
     }
 
     function _onSpecResolved(payload) {
@@ -855,6 +1056,10 @@
             // If ctx:ready fired before presets resolved, the toolbar is
             // already in the DOM (with "Loading…" state) — refresh it now.
             if (_state.ctxReady) { _renderToolbar(); _renderStatus() }
+            // Slice 8c — also try to consume a pending handoff once presets
+            // are loaded; the other direction (presets-then-ctx) is handled
+            // in _onCtxReady.
+            _maybeConsumeHandoff()
         })
     }
 
