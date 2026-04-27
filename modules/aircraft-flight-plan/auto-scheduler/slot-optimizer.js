@@ -476,6 +476,123 @@
         }
     }
 
+    // ── Slice 4c — turnaround-feasibility filter ───────────────────────
+
+    /**
+     * Drop proposals where preset validation or per-leg turnaround/range
+     * checks fail, then discard the worst quartile by feasibility-score
+     * (the count of warnings each surviving proposal accrued).
+     *
+     * The feasibility check rebuilds each proposal's preset against the
+     * supplied candidate set via the existing `ScheduleBuilder` so we
+     * use the same warning catalogue (`rangeExceeded`, `slotViolation`,
+     * `presetInvalid`, etc.) the user already sees in the panel.
+     *
+     * @param {Proposal[]} proposals
+     * @param {object} ctx
+     * @param {object} ctx.selectedSpec aircraft spec ({range, typeName, ...})
+     * @param {Array} ctx.candidates Slice C records (need `distanceNm`/`destIata`)
+     * @param {object} ctx.basePreset preset whose `factors` block + `hub`
+     *   anchor every proposal; required because Proposal carries only `waves`
+     * @returns {Proposal[]} survivors with `_meta.feasibilityScore` attached
+     */
+    function filterFeasible(proposals, ctx) {
+        if (!Array.isArray(proposals) || !proposals.length) return []
+        const c = ctx || {}
+        const basePreset = c.basePreset
+        if (!basePreset || !basePreset.factors) {
+            console.warn("[AES auto-4c] filterFeasible: basePreset.factors required — bailing")
+            return proposals.slice()
+        }
+        if (typeof ScheduleBuilder === "undefined" || typeof ScheduleFactors === "undefined") {
+            console.warn("[AES auto-4c] ScheduleBuilder unavailable — bailing")
+            return proposals.slice()
+        }
+
+        const candidates = Array.isArray(c.candidates) ? c.candidates : []
+        const spec = c.selectedSpec || {}
+        const aircraftRangeNm = (Number(spec.range) > 0)
+            ? ScheduleFactors.kmToNm(Number(spec.range)) : null
+
+        // Build the canonical "routes" array once — every proposal sees
+        // the same candidate set; only the wave windows vary.
+        const routes = []
+        for (const cand of candidates) {
+            if (!cand) continue
+            const distanceNm = Number(cand.distanceNm)
+                || (isFinite(Number(cand.distanceKm))
+                    ? ScheduleFactors.kmToNm(Number(cand.distanceKm)) : null)
+            if (!distanceNm) continue
+            // Feasibility-only — drop OOR routes here so per-proposal
+            // builds don't waste cycles on warnings we already know.
+            if (aircraftRangeNm && !ScheduleFactors.aircraftCanFly(aircraftRangeNm, distanceNm)) continue
+            routes.push({
+                destination:        String(cand.destIata || "").toUpperCase(),
+                distanceNm:         distanceNm,
+                aircraftType:       spec.typeName || spec.name || null,
+                aircraftRangeNm:    aircraftRangeNm,
+                turnaroundMinutes:  Number(basePreset.factors.minTransferMinutes) || 45
+            })
+        }
+
+        const scored = []
+        for (const prop of proposals) {
+            const synth = _composeSynthPreset(basePreset, prop.waves)
+            // Cheap reject: validatePreset() flags structural breaks.
+            const builder = new ScheduleBuilder(synth, {server: "", airlineCode: ""})
+            const validation = builder.validatePreset()
+            if (validation.length) {
+                // Hard fail — drop entirely.
+                continue
+            }
+
+            // Run a build to surface per-leg warnings (range / slot /
+            // turnaround). The builder is greedy; it emits one warning
+            // per failure with a stable `type`. We weight the types so
+            // a single rangeExceeded hurts more than a slotViolation
+            // (range failures mean the aircraft can't actually fly the
+            // leg, which is strictly worse than a curfew bump).
+            const built = builder.build(routes)
+            const warnings = built.warnings || []
+            let warnScore = 0
+            for (const w of warnings) {
+                if      (w.type === "presetInvalid") warnScore += 10
+                else if (w.type === "rangeExceeded") warnScore += 4
+                else if (w.type === "shortfall")     warnScore += 2
+                else                                 warnScore += 1
+            }
+            const meta = Object.assign({}, prop._meta || {}, {
+                feasibilityScore: warnScore,
+                warningCount:     warnings.length,
+                warningTypes:     warnings.map(w => w.type)
+            })
+            scored.push(Object.assign({}, prop, {_meta: meta}))
+        }
+
+        if (!scored.length) return []
+        // Discard the worst quartile by feasibility score (lower = better).
+        scored.sort((a, b) => (a._meta.feasibilityScore - b._meta.feasibilityScore))
+        const keep = Math.max(1, Math.ceil(scored.length * 0.75))
+        return scored.slice(0, keep)
+    }
+
+    /**
+     * Compose a full preset by cloning the base's factors/hub/etc. but
+     * substituting the supplied wave list. Caller-supplied waves win;
+     * everything else falls through.
+     */
+    function _composeSynthPreset(base, waves) {
+        return {
+            id:        base.id || "synth",
+            name:      (base.name || "synth") + " · proposal",
+            hub:       base.hub || "",
+            waves:     Array.isArray(waves) ? waves : (base.waves || []),
+            factors:   JSON.parse(JSON.stringify(base.factors)),
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+        }
+    }
+
     // ── Helpers shared across slices 4b-4e ─────────────────────────────
 
     function _num(v, fallback) {
@@ -492,8 +609,8 @@
     const SlotOptimizer = {
         demandProfile:      demandProfile,
         proposeAdjustments: proposeAdjustments,
-        // Slices 4c-4e populate these as they ship.
-        filterFeasible:     null,
+        filterFeasible:     filterFeasible,
+        // Slices 4d-4e populate these as they ship.
         selectBest:         null,
         optimize:           null,
         // Internals exposed for diagnostics + tests; do not depend on these
@@ -631,6 +748,88 @@
             console.log("[AES afp/auto-scheduler] slot-optimizer 4b smoke tests passed")
         } catch (e) {
             console.warn("[AES auto-4b] smoke tests threw", e)
+        }
+
+        // 4c — filterFeasible smoke tests.
+        try {
+            // Build a valid base preset + a few proposals; expect all to pass.
+            // Connection gap (arr end → dep start) is 60min so we sit safely
+            // above the default 45min minTransferMinutes; tightening past the
+            // floor is what the bad-proposal sub-test exercises.
+            const factors = ScheduleFactors.defaultFactors()
+            const basePreset = {
+                id: "p-base", hub: "MCO", name: "MCO base",
+                waves: [{
+                    id: "w1", label: "Mid",
+                    arrivalWindow:   {start: "13:00", end: "13:30"},
+                    departureWindow: {start: "14:30", end: "15:00"},
+                    composition: {shortHaul: 1, mediumHaul: 0, longHaul: 0}
+                }],
+                factors: factors
+            }
+            const goodProposals = [
+                {waves: basePreset.waves.slice(), source: "shift", deltaDescription: "noop"},
+                {waves: [Object.assign({}, basePreset.waves[0], {
+                    arrivalWindow:   {start: "12:00", end: "12:30"},
+                    departureWindow: {start: "13:30", end: "14:00"}
+                })], source: "shift", deltaDescription: "−60min"}
+            ]
+            const candidates = [
+                {destIata: "JFK", distanceNm: 900,  paxScore: 10, cargoScore: 4, weeklyFlights: 7},
+                {destIata: "BOS", distanceNm: 1100, paxScore: 8,  cargoScore: 2, weeklyFlights: 5}
+            ]
+            const spec = {range: 5000, typeName: "A320"}    // km
+            const filtered = SlotOptimizer.filterFeasible(goodProposals, {
+                basePreset:   basePreset,
+                candidates:   candidates,
+                selectedSpec: spec
+            })
+            console.assert(Array.isArray(filtered), "[auto-4c] returns an array")
+            console.assert(filtered.length >= 1, "[auto-4c] at least one valid proposal survives")
+            console.assert(filtered.every(p => p._meta && typeof p._meta.feasibilityScore === "number"),
+                "[auto-4c] survivors carry _meta.feasibilityScore")
+
+            // A structurally broken proposal (gap < minTransferMinutes) →
+            // must be hard-filtered out.
+            const badProposal = {
+                waves: [{
+                    id: "wbad", label: "Bad",
+                    arrivalWindow:   {start: "13:00", end: "13:50"},
+                    departureWindow: {start: "13:55", end: "14:00"},   // 5min gap, < 45min minTransfer
+                    composition: {shortHaul: 1, mediumHaul: 0, longHaul: 0}
+                }],
+                source: "shift", deltaDescription: "broken gap"
+            }
+            const filteredBad = SlotOptimizer.filterFeasible([badProposal], {
+                basePreset:   basePreset,
+                candidates:   candidates,
+                selectedSpec: spec
+            })
+            console.assert(filteredBad.length === 0,
+                "[auto-4c] structurally invalid proposal filtered out (got " + filteredBad.length + ")")
+
+            // Empty input → empty output.
+            const filteredEmpty = SlotOptimizer.filterFeasible([], {
+                basePreset:   basePreset, candidates: candidates, selectedSpec: spec
+            })
+            console.assert(filteredEmpty.length === 0, "[auto-4c] empty in → empty out")
+
+            // Worst-quartile cull: 4 valid proposals with different warning
+            // counts → drop the worst (count = 4 → keep 3).
+            const fourProps = [
+                goodProposals[0], goodProposals[1],
+                {waves: basePreset.waves.slice(), source: "shift", deltaDescription: "dup1"},
+                {waves: basePreset.waves.slice(), source: "shift", deltaDescription: "dup2"}
+            ]
+            const culled = SlotOptimizer.filterFeasible(fourProps, {
+                basePreset:   basePreset, candidates: candidates, selectedSpec: spec
+            })
+            console.assert(culled.length === 3,
+                "[auto-4c] worst quartile dropped: 4 in → 3 out (got " + culled.length + ")")
+
+            console.log("[AES afp/auto-scheduler] slot-optimizer 4c smoke tests passed")
+        } catch (e) {
+            console.warn("[AES auto-4c] smoke tests threw", e)
         }
     }
 })()
