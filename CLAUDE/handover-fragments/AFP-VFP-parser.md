@@ -1,15 +1,21 @@
 # AFP — Visual Flight Plan parser audit
 
-Selector audit for `host.js:readVisualFlightPlan`, written for slice 6a.
-The parser walks `.day .blocks > .block.flight` across Mon–Sun and emits a
-`Leg` per flight bar. Validated against the populated 13536 capture; the
-6968 captures still return `[]` because their `.blocks` are empty.
+Selector audit for `host.js:readVisualFlightPlan`, written for slice 6a
+and extended for the 6a-followup multi-day collapse. The parser walks
+`.day .blocks > .block.flight` across Mon–Sun and emits one *logical*
+`Leg` per flight (day-cross pairs are collapsed into a single leg
+with `crossesMidnight: true`). Validated against the 13536 (same-day)
+and 21944 MULTIDAYROUTES (6 day-crosses) captures; the 6968 captures
+still return `[]` because their `.blocks` are empty.
 
-## Snapshot used
+## Snapshots used
 
-`CLAUDE/https-:free1.airlinesim.aero:app:fleets:aircraft:13536:0?6 flight plan.html`
-— 14+ flight bars across all seven days (verified via
-`grep -c 'class="block flight' …` = a populated VFP).
+- `CLAUDE/https-:free1.airlinesim.aero:app:fleets:aircraft:13536:0?6 flight plan.html`
+  — 14+ flight bars across all seven days, all same-day. (`grep -c
+  'class="block flight' …` = 14.)
+- `CLAUDE/https-:free1.airlinesim.aero:app:fleets:aircraft:21944:0?13 MULTIDAYROUTES.html`
+  — 20 flight bars: 8 same-day + 6 day-cross pairs (12 visual halves).
+  Collapse outputs 14 logical legs.
 
 ## Confirmed selectors
 
@@ -54,24 +60,9 @@ rounded to 10) for a single well-defined code path.
 | flightId, flightLink | HIGH | Anchor href shape stable across all 14 flight bars in 13536 |
 | flightCode (suffix) | HIGH | `<span class="code">` always present inside the flight bar |
 | depTimeLocal | HIGH | `margin-left` parses cleanly to a minute; rounding error ≤ 1 min |
-| arrTimeLocal | MEDIUM | Computed `(start + width) % 1440`; spans-into-next flights wrap to early-morning value of the *next* day, which is correct but caller should respect `spansIntoNext` |
-| origin, destination | MEDIUM | The location-bar sandwich pattern is consistent in 13536 but a wrap-of-the-day flight could in principle have only one location bar adjacent; parser falls back to `null` rather than guessing |
+| arrTimeLocal | HIGH | Computed `(start + width) % 1440`; for collapsed day-cross pairs, taken from the ended half's `(start + width)` in its own day frame |
+| origin, destination | HIGH | Validated across both 13536 (same-day) and 21944 (multi-day) captures. For day-cross pairs the merged leg's `destination` comes from the ended half's same-day next-sibling `.inbound[title]`, which is the correct arrival airport |
 | flightCode → full flight number | UNCERTAIN | Span carries only the suffix (`"79"`); the airline code prefix (`AA`) lives on a different page (`/app/com/numbers/<id>`). Track 6 diff matches on origin+dest+depTime so the prefix is not needed for slice 6b, but a future "show full flight number" surface needs an enrichment pass via the flight-number detail page |
-
-## Day-spanning shape
-
-A block with `class="block flight started"` (no `ended`) represents a
-flight that begins in this day and continues past 24:00. The mirror
-block with `class="block flight ended"` (no `started`) appears in the
-next day starting at `margin-left: 0%`. The parser emits both halves as
-separate legs — slice 6b's `ScheduleDiff` matches by origin+dest+depTime
-so only the `started` half (the one with the real depTime) participates
-in the keep/delete/add decision; the `ended` half always appears with
-`depTimeLocal` of `00:00` and is best treated as a continuation marker.
-
-The 13536 capture happens to have **no** day-spanning flights so this
-behaviour wasn't exercised end-to-end. Flagged here so a future test on
-a long-haul aircraft (e.g. JFK–HKG) can verify the parser.
 
 ## Returned leg shape
 
@@ -89,9 +80,8 @@ a long-haul aircraft (e.g. JFK–HKG) can verify the parser.
   flightNumber:  "FGM 1",      // alias for callers expecting `flightNumber`
   flightId:      "9018",       // numeric AS id, parsed from the href
   flightLink:    "/app/com/numbers/9018",
-  spansIntoNext: false,
-  spansFromPrev: false,
-  raw:           HTMLElement   // back-pointer to the <div.block.flight>
+  crossesMidnight: false,        // true when this leg was merged from a started+ended pair
+  raw:           HTMLElement   // back-pointer to the <div.block.flight> (started half if merged)
 }
 ```
 
@@ -101,19 +91,57 @@ treats null sides as a non-match, so a leg with a missing IATA cannot
 be a "keep" — it always becomes a delete (or add) candidate, which is
 the safe failure mode.
 
+## Multi-day flights (slice 6a-followup)
+
+Validated against
+`CLAUDE/https-:free1.airlinesim.aero:app:fleets:aircraft:21944:0?13 MULTIDAYROUTES.html`
+— 20 flight bars, 6 day-cross pairs (Mon-Tue, Tue-Wed, Wed-Thu, etc.)
+across all 7 days, plus 8 same-day flights. Class shapes:
+
+| Class | Count | Meaning |
+|---|---|---|
+| `block flight started ended` | 8 | Same-day flight |
+| `block flight started`        | 6 | Crosses into next day (first half) |
+| `block flight ended`          | 6 | Continuation from prev day (second half) |
+
+Both halves share `flightId` (the `numbers/<id>` parsed out of the
+overlay anchor) AND `flightCode` (the `<span class="code">` text). The
+`started` half's `<span class="start">` text is the dep time in HHMM
+(`"1940"`); the `<span class="end">` is `"0000"` (midnight marker). The
+matching `ended` half's spans are `"0000"` / `"0251"` — the second half
+of the same flight.
+
+The parser pairs them in `_collapseDayCrossPairs(legs)` by `flightId` +
+`dayIdx + 1` (mod 7 for Sun→Mon wrap). The `started` half is kept as
+the canonical merged leg with:
+
+- `depTimeLocal` from the started half (e.g. `"19:40"`)
+- `arrTimeLocal` from the ended half (e.g. `"02:51"`)
+- `durationMin` = sum of both halves' widths (e.g. 260 + 171 = 431 min)
+- `destination` from the ended half (its same-day `.inbound` IATA)
+- `crossesMidnight: true`
+- `dayIdx` from the started half (the day the flight LEAVES)
+- `seq` re-stamped after collapse so it stays gap-free
+
+The `ended` half is dropped from the output.
+
+Pathological shapes (a `started` with no matching `ended`, or vice
+versa) emit `console.warn("[AES afp-6a] unpaired day-cross …", …)`
+and stay in the output as same-day legs (`crossesMidnight: false`).
+
+The retired `spansIntoNext` / `spansFromPrev` flags were internal
+scaffolding; they're stripped from every output leg before return so
+consumers see only `crossesMidnight`.
+
 ## Open questions
 
-- **Long-haul day-spanning flights** — not present in the 13536 capture.
-  When one ships, verify the parser emits two legs (one with
-  `spansIntoNext: true`, one with `spansFromPrev: true`) and that diff
-  treats them sensibly. The conservative call right now is to skip
-  `spansFromPrev: true` legs when comparing against a proposed Build,
-  since their `depTimeLocal` is structurally `00:00` and would only ever
-  match a midnight-departure proposal by accident.
-- **Multi-segment flight numbers** — `?segment=0` in the href hints AS
-  has multi-segment FNs. The 13536 capture only has `segment=0` for
-  every link; a multi-segment aircraft would let us audit whether
-  `segment=1` flights need to be emitted as separate legs or rolled up.
+- **Multi-cross long-haul** (a flight that crosses TWO midnights, e.g.
+  a 30+ hour flight) would produce a `started` + same-flightId
+  `started` + `ended` pattern. AS is unlikely to render this (the
+  longest scheduled flight in any AS server is ~18h), but the
+  pairing logic would currently merge the FIRST started with the
+  next-day ended and warn-then-skip the second started. Acceptable
+  for Phase 1.
 - **Airline-prefix enrichment** — slice 6c (flight-deleter) will hit
   `/app/com/numbers/<id>` directly, which is also where the full flight
   number (e.g. `AA79`) is exposed. If a future surface needs the prefix

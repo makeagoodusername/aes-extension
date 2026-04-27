@@ -86,12 +86,43 @@ See `AFP-VFP-parser.md` for the full table. Highlights:
   origin+dest+depTime so the prefix isn't needed; a future surface that
   wants `"AA79"` should hydrate from the flight-detail page.
 
-## Day-spanning flights
+## Day-spanning flights (followup — shipped)
 
-Not present in 13536. The parser tags `spansIntoNext` /
-`spansFromPrev` from the block's classList (`started` only / `ended`
-only) so consumers can recognise them, but the behaviour isn't
-end-to-end verified. Slice 6b documents how the diff treats them.
+The 13536 capture had no multi-day flights; this slice's original
+output tagged `spansIntoNext` / `spansFromPrev` flags but never
+exercised them. The user later supplied a populated 21944 capture
+with 6 day-cross pairs, which now sits at
+`CLAUDE/...:21944:0?13 MULTIDAYROUTES.html`.
+
+**Followup change:** added a `_collapseDayCrossPairs(legs)` post-pass
+to `readVisualFlightPlan`. It walks the output legs, buckets by
+`flightId`, and pairs each `spansIntoNext: true` leg with the
+matching `spansFromPrev: true` leg on `(dayIdx + 1) % 7` (so Sun→Mon
+wraps cleanly). The `started` half is kept as the canonical merged
+leg with:
+
+- `depTimeLocal` from the started half (e.g. `"19:40"`)
+- `arrTimeLocal` from the ended half (e.g. `"02:51"`)
+- `durationMin` = sum of both halves' widths
+- `destination` from the ended half (its same-day `.inbound` IATA;
+  the started half's same-day search returns `null` because it sits
+  at the end of its day's blocks)
+- `crossesMidnight: true`
+- `dayIdx` from the started half (the day the flight DEPARTS)
+
+The retired `spansIntoNext` / `spansFromPrev` flags are stripped
+from every output leg — only `crossesMidnight` survives.
+
+For the MULTIDAYROUTES capture: 20 raw flight bars → 6 paired into 6
+collapsed legs + 8 same-day legs = **14 logical legs**. Verified
+through a Node stub (24-assertion smoke run) covering empty/null
+input, same-day-only legs, simple paired collapse, multiple pairs,
+Sun→Mon wrap, unpaired halves (warn + keep as same-day), and the
+full 14-leg count.
+
+Pathological shapes (`started` with no matching `ended` or vice
+versa) emit `console.warn("[AES afp-6a] unpaired day-cross …")` and
+stay in the output as same-day legs — the safe failure mode.
 
 ## Verified
 
@@ -111,11 +142,9 @@ end-to-end verified. Slice 6b documents how the diff treats them.
   preview panel doesn't need it (the legs are referenced by `seq`); a
   future "show flight number on the diff modal" surface should hydrate
   from `/app/com/numbers/<id>`.
-- `spansFromPrev: true` legs always have `depTimeLocal` of `00:00` (it's
-  a structural side-effect of the bar starting at `margin-left: 0%` on
-  the next day). Slice 6b's diff treats them as a non-match against any
-  proposed leg, which is the safe call until we have a long-haul
-  populated capture to test against.
+- After the followup, `spansIntoNext` / `spansFromPrev` are no longer
+  surfaced — only `crossesMidnight` is. Existing 6b smoke tests don't
+  reference the retired flags so no regression.
 - The parser doesn't expose `pricePct` or `service` — they're not in the
   VFP markup (those fields live on `/app/com/numbers/<id>`). Slice 6b's
   diff doesn't need them either; the keep/delete/add decision is made on
@@ -123,10 +152,7 @@ end-to-end verified. Slice 6b documents how the diff treats them.
 
 ## Open questions for the human
 
-- **Long-haul day-spanning flights** — please point us at one when
-  available so we can verify the `started`/`ended` split renders cleanly
-  through the diff. Until then the parser is best-effort on those legs.
-- **Multi-segment flight numbers** — `?segment=0` in every captured
-  href hints AS has multi-segment FNs. None present in 13536; if a
-  future aircraft has them, the parser may need to emit one leg per
-  segment rather than one per flight bar.
+- **Multi-cross long-haul** (a flight that crosses two midnights) is
+  unlikely in AS but the pairing logic would currently merge the FIRST
+  started with the next-day ended and warn-then-skip the second
+  started. Acceptable for Phase 1.

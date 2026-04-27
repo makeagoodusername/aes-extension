@@ -189,10 +189,21 @@
      * so callers (Track 6's ScheduleDiff) can refer to a current leg by
      * an integer key the way ScheduleBuilder-produced legs do.
      *
-     * Validated against the 13536 capture (CLAUDE/...:13536:0?6 flight
-     * plan.html) which has 14+ populated flights across Mon-Sun. The
-     * 6968 capture's empty .blocks paths still return []. See
-     * CLAUDE/handover-fragments/AFP-VFP-parser.md for the selector audit.
+     * Slice 6a-followup: a long-haul flight that visually splits across
+     * midnight (a `block flight started` half on day N + a
+     * `block flight ended` half on day N+1, sharing the same `flightId`)
+     * is now collapsed into ONE merged leg with `crossesMidnight: true`.
+     * The pre-followup `spansIntoNext` / `spansFromPrev` flags are
+     * stripped from output legs; only `crossesMidnight` survives. See
+     * `_collapseDayCrossPairs` for the pairing rules.
+     *
+     * Validated against:
+     * - `CLAUDE/...:13536:0?6 flight plan.html` — 14 same-day flights;
+     *   collapse is a no-op (no `started`/`ended` halves).
+     * - `CLAUDE/...:21944:0?13 MULTIDAYROUTES.html` — 20 raw flight bars
+     *   collapse to 14 logical legs (8 same-day + 6 cross-midnight).
+     * - The 6968 capture's empty .blocks paths still return [].
+     * See `CLAUDE/handover-fragments/AFP-VFP-parser.md` for the audit.
      */
     function readVisualFlightPlan() {
         const out = []
@@ -215,7 +226,7 @@
             return (aMin == null ? 1e9 : aMin) - (bMin == null ? 1e9 : bMin)
         })
         for (let s = 0; s < out.length; s++) out[s].seq = s + 1
-        return out
+        return _collapseDayCrossPairs(out)
     }
 
     /** Internal: extract one flight leg from a `.block.flight` element. */
@@ -328,6 +339,87 @@
             // Skip turnaround / ready / odd-even background slivers.
         }
         return null
+    }
+
+    /**
+     * Internal (slice 6a-followup): collapse VFP day-cross pairs.
+     *
+     * AS renders a flight that crosses midnight as TWO bars sharing the
+     * same `flightId`: a `.block.flight.started` (no `ended` class) at
+     * the tail of day N, and a `.block.flight.ended` (no `started` class)
+     * at the head of day N+1. The pre-followup parser emitted both as
+     * separate legs with the `ended` half stamped `depTimeLocal: "00:00"`
+     * — diff treats those as non-matchable, but they pollute the array
+     * for any consumer iterating one-row-per-leg.
+     *
+     * This pass pairs the two halves by `flightId` (and verifies
+     * adjacency via `dayIdx + 1` mod 7 so a Sun→Mon wrap pairs correctly),
+     * keeps the `started` half as the canonical merged leg, and folds
+     * in the `ended` half's destination + arrTime + width-half-duration.
+     *
+     * Pre-followup leg flags `spansIntoNext` / `spansFromPrev` are
+     * retired here — every output leg gets a `crossesMidnight: boolean`
+     * field set instead. Pathological shapes (a `started` with no
+     * matching `ended`, or vice versa) emit a `console.warn` and stay
+     * in the output as same-day legs (`crossesMidnight: false`) so
+     * downstream consumers can still see them.
+     *
+     * No-op when no leg carries the span flags (e.g. when a future
+     * upstream reader already collapsed pairs internally) — the
+     * function still strips the retired flags + stamps `crossesMidnight`
+     * for shape consistency.
+     */
+    function _collapseDayCrossPairs(legs) {
+        if (!Array.isArray(legs) || !legs.length) return legs || []
+
+        const buckets = new Map()
+        for (const leg of legs) {
+            if (!leg || !leg.flightId) continue
+            if (!leg.spansIntoNext && !leg.spansFromPrev) continue
+            if (!buckets.has(leg.flightId)) buckets.set(leg.flightId, {started: [], ended: []})
+            const b = buckets.get(leg.flightId)
+            if (leg.spansIntoNext) b.started.push(leg)
+            if (leg.spansFromPrev) b.ended.push(leg)
+        }
+
+        const toRemove = new Set()
+        for (const [flightId, bucket] of buckets) {
+            for (const s of bucket.started) {
+                const expectedEndedDay = (s.dayIdx + 1) % 7
+                const e = bucket.ended.find(x => x.dayIdx === expectedEndedDay && !x._claimed)
+                if (!e) {
+                    console.warn("[AES afp-6a] unpaired day-cross started half", {flightId, dayIdx: s.dayIdx})
+                    continue
+                }
+                e._claimed = true
+                s.arrTimeLocal    = e.arrTimeLocal
+                s.durationMin     = (s.durationMin || 0) + (e.durationMin || 0)
+                if (!s.destination) s.destination = e.destination
+                s.crossesMidnight = true
+                toRemove.add(e)
+            }
+            for (const e of bucket.ended) {
+                if (!e._claimed) {
+                    console.warn("[AES afp-6a] unpaired day-cross ended half", {flightId, dayIdx: e.dayIdx})
+                }
+                delete e._claimed
+            }
+        }
+
+        const out = []
+        for (const leg of legs) {
+            if (toRemove.has(leg)) continue
+            if (leg && typeof leg === "object") {
+                if (leg.crossesMidnight === undefined) leg.crossesMidnight = false
+                delete leg.spansIntoNext
+                delete leg.spansFromPrev
+            }
+            out.push(leg)
+        }
+        for (let i = 0; i < out.length; i++) {
+            if (out[i]) out[i].seq = i + 1
+        }
+        return out
     }
 
     /**
