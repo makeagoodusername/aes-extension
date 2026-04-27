@@ -115,7 +115,7 @@
     const AesAfpAutoSchedulerPreview = {
         render:           () => _scheduleRender(),
         runAutoBuild:     () => _runAutoBuild(),
-        openConfirmModal: () => _openConfirmModal(),
+        openConfirmModal: (legs, opts) => _openConfirmModal(legs, opts),
         applyAll:         (legs, opts) => _applyAll(legs, opts),
         abortApply:       () => _abortApply(),
         retryFailed:      () => _retryFailed(),
@@ -1221,9 +1221,22 @@
         return out
     }
 
-    function _openConfirmModal() {
-        if (!_state.lastBuild) return
-        const legs = _materialiseLegs(_state.lastBuild, _state.draft)
+    /**
+     * Open the leg-confirmation modal. Without arguments, materialises legs
+     * from `_state.lastBuild` (the in-panel auto-build path). With
+     * `externalLegs`, opens against any caller-provided leg list — Flight
+     * Studio uses this so its "Apply" / "Automate" buttons reuse the same
+     * mandatory-ack gate and locked-leg detection without duplicating the
+     * modal markup. `externalOpts.source` flows through to the audit log.
+     */
+    function _openConfirmModal(externalLegs, externalOpts) {
+        let legs
+        if (Array.isArray(externalLegs) && externalLegs.length) {
+            legs = externalLegs
+        } else {
+            if (!_state.lastBuild) return
+            legs = _materialiseLegs(_state.lastBuild, _state.draft)
+        }
         if (!legs.length) return
         _closeConfirmModal()
 
@@ -1394,7 +1407,8 @@
             if (apply.disabled) return
             const selectedLegs = legs.filter(l => checked.has(l.seq))
             _closeConfirmModal()
-            _applyAll(selectedLegs, {source: "confirm-modal"})
+            const source = (externalOpts && externalOpts.source) || "confirm-modal"
+            _applyAll(selectedLegs, {source})
         })
         footer.appendChild(apply)
 
