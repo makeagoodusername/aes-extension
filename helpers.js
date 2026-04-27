@@ -233,3 +233,70 @@ function escapeHtml(s) {
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
 }
+
+// ---------------------------------------------------------------------------
+// AES — account-identity bootstrap (Slice L1).
+//
+// Resolves (server, airline) from the current AS page, derives a stable
+// 12-hex accountId, caches it on window.__aesAccountId for synchronous reads
+// by per-store account-aware adapters, and fires a best-effort touch message
+// to background.js so the registry refreshes lastSeenAt.
+//
+// Runs on every /app/* + /action/* page (this file is loaded by the second
+// content_scripts manifest entry, alongside jquery + AesAccountRegistry).
+// The navbar-based identity probe occasionally returns "" on slow loads
+// before the navbar mounts — we retry twice with exponential delay.
+// ---------------------------------------------------------------------------
+(function aesAccountIdentityBootstrap() {
+    if (typeof window === "undefined") return;
+    if (window.__aesAccountIdentityBootstrapped) return;
+    window.__aesAccountIdentityBootstrapped = true;
+
+    function resolveOnce() {
+        if (window.__aesAccountId) return true;
+        if (typeof AES === "undefined") return false;
+        let server, airline;
+        try { server = AES.getServerName(); }     catch (_) { server = ""; }
+        try { airline = AES.getAirlineIdentity(); } catch (_) { airline = ""; }
+        if (!server || !airline) return false;
+
+        const trimmedAirline = String(airline).trim();
+        const accountId = (typeof AesAccountRegistry !== "undefined")
+            ? AesAccountRegistry.accountIdOf(server, trimmedAirline)
+            : null;
+        if (!accountId) return false;
+
+        window.__aesAccountId      = accountId;
+        window.__aesAccountServer  = server;
+        window.__aesAccountAirline = trimmedAirline;
+
+        // Best-effort touch — failure is non-fatal (background may not be
+        // ready yet on cold start; the next page load retries).
+        try {
+            if (typeof AesAccountRegistry !== "undefined" && AesAccountRegistry.touch) {
+                AesAccountRegistry.touch(server, trimmedAirline);
+            } else if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+                chrome.runtime.sendMessage(
+                    {type: "aes:account:touch", accountId, server, airline: trimmedAirline, meta: {}},
+                    () => { void chrome.runtime.lastError; }
+                );
+            }
+        } catch (_) { /* noop */ }
+
+        return true;
+    }
+
+    if (resolveOnce()) return;
+
+    // Navbar can mount late on slow pages; retry once after DOM-content,
+    // then again at 1.5s and 4s as a final fallback.
+    function later() {
+        if (resolveOnce()) return;
+        setTimeout(() => { if (!resolveOnce()) setTimeout(resolveOnce, 2500); }, 1500);
+    }
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", later, {once: true});
+    } else {
+        later();
+    }
+})();
