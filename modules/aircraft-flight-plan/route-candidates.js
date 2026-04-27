@@ -775,9 +775,11 @@
     async function _runCompute() {
         try {
             const slot = (window.AesAfp && AesAfp.slot) ? AesAfp.slot("candidates") : null
-            if (!window.AesAfp || !AesAfp.ctx || !AesAfp.ctx.currentLocationIata) {
-                _renderPlaceholder(slot, "Aircraft location not yet resolved.",
-                    "Slice A's ctx hasn't found the aircraft's current airport. Reload the page or use the header Refresh link.")
+            const activeHub = (window.AesAfp && typeof AesAfp.getActiveHub === "function")
+                ? AesAfp.getActiveHub() : null
+            if (!activeHub) {
+                _renderPlaceholder(slot, "Hub not yet resolved.",
+                    "Set a planning hub via the 'Plan from' input above, or wait for Slice A's ctx to find the aircraft's current airport.")
                 return
             }
             const spec = (window.AesAfpSpecResolver && AesAfpSpecResolver.last) || null
@@ -819,7 +821,7 @@
                 .map(l => l && l.flightId != null ? String(l.flightId) : null)
                 .filter(Boolean))
             const opts = {
-                originIata: AesAfp.ctx.currentLocationIata,
+                originIata: activeHub,
                 spec, settings, scheduledDestSet, scheduledFlightIds
             }
             const candidates = await AesAfpRouteCandidates.compute(opts)
@@ -846,6 +848,10 @@
         // schedule (in-page immediacy; chrome.storage.onChanged covers the
         // cross-tab case below).
         AesAfp.bus.on("schedule:updated", _scheduleRun)
+        // Plan-from override changed (tools-strip hub picker) — recompute
+        // candidates against the new hub. _runCompute reads getActiveHub()
+        // each call so no extra plumbing is needed.
+        AesAfp.bus.on("hub:changed", _scheduleRun)
         // Race-safe one-shot when spec already resolved before we subscribed.
         if (window.AesAfpSpecResolver && AesAfpSpecResolver.last) _scheduleRun()
 

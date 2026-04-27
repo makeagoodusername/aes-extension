@@ -175,6 +175,61 @@
         }
     }
 
+    // ── Hub override (Plan-from picker) ──────────────────────────────────
+    //
+    // Aircraft sit at one airport but the user often wants to plan routes
+    // from a different one (e.g. their airline hub vs. the ramp the plane
+    // happened to overnight at). The tools-strip "Plan from" input writes
+    // a per-(server, aircraftId) override here; route-candidates reads it
+    // via AesAfp.getActiveHub() to decide which airport to source candidates
+    // from. Cleared by typing the aircraft's actual location or blank.
+    let _hubOverride = null   // {iata, server, aircraftId, ts} | null
+
+    function _hubOverrideKey(server, aircraftId) {
+        return "aircraftFlightPlan:planHub:" + server + ":" + aircraftId
+    }
+
+    async function _loadHubOverride() {
+        _hubOverride = null
+        if (typeof chrome === "undefined" || !chrome.storage || !AesAfp.ctx) return
+        const ctx = AesAfp.ctx
+        if (!ctx.server || !ctx.aircraftId) return
+        const key = _hubOverrideKey(ctx.server, ctx.aircraftId)
+        try {
+            const out = await chrome.storage.local.get([key])
+            const rec = out && out[key]
+            if (rec && typeof rec.iata === "string" && /^[A-Z]{3}$/.test(rec.iata)) {
+                _hubOverride = rec
+            }
+        } catch (_) { /* keep null */ }
+    }
+
+    async function _saveHubOverride(iata) {
+        if (typeof chrome === "undefined" || !chrome.storage || !AesAfp.ctx) return
+        const ctx = AesAfp.ctx
+        if (!ctx.server || !ctx.aircraftId) return
+        const key = _hubOverrideKey(ctx.server, ctx.aircraftId)
+        try {
+            if (!iata) {
+                _hubOverride = null
+                await chrome.storage.local.remove([key])
+            } else {
+                const rec = {iata, server: ctx.server, aircraftId: ctx.aircraftId, ts: Date.now()}
+                _hubOverride = rec
+                await chrome.storage.local.set({[key]: rec})
+            }
+        } catch (e) { console.warn("[AES AFP] hub override save threw", e) }
+    }
+
+    /** Returns the airport IATA the user wants candidates planned from.
+     *  Override (if any) wins over the aircraft's current location so the
+     *  user can plan routes from their airline hub even when the plane is
+     *  parked elsewhere. Public — exposed on AesAfp for slice consumers. */
+    function getActiveHub() {
+        if (_hubOverride && _hubOverride.iata) return _hubOverride.iata
+        return (AesAfp.ctx && AesAfp.ctx.currentLocationIata) || null
+    }
+
     /**
      * Visual Flight Plan reader. Returns the legacy `Leg[]` shape — one
      * entry per logical flight across Mon-Sun, sorted by (dayIdx, depTime),
@@ -661,13 +716,92 @@
         wrap.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;align-items:center;"
             + "font-size:11px;color:#cbd5e1;"
 
-        const hub = (ctx && ctx.currentLocationIata) || null
+        const ctxHub = (ctx && ctx.currentLocationIata) || null
+        const hub = getActiveHub()  // override-aware — drives every button below
 
-        // Hub label (no-op clickable that shows where actions are scoped).
-        const label = document.createElement("span")
-        label.style.cssText = "color:#9ca3af;margin-right:4px;"
-        label.textContent = hub ? ("Hub: " + hub) : "Hub: unresolved"
-        wrap.appendChild(label)
+        // Plan-from picker. Editable IATA input that overrides the
+        // aircraft's current location for candidate-planning purposes.
+        // Datalist is populated from FlightsFromStore so airports the
+        // user has scanned auto-complete; any 3-letter IATA is allowed.
+        // Blank or matching ctxHub clears the override.
+        const labelSpan = document.createElement("span")
+        labelSpan.textContent = "Plan from:"
+        labelSpan.style.cssText = "color:#9ca3af;"
+
+        const hubInput = document.createElement("input")
+        hubInput.type = "text"
+        hubInput.value = hub || ""
+        hubInput.placeholder = ctxHub || "IATA"
+        hubInput.maxLength = 3
+        hubInput.spellcheck = false
+        hubInput.autocapitalize = "characters"
+        hubInput.style.cssText = "width:54px;padding:3px 6px;border-radius:3px;"
+            + "border:1px solid #374151;background:#0f1623;color:#cbd5e1;"
+            + "font-family:var(--aes-font-mono,monospace);font-size:11px;"
+            + "text-transform:uppercase;text-align:center;letter-spacing:1px;"
+        hubInput.title = ctxHub
+            ? ("Plan candidates from this airport. Aircraft is currently at "
+                + ctxHub + " — clear or type " + ctxHub + " to remove the override.")
+            : "Plan candidates from this airport (3-letter IATA)."
+
+        const datalistId = "aes-afp-hub-list"
+        let datalist = document.getElementById(datalistId)
+        if (!datalist) {
+            datalist = document.createElement("datalist")
+            datalist.id = datalistId
+            document.body.appendChild(datalist)
+        }
+        hubInput.setAttribute("list", datalistId)
+
+        // Populate datalist with cached airports. Idempotent across
+        // re-renders (the previous list is replaced wholesale).
+        ;(async () => {
+            const seen = new Set()
+            const opts = []
+            const addOpt = (iata) => {
+                const code = String(iata || "").toUpperCase()
+                if (!/^[A-Z]{3}$/.test(code) || seen.has(code)) return
+                seen.add(code)
+                opts.push(code)
+            }
+            if (ctxHub) addOpt(ctxHub)
+            if (typeof FlightsFromStore !== "undefined") {
+                try {
+                    const list = await FlightsFromStore.listAirports()
+                    for (const a of (list || [])) addOpt(a && a.iata)
+                } catch (_) { /* noop */ }
+            }
+            datalist.innerHTML = ""
+            for (const code of opts) {
+                const opt = document.createElement("option")
+                opt.value = code
+                datalist.appendChild(opt)
+            }
+        })()
+
+        const commitHub = async () => {
+            const v = String(hubInput.value || "").trim().toUpperCase()
+            hubInput.value = v  // normalise displayed value
+            if (v && !/^[A-Z]{3}$/.test(v)) {
+                hubInput.style.borderColor = "#dc2626"
+                return
+            }
+            hubInput.style.borderColor = "#374151"
+            const newOverride = (!v || v === ctxHub) ? null : v
+            const currentOverride = _hubOverride && _hubOverride.iata
+            if (newOverride === currentOverride) return
+            await _saveHubOverride(newOverride)
+            if (AesAfp.bus) AesAfp.bus.emit("hub:changed", {hub: getActiveHub()})
+            renderToolsStrip(AesAfp.slot("tools"), AesAfp.ctx)
+        }
+
+        hubInput.addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); hubInput.blur() }
+            else if (e.key === "Escape") { hubInput.value = hub || ""; hubInput.blur() }
+        })
+        hubInput.addEventListener("blur", () => commitHub().catch(() => {}))
+
+        wrap.append(labelSpan, hubInput)
 
         // Open Stations — primary opens the modal seeded with the visible
         // candidate-list rows, secondary "▾" exposes the legacy bulk-open
@@ -960,6 +1094,7 @@
         AesAfp.wideHost = widePanel || null
 
         AesAfp.ctx = extractPageContext()
+        await _loadHubOverride()
         renderHeaderStrip(AesAfp.slot("header"), AesAfp.ctx)
         renderToolsStrip(AesAfp.slot("tools"),   AesAfp.ctx)
 
@@ -1004,6 +1139,7 @@
         getSchedule:        readSchedule,           // Slice 7a — rich Schedule
         getNewFlightForm:   findNewFlightForm,
         getFormTabs:        findFormTabs,
+        getActiveHub,                               // override-aware hub for planning
         mount
     }
 
