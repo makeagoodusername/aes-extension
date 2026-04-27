@@ -2,18 +2,31 @@
 
 /**
  * Track 6 slice 6b — schedule diff engine.
- * Track 6 slice 6b-followup — configurable per-call tolerance.
+ * Track 7 slice 7e — flightId-precedence pass + locked bucket.
  *
  * Pure compare function. No DOM, no chrome.storage, no AS knowledge —
  * the caller hands in two arrays of legs (current and proposed) and
- * gets back a {keep, delete, add, moveTime} bucketing.
+ * gets back a {keep, delete, add, moveTime, locked} bucketing.
  *
- * Match rule for "keep":
- *   - same origin (3-letter IATA, case-sensitive)
- *   - same destination (3-letter IATA)
- *   - depTimeLocal within ±N minutes (default 15; per-call override
- *     via the 3rd arg, or globally via
- *     `settings.aircraftFlightPlan.autoScheduler.diff.toleranceMin`)
+ * Match resolution order (7e):
+ *   1. flightId-exact: when both sides expose `flightId`, an exact
+ *      match wins regardless of time delta. This is the canonical
+ *      identity AS hands us via the .block.flight overlay link
+ *      (`vfp-reader` populates it; ScheduleBuilder propagates it on
+ *      proposed legs that originated from a current schedule).
+ *   2. (origin, destination, depTime ±15) — the legacy 6b heuristic.
+ *      Used for proposed legs born from auto-build (no flightId yet).
+ *
+ * The flightId pass runs first so an exact identity always beats a
+ * time-shaped neighbour: a leg the user moved by 30 minutes is still
+ * the same leg, not a delete+add.
+ *
+ * Locked legs (7e): when a CURRENT leg's `modifiers.locked === true`
+ * fails to match anything proposed, it goes into `result.locked`
+ * instead of `result.delete`. apply-batch refuses to delete locked
+ * legs without explicit override; this bucket lets callers (the
+ * confirmation modal, the schedule-mgmt diff toggle) surface the
+ * conflict separately.
  *
  * Phase 1 simplification: when a current leg's origin+dest match a
  * proposed leg but the depTime delta is OUTSIDE ±15 min, this slice
@@ -21,53 +34,31 @@
  * + an add. The moveTime field is therefore always [] in Phase 1; it
  * stays in the return shape so slice 6e (transactional wipe-then-
  * rebuild) can later flip the heuristic without breaking callers.
- * Reasoning: AS's edit-flight Wicket post is more fragile than a
- * delete-then-create, and Track 5's apply pipeline is already optimised
- * for the create path. A future slice can specialise moveTime once we
- * confirm AS exposes a stable edit-time endpoint.
  *
  * Day-of-week handling: this slice compares legs as-passed; it does
  * NOT expand a `dayMask` on proposed (ScheduleBuilder-shaped) legs.
  * Callers that pass in template legs and currentLegs from
  * `AesAfp.getCurrentSchedule()` (per-day expanded) should expand the
- * proposed side first. The contract is intentionally narrow: same
- * shape in → diff out. Slice 6d's confirmation modal is the right
- * place to expand and re-diff when the user toggles "all days".
+ * proposed side first.
  *
  * Multiple-match disambiguation: if more than one proposed leg
  * matches a current leg's (origin, dest, depTime±15) box, the diff
  * picks the proposed with the smallest absolute time delta. Each
- * proposed leg is claimed at most once per compare call (so an
- * over-counted dayMask can't blow up keep cardinality).
+ * proposed leg is claimed at most once per compare call.
  *
  * Unmatchable legs (missing origin / destination / depTimeLocal) on
- * the CURRENT side go into `delete` — they can't be kept. On the
- * PROPOSED side they go into `add`. This is the safe default: if we
- * can't reason about a leg, we conservatively wipe and rebuild.
- *
- * Tolerance configurability (6b-followup):
- *   compare(curr, prop, {toleranceMin: N}) — overrides the default 15
- *   for THIS call. Falls back to
- *   `settings.aircraftFlightPlan.autoScheduler.diff.toleranceMin`
- *   when callable via `AesAfpSettings`. Caller's option always wins;
- *   missing / non-finite / negative values fall back to default 15.
- *   Note: settings read is sync — `compare` reads
- *   `AesAfpSettings.cached?.()` (introduced for sync access by
- *   the apply path) when present, otherwise the hard-coded default.
- *   Callers that have an async settings handle should pass the value
- *   in via the option arg.
+ * the CURRENT side go into `delete` — they can't be kept (or `locked`
+ * when modifiers.locked). On the PROPOSED side they go into `add`.
  *
  * Public API (window.AesAfpScheduleDiff):
- *   .compare(currentLegs, proposedLegs, opts?)
- *     → {keep:[{currentSeq, proposedSeq, deltaMin}],
- *        delete:[currentLeg], add:[proposedLeg], moveTime:[]}
- *     opts: {toleranceMin?: number}
+ *   .compare(currentLegs, proposedLegs)
+ *     → {keep:[{currentSeq, proposedSeq, deltaMin, matchedBy:"flightId"|"time"}],
+ *        delete:[currentLeg], add:[proposedLeg], moveTime:[], locked:[currentLeg]}
  *   .timeDeltaMin(aHHMM, bHHMM)
  *     → absolute minute-distance between two HH:MM strings, taking the
  *       midnight-wrap shorter side (e.g. 23:50 vs 00:10 → 20)
  *   .isMatchable(leg) → boolean
- *   .TOLERANCE_MIN  (15) — read-only default; per-call override is
- *                          how callers customise.
+ *   .TOLERANCE_MIN  (15)
  */
 ;(function () {
     if (window.AesAfpScheduleDiff) return
@@ -80,26 +71,24 @@
      * Diff two leg arrays. Returns the four buckets described in the
      * module header. Both arguments default to [] on bad input — the
      * caller never has to pre-validate.
-     *
-     * `opts.toleranceMin` overrides the per-call match window. See
-     * `_resolveTolerance` for the precedence rules.
      */
-    function compare(currentLegs, proposedLegs, opts) {
+    function compare(currentLegs, proposedLegs) {
         const cur = Array.isArray(currentLegs)  ? currentLegs  : []
         const pro = Array.isArray(proposedLegs) ? proposedLegs : []
-        const result = {keep: [], delete: [], add: [], moveTime: []}
-        const tol = _resolveTolerance(opts)
+        const result = {keep: [], delete: [], add: [], moveTime: [], locked: []}
 
         if (!cur.length && !pro.length) return result
 
         // Partition each side into matchable / unmatchable. Unmatchable
-        // current → delete; unmatchable proposed → add. Matchable pairs
-        // run through the (origin, dest, depTime±15) matcher below.
+        // current → delete (or locked); unmatchable proposed → add.
+        // Matchable pairs run through the flightId-precedence pass and
+        // then the (origin, dest, depTime±15) matcher below.
         const curMatch = []
+        const curUnmatched = []
         for (const leg of cur) {
             if (!leg) continue
             if (isMatchable(leg)) curMatch.push(leg)
-            else                  result.delete.push(leg)
+            else                  curUnmatched.push(leg)
         }
         const proMatch = []
         for (const leg of pro) {
@@ -108,16 +97,44 @@
             else                  result.add.push(leg)
         }
 
-        // For each current leg, find the proposed leg with the smallest
-        // absolute time delta among same-O/D unclaimed candidates within
-        // ±TOLERANCE_MIN. Greedy: a current leg never re-shops once it
-        // claims a proposed leg, even if a later current leg would have
-        // been a closer match. This is acceptable because the typical
-        // proposed Build has at most a handful of legs sharing an O/D
-        // and they're spread across multiple hours; the ±15min window
-        // makes ambiguity rare.
         const claimedProposed = new Set()
-        for (const c of curMatch) {
+        const claimedCurrent  = new Set()
+
+        // Pass 1 (7e): exact flightId match wins regardless of time
+        // delta. AS hands us a stable per-leg id via the .block.flight
+        // overlay; ScheduleBuilder propagates it onto proposed legs that
+        // were carried forward from current. A leg the user shifted by
+        // 30 minutes is still the same leg.
+        const proByFlightId = new Map()
+        for (let i = 0; i < proMatch.length; i++) {
+            const fid = _flightIdOf(proMatch[i])
+            if (fid != null) proByFlightId.set(fid, i)
+        }
+        for (let ci = 0; ci < curMatch.length; ci++) {
+            const c = curMatch[ci]
+            const fid = _flightIdOf(c)
+            if (fid == null) continue
+            const pi = proByFlightId.get(fid)
+            if (pi == null || claimedProposed.has(pi)) continue
+            const p = proMatch[pi]
+            const d = timeDeltaMin(c.depTimeLocal, p.depTimeLocal)
+            claimedProposed.add(pi)
+            claimedCurrent.add(ci)
+            result.keep.push({
+                currentSeq:  c.seq != null ? c.seq : null,
+                proposedSeq: p.seq != null ? p.seq : null,
+                deltaMin:    d == null ? null : d,
+                matchedBy:   "flightId"
+            })
+        }
+
+        // Pass 2: for each remaining current leg, find the proposed leg
+        // with the smallest absolute time delta among same-O/D unclaimed
+        // candidates within ±TOLERANCE_MIN. Greedy: a current leg never
+        // re-shops once it claims a proposed leg.
+        for (let ci = 0; ci < curMatch.length; ci++) {
+            if (claimedCurrent.has(ci)) continue
+            const c = curMatch[ci]
             let bestIdx = -1
             let bestDelta = Infinity
             for (let i = 0; i < proMatch.length; i++) {
@@ -127,25 +144,49 @@
                 if (c.destination !== p.destination) continue
                 const d = timeDeltaMin(c.depTimeLocal, p.depTimeLocal)
                 if (d == null)            continue
-                if (d > tol)              continue
+                if (d > TOLERANCE_MIN)    continue
                 if (d < bestDelta) { bestDelta = d; bestIdx = i }
             }
             if (bestIdx >= 0) {
                 claimedProposed.add(bestIdx)
+                claimedCurrent.add(ci)
                 const p = proMatch[bestIdx]
                 result.keep.push({
                     currentSeq:  c.seq != null ? c.seq : null,
                     proposedSeq: p.seq != null ? p.seq : null,
-                    deltaMin:    bestDelta
+                    deltaMin:    bestDelta,
+                    matchedBy:   "time"
                 })
-            } else {
-                result.delete.push(c)
             }
         }
+
+        // Route remaining current legs to delete or locked.
+        for (let ci = 0; ci < curMatch.length; ci++) {
+            if (claimedCurrent.has(ci)) continue
+            _routeUnmatchedCurrent(curMatch[ci], result)
+        }
+        for (const leg of curUnmatched) {
+            _routeUnmatchedCurrent(leg, result)
+        }
+
         for (let i = 0; i < proMatch.length; i++) {
             if (!claimedProposed.has(i)) result.add.push(proMatch[i])
         }
         return result
+    }
+
+    function _flightIdOf(leg) {
+        if (!leg) return null
+        const v = leg.flightId
+        if (v == null) return null
+        const s = String(v).trim()
+        return s ? s : null
+    }
+
+    function _routeUnmatchedCurrent(leg, result) {
+        if (!leg) return
+        if (leg.modifiers && leg.modifiers.locked === true) result.locked.push(leg)
+        else                                                result.delete.push(leg)
     }
 
     /**
@@ -172,41 +213,6 @@
         if (typeof leg.destination !== "string" || !IATA_RE.test(leg.destination)) return false
         if (typeof leg.depTimeLocal !== "string" || !HHMM_RE.test(leg.depTimeLocal)) return false
         return true
-    }
-
-    /**
-     * Internal: resolve the tolerance window for one compare() call.
-     *
-     * Precedence:
-     *   1. opts.toleranceMin (caller wins) — finite, ≥ 0
-     *   2. AesAfpSettings.cached().aircraftFlightPlan.autoScheduler.diff.toleranceMin
-     *      (sync read; only used when AesAfpSettings exposes a cached
-     *      accessor — the apply pipeline pre-warms it)
-     *   3. TOLERANCE_MIN (15)
-     *
-     * Defensive: any non-finite or negative value at any layer falls
-     * through to the next one, so a misconfigured setting never breaks
-     * the diff.
-     */
-    function _resolveTolerance(opts) {
-        if (opts && typeof opts === "object") {
-            const v = opts.toleranceMin
-            if (typeof v === "number" && isFinite(v) && v >= 0) return v
-        }
-        try {
-            if (typeof window !== "undefined"
-             && window.AesAfpSettings
-             && typeof window.AesAfpSettings.cached === "function") {
-                const s = window.AesAfpSettings.cached()
-                const v = s
-                    && s.aircraftFlightPlan
-                    && s.aircraftFlightPlan.autoScheduler
-                    && s.aircraftFlightPlan.autoScheduler.diff
-                    && s.aircraftFlightPlan.autoScheduler.diff.toleranceMin
-                if (typeof v === "number" && isFinite(v) && v >= 0) return v
-            }
-        } catch (_) { /* fall through to default */ }
-        return TOLERANCE_MIN
     }
 
     /** Internal: parse "HH:MM" → 0..1439, or null on bad input. */
@@ -256,8 +262,9 @@
             // ── compare: empty inputs
             const empty = D.compare([], [])
             console.assert(empty.keep.length === 0 && empty.delete.length === 0
-                       && empty.add.length === 0 && empty.moveTime.length === 0,
-                "[diff] empty/empty → all empty")
+                       && empty.add.length === 0 && empty.moveTime.length === 0
+                       && empty.locked.length === 0,
+                "[diff] empty/empty → all empty (incl. locked)")
 
             // ── compare: identical lists
             const aJFKLAX = {seq: 1, origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}
@@ -331,33 +338,60 @@
             console.assert(wrap.keep.length === 1,
                 "[diff] 23:55 vs 00:05 (10 min across midnight) → keep")
 
-            // ── compare: per-call toleranceMin override (6b-followup)
-            const tightCur = [{seq:1, origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}]
-            const tightProp = [{seq:11, origin:"JFK", destination:"LAX", depTimeLocal:"06:10"}]
-            const tight = D.compare(tightCur, tightProp, {toleranceMin: 5})
-            console.assert(tight.keep.length === 0 && tight.delete.length === 1 && tight.add.length === 1,
-                "[diff] tolerance:5 — ±10min becomes delete+add")
+            // ── 7e: flightId-exact match beats time delta (>15min OK)
+            const fidMatch = D.compare(
+                [{seq:1, flightId:"f-42", origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}],
+                [{seq:11, flightId:"f-42", origin:"JFK", destination:"LAX", depTimeLocal:"08:00"}])
+            console.assert(fidMatch.keep.length === 1,
+                "[diff/7e] flightId match keeps even with 120-min delta")
+            console.assert(fidMatch.keep[0].matchedBy === "flightId",
+                "[diff/7e] keep records matchedBy:flightId")
+            console.assert(fidMatch.delete.length === 0 && fidMatch.add.length === 0,
+                "[diff/7e] flightId match clears delete/add")
 
-            const wide = D.compare(
-                [{seq:1, origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}],
-                [{seq:11, origin:"JFK", destination:"LAX", depTimeLocal:"06:30"}],
-                {toleranceMin: 60})
-            console.assert(wide.keep.length === 1,
-                "[diff] tolerance:60 — ±30min becomes keep")
+            // ── 7e: flightId match beats a same-O/D time-close neighbour
+            const fidPriority = D.compare(
+                [{seq:1, flightId:"f-7", origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}],
+                [
+                    {seq:11,                origin:"JFK", destination:"LAX", depTimeLocal:"06:05"},
+                    {seq:12, flightId:"f-7", origin:"JFK", destination:"LAX", depTimeLocal:"06:30"}
+                ])
+            console.assert(fidPriority.keep.length === 1,
+                "[diff/7e] flightId-precedence: 1 keep")
+            console.assert(fidPriority.keep[0].matchedBy === "flightId"
+                        && fidPriority.keep[0].proposedSeq === 12,
+                "[diff/7e] flightId pass beats time-close neighbour")
+            console.assert(fidPriority.add.length === 1 && fidPriority.add[0].seq === 11,
+                "[diff/7e] losing time-neighbour goes to add")
 
-            const exact = D.compare(
-                [{seq:1, origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}],
-                [{seq:11, origin:"JFK", destination:"LAX", depTimeLocal:"06:01"}],
-                {toleranceMin: 0})
-            console.assert(exact.keep.length === 0 && exact.delete.length === 1 && exact.add.length === 1,
-                "[diff] tolerance:0 — only exact-time matches keep")
+            // ── 7e: locked bucket — unmatched locked current leg
+            const lockedNoMatch = D.compare(
+                [{seq:1, flightId:"f-9", origin:"JFK", destination:"LAX",
+                  depTimeLocal:"06:00", modifiers:{locked:true}}],
+                [{seq:11, origin:"JFK", destination:"BOS", depTimeLocal:"06:00"}])
+            console.assert(lockedNoMatch.locked.length === 1,
+                "[diff/7e] unmatched locked → locked bucket")
+            console.assert(lockedNoMatch.delete.length === 0,
+                "[diff/7e] locked never goes to delete")
 
-            const bogus = D.compare(
-                [{seq:1, origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}],
-                [{seq:11, origin:"JFK", destination:"LAX", depTimeLocal:"06:14"}],
-                {toleranceMin: -1})
-            console.assert(bogus.keep.length === 1,
-                "[diff] tolerance:-1 — bad input falls through to default 15, ±14min keeps")
+            // ── 7e: locked + matched still goes to keep, not locked
+            const lockedMatched = D.compare(
+                [{seq:1, flightId:"f-9", origin:"JFK", destination:"LAX",
+                  depTimeLocal:"06:00", modifiers:{locked:true}}],
+                [{seq:11, flightId:"f-9", origin:"JFK", destination:"LAX", depTimeLocal:"06:00"}])
+            console.assert(lockedMatched.keep.length === 1,
+                "[diff/7e] locked+matched → keep")
+            console.assert(lockedMatched.locked.length === 0,
+                "[diff/7e] locked+matched leaves locked empty")
+
+            // ── 7e: unmatchable locked current also goes to locked
+            const lockedBadCur = D.compare(
+                [{seq:1, origin:"jfk", destination:"LAX", depTimeLocal:"06:00",
+                  modifiers:{locked:true}}],
+                [])
+            console.assert(lockedBadCur.locked.length === 1
+                        && lockedBadCur.delete.length === 0,
+                "[diff/7e] unmatchable locked still goes to locked, not delete")
 
             console.log("[AES afp/auto-scheduler] schedule-diff smoke tests passed")
         } catch (e) {

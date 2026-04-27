@@ -1,0 +1,38 @@
+"use strict"
+
+/** Captures `/app/finance/assets` into the `accounting:assets` sister record. */
+;(function () {
+    const HARD_TIMEOUT_MS = 5000
+
+    function findAnchor() {
+        return document.querySelector(".tab-pane.active table")
+            || document.querySelector("table.table")
+            || document.querySelector("h1 + .as-panel")
+    }
+
+    async function start() {
+        try {
+            const server = AES.getServerName()
+            const airline = AES.getAirlineIdentity()
+            if (!server || !airline) return
+            const scraped = AccountingSisterScraper.scrape("assets")
+            if (!scraped) return
+            await AccountingSnapshotStore.saveSister(server, airline, "assets", scraped)
+        } catch (err) {
+            console.warn("[AES Accounting] assets capture failed", err)
+        }
+    }
+
+    if (findAnchor()) { start(); return }
+    let done = false
+    const finish = () => {
+        if (done) return
+        done = true
+        try { observer.disconnect() } catch (_) {}
+        clearTimeout(timeout)
+        start()
+    }
+    const observer = new MutationObserver(() => { if (findAnchor()) finish() })
+    observer.observe(document.body, {childList: true, subtree: true})
+    const timeout = setTimeout(finish, HARD_TIMEOUT_MS)
+})()

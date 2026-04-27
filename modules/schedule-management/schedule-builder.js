@@ -60,10 +60,22 @@ class ScheduleBuilder {
     /**
      * Greedy bucket-then-fill assignment.
      *
+     * Slice E — `opts.overrides` is a `{destIata: waveId}` map (or a
+     * Map). Routes named in overrides are pulled out of the haul bucket
+     * and force-assigned to the named wave first, *bypassing* that
+     * wave's composition capacity. The greedy fill then runs against
+     * the leftover routes as before. Forced placements carry
+     * `placement.forced = true` so the renderer can mark them.
+     *
+     * Overrides pointing at a wave id that no longer exists silently
+     * fall through to the bucket — no surprise placement, no error.
+     *
      * @param {Array} routes - [{destination, distanceNm, aircraftType?, aircraftRangeNm?, turnaroundMinutes?}]
-     * @returns {object} {placements: [{waveId, route, direction}], unplaced: [route]}
+     * @param {object} [opts]
+     *   - overrides: {destIata: waveId} map of forced placements
+     * @returns {object} {placements: [{waveId, route, direction, forced?}], unplaced, shortfall, forcedDests}
      */
-    assignRoutes(routes) {
+    assignRoutes(routes, opts) {
         const buckets = this.preset.factors.rangeBuckets
         const byBucket = {}
         for (const key in buckets) byBucket[key] = []
@@ -80,6 +92,33 @@ class ScheduleBuilder {
         const placements = []
         const unplaced = []
         const remaining = {}
+        const forcedDests = []   // dest IATAs that took the override path
+
+        // Slice E — forced placements from overrides. Process before the
+        // greedy fill so they don't compete with capacity counts. We
+        // accept either a Map or a plain object.
+        const o = opts || {}
+        const overrideEntries = ScheduleBuilder._coerceOverrides(o.overrides)
+        if (overrideEntries.length) {
+            const validWaveIds = new Set(this.preset.waves.map(w => w.id))
+            for (const [destU, waveId] of overrideEntries) {
+                if (!validWaveIds.has(waveId)) continue
+                // Pull the route out of whichever bucket it's in.
+                let pulled = null
+                for (const key in byBucket) {
+                    const idx = byBucket[key].findIndex(
+                        r => String(r.destination || "").toUpperCase() === destU)
+                    if (idx >= 0) {
+                        pulled = byBucket[key].splice(idx, 1)[0]
+                        break
+                    }
+                }
+                if (!pulled) continue
+                placements.push({waveId, route: pulled, direction: "outbound", forced: true})
+                placements.push({waveId, route: pulled, direction: "inbound",  forced: true})
+                forcedDests.push(destU)
+            }
+        }
 
         for (const wave of this.preset.waves) {
             for (const bucket in wave.composition) {
@@ -100,7 +139,26 @@ class ScheduleBuilder {
             for (const route of byBucket[key]) unplaced.push(route)
         }
 
-        return {placements, unplaced, shortfall: remaining}
+        return {placements, unplaced, shortfall: remaining, forcedDests}
+    }
+
+    /**
+     * Slice E — coerce an overrides Map / object into a [destU, waveId][]
+     * array with normalised destination IATAs. Tolerates undefined input.
+     */
+    static _coerceOverrides(input) {
+        if (!input) return []
+        const out = []
+        if (input instanceof Map) {
+            for (const [k, v] of input.entries()) {
+                if (k && v) out.push([String(k).toUpperCase(), String(v)])
+            }
+        } else if (typeof input === "object") {
+            for (const k in input) {
+                if (k && input[k]) out.push([String(k).toUpperCase(), String(input[k])])
+            }
+        }
+        return out
     }
 
     /**
@@ -297,7 +355,11 @@ class ScheduleBuilder {
             arrTimeLocal: isOutbound ? null : timeHHMM,
             distanceNm: route.distanceNm,
             rangeBucket: ScheduleFactors.bucketize(route.distanceNm, this.preset.factors.rangeBuckets),
-            dayMask: dayMask.slice()
+            dayMask: dayMask.slice(),
+            // Slice E — true if this placement bypassed bucket capacity
+            // because the user explicitly dragged it onto this wave.
+            // Renderer surfaces a (forced) badge.
+            forced: !!placement.forced
         }
     }
 
