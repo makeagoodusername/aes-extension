@@ -42,40 +42,68 @@ class RouteAssistantSandboxBacktestStore {
      *  done just before a scrape lands still matches. */
     static BACKFILL_WINDOW_MS = 8 * 86400 * 1000
 
-    static _key(hub, dest) {
+    static _legacyKey(hub, dest) {
         return RouteAssistantSandboxBacktestStore.PREFIX
             + String(hub  || "").toUpperCase() + "-"
             + String(dest || "").toUpperCase()
+    }
+
+    static _key(hub, dest, accountId) {
+        const legacy = RouteAssistantSandboxBacktestStore._legacyKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
     }
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
-    static async get(hub, dest) {
-        const key = RouteAssistantSandboxBacktestStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+    static async get(hub, dest, opts) {
+        const acctId = RouteAssistantSandboxBacktestStore._resolveAccountId(opts)
+        const scoped = RouteAssistantSandboxBacktestStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantSandboxBacktestStore._legacyKey(hub, dest)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const out = await chrome.storage.local.get(reqKeys)
+        return out[scoped] || out[legacy] || null
     }
 
     /**
      * Bulk read for a list of [hub, dest] pairs (or {hub, dest} objects).
      * Returns Map<pairKey, record> where pairKey is "<HUB>-<DEST>".
+     * Account-scoped first with a legacy-key fallback.
      */
-    static async getMany(pairs) {
+    static async getMany(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(p => {
+        const acctId = RouteAssistantSandboxBacktestStore._resolveAccountId(opts)
+        const pairList   = []
+        const scopedKeys = []
+        const legacyKeys = []
+        for (const p of pairs) {
             const h = Array.isArray(p) ? p[0] : p.hub
             const d = Array.isArray(p) ? p[1] : p.dest
-            return RouteAssistantSandboxBacktestStore._key(h, d)
-        })
-        const out = await chrome.storage.local.get(keys)
-        const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+            pairList.push(RouteAssistantSandboxBacktestStore._pairKey(h, d))
+            scopedKeys.push(RouteAssistantSandboxBacktestStore._key(h, d, acctId))
+            legacyKeys.push(RouteAssistantSandboxBacktestStore._legacyKey(h, d))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out     = await chrome.storage.local.get(reqKeys)
+        const map     = new Map()
+        for (let i = 0; i < pairList.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
             if (!rec) continue
-            const pair = k.substring(RouteAssistantSandboxBacktestStore.PREFIX.length)
-            map.set(pair, rec)
+            map.set(pairList[i], rec)
         }
         return map
     }
@@ -85,15 +113,36 @@ class RouteAssistantSandboxBacktestStore {
      * by the model-fit summary (slice 3c) which aggregates across the
      * user's full back-test history. Heavier than `getMany` — only call
      * from the settings drawer / explicit refresh.
+     *
+     * Account-aware: when `opts.accountId` (or the bootstrapped session
+     * accountId) is present, returns only entries scoped to that account
+     * PLUS legacy un-scoped entries (which the migration step will
+     * eventually adopt into the right account).
      */
-    static async loadAll() {
+    static async loadAll(opts) {
+        const acctId = RouteAssistantSandboxBacktestStore._resolveAccountId(opts)
         const all = await chrome.storage.local.get(null)
         const map = new Map()
+        const PREFIX = RouteAssistantSandboxBacktestStore.PREFIX
+        const acctMarker = acctId ? "acct:" + acctId + ":" : null
         for (const k in all) {
-            if (!k.startsWith(RouteAssistantSandboxBacktestStore.PREFIX)) continue
+            if (!k.startsWith(PREFIX)) continue
             const rec = all[k]
             if (!rec || !Array.isArray(rec.entries)) continue
-            const pair = k.substring(RouteAssistantSandboxBacktestStore.PREFIX.length)
+            // Restrict to the active account when scoping is in effect:
+            // include legacy keys (no `acct:` segment after PREFIX) +
+            // matching `acct:<id>:` keys; drop other accounts'.
+            const remainder = k.substring(PREFIX.length)
+            if (acctMarker) {
+                if (remainder.startsWith("acct:")) {
+                    if (!remainder.startsWith(acctMarker)) continue
+                }
+            }
+            // Use the route pair (last segment after the optional `acct:`)
+            // as the map key so the caller's pair-keyed lookups still work.
+            const pair = remainder.startsWith("acct:")
+                ? remainder.substring(remainder.indexOf(":", 5) + 1)
+                : remainder
             map.set(pair, rec)
         }
         return map
@@ -104,15 +153,19 @@ class RouteAssistantSandboxBacktestStore {
      * (oldest first). Returns the stored record, or null on invalid
      * input (no projected.share AND no projected.paxPerWeek).
      */
-    static async log(hub, dest, entry) {
+    static async log(hub, dest, entry, opts) {
         const hubU  = String(hub  || "").toUpperCase()
         const destU = String(dest || "").toUpperCase()
         if (!hubU || !destU) return null
         const cleaned = RouteAssistantSandboxBacktestStore._normaliseEntry(entry || {})
         if (!cleaned) return null
 
-        const key = RouteAssistantSandboxBacktestStore._key(hubU, destU)
-        const existing = (await chrome.storage.local.get([key]))[key] || null
+        const acctId = RouteAssistantSandboxBacktestStore._resolveAccountId(opts)
+        const scoped = RouteAssistantSandboxBacktestStore._key(hubU, destU, acctId)
+        const legacy = RouteAssistantSandboxBacktestStore._legacyKey(hubU, destU)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const fetched = await chrome.storage.local.get(reqKeys)
+        const existing = fetched[scoped] || fetched[legacy] || null
         const entries = (existing && Array.isArray(existing.entries))
             ? existing.entries.slice()
             : []
@@ -125,13 +178,16 @@ class RouteAssistantSandboxBacktestStore {
             entries:   entries,
             updatedAt: now
         }
-        await chrome.storage.local.set({[key]: record})
+        await chrome.storage.local.set({[scoped]: record})
         return record
     }
 
-    static async remove(hub, dest) {
-        const key = RouteAssistantSandboxBacktestStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+    static async remove(hub, dest, opts) {
+        const acctId = RouteAssistantSandboxBacktestStore._resolveAccountId(opts)
+        const scoped = RouteAssistantSandboxBacktestStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantSandboxBacktestStore._legacyKey(hub, dest)
+        const toRemove = scoped === legacy ? [scoped] : [scoped, legacy]
+        await chrome.storage.local.remove(toRemove)
     }
 
     /**
@@ -144,25 +200,29 @@ class RouteAssistantSandboxBacktestStore {
      * `marketsScraper.bulkLoadCache(pairs, {families: ["marketShare"]})`
      * → unwrap the per-pair `bucket.marketShare` first).
      */
-    static async backfillManyFromMarketShares(pairs, marketSharesByPair, ourEnterpriseId) {
+    static async backfillManyFromMarketShares(pairs, marketSharesByPair, ourEnterpriseId, opts) {
         const result = {filled: 0, scanned: 0, skipped: 0}
         if (!pairs || !pairs.length) return result
         if (ourEnterpriseId == null) return result
 
+        const acctId = RouteAssistantSandboxBacktestStore._resolveAccountId(opts)
         const normPairs = pairs.map(p => {
             const h = Array.isArray(p) ? p[0] : p.hub
             const d = Array.isArray(p) ? p[1] : p.dest
             return [h, d]
         })
-        const keys = normPairs.map(([h, d]) => RouteAssistantSandboxBacktestStore._key(h, d))
-        const stored = await chrome.storage.local.get(keys)
+        const scopedKeys = normPairs.map(([h, d]) => RouteAssistantSandboxBacktestStore._key(h, d, acctId))
+        const legacyKeys = normPairs.map(([h, d]) => RouteAssistantSandboxBacktestStore._legacyKey(h, d))
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const stored = await chrome.storage.local.get(reqKeys)
         const writes = {}
         const now = Date.now()
         const targetEnterpriseId = Number(ourEnterpriseId)
 
-        for (const [h, d] of normPairs) {
-            const k = RouteAssistantSandboxBacktestStore._key(h, d)
-            const rec = stored[k]
+        for (let i = 0; i < normPairs.length; i++) {
+            const [h, d] = normPairs[i]
+            const writeKey = scopedKeys[i]
+            const rec = stored[writeKey] || stored[legacyKeys[i]] || null
             if (!rec || !Array.isArray(rec.entries) || !rec.entries.length) continue
             const pair = RouteAssistantSandboxBacktestStore._pairKey(h, d)
             const ms = (marketSharesByPair && typeof marketSharesByPair.get === "function")
@@ -196,7 +256,7 @@ class RouteAssistantSandboxBacktestStore {
             }
             if (touched) {
                 rec.updatedAt = now
-                writes[k] = rec
+                writes[writeKey] = rec
             }
         }
         if (Object.keys(writes).length) await chrome.storage.local.set(writes)

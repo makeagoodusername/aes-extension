@@ -40,6 +40,7 @@ class RouteAssistantTicketPriceScraper {
         if (!server) throw new Error("RouteAssistantTicketPriceScraper: server required")
         this.server = server
         this.maxAgeDays = RouteAssistantTicketPriceScraper._normaliseMaxAge(opts && opts.maxAgeDays)
+        this._accountId = (opts && typeof opts.accountId === "string" && opts.accountId) || null
         this._sessionCache = new Map()
     }
 
@@ -58,26 +59,55 @@ class RouteAssistantTicketPriceScraper {
         return Date.now() - record.scrapedAt > maxAgeDays * 86400000
     }
 
+    static _legacyKey(hub, dest) {
+        return RouteAssistantTicketPriceScraper.CACHE_PREFIX
+            + RouteAssistantTicketPriceScraper._pairKey(hub, dest)
+    }
+
+    static _key(hub, dest, accountId) {
+        const legacy = RouteAssistantTicketPriceScraper._legacyKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
     /**
      * Bulk-load cached records for a list of {hub, dest} pairs (or
-     * [hub, dest] tuples). Returns Map<pairKey, record>. Used by panel.js
-     * on mount to paint pricing columns instantly before any fetch.
+     * [hub, dest] tuples). Returns Map<pairKey, record>. Account-scoped
+     * first with a legacy-key fallback so pre-L3 caches stay readable.
      */
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
+        const acctId     = RouteAssistantTicketPriceScraper._resolveAccountId(opts)
         const maxAgeDays = RouteAssistantTicketPriceScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = pairs.map(p => {
+        const pairList   = []
+        const scopedKeys = []
+        const legacyKeys = []
+        for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantTicketPriceScraper.CACHE_PREFIX + RouteAssistantTicketPriceScraper._pairKey(a, b)
-        })
-        const out = await chrome.storage.local.get(keys)
-        const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+            pairList.push(RouteAssistantTicketPriceScraper._pairKey(a, b))
+            scopedKeys.push(RouteAssistantTicketPriceScraper._key(a, b, acctId))
+            legacyKeys.push(RouteAssistantTicketPriceScraper._legacyKey(a, b))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out     = await chrome.storage.local.get(reqKeys)
+        const map     = new Map()
+        for (let i = 0; i < pairList.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
             if (!rec) continue
             if (RouteAssistantTicketPriceScraper._isExpired(rec, maxAgeDays)) continue
-            const pair = k.substring(RouteAssistantTicketPriceScraper.CACHE_PREFIX.length)
-            map.set(pair, rec)
+            map.set(pairList[i], rec)
         }
         return map
     }
@@ -86,10 +116,10 @@ class RouteAssistantTicketPriceScraper {
      * Persists a record. Live-read path calls this directly with
      * source="live"; the fetch path calls it via scrape().
      */
-    static async saveRecord(hub, dest, fields, source) {
-        const pair = RouteAssistantTicketPriceScraper._pairKey(hub, dest)
-        const key = RouteAssistantTicketPriceScraper.CACHE_PREFIX + pair
-        const rec = Object.assign({
+    static async saveRecord(hub, dest, fields, source, opts) {
+        const acctId = RouteAssistantTicketPriceScraper._resolveAccountId(opts)
+        const key    = RouteAssistantTicketPriceScraper._key(hub, dest, acctId)
+        const rec    = Object.assign({
             hub:       String(hub || "").toUpperCase(),
             dest:      String(dest || "").toUpperCase(),
             scrapedAt: Date.now(),
@@ -99,11 +129,13 @@ class RouteAssistantTicketPriceScraper {
         return rec
     }
 
-    static async loadRecord(hub, dest) {
-        const key = RouteAssistantTicketPriceScraper.CACHE_PREFIX
-            + RouteAssistantTicketPriceScraper._pairKey(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+    static async loadRecord(hub, dest, opts) {
+        const acctId = RouteAssistantTicketPriceScraper._resolveAccountId(opts)
+        const scoped = RouteAssistantTicketPriceScraper._key(hub, dest, acctId)
+        const legacy = RouteAssistantTicketPriceScraper._legacyKey(hub, dest)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const out = await chrome.storage.local.get(reqKeys)
+        return out[scoped] || out[legacy] || null
     }
 
     /**
@@ -125,7 +157,9 @@ class RouteAssistantTicketPriceScraper {
             }
             const html = await resp.text()
             const fields = RouteAssistantTicketPriceScraper.parseFromHtml(html)
-            const rec = await RouteAssistantTicketPriceScraper.saveRecord(hubIata, destIata, fields, "fetch")
+            const rec = await RouteAssistantTicketPriceScraper.saveRecord(
+                hubIata, destIata, fields, "fetch", {accountId: this._accountId}
+            )
             this._sessionCache.set(pair, rec)
             return rec
         } catch (e) {

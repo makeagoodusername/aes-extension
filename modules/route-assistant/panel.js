@@ -6074,9 +6074,24 @@ class RouteAssistantPanel {
             rows:      slim
         }
         const hubU = String(this.hubIata).toUpperCase()
+        const acctId = (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function")
+            ? globalThis.AesAccountScopedKey.currentAccountIdSync()
+            : null
+        const ack = legacy => {
+            if (typeof globalThis !== "undefined"
+                && globalThis.AesAccountScopedKey
+                && typeof globalThis.AesAccountScopedKey.acctKey === "function") {
+                return globalThis.AesAccountScopedKey.acctKey(legacy, acctId)
+            }
+            return legacy
+        }
+        const globalLegacy = "routeAssistant:topRoutes"
+        const perHubLegacy = "routeAssistant:topRoutes:" + hubU
         const writes = {
-            "routeAssistant:topRoutes":          blob,
-            ["routeAssistant:topRoutes:" + hubU]: blob
+            [ack(globalLegacy)]: blob,
+            [ack(perHubLegacy)]: blob
         }
         // Fire-and-forget; failures here mustn't break the panel render.
         try {
@@ -6091,17 +6106,34 @@ class RouteAssistantPanel {
      * record so the heatmap can render a hubs × destinations grid. Returns
      * Map<HUB, blob> keyed uppercase. Hubs with no cached record are
      * silently absent (the heatmap renders empty cells in their row).
+     * Reads the account-scoped key first; falls back to the legacy
+     * un-scoped key per-hub so pre-L3 caches stay readable.
      */
     static async loadAllHubTopRoutes(hubs) {
         if (!Array.isArray(hubs) || !hubs.length) return new Map()
-        const keys = hubs.map(h => "routeAssistant:topRoutes:" + String(h).toUpperCase())
-        const out = await chrome.storage.local.get(keys)
+        const acctId = (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function")
+            ? globalThis.AesAccountScopedKey.currentAccountIdSync()
+            : null
+        const ack = legacy => {
+            if (typeof globalThis !== "undefined"
+                && globalThis.AesAccountScopedKey
+                && typeof globalThis.AesAccountScopedKey.acctKey === "function") {
+                return globalThis.AesAccountScopedKey.acctKey(legacy, acctId)
+            }
+            return legacy
+        }
+        const hubsU = hubs.map(h => String(h).toUpperCase())
+        const scopedKeys = hubsU.map(h => ack("routeAssistant:topRoutes:" + h))
+        const legacyKeys = hubsU.map(h => "routeAssistant:topRoutes:" + h)
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out = await chrome.storage.local.get(reqKeys)
         const map = new Map()
-        for (const k in out) {
-            const v = out[k]
+        for (let i = 0; i < hubsU.length; i++) {
+            const v = out[scopedKeys[i]] || out[legacyKeys[i]] || null
             if (!v) continue
-            const hub = k.substring("routeAssistant:topRoutes:".length)
-            map.set(String(hub).toUpperCase(), v)
+            map.set(hubsU[i], v)
         }
         return map
     }
@@ -14931,12 +14963,29 @@ const RA_DIFF_FMT_BY_FIELD = (() => {
     return m
 })()
 
+function _diffSnapshotKeys(hub) {
+    const legacy = "routeAssistant:lastSnapshot:" + hub
+    const acctId = (typeof globalThis !== "undefined"
+        && globalThis.AesAccountScopedKey
+        && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function")
+        ? globalThis.AesAccountScopedKey.currentAccountIdSync()
+        : null
+    if (!acctId) return {scoped: legacy, legacy}
+    const scoped = (typeof globalThis !== "undefined"
+        && globalThis.AesAccountScopedKey
+        && typeof globalThis.AesAccountScopedKey.acctKey === "function")
+        ? globalThis.AesAccountScopedKey.acctKey(legacy, acctId)
+        : legacy
+    return {scoped, legacy}
+}
+
 async function _loadDiffSnapshot(hub) {
     if (!hub) return null
     try {
-        const key = "routeAssistant:lastSnapshot:" + hub
-        const got = await chrome.storage.local.get(key)
-        const rec = got[key]
+        const {scoped, legacy} = _diffSnapshotKeys(hub)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const got = await chrome.storage.local.get(reqKeys)
+        const rec = got[scoped] || got[legacy] || null
         if (!rec || !Array.isArray(rec.rows)) return null
         return rec
     } catch (e) {
@@ -14947,7 +14996,7 @@ async function _loadDiffSnapshot(hub) {
 
 function _writeDiffSnapshot(hub, server, rows) {
     if (!hub || !rows || !rows.length) return
-    const key = "routeAssistant:lastSnapshot:" + hub
+    const {scoped} = _diffSnapshotKeys(hub)
     const num = v => (typeof v === "number" && isFinite(v)) ? v : null
     const slim = []
     for (const r of rows) {
@@ -14958,7 +15007,7 @@ function _writeDiffSnapshot(hub, server, rows) {
     }
     const blob = {hub, server: server || "", scrapedAt: Date.now(), rows: slim}
     try {
-        chrome.storage.local.set({[key]: blob})
+        chrome.storage.local.set({[scoped]: blob})
     } catch (e) {
         console.warn("[AES routeAssistant] lastSnapshot write failed:", e)
     }

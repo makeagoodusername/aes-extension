@@ -50,6 +50,31 @@ class RouteAssistantYieldSnapshot {
     static BASELINE_KEY = "routeAssistant:yieldBaselines"
 
     /**
+     * Resolve the active account-scoped baseline key. Falls back to the
+     * legacy un-scoped key when account scoping isn't loaded (helpers.js
+     * bootstrap hasn't run yet). Read paths must consult both keys; write
+     * paths must hit the scoped key only.
+     */
+    static _baselineKey(accountId) {
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(
+                RouteAssistantYieldSnapshot.BASELINE_KEY, accountId
+            )
+        }
+        return RouteAssistantYieldSnapshot.BASELINE_KEY
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
+    /**
      * @param {object} input
      * @param {string} input.server          AS server name (e.g. "free1").
      * @param {string} [input.hubIata]       Optional: scope to routes leaving
@@ -84,9 +109,15 @@ class RouteAssistantYieldSnapshot {
         if (!server) throw new Error("RouteAssistantYieldSnapshot.takeSnapshot: server required")
 
         const all = await chrome.storage.local.get(null)
+        const acctId         = RouteAssistantYieldSnapshot._resolveAccountId(input)
+        const scopedBaseline = RouteAssistantYieldSnapshot._baselineKey(acctId)
         const aircraftRecs   = RouteAssistantYieldSnapshot._collectAircraftFlights(all, server)
         const priceRecs      = RouteAssistantYieldSnapshot._collectTicketPriceRecords(all, hubFilter)
-        const baselines      = deltaMode ? (all[RouteAssistantYieldSnapshot.BASELINE_KEY] || {}) : null
+        // Read scoped first, falling back to legacy un-scoped baselines so
+        // a partially-migrated install keeps producing periodic deltas.
+        const baselines      = deltaMode
+            ? (all[scopedBaseline] || all[RouteAssistantYieldSnapshot.BASELINE_KEY] || {})
+            : null
         const regToProfit    = RouteAssistantYieldSnapshot._buildRegProfitMap(aircraftRecs, baselines)
 
         // Pre-pass — for "equal" / "distance" we need to know, per tail, the
@@ -231,7 +262,7 @@ class RouteAssistantYieldSnapshot {
         // gets a meaningful starting point. Only persist tails we actually
         // saw — pruning keeps the baseline blob small.
         if (contributingTails.size || seenTails.size) {
-            await RouteAssistantYieldSnapshot._saveBaselines(aircraftRecs, seenTails)
+            await RouteAssistantYieldSnapshot._saveBaselines(aircraftRecs, seenTails, acctId)
         }
 
         return {
@@ -392,9 +423,15 @@ class RouteAssistantYieldSnapshot {
      * yield. We only update tails that had data this round; stale tails
      * keep their last-known baseline.
      */
-    static async _saveBaselines(aircraftRecs, observedTails) {
-        const all = await chrome.storage.local.get([RouteAssistantYieldSnapshot.BASELINE_KEY])
-        const blob = all[RouteAssistantYieldSnapshot.BASELINE_KEY] || {}
+    static async _saveBaselines(aircraftRecs, observedTails, accountId) {
+        const scopedKey = RouteAssistantYieldSnapshot._baselineKey(accountId)
+        const legacyKey = RouteAssistantYieldSnapshot.BASELINE_KEY
+        const reqKeys = scopedKey === legacyKey ? [scopedKey] : [scopedKey, legacyKey]
+        const all = await chrome.storage.local.get(reqKeys)
+        // Seed from the scoped record when present, else fall back to the
+        // legacy un-scoped baseline so the first scoped write inherits the
+        // pre-L3 history without losing tails.
+        const blob = Object.assign({}, all[legacyKey] || {}, all[scopedKey] || {})
         const now = Date.now()
         for (const rec of aircraftRecs) {
             if (!rec || !rec.registration) continue
@@ -407,7 +444,7 @@ class RouteAssistantYieldSnapshot {
                 savedAt:       now
             }
         }
-        await chrome.storage.local.set({[RouteAssistantYieldSnapshot.BASELINE_KEY]: blob})
+        await chrome.storage.local.set({[scopedKey]: blob})
     }
 
     /**

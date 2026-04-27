@@ -166,8 +166,18 @@ class OpenStationsModal {
     }
 
     async _loadTopRoutes() {
-        const out = await chrome.storage.local.get(["routeAssistant:topRoutes"])
-        return out["routeAssistant:topRoutes"] || null
+        // L3 — account-scoped key first; legacy un-scoped key as fallback.
+        const acctId = (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function")
+            ? globalThis.AesAccountScopedKey.currentAccountIdSync() : null
+        const legacyKey = "routeAssistant:topRoutes"
+        const scopedKey = (acctId && globalThis.AesAccountScopedKey)
+            ? globalThis.AesAccountScopedKey.acctKey(legacyKey, acctId)
+            : legacyKey
+        const reqKeys = scopedKey === legacyKey ? [scopedKey] : [scopedKey, legacyKey]
+        const out = await chrome.storage.local.get(reqKeys)
+        return out[scopedKey] || out[legacyKey] || null
     }
 
     async _loadDemandRecords() {

@@ -37,6 +37,7 @@ class RouteAssistantEnterpriseMetaScraper {
         if (!server) throw new Error("RouteAssistantEnterpriseMetaScraper: server required")
         this.server = server
         this.maxAgeDays = RouteAssistantEnterpriseMetaScraper._normaliseMaxAge(opts && opts.maxAgeDays)
+        this._accountId = (opts && typeof opts.accountId === "string" && opts.accountId) || null
         this._sessionCache = new Map()
     }
 
@@ -51,32 +52,59 @@ class RouteAssistantEnterpriseMetaScraper {
         return Date.now() - record.scrapedAt > maxAgeDays * 86400000
     }
 
+    static _legacyKey(enterpriseId) {
+        return RouteAssistantEnterpriseMetaScraper.CACHE_PREFIX + String(enterpriseId)
+    }
+
+    static _key(enterpriseId, accountId) {
+        const legacy = RouteAssistantEnterpriseMetaScraper._legacyKey(enterpriseId)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
     /**
      * Bulk-load cached records for a list of enterprise IDs (numbers
      * or strings). Returns Map<enterpriseId-as-string, record>. Used by
      * the panel on mount + after a bulk scrape so the popover paints
-     * with whatever's already cached.
+     * with whatever's already cached. Account-scoped first, with a
+     * legacy-key fallback so pre-L3 caches stay readable.
      */
     static async bulkLoadCache(ids, opts) {
         if (!ids || !ids.length) return new Map()
+        const acctId     = RouteAssistantEnterpriseMetaScraper._resolveAccountId(opts)
         const maxAgeDays = RouteAssistantEnterpriseMetaScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = ids.map(id => RouteAssistantEnterpriseMetaScraper.CACHE_PREFIX + String(id))
-        const out = await chrome.storage.local.get(keys)
-        const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+        const idStrs     = ids.map(id => String(id))
+        const scopedKeys = idStrs.map(id => RouteAssistantEnterpriseMetaScraper._key(id, acctId))
+        const legacyKeys = idStrs.map(id => RouteAssistantEnterpriseMetaScraper._legacyKey(id))
+        const reqKeys    = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out        = await chrome.storage.local.get(reqKeys)
+        const map        = new Map()
+        for (let i = 0; i < idStrs.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
             if (!rec) continue
             if (RouteAssistantEnterpriseMetaScraper._isExpired(rec, maxAgeDays)) continue
-            const id = k.substring(RouteAssistantEnterpriseMetaScraper.CACHE_PREFIX.length)
-            map.set(id, rec)
+            map.set(idStrs[i], rec)
         }
         return map
     }
 
-    static async saveRecord(server, enterpriseId, fields) {
-        const id = String(enterpriseId)
-        const key = RouteAssistantEnterpriseMetaScraper.CACHE_PREFIX + id
-        const rec = Object.assign({
+    static async saveRecord(server, enterpriseId, fields, opts) {
+        const id     = String(enterpriseId)
+        const acctId = RouteAssistantEnterpriseMetaScraper._resolveAccountId(opts)
+        const key    = RouteAssistantEnterpriseMetaScraper._key(id, acctId)
+        const rec    = Object.assign({
             enterpriseId: id,
             server:       server,
             scrapedAt:    Date.now()
@@ -103,7 +131,9 @@ class RouteAssistantEnterpriseMetaScraper {
         }
 
         const parsed = parseEnterpriseHtml(html, this.server, id)
-        const record = await RouteAssistantEnterpriseMetaScraper.saveRecord(this.server, id, parsed)
+        const record = await RouteAssistantEnterpriseMetaScraper.saveRecord(
+            this.server, id, parsed, {accountId: this._accountId}
+        )
         this._sessionCache.set(id, record)
         return record
     }

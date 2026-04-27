@@ -44,6 +44,7 @@ class RouteAssistantCarriersScraper {
 
     constructor(opts) {
         this.maxAgeDays = RouteAssistantCarriersScraper._normaliseMaxAge(opts && opts.maxAgeDays)
+        this._accountId = (opts && typeof opts.accountId === "string" && opts.accountId) || null
         this._sessionCache = new Map()
     }
 
@@ -62,35 +63,63 @@ class RouteAssistantCarriersScraper {
         return Date.now() - record.scrapedAt > maxAgeDays * 86400000
     }
 
+    static _legacyKey(hub, dest) {
+        return RouteAssistantCarriersScraper.CACHE_PREFIX
+            + RouteAssistantCarriersScraper._pairKey(hub, dest)
+    }
+
+    static _key(hub, dest, accountId) {
+        const legacy = RouteAssistantCarriersScraper._legacyKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
     /**
      * Bulk-load cached records for a list of {hub, dest} pairs (or
-     * [hub, dest] tuples). Returns Map<pairKey, record>. Mirrors
-     * RouteAssistantTicketPriceScraper.bulkLoadCache so the panel can
-     * paint immediately on mount.
+     * [hub, dest] tuples). Returns Map<pairKey, record>. Account-scoped
+     * first with a legacy-key fallback so pre-L3 caches stay readable.
      */
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
+        const acctId     = RouteAssistantCarriersScraper._resolveAccountId(opts)
         const maxAgeDays = RouteAssistantCarriersScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = pairs.map(p => {
+        const pairList   = []
+        const scopedKeys = []
+        const legacyKeys = []
+        for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantCarriersScraper.CACHE_PREFIX + RouteAssistantCarriersScraper._pairKey(a, b)
-        })
-        const out = await chrome.storage.local.get(keys)
-        const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+            pairList.push(RouteAssistantCarriersScraper._pairKey(a, b))
+            scopedKeys.push(RouteAssistantCarriersScraper._key(a, b, acctId))
+            legacyKeys.push(RouteAssistantCarriersScraper._legacyKey(a, b))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out     = await chrome.storage.local.get(reqKeys)
+        const map     = new Map()
+        for (let i = 0; i < pairList.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
             if (!rec) continue
             if (RouteAssistantCarriersScraper._isExpired(rec, maxAgeDays)) continue
-            const pair = k.substring(RouteAssistantCarriersScraper.CACHE_PREFIX.length)
-            map.set(pair, rec)
+            map.set(pairList[i], rec)
         }
         return map
     }
 
-    static async saveRecord(hub, dest, fields, source) {
-        const pair = RouteAssistantCarriersScraper._pairKey(hub, dest)
-        const key = RouteAssistantCarriersScraper.CACHE_PREFIX + pair
-        const rec = Object.assign({
+    static async saveRecord(hub, dest, fields, source, opts) {
+        const acctId = RouteAssistantCarriersScraper._resolveAccountId(opts)
+        const key    = RouteAssistantCarriersScraper._key(hub, dest, acctId)
+        const rec    = Object.assign({
             hub:       String(hub || "").toUpperCase(),
             dest:      String(dest || "").toUpperCase(),
             scrapedAt: Date.now(),
@@ -127,7 +156,8 @@ class RouteAssistantCarriersScraper {
                 totalWeeklyFlights: parsed.totalWeeklyFlights,
                 parserNotes:        parsed.parserNotes
             },
-            "ff-detail"
+            "ff-detail",
+            {accountId: this._accountId}
         )
         this._sessionCache.set(pair, record)
         return record

@@ -41,20 +41,53 @@ class RouteAssistantPricingApplyLog {
      * @param {object} [opts]
      * @param {number} [opts.limit=200]   — global timeline cap
      * @param {number} [opts.perRouteLimit=20]
+     * @param {string} [opts.accountId]   — sticky account scope for this instance
      */
     constructor(opts) {
         opts = opts || {}
         this.limit         = isFinite(opts.limit)         ? Math.max(20, opts.limit)         : RouteAssistantPricingApplyLog.DEFAULT_LIMIT
         this.perRouteLimit = isFinite(opts.perRouteLimit) ? Math.max(5,  opts.perRouteLimit) : RouteAssistantPricingApplyLog.PER_ROUTE_LIMIT
+        this._accountId    = (typeof opts.accountId === "string" && opts.accountId) || null
     }
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
-    static _routeKey(hub, dest) {
+    static _legacyRouteKey(hub, dest) {
         return RouteAssistantPricingApplyLog.PER_ROUTE_PREFIX
             + RouteAssistantPricingApplyLog._pairKey(hub, dest)
+    }
+
+    static _routeKey(hub, dest, accountId) {
+        const legacy = RouteAssistantPricingApplyLog._legacyRouteKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _legacyGlobalKey() {
+        return RouteAssistantPricingApplyLog.GLOBAL_KEY
+    }
+
+    static _globalKey(accountId) {
+        const legacy = RouteAssistantPricingApplyLog.GLOBAL_KEY
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (this._accountId) return this._accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
     }
 
     static _newId(ts) {
@@ -77,6 +110,7 @@ class RouteAssistantPricingApplyLog {
      */
     async add(record, opts) {
         opts = opts || {}
+        const acctId = this._resolveAccountId(opts)
         const dedupWindowMs = isFinite(opts.dedupWindowMs) ? opts.dedupWindowMs : 5 * 60 * 1000
         const ts = record && record.ts ? record.ts : Date.now()
         const fingerprint = (record && record.fingerprint) || null
@@ -85,14 +119,17 @@ class RouteAssistantPricingApplyLog {
         cleaned.ts = ts
         cleaned.id = cleaned.id || RouteAssistantPricingApplyLog._newId(ts)
 
-        const routeKey = RouteAssistantPricingApplyLog._routeKey(cleaned.hub, cleaned.dest)
-        const got = await chrome.storage.local.get([
-            RouteAssistantPricingApplyLog.GLOBAL_KEY,
-            routeKey
-        ])
+        const globalKey   = RouteAssistantPricingApplyLog._globalKey(acctId)
+        const legacyGlobal = RouteAssistantPricingApplyLog._legacyGlobalKey()
+        const routeKey    = RouteAssistantPricingApplyLog._routeKey(cleaned.hub, cleaned.dest, acctId)
+        const legacyRoute = RouteAssistantPricingApplyLog._legacyRouteKey(cleaned.hub, cleaned.dest)
+        const reqKeys = [globalKey, routeKey]
+        if (acctId && globalKey !== legacyGlobal) reqKeys.push(legacyGlobal)
+        if (acctId && routeKey  !== legacyRoute)  reqKeys.push(legacyRoute)
+        const got = await chrome.storage.local.get(reqKeys)
 
         // ----- Global timeline -----
-        const globalRec = (got && got[RouteAssistantPricingApplyLog.GLOBAL_KEY]) || {entries: [], updatedAt: 0}
+        const globalRec = got[globalKey] || got[legacyGlobal] || {entries: [], updatedAt: 0}
         let entries = Array.isArray(globalRec.entries) ? globalRec.entries.slice() : []
 
         let merged = false
@@ -112,7 +149,7 @@ class RouteAssistantPricingApplyLog {
         if (entries.length > this.limit) entries = entries.slice(0, this.limit)
 
         // ----- Per-route ring -----
-        const routeRec = (got && got[routeKey]) || {hub: cleaned.hub, dest: cleaned.dest, entries: [], updatedAt: 0}
+        const routeRec = got[routeKey] || got[legacyRoute] || {hub: cleaned.hub, dest: cleaned.dest, entries: [], updatedAt: 0}
         let routeEntries = Array.isArray(routeRec.entries) ? routeRec.entries.slice() : []
         // Per-route does NOT dedup — every attempt for this route is
         // worth seeing, including back-to-back identical attempts.
@@ -121,8 +158,8 @@ class RouteAssistantPricingApplyLog {
 
         const updatedAt = ts
         const writes = {
-            [RouteAssistantPricingApplyLog.GLOBAL_KEY]: {entries, updatedAt},
-            [routeKey]: {hub: cleaned.hub, dest: cleaned.dest, entries: routeEntries, updatedAt}
+            [globalKey]: {entries, updatedAt},
+            [routeKey]:  {hub: cleaned.hub, dest: cleaned.dest, entries: routeEntries, updatedAt}
         }
         await chrome.storage.local.set(writes)
         return cleaned
@@ -133,13 +170,17 @@ class RouteAssistantPricingApplyLog {
      * to `verified` after a delayed verify pass). No-op if the id
      * isn't found in either store.
      */
-    async update(id, patch) {
+    async update(id, patch, opts) {
         if (!id || !patch) return null
+        const acctId = this._resolveAccountId(opts)
         // We don't know the route key without scanning. Walk the global
         // log first; if we find it, derive the per-route key from the
         // record's hub+dest and patch both atomically.
-        const got = await chrome.storage.local.get([RouteAssistantPricingApplyLog.GLOBAL_KEY])
-        const globalRec = got[RouteAssistantPricingApplyLog.GLOBAL_KEY]
+        const globalKey   = RouteAssistantPricingApplyLog._globalKey(acctId)
+        const legacyGlobal = RouteAssistantPricingApplyLog._legacyGlobalKey()
+        const reqKeys = globalKey === legacyGlobal ? [globalKey] : [globalKey, legacyGlobal]
+        const got = await chrome.storage.local.get(reqKeys)
+        const globalRec = got[globalKey] || got[legacyGlobal] || null
         if (!globalRec || !Array.isArray(globalRec.entries)) return null
         const idx = globalRec.entries.findIndex(e => e && e.id === id)
         if (idx < 0) return null
@@ -147,16 +188,18 @@ class RouteAssistantPricingApplyLog {
         const newEntries = globalRec.entries.slice()
         newEntries[idx] = merged
 
-        const routeKey = RouteAssistantPricingApplyLog._routeKey(merged.hub, merged.dest)
-        const got2 = await chrome.storage.local.get([routeKey])
-        const routeRec = got2[routeKey]
+        const routeKey    = RouteAssistantPricingApplyLog._routeKey(merged.hub, merged.dest, acctId)
+        const legacyRoute = RouteAssistantPricingApplyLog._legacyRouteKey(merged.hub, merged.dest)
+        const routeReqKeys = routeKey === legacyRoute ? [routeKey] : [routeKey, legacyRoute]
+        const got2 = await chrome.storage.local.get(routeReqKeys)
+        const routeRec = got2[routeKey] || got2[legacyRoute] || null
         let routeEntries = routeRec && Array.isArray(routeRec.entries) ? routeRec.entries.slice() : []
         const ridx = routeEntries.findIndex(e => e && e.id === id)
         if (ridx >= 0) routeEntries[ridx] = Object.assign({}, routeEntries[ridx], patch)
 
         const ts = Date.now()
         const writes = {
-            [RouteAssistantPricingApplyLog.GLOBAL_KEY]: {entries: newEntries, updatedAt: ts}
+            [globalKey]: {entries: newEntries, updatedAt: ts}
         }
         if (ridx >= 0) {
             writes[routeKey] = {hub: merged.hub, dest: merged.dest, entries: routeEntries, updatedAt: ts}
@@ -169,9 +212,13 @@ class RouteAssistantPricingApplyLog {
      * Read the global timeline. Returns the raw record or a
      * synthesised-empty one. Pass `n` to slice off the head.
      */
-    async getRecent(n) {
-        const got = await chrome.storage.local.get([RouteAssistantPricingApplyLog.GLOBAL_KEY])
-        const rec = got[RouteAssistantPricingApplyLog.GLOBAL_KEY] || {entries: [], updatedAt: 0}
+    async getRecent(n, opts) {
+        const acctId = this._resolveAccountId(opts)
+        const globalKey   = RouteAssistantPricingApplyLog._globalKey(acctId)
+        const legacyGlobal = RouteAssistantPricingApplyLog._legacyGlobalKey()
+        const reqKeys = globalKey === legacyGlobal ? [globalKey] : [globalKey, legacyGlobal]
+        const got = await chrome.storage.local.get(reqKeys)
+        const rec = got[globalKey] || got[legacyGlobal] || {entries: [], updatedAt: 0}
         const entries = Array.isArray(rec.entries) ? rec.entries : []
         return {
             entries:   isFinite(n) && n > 0 ? entries.slice(0, n) : entries,
@@ -183,10 +230,14 @@ class RouteAssistantPricingApplyLog {
      * Read the per-route ring for one (hub, dest). Always returns a record
      * shape; entries empty when the route has never been touched.
      */
-    async getForRoute(hub, dest, n) {
-        const routeKey = RouteAssistantPricingApplyLog._routeKey(hub, dest)
-        const got = await chrome.storage.local.get([routeKey])
-        const rec = got[routeKey] || {hub: String(hub || "").toUpperCase(), dest: String(dest || "").toUpperCase(), entries: [], updatedAt: 0}
+    async getForRoute(hub, dest, n, opts) {
+        const acctId = this._resolveAccountId(opts)
+        const routeKey    = RouteAssistantPricingApplyLog._routeKey(hub, dest, acctId)
+        const legacyRoute = RouteAssistantPricingApplyLog._legacyRouteKey(hub, dest)
+        const reqKeys = routeKey === legacyRoute ? [routeKey] : [routeKey, legacyRoute]
+        const got = await chrome.storage.local.get(reqKeys)
+        const rec = got[routeKey] || got[legacyRoute]
+            || {hub: String(hub || "").toUpperCase(), dest: String(dest || "").toUpperCase(), entries: [], updatedAt: 0}
         const entries = Array.isArray(rec.entries) ? rec.entries : []
         return Object.assign({}, rec, {
             entries: isFinite(n) && n > 0 ? entries.slice(0, n) : entries
@@ -199,8 +250,8 @@ class RouteAssistantPricingApplyLog {
      * OR posted), or null. Dry-run + failed entries are excluded so
      * the cooldown only fires off real writes.
      */
-    async getLastSuccessAt(hub, dest) {
-        const r = await this.getForRoute(hub, dest)
+    async getLastSuccessAt(hub, dest, opts) {
+        const r = await this.getForRoute(hub, dest, null, opts)
         for (const e of r.entries) {
             if (!e) continue
             if (e.status === "verified" || e.status === "posted") return e.ts || null
@@ -211,23 +262,30 @@ class RouteAssistantPricingApplyLog {
     /**
      * Bulk-load the last-success timestamps for many routes. Drives the
      * "is cooldown active?" preflight in a single combined fetch when
-     * the bulk apply modal is opening across N rows.
+     * the bulk apply modal is opening across N rows. Account-scoped
+     * with legacy-key fallback.
      */
-    async getLastSuccessMap(pairs) {
+    async getLastSuccessMap(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(p => {
+        const acctId = this._resolveAccountId(opts)
+        const pairList   = []
+        const scopedKeys = []
+        const legacyKeys = []
+        for (const p of pairs) {
             const [h, d] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantPricingApplyLog._routeKey(h, d)
-        })
-        const got = await chrome.storage.local.get(keys)
+            pairList.push(RouteAssistantPricingApplyLog._pairKey(h, d))
+            scopedKeys.push(RouteAssistantPricingApplyLog._routeKey(h, d, acctId))
+            legacyKeys.push(RouteAssistantPricingApplyLog._legacyRouteKey(h, d))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const got = await chrome.storage.local.get(reqKeys)
         const out = new Map()
-        for (const k in got) {
-            const rec = got[k]
+        for (let i = 0; i < pairList.length; i++) {
+            const rec = got[scopedKeys[i]] || got[legacyKeys[i]] || null
             if (!rec || !Array.isArray(rec.entries)) continue
-            const pair = k.substring(RouteAssistantPricingApplyLog.PER_ROUTE_PREFIX.length)
             for (const e of rec.entries) {
                 if (e && (e.status === "verified" || e.status === "posted")) {
-                    out.set(pair, e.ts || null)
+                    out.set(pairList[i], e.ts || null)
                     break
                 }
             }
@@ -240,13 +298,15 @@ class RouteAssistantPricingApplyLog {
      * the global timeline and slices to the new cap. Per-route rings are
      * left alone; their cap is constant.
      */
-    async prune(newLimit) {
+    async prune(newLimit, opts) {
+        const acctId = this._resolveAccountId(opts)
         const lim = isFinite(newLimit) ? Math.max(20, newLimit) : this.limit
-        const rec = await this.getRecent()
+        const rec = await this.getRecent(null, {accountId: acctId})
         if (!rec.entries.length || rec.entries.length <= lim) return rec
         const sliced = rec.entries.slice(0, lim)
+        const globalKey = RouteAssistantPricingApplyLog._globalKey(acctId)
         await chrome.storage.local.set({
-            [RouteAssistantPricingApplyLog.GLOBAL_KEY]: {entries: sliced, updatedAt: Date.now()}
+            [globalKey]: {entries: sliced, updatedAt: Date.now()}
         })
         return {entries: sliced, updatedAt: Date.now()}
     }
@@ -254,13 +314,33 @@ class RouteAssistantPricingApplyLog {
     /**
      * Remove the entire log (both stores for every touched route).
      * Returns the number of route-keys cleared. Manual-reset CTA in
-     * the settings drawer.
+     * the settings drawer. Account-aware: with `opts.accountId` (or the
+     * current session account) only that account's keys are dropped.
+     * Without an accountId scope, drops both legacy and scoped variants
+     * (the unconditional clear path).
      */
-    async clear() {
+    async clear(opts) {
+        const acctId = this._resolveAccountId(opts)
         const all = await chrome.storage.local.get(null)
-        const keys = [RouteAssistantPricingApplyLog.GLOBAL_KEY]
+        const keys = []
+        const PREFIX = RouteAssistantPricingApplyLog.PER_ROUTE_PREFIX
+        const GLOBAL = RouteAssistantPricingApplyLog.GLOBAL_KEY
+        const acctMarker = acctId ? "acct:" + acctId + ":" : null
         for (const k in all) {
-            if (k.startsWith(RouteAssistantPricingApplyLog.PER_ROUTE_PREFIX)) keys.push(k)
+            const isGlobal = k === GLOBAL || (k.startsWith(GLOBAL) && k.indexOf(":acct:") >= 0 && !k.startsWith(PREFIX))
+            const isRoute  = k.startsWith(PREFIX)
+            if (!isGlobal && !isRoute) continue
+            if (acctMarker) {
+                if (k.indexOf(acctMarker) < 0 && k !== GLOBAL && !k.startsWith(PREFIX + acctMarker)) {
+                    // not this account's key, skip
+                    if (k.indexOf(":acct:") >= 0) continue
+                    // legacy keys (no acct: marker) belong to no specific
+                    // account; we leave them in place so other accounts'
+                    // historic data still falls back to them
+                    continue
+                }
+            }
+            keys.push(k)
         }
         if (keys.length) await chrome.storage.local.remove(keys)
         return keys.length

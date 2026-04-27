@@ -44,6 +44,7 @@ class RouteAssistantContractualPartnersScraper {
         if (!server) throw new Error("RouteAssistantContractualPartnersScraper: server required")
         this.server = server
         this.maxAgeDays = RouteAssistantContractualPartnersScraper._normaliseMaxAge(opts && opts.maxAgeDays)
+        this._accountId = (opts && typeof opts.accountId === "string" && opts.accountId) || null
         this._sessionCache = new Map()
     }
 
@@ -58,38 +59,66 @@ class RouteAssistantContractualPartnersScraper {
         return Date.now() - record.scrapedAt > maxAgeDays * 86400000
     }
 
-    static async loadRecord(server, enterpriseId) {
-        const key = RouteAssistantContractualPartnersScraper.CACHE_PREFIX + String(enterpriseId)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+    static _legacyKey(enterpriseId) {
+        return RouteAssistantContractualPartnersScraper.CACHE_PREFIX + String(enterpriseId)
+    }
+
+    static _key(enterpriseId, accountId) {
+        const legacy = RouteAssistantContractualPartnersScraper._legacyKey(enterpriseId)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
+    static async loadRecord(server, enterpriseId, opts) {
+        const acctId = RouteAssistantContractualPartnersScraper._resolveAccountId(opts)
+        const scoped = RouteAssistantContractualPartnersScraper._key(enterpriseId, acctId)
+        const legacy = RouteAssistantContractualPartnersScraper._legacyKey(enterpriseId)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const out = await chrome.storage.local.get(reqKeys)
+        return out[scoped] || out[legacy] || null
     }
 
     /**
      * Bulk-load cached records for a list of enterprise IDs. Returns
-     * Map<enterpriseId-as-string, record>. Used by the panel on mount
-     * + after a refresh so the popover paints with whatever's already
-     * cached even when the user hasn't pressed refresh in this session.
+     * Map<enterpriseId-as-string, record>. Account-scoped first, with a
+     * legacy-key fallback so pre-L3 caches stay readable.
      */
     static async bulkLoadCache(ids, opts) {
         if (!ids || !ids.length) return new Map()
+        const acctId     = RouteAssistantContractualPartnersScraper._resolveAccountId(opts)
         const maxAgeDays = RouteAssistantContractualPartnersScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = ids.map(id => RouteAssistantContractualPartnersScraper.CACHE_PREFIX + String(id))
-        const out = await chrome.storage.local.get(keys)
-        const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+        const idStrs     = ids.map(id => String(id))
+        const scopedKeys = idStrs.map(id => RouteAssistantContractualPartnersScraper._key(id, acctId))
+        const legacyKeys = idStrs.map(id => RouteAssistantContractualPartnersScraper._legacyKey(id))
+        const reqKeys    = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out        = await chrome.storage.local.get(reqKeys)
+        const map        = new Map()
+        for (let i = 0; i < idStrs.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
             if (!rec) continue
             if (RouteAssistantContractualPartnersScraper._isExpired(rec, maxAgeDays)) continue
-            const id = k.substring(RouteAssistantContractualPartnersScraper.CACHE_PREFIX.length)
-            map.set(id, rec)
+            map.set(idStrs[i], rec)
         }
         return map
     }
 
-    static async saveRecord(server, enterpriseId, fields) {
-        const id = String(enterpriseId)
-        const key = RouteAssistantContractualPartnersScraper.CACHE_PREFIX + id
-        const rec = Object.assign({
+    static async saveRecord(server, enterpriseId, fields, opts) {
+        const id     = String(enterpriseId)
+        const acctId = RouteAssistantContractualPartnersScraper._resolveAccountId(opts)
+        const key    = RouteAssistantContractualPartnersScraper._key(id, acctId)
+        const rec    = Object.assign({
             enterpriseId: id,
             server:       server,
             scrapedAt:    Date.now()
@@ -117,7 +146,9 @@ class RouteAssistantContractualPartnersScraper {
         }
 
         const parsed = parsePartnersHtml(html)
-        const record = await RouteAssistantContractualPartnersScraper.saveRecord(this.server, id, parsed)
+        const record = await RouteAssistantContractualPartnersScraper.saveRecord(
+            this.server, id, parsed, {accountId: this._accountId}
+        )
         const suffix = parsed.parserNotes ? " (" + parsed.parserNotes + ")" : ""
         console.log("[AES partnersScraper] saved partners for enterprise " + id + ": "
             + (parsed.partners ? parsed.partners.length : 0) + " entries" + suffix)

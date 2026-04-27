@@ -23,18 +23,39 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
     openHref() { return "/app/com/scheduling" }
 
     async _loadHubs() {
+        // L3 — accept BOTH legacy `routeAssistant:topRoutes:<HUB>` and
+        // account-scoped `routeAssistant:topRoutes:acct:<id>:<HUB>` keys.
+        // When an account is loaded we restrict to its scoped keys + legacy
+        // un-scoped keys (as fallback for hubs the active account hasn't
+        // visited yet); without an account we surface the legacy ones only.
+        const acctId = (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function")
+            ? globalThis.AesAccountScopedKey.currentAccountIdSync() : null
         const all = await chrome.storage.local.get(null)
         const prefix = "routeAssistant:topRoutes:"
-        const out = []
+        const acctPrefix = acctId ? prefix + "acct:" + acctId + ":" : null
+        const byHub = new Map()  // HUB → record (scoped wins over legacy)
         for (const k in all) {
             if (k.indexOf(prefix) !== 0) continue
             if (k.indexOf(":perClass:") >= 0) continue   // companion snapshot
-            const hub = k.substring(prefix.length)
+            const remainder = k.substring(prefix.length)
+            let hub
+            let scoped = false
+            if (remainder.indexOf("acct:") === 0) {
+                if (!acctPrefix || k.indexOf(acctPrefix) !== 0) continue  // other account
+                hub = k.substring(acctPrefix.length)
+                scoped = true
+            } else {
+                hub = remainder
+            }
             if (!hub || hub.indexOf(":") >= 0) continue
             const rec = all[k]
             if (!rec) continue
-            out.push({hub, record: rec})
+            if (scoped || !byHub.has(hub)) byHub.set(hub, rec)
         }
+        const out = []
+        for (const [hub, record] of byHub) out.push({hub, record})
         out.sort((a, b) => (b.record.snapshotAt || 0) - (a.record.snapshotAt || 0))
         return out
     }

@@ -3718,8 +3718,20 @@ async function loadDealContext(server) {
         console.warn("[AES UsedAircraftScanner] RA settings load failed:", e);
     }
     try {
-        const data = await chrome.storage.local.get(["routeAssistant:topRoutes"]);
-        const blob = data && data["routeAssistant:topRoutes"];
+        // L3 — account-scoped key first; fall back to the legacy un-scoped
+        // key when scoping isn't loaded or the active account hasn't yet
+        // populated its own snapshot.
+        const acctId = (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function")
+            ? globalThis.AesAccountScopedKey.currentAccountIdSync() : null;
+        const legacyKey = "routeAssistant:topRoutes";
+        const scopedKey = (acctId && globalThis.AesAccountScopedKey)
+            ? globalThis.AesAccountScopedKey.acctKey(legacyKey, acctId)
+            : legacyKey;
+        const reqKeys = scopedKey === legacyKey ? [scopedKey] : [scopedKey, legacyKey];
+        const data = await chrome.storage.local.get(reqKeys);
+        const blob = (data && (data[scopedKey] || data[legacyKey])) || null;
         if (blob && Array.isArray(blob.rows)) {
             ctx.topRoutes    = blob.rows;
             ctx.topRoutesHub = blob.hub || null;

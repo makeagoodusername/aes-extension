@@ -58,6 +58,7 @@ class RouteAssistantOrsScraper {
         if (!server) throw new Error("RouteAssistantOrsScraper: server required")
         this.server = server
         this.maxAgeDays = RouteAssistantOrsScraper._normaliseMaxAge(opts && opts.maxAgeDays)
+        this._accountId = (opts && typeof opts.accountId === "string" && opts.accountId) || null
         this._sessionCache = new Map()
         this._consecutiveErrors = 0
         this._haltedReason = null
@@ -79,27 +80,58 @@ class RouteAssistantOrsScraper {
         return Date.now() - record.scrapedAt > maxAgeDays * 86400000
     }
 
+    static _legacyKey(hub, dest) {
+        return RouteAssistantOrsScraper.CACHE_PREFIX
+            + RouteAssistantOrsScraper._pairKey(hub, dest)
+    }
+
+    static _key(hub, dest, accountId) {
+        const legacy = RouteAssistantOrsScraper._legacyKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
     /**
      * Bulk-load cached records for a list of {hub, dest} pairs.
      * Returns Map<pairKey, record>. Records are lazy-migrated to the
      * `byClass` shape on read so legacy single-class caches keep working.
+     * Account-scoped first with a legacy-key fallback so pre-L3 caches
+     * stay readable.
      */
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
+        const acctId     = RouteAssistantOrsScraper._resolveAccountId(opts)
         const maxAgeDays = RouteAssistantOrsScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = pairs.map(p => {
+        const pairList   = []
+        const scopedKeys = []
+        const legacyKeys = []
+        for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantOrsScraper.CACHE_PREFIX + RouteAssistantOrsScraper._pairKey(a, b)
-        })
-        const out = await chrome.storage.local.get(keys)
-        const map = new Map()
-        for (const k in out) {
-            let rec = out[k]
+            pairList.push(RouteAssistantOrsScraper._pairKey(a, b))
+            scopedKeys.push(RouteAssistantOrsScraper._key(a, b, acctId))
+            legacyKeys.push(RouteAssistantOrsScraper._legacyKey(a, b))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out     = await chrome.storage.local.get(reqKeys)
+        const map     = new Map()
+        for (let i = 0; i < pairList.length; i++) {
+            let rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
             if (!rec) continue
             if (RouteAssistantOrsScraper._isExpired(rec, maxAgeDays)) continue
             rec = RouteAssistantOrsScraper._migrateOrsRecord(rec)
-            const pair = k.substring(RouteAssistantOrsScraper.CACHE_PREFIX.length)
-            map.set(pair, rec)
+            map.set(pairList[i], rec)
         }
         return map
     }
@@ -146,10 +178,10 @@ class RouteAssistantOrsScraper {
         })
     }
 
-    static async saveRecord(hub, dest, fields) {
-        const pair = RouteAssistantOrsScraper._pairKey(hub, dest)
-        const key = RouteAssistantOrsScraper.CACHE_PREFIX + pair
-        const rec = Object.assign({
+    static async saveRecord(hub, dest, fields, opts) {
+        const acctId = RouteAssistantOrsScraper._resolveAccountId(opts)
+        const key    = RouteAssistantOrsScraper._key(hub, dest, acctId)
+        const rec    = Object.assign({
             hub:       String(hub || "").toUpperCase(),
             dest:      String(dest || "").toUpperCase(),
             scrapedAt: Date.now()
@@ -158,11 +190,13 @@ class RouteAssistantOrsScraper {
         return rec
     }
 
-    static async loadRecord(hub, dest) {
-        const key = RouteAssistantOrsScraper.CACHE_PREFIX
-            + RouteAssistantOrsScraper._pairKey(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        const rec = out[key]
+    static async loadRecord(hub, dest, opts) {
+        const acctId = RouteAssistantOrsScraper._resolveAccountId(opts)
+        const scoped = RouteAssistantOrsScraper._key(hub, dest, acctId)
+        const legacy = RouteAssistantOrsScraper._legacyKey(hub, dest)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const out = await chrome.storage.local.get(reqKeys)
+        const rec = out[scoped] || out[legacy] || null
         return rec ? RouteAssistantOrsScraper._migrateOrsRecord(rec) : null
     }
 
@@ -613,7 +647,7 @@ class RouteAssistantOrsScraper {
             byClass,
             classesScraped
         }
-        const saved = await RouteAssistantOrsScraper.saveRecord(hubIata, destIata, fields)
+        const saved = await RouteAssistantOrsScraper.saveRecord(hubIata, destIata, fields, {accountId: this._accountId})
         this._sessionCache.set(pair, saved)
         this._consecutiveErrors = 0
 

@@ -38,10 +38,28 @@ class RouteAssistantRatingObservationStore {
     static MAX_OBS    = 50
     static MAX_AGE_MS = 90 * 86400000
 
-    static _key(hub, dest) {
+    static _legacyKey(hub, dest) {
         return RouteAssistantRatingObservationStore.PREFIX
             + String(hub  || "").toUpperCase() + "-"
             + String(dest || "").toUpperCase()
+    }
+
+    static _key(hub, dest, accountId) {
+        const legacy = RouteAssistantRatingObservationStore._legacyKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
     }
 
     static _pairKey(hub, dest) {
@@ -50,11 +68,15 @@ class RouteAssistantRatingObservationStore {
 
     /**
      * Returns `{hub, dest, observations: [...]}` or null. Pruned on read.
+     * Account-scoped first; falls back to the legacy un-scoped key.
      */
-    static async get(hub, dest) {
-        const key = RouteAssistantRatingObservationStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        const rec = out[key] || null
+    static async get(hub, dest, opts) {
+        const acctId = RouteAssistantRatingObservationStore._resolveAccountId(opts)
+        const scoped = RouteAssistantRatingObservationStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantRatingObservationStore._legacyKey(hub, dest)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const out = await chrome.storage.local.get(reqKeys)
+        const rec = out[scoped] || out[legacy] || null
         if (!rec) return null
         rec.observations = RouteAssistantRatingObservationStore._prune(rec.observations || [])
         return rec
@@ -63,23 +85,30 @@ class RouteAssistantRatingObservationStore {
     /**
      * Bulk read for [hub, dest] pairs. Returns Map<pairKey, record>. Each
      * record is pruned on read; pairs with no record (or pruned to empty)
-     * are absent from the map.
+     * are absent from the map. Account-scoped first; per-pair legacy
+     * fallback in the same combined `get()`.
      */
-    static async getMany(pairs) {
+    static async getMany(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(p => {
+        const acctId = RouteAssistantRatingObservationStore._resolveAccountId(opts)
+        const pairList   = []
+        const scopedKeys = []
+        const legacyKeys = []
+        for (const p of pairs) {
             const [h, d] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantRatingObservationStore._key(h, d)
-        })
-        const out = await chrome.storage.local.get(keys)
-        const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+            pairList.push(RouteAssistantRatingObservationStore._pairKey(h, d))
+            scopedKeys.push(RouteAssistantRatingObservationStore._key(h, d, acctId))
+            legacyKeys.push(RouteAssistantRatingObservationStore._legacyKey(h, d))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out     = await chrome.storage.local.get(reqKeys)
+        const map     = new Map()
+        for (let i = 0; i < pairList.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
             if (!rec) continue
             const pruned = RouteAssistantRatingObservationStore._prune(rec.observations || [])
             if (!pruned.length) continue
-            const pair = k.substring(RouteAssistantRatingObservationStore.PREFIX.length)
-            map.set(pair, Object.assign({}, rec, {observations: pruned}))
+            map.set(pairList[i], Object.assign({}, rec, {observations: pruned}))
         }
         return map
     }
@@ -88,15 +117,21 @@ class RouteAssistantRatingObservationStore {
      * Append one observation. Read-modify-write — pulls the existing
      * record (if any), prunes by age, appends the new entry, FIFO-trims
      * to `MAX_OBS`, and writes back. Silently no-ops on invalid input.
+     * Reads scoped+legacy so existing accumulated history continues
+     * after the migration; writes the scoped key only.
      */
-    static async add(hub, dest, observation) {
+    static async add(hub, dest, observation, opts) {
         if (!RouteAssistantRatingObservationStore._isValidObservation(observation)) return
         const hubU  = String(hub  || "").toUpperCase()
         const destU = String(dest || "").toUpperCase()
         if (!hubU || !destU) return
 
-        const key = RouteAssistantRatingObservationStore._key(hubU, destU)
-        const existing = (await chrome.storage.local.get([key]))[key] || null
+        const acctId = RouteAssistantRatingObservationStore._resolveAccountId(opts)
+        const scoped = RouteAssistantRatingObservationStore._key(hubU, destU, acctId)
+        const legacy = RouteAssistantRatingObservationStore._legacyKey(hubU, destU)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const fetched = await chrome.storage.local.get(reqKeys)
+        const existing = fetched[scoped] || fetched[legacy] || null
         const prior = existing && Array.isArray(existing.observations) ? existing.observations : []
         const pruned = RouteAssistantRatingObservationStore._prune(prior)
         pruned.push(observation)
@@ -111,37 +146,61 @@ class RouteAssistantRatingObservationStore {
             observations: capped,
             updatedAt:    Date.now()
         }
-        await chrome.storage.local.set({[key]: record})
+        await chrome.storage.local.set({[scoped]: record})
     }
 
-    static async clear(hub, dest) {
-        const key = RouteAssistantRatingObservationStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+    static async clear(hub, dest, opts) {
+        const acctId = RouteAssistantRatingObservationStore._resolveAccountId(opts)
+        const scoped = RouteAssistantRatingObservationStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantRatingObservationStore._legacyKey(hub, dest)
+        const toRemove = scoped === legacy ? [scoped] : [scoped, legacy]
+        await chrome.storage.local.remove(toRemove)
     }
 
     /**
      * Wipe every observation record across all routes. Used by the
-     * settings-drawer "Reset all observations" button.
+     * settings-drawer "Reset all observations" button. Account-aware:
+     * with an `opts.accountId` (or session account) drops only that
+     * account's keys + legacy keys; without scope, drops everything.
      */
-    static async clearAll() {
+    static async clearAll(opts) {
+        const acctId = RouteAssistantRatingObservationStore._resolveAccountId(opts)
         const all = await chrome.storage.local.get(null)
-        const toRemove = Object.keys(all).filter(k => k.startsWith(RouteAssistantRatingObservationStore.PREFIX))
+        const PREFIX = RouteAssistantRatingObservationStore.PREFIX
+        const acctMarker = acctId ? "acct:" + acctId + ":" : null
+        const toRemove = []
+        for (const k of Object.keys(all)) {
+            if (!k.startsWith(PREFIX)) continue
+            if (acctMarker) {
+                const remainder = k.substring(PREFIX.length)
+                if (remainder.startsWith("acct:") && !remainder.startsWith(acctMarker)) continue
+            }
+            toRemove.push(k)
+        }
         if (toRemove.length) await chrome.storage.local.remove(toRemove)
         return toRemove.length
     }
 
     /**
-     * Count total observations across every cached route — used by the
-     * settings-drawer status line.
-     * Returns `{routes, observations}`.
+     * Count total observations across cached routes — used by the
+     * settings-drawer status line. Account-aware: counts only the active
+     * account's keys plus legacy un-scoped keys, mirroring `getMany` /
+     * derivator semantics. Returns `{routes, observations}`.
      */
-    static async count() {
+    static async count(opts) {
+        const acctId = RouteAssistantRatingObservationStore._resolveAccountId(opts)
         const all = await chrome.storage.local.get(null)
+        const PREFIX = RouteAssistantRatingObservationStore.PREFIX
+        const acctMarker = acctId ? "acct:" + acctId + ":" : null
         let routes = 0
         let observations = 0
         const cutoff = Date.now() - RouteAssistantRatingObservationStore.MAX_AGE_MS
         for (const k in all) {
-            if (!k.startsWith(RouteAssistantRatingObservationStore.PREFIX)) continue
+            if (!k.startsWith(PREFIX)) continue
+            if (acctMarker) {
+                const remainder = k.substring(PREFIX.length)
+                if (remainder.startsWith("acct:") && !remainder.startsWith(acctMarker)) continue
+            }
             const rec = all[k]
             if (!rec || !Array.isArray(rec.observations)) continue
             const fresh = rec.observations.filter(o => o && typeof o.at === "number" && o.at >= cutoff)

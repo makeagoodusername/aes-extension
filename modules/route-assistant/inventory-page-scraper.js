@@ -32,6 +32,7 @@ class RouteAssistantInventoryPageScraper {
         if (!server) throw new Error("RouteAssistantInventoryPageScraper: server required")
         this.server = server
         this.maxAgeDays = RouteAssistantInventoryPageScraper._normaliseMaxAge(opts && opts.maxAgeDays)
+        this._accountId = (opts && typeof opts.accountId === "string" && opts.accountId) || null
         this._sessionCache = new Map()
         // Circuit-breaker — same shape as ors-scraper. Halts after
         // `breakerThreshold` consecutive 429/503 responses; bulk caller
@@ -58,29 +59,58 @@ class RouteAssistantInventoryPageScraper {
         return Date.now() - record.scrapedAt > maxAgeDays * 86400000
     }
 
+    static _legacyKey(hub, dest) {
+        return RouteAssistantInventoryPageScraper.CACHE_PREFIX
+            + RouteAssistantInventoryPageScraper._pairKey(hub, dest)
+    }
+
+    static _key(hub, dest, accountId) {
+        const legacy = RouteAssistantInventoryPageScraper._legacyKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
+        const acctId     = RouteAssistantInventoryPageScraper._resolveAccountId(opts)
         const maxAgeDays = RouteAssistantInventoryPageScraper._normaliseMaxAge(opts && opts.maxAgeDays)
-        const keys = pairs.map(p => {
+        const pairList   = []
+        const scopedKeys = []
+        const legacyKeys = []
+        for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantInventoryPageScraper.CACHE_PREFIX + RouteAssistantInventoryPageScraper._pairKey(a, b)
-        })
-        const out = await chrome.storage.local.get(keys)
-        const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+            pairList.push(RouteAssistantInventoryPageScraper._pairKey(a, b))
+            scopedKeys.push(RouteAssistantInventoryPageScraper._key(a, b, acctId))
+            legacyKeys.push(RouteAssistantInventoryPageScraper._legacyKey(a, b))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out     = await chrome.storage.local.get(reqKeys)
+        const map     = new Map()
+        for (let i = 0; i < pairList.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
             if (!rec) continue
             if (RouteAssistantInventoryPageScraper._isExpired(rec, maxAgeDays)) continue
-            const pair = k.substring(RouteAssistantInventoryPageScraper.CACHE_PREFIX.length)
-            map.set(pair, rec)
+            map.set(pairList[i], rec)
         }
         return map
     }
 
-    static async saveRecord(hub, dest, fields, source) {
-        const pair = RouteAssistantInventoryPageScraper._pairKey(hub, dest)
-        const key  = RouteAssistantInventoryPageScraper.CACHE_PREFIX + pair
-        const rec = Object.assign({
+    static async saveRecord(hub, dest, fields, source, opts) {
+        const acctId = RouteAssistantInventoryPageScraper._resolveAccountId(opts)
+        const key    = RouteAssistantInventoryPageScraper._key(hub, dest, acctId)
+        const rec    = Object.assign({
             hub:       String(hub || "").toUpperCase(),
             dest:      String(dest || "").toUpperCase(),
             scrapedAt: Date.now(),
@@ -143,7 +173,8 @@ class RouteAssistantInventoryPageScraper {
                 departures:  parsed.departures,
                 parserNotes: parsed.parserNotes
             },
-            "fetch"
+            "fetch",
+            {accountId: this._accountId}
         )
         this._sessionCache.set(pair, record)
         return record

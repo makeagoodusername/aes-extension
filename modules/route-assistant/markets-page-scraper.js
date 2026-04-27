@@ -62,6 +62,7 @@ class RouteAssistantMarketsPageScraper {
         if (!server) throw new Error("RouteAssistantMarketsPageScraper: server required")
         this.server = server
         this.maxAgeDays = RouteAssistantMarketsPageScraper._normaliseMaxAge(opts && opts.maxAgeDays)
+        this._accountId = (opts && typeof opts.accountId === "string" && opts.accountId) || null
         this._sessionCache = new Map()
     }
 
@@ -80,43 +81,67 @@ class RouteAssistantMarketsPageScraper {
         return Date.now() - record.scrapedAt > maxAgeDays * 86400000
     }
 
+    static _legacyKey(family, hub, dest) {
+        return RouteAssistantMarketsPageScraper.CACHE_PREFIXES[family]
+            + RouteAssistantMarketsPageScraper._pairKey(hub, dest)
+    }
+
+    static _key(family, hub, dest, accountId) {
+        const legacy = RouteAssistantMarketsPageScraper._legacyKey(family, hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
     /**
      * Bulk-load cached records for a list of {hub, dest} pairs. Returns
      *   Map<pairKey, {family1: record1, family2: record2, …}>
      * Pass `opts.families` to limit which families are fetched (default: all 4).
      * Pass `opts.maxAge` as `{family: days}` to per-family-expire records.
-     * One combined chrome.storage.local.get call regardless of split.
+     * Account-scoped keys are read first; pre-L3 legacy keys are read in
+     * the same combined `get()` call as fallback.
      */
     static async bulkLoadCache(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
+        const acctId  = RouteAssistantMarketsPageScraper._resolveAccountId(opts)
         const families = (opts && Array.isArray(opts.families) && opts.families.length)
             ? opts.families
             : RouteAssistantMarketsPageScraper.FAMILIES
         const maxAge = (opts && opts.maxAge) || {}
-        const keys = []
-        const keyMeta = []   // parallel: [{pair, family, key}]
+        const allKeys = []
+        const keyMeta = []   // parallel: [{pair, family, scopedKey, legacyKey}]
         for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
             const pair = RouteAssistantMarketsPageScraper._pairKey(a, b)
             for (const fam of families) {
                 const prefix = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam]
                 if (!prefix) continue
-                const key = prefix + pair
-                keys.push(key)
-                keyMeta.push({pair, family: fam, key})
+                const scopedKey = RouteAssistantMarketsPageScraper._key(fam, a, b, acctId)
+                const legacyKey = RouteAssistantMarketsPageScraper._legacyKey(fam, a, b)
+                allKeys.push(scopedKey)
+                if (acctId && scopedKey !== legacyKey) allKeys.push(legacyKey)
+                keyMeta.push({pair, family: fam, scopedKey, legacyKey})
             }
         }
-        if (!keys.length) return new Map()
-        const out = await chrome.storage.local.get(keys)
+        if (!allKeys.length) return new Map()
+        const out = await chrome.storage.local.get(allKeys)
         const map = new Map()
         for (const meta of keyMeta) {
-            let rec = out[meta.key]
+            let rec = out[meta.scopedKey] || out[meta.legacyKey] || null
             if (!rec) continue
             const ageDays = RouteAssistantMarketsPageScraper._normaliseMaxAge(maxAge[meta.family])
             if (RouteAssistantMarketsPageScraper._isExpired(rec, ageDays)) continue
-            // Letter K — `historic` family migrated to a `byPayload` map.
-            // Lazy-migrate legacy `{periods, capacities, prices, payload}`
-            // records on read so already-cached routes still work.
             if (meta.family === "historic") {
                 rec = RouteAssistantMarketsPageScraper._migrateHistoricRecord(rec)
             }
@@ -157,10 +182,11 @@ class RouteAssistantMarketsPageScraper {
     /**
      * Single chrome.storage.local.set with one key per family the parser
      * produced. Skips families where the parser returned null (e.g., no
-     * pricing fieldset present on a sub-page).
+     * pricing fieldset present on a sub-page). Writes account-scoped keys
+     * exclusively; legacy un-scoped keys are READ-ONLY fallback.
      */
-    static async saveAllRecords(hub, dest, parsed, source) {
-        const pair = RouteAssistantMarketsPageScraper._pairKey(hub, dest)
+    static async saveAllRecords(hub, dest, parsed, source, opts) {
+        const acctId = RouteAssistantMarketsPageScraper._resolveAccountId(opts)
         const ts = Date.now()
         const base = {
             hub:       String(hub || "").toUpperCase(),
@@ -170,23 +196,23 @@ class RouteAssistantMarketsPageScraper {
         }
         const writes = {}
         const saved = {}
-        // Read the existing historic record so a fresh single-payload
-        // scrape doesn't wipe out previously-cached payloads. We write
-        // the union under `byPayload`.
+        // Read the existing historic record (scoped first, then legacy) so
+        // a fresh single-payload scrape doesn't wipe out previously-cached
+        // payloads. We write the union under `byPayload`.
         let prevHistoric = null
         if (parsed && parsed.historic) {
-            const histKey = RouteAssistantMarketsPageScraper.CACHE_PREFIXES.historic + pair
-            const cur = await chrome.storage.local.get([histKey])
-            prevHistoric = cur && cur[histKey] ? RouteAssistantMarketsPageScraper._migrateHistoricRecord(cur[histKey]) : null
+            const scopedHist = RouteAssistantMarketsPageScraper._key("historic", hub, dest, acctId)
+            const legacyHist = RouteAssistantMarketsPageScraper._legacyKey("historic", hub, dest)
+            const reqKeys = scopedHist === legacyHist ? [scopedHist] : [scopedHist, legacyHist]
+            const cur = await chrome.storage.local.get(reqKeys)
+            const rec = cur[scopedHist] || cur[legacyHist] || null
+            prevHistoric = rec ? RouteAssistantMarketsPageScraper._migrateHistoricRecord(rec) : null
         }
         for (const fam of RouteAssistantMarketsPageScraper.FAMILIES) {
             if (!parsed || !parsed[fam]) continue
-            const key = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam] + pair
+            const key = RouteAssistantMarketsPageScraper._key(fam, hub, dest, acctId)
             let payload = parsed[fam]
             if (fam === "historic") {
-                // Letter K — coerce parser output into the byPayload map
-                // shape, merging with any previously-cached payloads so a
-                // single-payload refresh doesn't lose the others.
                 payload = RouteAssistantMarketsPageScraper._mergeHistoric(prevHistoric, payload)
             }
             const rec = Object.assign({}, base, payload)
@@ -228,18 +254,24 @@ class RouteAssistantMarketsPageScraper {
     /**
      * Single combined get for one route. Returns
      *   {competitors?, ownPricing?, marketShare?, historic?}
-     * — present families only.
+     * — present families only. Account-scoped first; per-family legacy
+     * fallback in the same combined `get()`.
      */
-    static async loadAll(hub, dest) {
-        const pair = RouteAssistantMarketsPageScraper._pairKey(hub, dest)
-        const keys = RouteAssistantMarketsPageScraper.FAMILIES.map(
-            f => RouteAssistantMarketsPageScraper.CACHE_PREFIXES[f] + pair
+    static async loadAll(hub, dest, opts) {
+        const acctId = RouteAssistantMarketsPageScraper._resolveAccountId(opts)
+        const scopedKeys = RouteAssistantMarketsPageScraper.FAMILIES.map(
+            f => RouteAssistantMarketsPageScraper._key(f, hub, dest, acctId)
         )
-        const out = await chrome.storage.local.get(keys)
+        const legacyKeys = RouteAssistantMarketsPageScraper.FAMILIES.map(
+            f => RouteAssistantMarketsPageScraper._legacyKey(f, hub, dest)
+        )
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out = await chrome.storage.local.get(reqKeys)
         const result = {}
-        for (const fam of RouteAssistantMarketsPageScraper.FAMILIES) {
-            const k = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam] + pair
-            if (out[k]) result[fam] = out[k]
+        for (let i = 0; i < RouteAssistantMarketsPageScraper.FAMILIES.length; i++) {
+            const fam = RouteAssistantMarketsPageScraper.FAMILIES[i]
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
+            if (rec) result[fam] = rec
         }
         return result
     }
@@ -282,7 +314,7 @@ class RouteAssistantMarketsPageScraper {
             // other families.
             await RouteAssistantMarketsPageScraper.saveAllRecords(hubIata, destIata, {
                 competitors: null, ownPricing: null, marketShare: null, historic: parsed
-            }, "fetch")
+            }, "fetch", {accountId: this._accountId})
             return {
                 periods:    parsed.periods,
                 capacities: parsed.capacities || [],
@@ -379,7 +411,7 @@ class RouteAssistantMarketsPageScraper {
             const html = await resp.text()
             const parsed = RouteAssistantMarketsPageScraper.parseFromHtml(html)
             const saved = await RouteAssistantMarketsPageScraper.saveAllRecords(
-                hubIata, destIata, parsed, "fetch"
+                hubIata, destIata, parsed, "fetch", {accountId: this._accountId}
             )
             this._sessionCache.set(pair, saved)
             return saved
