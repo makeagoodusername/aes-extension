@@ -233,3 +233,23 @@ function escapeHtml(s) {
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
 }
+
+// ── L1 account-registry bootstrap ──────────────────────────────────────
+//
+// Once the manifest content-script chain has loaded (deferred via
+// setTimeout 0 to clear the synchronous load phase), kick off the
+// account-registry bootstrap. It reads (server, airline) from the
+// page DOM, computes the canonical id, sets `window.__aesAccountId`,
+// and fires a single `aes:account:touch` message so background.js
+// upserts the registry. See modules/_shared/account-registry.js.
+//
+// Harmless when the registry module / background handler / manifest
+// entries aren't all wired yet — touchCurrent rejects silently and
+// the bootstrap exits, leaving __aesAccountId unset; acctKey() then
+// returns the legacy key shape per the §10 race-condition invariant.
+;(function _aesL1ScheduleAccountBootstrap() {
+    setTimeout(function () {
+        if (typeof AesAccountRegistry === "undefined") return
+        AesAccountRegistry.bootstrapFromPage()
+    }, 0)
+})()

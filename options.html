@@ -112,6 +112,43 @@
         .aes-settings input[type="checkbox"],
         .aes-settings input[type="radio"] { accent-color: var(--aes-rust); margin-right: var(--aes-sp-1); }
         .aes-settings label { cursor: pointer; }
+        .aes-accounts {
+            border: var(--aes-bw-2) solid var(--aes-oxide);
+            background: var(--aes-bone);
+            padding: var(--aes-sp-3);
+            margin-bottom: var(--aes-sp-5);
+        }
+        .aes-accounts__title {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-small);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            color: var(--aes-oxide);
+            margin: 0 0 var(--aes-sp-2);
+        }
+        .aes-accounts__hint {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            color: var(--aes-slate);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            margin: 0 0 var(--aes-sp-2);
+        }
+        .aes-accounts__empty {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-body);
+            color: var(--aes-slate);
+            padding: var(--aes-sp-2) 0;
+        }
+        .aes-accounts__viewing {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            color: var(--aes-oxide-2);
+            margin: var(--aes-sp-2) 0 0;
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+        }
     </style>
 </head>
 <body>
@@ -123,6 +160,15 @@
         <p class="aes-page__subtitle">AirlineSim Enhancement Suite — local snapshot inspector</p>
 
         <hr class="aes-double-rule" style="margin: 0 0 var(--aes-sp-4);">
+
+        <section class="aes-accounts" aria-label="AES registered accounts">
+            <h2 class="aes-accounts__title">Accounts</h2>
+            <p class="aes-accounts__hint">
+                Every (server, airline) tuple AES has observed. Touched on each AS page mount.
+            </p>
+            <div id="aes-accounts-table"></div>
+            <p class="aes-accounts__viewing" id="aes-accounts-viewing"></p>
+        </section>
 
         <section class="aes-settings" aria-label="AES site-skin settings">
             <span class="aes-settings__row-label">Brutalist Skin</span>

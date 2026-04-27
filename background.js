@@ -769,3 +769,73 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   return false;
 });
+
+// ── L1 — account-registry single-writer ────────────────────────────────
+//
+// HANDOVER §10 invariant: only this handler ever writes the
+// `aesAccounts` blob. Content scripts compute the canonical accountId
+// (sha1(server:airlineIdentity).slice(0,12)) on every AS page mount
+// and send `aes:account:touch`; this handler upserts the registry in
+// a single chrome.storage.local.get → merge → set, so concurrent pages
+// touching the same blob don't lose updates.
+//
+// Touches are serialised through _aesAccountTouchQueue. Without the
+// queue, two pages racing the same blob (read empty, both add, last
+// write wins) would lose one of the touches.
+
+let _aesAccountTouchQueue = Promise.resolve();
+
+function _aesAccountTouchCore(req) {
+  return _aesAccountTouchQueue = _aesAccountTouchQueue
+    .catch(() => null)
+    .then(() => _aesAccountTouchApply(req));
+}
+
+async function _aesAccountTouchApply(req) {
+  const server   = String(req.server || "").toLowerCase().trim();
+  const identity = String(req.airlineIdentity || "").trim();
+  if (!server || !identity) return {ok: false, error: 'missing server or airlineIdentity'};
+
+  // Compute the same id the content-side AesAccountRegistry.computeId
+  // produces. Both sides MUST match — duplicating the digest here lets
+  // the background be the single authority that confirms the id.
+  const norm = server + ":" + identity;
+  const buf  = new TextEncoder().encode(norm);
+  const dig  = await crypto.subtle.digest('SHA-1', buf);
+  const arr  = new Uint8Array(dig);
+  let hex = '';
+  for (const b of arr) hex += b.toString(16).padStart(2, '0');
+  const accountId = hex.slice(0, 12);
+
+  const data = await chrome.storage.local.get(['aesAccounts']);
+  const blob = data.aesAccounts || {};
+  const accounts = (blob.accounts && typeof blob.accounts === 'object') ? blob.accounts : {};
+  const now = Date.now();
+  const prior = accounts[accountId] || null;
+  accounts[accountId] = {
+    id:               accountId,
+    server,
+    airlineIdentity:  identity,
+    displayName:      String(req.displayName || identity),
+    firstSeenAt:      (prior && prior.firstSeenAt) ? prior.firstSeenAt : now,
+    lastSeenAt:       now
+  };
+  const next = {
+    migrationVersion: Number(blob.migrationVersion) || 1,
+    viewingAccountId: accountId,
+    accounts
+  };
+  await chrome.storage.local.set({aesAccounts: next});
+  return {ok: true, accountId};
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'aes:account:touch') return false;
+  _aesAccountTouchCore(msg).then(resp => {
+    try { sendResponse(resp); } catch (_) { /* caller may have gone */ }
+  }).catch(err => {
+    try { sendResponse({ok: false, error: (err && err.message) || String(err)}); }
+    catch (_) { /* noop */ }
+  });
+  return true;   // async response
+});

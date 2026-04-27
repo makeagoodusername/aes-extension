@@ -51,6 +51,67 @@ function wireSiteSkinSettings() {
     });
 }
 
+// L1 — render the Accounts section above the Data Manager. Reads the
+// `aesAccounts` blob populated by background.js's `aes:account:touch`
+// handler. Refreshes whenever the blob changes (touched on every AS
+// page mount, so an open options tab stays current).
+function renderAccountsSection() {
+    const tableHost = document.getElementById("aes-accounts-table");
+    const viewingEl = document.getElementById("aes-accounts-viewing");
+    if (!tableHost) return;
+    chrome.storage.local.get(["aesAccounts"], function (data) {
+        const blob = (data && data.aesAccounts) || {};
+        const accounts = blob.accounts && typeof blob.accounts === "object" ? blob.accounts : {};
+        const list = Object.values(accounts).sort(function (a, b) {
+            return (b.lastSeenAt || 0) - (a.lastSeenAt || 0);
+        });
+        tableHost.innerHTML = "";
+        if (!list.length) {
+            const empty = document.createElement("div");
+            empty.className = "aes-accounts__empty";
+            empty.textContent = "No accounts registered yet — visit an AS page to register the active airline.";
+            tableHost.appendChild(empty);
+            if (viewingEl) viewingEl.textContent = "";
+            return;
+        }
+        const table = $('<table class="aes-table" style="width:100%"></table>');
+        const thead = $("<thead></thead>").append(
+            $("<tr></tr>").append(
+                $("<th></th>").text("Airline"),
+                $("<th></th>").text("Server"),
+                $("<th></th>").text("Account ID"),
+                $('<th class="aes-text-right"></th>').text("First seen"),
+                $('<th class="aes-text-right"></th>').text("Last seen")
+            )
+        );
+        const tbody = $("<tbody></tbody>");
+        const fmtDate = function (ms) {
+            if (!ms) return "—";
+            const d = new Date(ms);
+            return d.toISOString().slice(0, 10);
+        };
+        list.forEach(function (acct) {
+            tbody.append(
+                $("<tr></tr>").append(
+                    $("<td></td>").text(acct.displayName || acct.airlineIdentity || "—"),
+                    $("<td></td>").text(acct.server || "—"),
+                    $("<td></td>").append($('<code></code>').text(acct.id || "")),
+                    $('<td class="aes-text-right"></td>').text(fmtDate(acct.firstSeenAt)),
+                    $('<td class="aes-text-right"></td>').text(fmtDate(acct.lastSeenAt))
+                )
+            );
+        });
+        table.append(thead, tbody);
+        $(tableHost).append(table);
+        if (viewingEl) {
+            const viewing = blob.viewingAccountId || "";
+            viewingEl.textContent = viewing
+                ? ("Last touched: " + viewing)
+                : "";
+        }
+    });
+}
+
 $(function () {
     // Stamp the version number.
     const m = chrome.runtime.getManifest();
@@ -58,6 +119,12 @@ $(function () {
     if (stamp) stamp.textContent = "v" + (m.version_name || m.version);
 
     wireSiteSkinSettings();
+    renderAccountsSection();
+    // Re-render on registry changes so an open options tab tracks
+    // touches that arrive while the user is viewing.
+    chrome.storage.onChanged.addListener(function (changes, area) {
+        if (area === "local" && changes && changes.aesAccounts) renderAccountsSection();
+    });
 
     chrome.storage.local.get(null, function (items) {
         data = items;
