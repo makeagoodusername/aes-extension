@@ -520,6 +520,241 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;   // keep the message channel open for async response
 });
 
+// ── Account Registry (Slice L1) ───────────────────────────────────────
+//
+// Single-writer for the `aesAccounts` registry blob. Every content script
+// or option page that wants to mutate the registry sends a message here.
+// Reads can hit chrome.storage.local directly without round-tripping.
+// See modules/_shared/account-registry.js for the client-side API and
+// HANDOVER §10 for the single-writer invariant.
+
+const AES_ACCOUNT_REGISTRY_KEY = 'aesAccounts';
+const AES_ACCOUNT_REGISTRY_SCHEMA_VERSION = 1;
+
+// Serialise registry mutations through a single tail-promise so concurrent
+// touches across tabs apply in order without losing fields.
+let _aesAccountRegistryQueue = Promise.resolve();
+
+function _aesAcctEmptyRegistry() {
+  return {
+    schemaVersion: AES_ACCOUNT_REGISTRY_SCHEMA_VERSION,
+    accounts: {},
+    activeAccountId: null,
+    viewingAccountId: null,
+    updatedAt: 0
+  };
+}
+
+function _aesAcctReadRegistry() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(AES_ACCOUNT_REGISTRY_KEY, (items) => {
+      void chrome.runtime.lastError;
+      const raw = items && items[AES_ACCOUNT_REGISTRY_KEY];
+      if (!raw || typeof raw !== 'object') return resolve(_aesAcctEmptyRegistry());
+      resolve(Object.assign(_aesAcctEmptyRegistry(), raw, {
+        accounts: raw.accounts && typeof raw.accounts === 'object' ? raw.accounts : {}
+      }));
+    });
+  });
+}
+
+function _aesAcctWriteRegistry(reg) {
+  reg.updatedAt = Date.now();
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set({[AES_ACCOUNT_REGISTRY_KEY]: reg}, () => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(new Error(err.message || 'storage.set failed'));
+      else resolve(reg);
+    });
+  });
+}
+
+function _aesAcctEnqueue(fn) {
+  const next = _aesAccountRegistryQueue.catch(() => null).then(fn);
+  _aesAccountRegistryQueue = next.catch(() => null);
+  return next;
+}
+
+async function _aesAcctTouch(payload) {
+  const accountId = payload && payload.accountId;
+  if (!accountId || !payload.server || !payload.airline) {
+    return {ok: false, error: 'touch: missing accountId/server/airline'};
+  }
+  return _aesAcctEnqueue(async () => {
+    const reg = await _aesAcctReadRegistry();
+    const now = Date.now();
+    const existing = reg.accounts[accountId];
+    const meta = (payload.meta && typeof payload.meta === 'object') ? payload.meta : {};
+    const next = Object.assign(
+      {
+        accountId,
+        server: String(payload.server),
+        airlineCode: String(payload.airline).trim(),
+        airlineName: String(payload.airline).trim(),
+        enterpriseId: null,
+        label: null,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        lastSyncedAt: {},
+        active: true,
+        archived: false
+      },
+      existing || {},
+      // Allow caller-provided meta to refresh airlineName / enterpriseId
+      // (e.g. when the dashboard scrape resolves them) but never let meta
+      // overwrite firstSeenAt or the user-set label.
+      {
+        airlineName:  meta.airlineName  || (existing && existing.airlineName)  || String(payload.airline).trim(),
+        enterpriseId: meta.enterpriseId || (existing && existing.enterpriseId) || null,
+        lastSeenAt: now
+      }
+    );
+    reg.accounts[accountId] = next;
+    reg.activeAccountId = accountId;
+    if (!reg.viewingAccountId) reg.viewingAccountId = accountId;
+    await _aesAcctWriteRegistry(reg);
+    return {ok: true, accountId, account: next};
+  });
+}
+
+async function _aesAcctSetLabel(payload) {
+  const {accountId, label} = payload || {};
+  if (!accountId) return {ok: false, error: 'setLabel: missing accountId'};
+  return _aesAcctEnqueue(async () => {
+    const reg = await _aesAcctReadRegistry();
+    const rec = reg.accounts[accountId];
+    if (!rec) return {ok: false, error: 'unknown accountId'};
+    rec.label = label ? String(label).slice(0, 80) : null;
+    await _aesAcctWriteRegistry(reg);
+    return {ok: true, accountId, label: rec.label};
+  });
+}
+
+async function _aesAcctArchive(payload, archived) {
+  const accountId = payload && payload.accountId;
+  if (!accountId) return {ok: false, error: 'archive: missing accountId'};
+  return _aesAcctEnqueue(async () => {
+    const reg = await _aesAcctReadRegistry();
+    const rec = reg.accounts[accountId];
+    if (!rec) return {ok: false, error: 'unknown accountId'};
+    rec.archived = !!archived;
+    if (archived && reg.viewingAccountId === accountId) {
+      // Pick another account to view; fall back to activeAccountId or first
+      // non-archived.
+      const live = Object.values(reg.accounts).find(a => !a.archived && a.accountId !== accountId);
+      reg.viewingAccountId = live ? live.accountId : null;
+    }
+    await _aesAcctWriteRegistry(reg);
+    return {ok: true, accountId, archived: rec.archived};
+  });
+}
+
+/**
+ * Remove an account from the registry. When deleteData=true, also walk
+ * chrome.storage.local for legacy single-account keys (`<server><airline>...`)
+ * and per-account namespaced keys (`*:acct:<accountId>:*`) and remove them.
+ *
+ * L1 only writes the namespaced keys via future slices, so today the
+ * namespaced sweep is a no-op for fresh installs. The legacy sweep is
+ * defensive — only deletes keys whose stored .server + .airline match
+ * (per the legacy snapshot shape used by the Data Manager).
+ */
+async function _aesAcctRemove(payload) {
+  const accountId = payload && payload.accountId;
+  const deleteData = !!(payload && payload.deleteData);
+  if (!accountId) return {ok: false, error: 'remove: missing accountId'};
+  return _aesAcctEnqueue(async () => {
+    const reg = await _aesAcctReadRegistry();
+    const rec = reg.accounts[accountId];
+    if (!rec) return {ok: false, error: 'unknown accountId'};
+
+    const summary = {keysDeleted: 0};
+    if (deleteData) {
+      const allKeys = await new Promise((resolve) => {
+        chrome.storage.local.get(null, (items) => {
+          void chrome.runtime.lastError;
+          resolve(items || {});
+        });
+      });
+      const namespaceMarker = ':acct:' + accountId + ':';
+      const legacyServer = String(rec.server || '').toLowerCase();
+      const legacyAirlineCode = String(rec.airlineCode || '').toLowerCase();
+      const toRemove = [];
+      for (const k of Object.keys(allKeys)) {
+        if (!k || k === AES_ACCOUNT_REGISTRY_KEY) continue;
+        // Per-account namespaced key
+        if (k.indexOf(namespaceMarker) !== -1 || k.indexOf('acct:' + accountId + ':') === 0) {
+          toRemove.push(k);
+          continue;
+        }
+        // Legacy snapshot blob — match on stored .server + .airline only.
+        const v = allKeys[k];
+        if (v && typeof v === 'object'
+            && typeof v.server === 'string'
+            && typeof v.airline === 'string'
+            && v.server.toLowerCase() === legacyServer
+            && v.airline.toLowerCase() === legacyAirlineCode) {
+          toRemove.push(k);
+        }
+      }
+      if (toRemove.length) {
+        await new Promise((resolve) => {
+          chrome.storage.local.remove(toRemove, () => {
+            void chrome.runtime.lastError;
+            resolve();
+          });
+        });
+      }
+      summary.keysDeleted = toRemove.length;
+    }
+
+    delete reg.accounts[accountId];
+    if (reg.activeAccountId === accountId) reg.activeAccountId = null;
+    if (reg.viewingAccountId === accountId) {
+      const live = Object.values(reg.accounts).find(a => !a.archived);
+      reg.viewingAccountId = live ? live.accountId : null;
+    }
+    await _aesAcctWriteRegistry(reg);
+    return {ok: true, accountId, deleteData, summary};
+  });
+}
+
+async function _aesAcctSetViewing(payload) {
+  const accountId = payload && payload.accountId;
+  return _aesAcctEnqueue(async () => {
+    const reg = await _aesAcctReadRegistry();
+    if (accountId && !reg.accounts[accountId]) {
+      return {ok: false, error: 'unknown accountId'};
+    }
+    reg.viewingAccountId = accountId || null;
+    await _aesAcctWriteRegistry(reg);
+    return {ok: true, viewingAccountId: reg.viewingAccountId};
+  });
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg.type !== 'string' || msg.type.indexOf('aes:account:') !== 0) {
+    return false;
+  }
+  let promise;
+  switch (msg.type) {
+    case 'aes:account:touch':      promise = _aesAcctTouch(msg);       break;
+    case 'aes:account:setLabel':   promise = _aesAcctSetLabel(msg);    break;
+    case 'aes:account:archive':    promise = _aesAcctArchive(msg, true); break;
+    case 'aes:account:unarchive':  promise = _aesAcctArchive(msg, false); break;
+    case 'aes:account:remove':     promise = _aesAcctRemove(msg);      break;
+    case 'aes:account:setViewing': promise = _aesAcctSetViewing(msg);  break;
+    default: return false;
+  }
+  promise.then((resp) => {
+    try { sendResponse(resp); } catch (_) { /* caller may have gone */ }
+  }).catch((err) => {
+    try { sendResponse({ok: false, error: (err && err.message) || String(err)}); }
+    catch (_) { /* noop */ }
+  });
+  return true;   // async response
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== 'aes:afp:apply-batch:abort') return false;
   if (!msg.batchId) {

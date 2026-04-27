@@ -75,6 +75,60 @@
             color: var(--aes-slate);
             border: var(--aes-bw-1) dashed var(--aes-paper-rule);
         }
+        .aes-section {
+            margin-bottom: var(--aes-sp-6);
+        }
+        .aes-section__h2 {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-h2);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            margin: 0 0 var(--aes-sp-2);
+        }
+        .aes-section__hint {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            color: var(--aes-slate);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            margin: 0 0 var(--aes-sp-3);
+        }
+        .aes-acct-pill {
+            display: inline-block;
+            padding: 1px 6px;
+            border: var(--aes-bw-1) solid var(--aes-oxide);
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+        }
+        .aes-acct-pill--archived { color: var(--aes-slate); border-color: var(--aes-paper-rule); }
+        .aes-acct-pill--active   { background: var(--aes-rust); color: var(--aes-bone); border-color: var(--aes-rust); }
+        .aes-acct-actions { display: flex; gap: var(--aes-sp-1); flex-wrap: wrap; }
+        .aes-acct-actions button {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            padding: 2px var(--aes-sp-2);
+            border: var(--aes-bw-1) solid var(--aes-oxide);
+            background: var(--aes-bone);
+            color: var(--aes-oxide);
+            cursor: pointer;
+        }
+        .aes-acct-actions button:hover  { background: var(--aes-oxide); color: var(--aes-bone); }
+        .aes-acct-actions button.danger { border-color: var(--aes-rust); color: var(--aes-rust); }
+        .aes-acct-actions button.danger:hover { background: var(--aes-rust); color: var(--aes-bone); }
+        .aes-acct-label-input {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-body);
+            padding: 2px var(--aes-sp-1);
+            border: var(--aes-bw-1) solid var(--aes-oxide);
+            background: var(--aes-bone);
+            width: 100%;
+            box-sizing: border-box;
+        }
     </style>
 </head>
 <body>
@@ -87,9 +141,27 @@
 
         <hr class="aes-double-rule" style="margin: 0 0 var(--aes-sp-4);">
 
-        <div class="aes-filter-row" id="aes-div-topSelect"></div>
+        <section class="aes-section" aria-labelledby="aes-accounts-heading">
+            <h2 id="aes-accounts-heading" class="aes-section__h2">Accounts</h2>
+            <p class="aes-section__hint">
+                Every (server, airline) the extension has observed is registered here.
+                Visit an AirlineSim page to register a new account; archive or remove
+                entries below to manage the list.
+            </p>
+            <label class="aes-section__hint" style="display:flex; gap: var(--aes-sp-2); align-items:center;">
+                <input type="checkbox" id="aes-acct-show-archived"> Show archived
+            </label>
+            <div id="aes-acct-list"></div>
+        </section>
 
-        <div id="aes-div-dataDisplay"></div>
+        <hr class="aes-double-rule" style="margin: var(--aes-sp-4) 0;">
+
+        <section class="aes-section" aria-labelledby="aes-data-heading">
+            <h2 id="aes-data-heading" class="aes-section__h2">Data Manager</h2>
+            <p class="aes-section__hint">Inspect cached pricing &amp; schedule snapshots by server / airline / type.</p>
+            <div class="aes-filter-row" id="aes-div-topSelect"></div>
+            <div id="aes-div-dataDisplay"></div>
+        </section>
     </main>
     <script src="options.js"></script>
 </body>
