@@ -773,6 +773,23 @@
             })
         wrap.appendChild(raBtn)
 
+        // Force-recompute candidates + re-read the persisted schedule
+        // without leaving the page. Same debounced path the bus uses
+        // (spec:resolved / ctx:ready / schedule:updated) so spamming the
+        // button is safe. Read-only — preserves the panel-CTA write
+        // gateway invariant.
+        const refreshEnabled = typeof AesAfpRouteCandidates !== "undefined"
+            && typeof AesAfpRouteCandidates.refresh === "function"
+        const refreshBtn = mkToolButton("↻ Update",
+            refreshEnabled
+                ? "Re-fetch candidates and re-read the persisted schedule for this hub."
+                : "Route candidates module not loaded.",
+            refreshEnabled,
+            () => {
+                try { AesAfpRouteCandidates.refresh() } catch (_) { /* noop */ }
+            })
+        wrap.appendChild(refreshBtn)
+
         // Hub-watchlist toggle. Watchlist keys are "<HUB>-<DEST>"; we use
         // a synthetic "<HUB>-HUB" sentinel to mark the hub itself as a
         // tracked target so the OpenStationsModal can prefer this hub on

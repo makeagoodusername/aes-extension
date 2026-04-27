@@ -723,6 +723,14 @@
                 .filter(i => /^[A-Z]{3}$/.test(i))
         },
 
+        /** Public refresh entry — host.js's "Update" tool button calls this
+         *  so users can force a recompute without navigating away. Re-uses
+         *  the same debounced `_scheduleRun` path as the bus subscriptions
+         *  so multiple rapid clicks coalesce into one compute. Read-only:
+         *  re-reads schedule + FlightsFrom + demand + α + watchlist stores
+         *  and re-renders; never writes. */
+        refresh() { _scheduleRun() },
+
         async _loadDefaultDepTime() {
             if (this._depTimeLoaded) return
             this._depTimeLoaded = true
