@@ -24,10 +24,24 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         this._sortDir = "desc"
         this._applyingPair = null
         this._applier = null
+        this._applyLog = null
         this._lastTopRoute = null
+        this._recentExpanded = false
     }
 
-    watchedStorageKeys() { return ["routeAssistant:inventory:"] }
+    watchedStorageKeys() {
+        return [
+            "routeAssistant:inventory:",
+            "routeAssistant:inventoryQuickPriceApplyLog"
+        ]
+    }
+
+    _ensureApplyLog() {
+        if (!this._applyLog && window.CentralInventoryQuickPriceApplyLog) {
+            this._applyLog = new window.CentralInventoryQuickPriceApplyLog()
+        }
+        return this._applyLog
+    }
 
     openHandler(ctx) {
         return () => {
@@ -77,6 +91,62 @@ class CentralHubInventoryTile extends window.CentralHubTile {
 
         const sorted = this._sortRows(rows)
         host.appendChild(this._renderTable(sorted, ctx, T))
+        await this._renderRecentApplies(host, T)
+    }
+
+    async _renderRecentApplies(host, T) {
+        const log = this._ensureApplyLog()
+        if (!log) return
+        const {entries} = await log.getRecent(5)
+        if (!entries || !entries.length) return
+
+        const wrap = document.createElement("details")
+        wrap.style.cssText = "margin-top:" + T.sp[2] + ";font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";color:" + T.color.oxide2 + ";"
+        if (this._recentExpanded) wrap.open = true
+        wrap.addEventListener("toggle", () => { this._recentExpanded = wrap.open })
+
+        const summary = document.createElement("summary")
+        summary.style.cssText = "cursor:pointer;color:" + T.color.slate + ";text-transform:uppercase;letter-spacing:" + T.track.caps + ";font-family:" + T.font.display + ";font-size:" + T.fs.micro + ";"
+        summary.textContent = "Recent applies (" + entries.length + ")"
+        wrap.appendChild(summary)
+
+        const list = document.createElement("ul")
+        list.style.cssText = "list-style:none;margin:" + T.sp[1] + " 0 0;padding:0;"
+        for (const e of entries) {
+            const li = document.createElement("li")
+            li.style.cssText = "padding:" + T.sp[0] + " 0;border-top:" + T.geom.bw1 + " solid " + T.color.paperRule + ";display:flex;gap:" + T.sp[2] + ";align-items:baseline;"
+
+            const route = document.createElement("span")
+            route.style.cssText = "color:" + T.color.oxide + ";font-weight:" + T.fw.display + ";min-width:64px;"
+            route.textContent = (e.hub || "??") + (e.dest || "??")
+
+            const change = document.createElement("span")
+            change.style.cssText = "flex:1 1 auto;"
+            const prev = e.prev != null ? e.prev : "?"
+            const next = e.new  != null ? e.new  : "?"
+            change.textContent = (e.classKey || "?") + " " + prev + " → " + next + (e.count > 1 ? " ×" + e.count : "")
+
+            const status = document.createElement("span")
+            const kind = e.status
+            const color = kind === "verified" ? T.color.moss
+                : kind === "posted" ? T.color.amber
+                : (kind === "failed" || kind === "aborted") ? T.color.rust
+                : T.color.slate
+            status.style.cssText = "color:" + color + ";text-transform:uppercase;letter-spacing:" + T.track.caps + ";font-family:" + T.font.display + ";"
+            status.textContent = kind || "—"
+
+            const ts = document.createElement("span")
+            ts.style.cssText = "color:" + T.color.slate + ";min-width:64px;text-align:right;"
+            ts.textContent = window.CentralInventorySummaryStore.formatRelative(e.ts)
+
+            li.append(route, change, status, ts)
+            if (e.error && e.error.message) {
+                li.title = e.error.message
+            }
+            list.appendChild(li)
+        }
+        wrap.appendChild(list)
+        host.appendChild(wrap)
     }
 
     _sortRows(rows) {
@@ -354,7 +424,12 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         const pairLabel = row.hub + "-" + row.dest
         this._applyingPair = pairLabel
 
-        this._applier = this._applier || new window.CentralInventoryQuickPriceApplier({applyEnabled: true})
+        if (!this._applier) {
+            this._applier = new window.CentralInventoryQuickPriceApplier({
+                applyEnabled: true,
+                applyLog:     this._ensureApplyLog()
+            })
+        }
 
         const progress = window.RouteAssistantToast.progress(
             "Applying " + classKey + " " + newPrice + " on " + pairLabel,
