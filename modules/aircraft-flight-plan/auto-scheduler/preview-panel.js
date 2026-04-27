@@ -59,7 +59,26 @@
         editingSeq:    null,
         storageTimer:  null,
         storageListener: null,
-        settings:      null
+        settings:      null,
+        // Slice 5d — live apply-batch mirror of AesAfpAutoApplyBatch.state.
+        // Refreshed on every `auto-apply:start/progress/done/aborted/error`
+        // bus event so the footer can render without polling.
+        apply: {
+            inFlight:       false,
+            batchId:        null,
+            total:          0,
+            completed:      0,
+            succeeded:      0,
+            failed:         0,
+            startedAt:      null,
+            finishedAt:     null,
+            lastLegResult:  null,    // {legIdx, seq, ok, error, at}
+            currentLegIdx:  null,    // most recent leg-start; null between phases
+            phase:          null,    // last seen phase
+            error:          null,
+            aborted:        false,
+            results:        []
+        }
     }
 
     let _rootEl       = null   // container injected into the slot
@@ -77,7 +96,10 @@
         runAutoBuild:     () => _runAutoBuild(),
         openConfirmModal: () => _openConfirmModal(),
         applyAll:         (legs, opts) => _applyAll(legs, opts),
-        get lastBuild() { return _state.lastBuild }
+        abortApply:       () => _abortApply(),
+        retryFailed:      () => _retryFailed(),
+        get lastBuild() { return _state.lastBuild },
+        get applyState() { return Object.assign({}, _state.apply) }
     }
 
     // ── Slot helpers ───────────────────────────────────────────────────
@@ -594,6 +616,22 @@
     function _renderFooter() {
         if (!_footerEl) return
         _footerEl.innerHTML = ""
+
+        // Live progress UI when a batch is in flight (slice 5d).
+        if (_state.apply.inFlight) {
+            _footerEl.appendChild(_renderApplyProgress())
+            return
+        }
+
+        // Recently-finished batch summary — sticky until a new batch
+        // starts or the user dismisses it. Surfaces failed legs as a
+        // hand-off to slice 5e's retry queue.
+        if (_state.apply.finishedAt) {
+            _footerEl.appendChild(_renderApplyResultBanner())
+            return
+        }
+
+        // Default tip.
         const tip = document.createElement("div")
         const flights = (_state.lastBuild && _state.lastBuild.flights) || []
         const tier = _state.settings
@@ -604,13 +642,378 @@
             && _state.settings.autoScheduler.enabled
         const armed = enabled && tier === "apply-on-confirm"
         if (armed && flights.length) {
-            tip.textContent = "Apply-all CTA is wired by slice 5b — active when settings unlocked."
+            tip.textContent = "Apply-all wired — confirm modal lists every leg before posting."
         } else if (flights.length) {
             tip.textContent = "Preview-only tier. Per-leg edits persist into the active draft and are picked up by the Fleet Hub overlay."
         } else {
             tip.textContent = "Apply-all is gated behind settings.aircraftFlightPlan.autoScheduler.tier === \"apply-on-confirm\"."
         }
         _footerEl.appendChild(tip)
+    }
+
+    // ── Slice 5d — live progress UI + abort ────────────────────────────
+
+    function _renderApplyProgress() {
+        const wrap = document.createElement("div")
+        wrap.className = "aes-afp-auto-progress"
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:6px;"
+            + "padding:6px 4px;"
+
+        // Top row — counters + abort.
+        const top = document.createElement("div")
+        top.style.cssText = "display:flex;align-items:center;gap:10px;font-size:11px;"
+            + "color:#e5e7eb;"
+
+        const a = _state.apply
+        const total = a.total || 0
+        const done  = a.completed || 0
+        const sym = a.lastLegResult
+            ? (a.lastLegResult.ok ? "✓" : "✗")
+            : "·"
+        const symColor = a.lastLegResult
+            ? (a.lastLegResult.ok ? "#34d399" : "#f87171")
+            : "#6b7280"
+
+        const heading = document.createElement("span")
+        heading.style.cssText = "font-weight:600;color:#f3f4f6;"
+        const curIdx = a.currentLegIdx != null ? (a.currentLegIdx + 1) : done
+        heading.textContent = "Applying leg " + curIdx + " of " + total + "…"
+        top.appendChild(heading)
+
+        const sep = document.createElement("span")
+        sep.style.cssText = "color:#374151;"
+        sep.textContent = "·"
+        top.appendChild(sep)
+
+        const lastSym = document.createElement("span")
+        lastSym.style.cssText = "color:" + symColor + ";font-weight:700;"
+            + "font-variant-numeric:tabular-nums;"
+        lastSym.textContent = sym
+        if (a.lastLegResult) {
+            const r = a.lastLegResult
+            const tag = r.ok
+                ? "leg " + ((r.legIdx != null ? r.legIdx + 1 : "?")) + " ok"
+                : "leg " + ((r.legIdx != null ? r.legIdx + 1 : "?")) + " failed"
+                  + (r.error ? " — " + r.error : "")
+            lastSym.title = tag
+        }
+        top.appendChild(lastSym)
+
+        const ok = document.createElement("span")
+        ok.style.cssText = "color:#34d399;"
+        ok.textContent = a.succeeded + " ok"
+        top.appendChild(ok)
+
+        if (a.failed > 0) {
+            const fail = document.createElement("span")
+            fail.style.cssText = "color:#f87171;"
+            fail.textContent = a.failed + " failed"
+            top.appendChild(fail)
+        }
+
+        const eta = document.createElement("span")
+        eta.style.cssText = "color:#9ca3af;flex:1 1 auto;text-align:right;"
+            + "font-variant-numeric:tabular-nums;"
+        const remaining = Math.max(0, total - done)
+        const liveSec = _liveSecondsPerLeg()
+        const remainingSec = Math.round(remaining * liveSec)
+        eta.textContent = remaining
+            ? "~" + _fmtDuration(remainingSec) + " remaining"
+            : "finalizing…"
+        top.appendChild(eta)
+
+        const abort = document.createElement("button")
+        abort.type = "button"
+        abort.textContent = "Abort"
+        abort.title = "Stop the batch + close the hidden tab. Already-applied legs stay in AS."
+        abort.style.cssText = "background:#7f1d1d;color:#fef2f2;"
+            + "border:1px solid #b91c1c;border-radius:3px;padding:3px 10px;"
+            + "font-size:11px;font-weight:600;cursor:pointer;"
+        abort.addEventListener("click", () => _abortApply())
+        top.appendChild(abort)
+
+        wrap.appendChild(top)
+
+        // Progress bar.
+        const bar = document.createElement("div")
+        bar.style.cssText = "position:relative;height:6px;background:#0f1623;"
+            + "border:1px solid #1f2937;border-radius:3px;overflow:hidden;"
+        const pct = total > 0 ? (done / total) * 100 : 0
+        const fill = document.createElement("div")
+        fill.style.cssText = "position:absolute;left:0;top:0;bottom:0;"
+            + "width:" + pct.toFixed(1) + "%;"
+            + "background:linear-gradient(90deg,#1d4ed8,#3b82f6);"
+            + "transition:width 200ms linear;"
+        bar.appendChild(fill)
+        wrap.appendChild(bar)
+
+        // Status line — phase + last error.
+        const status = document.createElement("div")
+        status.style.cssText = "font-size:10px;color:#9ca3af;"
+        const phase = a.phase || ""
+        const phaseLabel = ({
+            "queued":    "Waiting in queue",
+            "tab-opened": "Hidden tab opened",
+            "tab-loaded": "Tab loaded",
+            "leg-start":  "Filling form…",
+            "leg-done":   "Leg settled",
+            "aborted":    "Aborted",
+            "timeout":    "Timed out",
+            "done":       "Done",
+            "error":      "Error"
+        })[phase] || phase
+        const elapsed = a.startedAt ? Math.round((Date.now() - a.startedAt) / 1000) : 0
+        status.textContent = "Phase: " + phaseLabel
+            + " · " + a.batchId
+            + " · elapsed " + _fmtDuration(elapsed)
+        if (a.error) {
+            status.textContent += " · " + a.error
+            status.style.color = "#fca5a5"
+        }
+        wrap.appendChild(status)
+
+        return wrap
+    }
+
+    function _renderApplyResultBanner() {
+        const a = _state.apply
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;align-items:center;gap:10px;"
+            + "padding:6px 8px;font-size:11px;"
+            + "background:#0f1623;border:1px solid #1f2937;border-radius:3px;"
+            + "color:#cbd5e1;"
+        const summary = document.createElement("span")
+        summary.style.cssText = "flex:1 1 auto;"
+        const elapsed = (a.finishedAt && a.startedAt)
+            ? Math.round((a.finishedAt - a.startedAt) / 1000) : 0
+        const verb = a.aborted ? "Aborted" : (a.error ? "Errored" : "Done")
+        summary.innerHTML = "<strong>" + verb + ":</strong> "
+            + a.succeeded + " ok"
+            + (a.failed ? " · <span style=\"color:#fca5a5;\">" + a.failed + " failed</span>" : "")
+            + " · " + _fmtDuration(elapsed) + " elapsed"
+            + (a.error ? " · " + escapeHtml(a.error) : "")
+        wrap.appendChild(summary)
+
+        if (a.failed > 0) {
+            const retry = document.createElement("button")
+            retry.type = "button"
+            retry.textContent = a.failed + " failed — retry"
+            retry.title = "Retry the failed legs from the audit log (slice 5e wires this)."
+            retry.style.cssText = "background:#1d4ed8;color:#f8fafc;"
+                + "border:1px solid #1e3a8a;border-radius:3px;padding:3px 10px;"
+                + "font-size:11px;font-weight:600;cursor:pointer;"
+            retry.addEventListener("click", () => _retryFailed())
+            wrap.appendChild(retry)
+        }
+
+        const dismiss = document.createElement("button")
+        dismiss.type = "button"
+        dismiss.textContent = "Dismiss"
+        dismiss.title = "Clear this banner."
+        dismiss.style.cssText = "background:transparent;color:#9ca3af;"
+            + "border:1px solid #374151;border-radius:3px;padding:3px 8px;"
+            + "font-size:11px;cursor:pointer;"
+        dismiss.addEventListener("click", () => {
+            _state.apply.finishedAt = null
+            _state.apply.lastLegResult = null
+            _state.apply.results = []
+            _renderFooter()
+        })
+        wrap.appendChild(dismiss)
+
+        return wrap
+    }
+
+    function _liveSecondsPerLeg() {
+        const a = _state.apply
+        if (a.startedAt && a.completed > 0) {
+            const elapsedMs = Date.now() - a.startedAt
+            const rate = elapsedMs / a.completed / 1000
+            // Clamp to a sensible band so a single fast/slow leg doesn't
+            // wildly skew the projection.
+            return Math.max(3, Math.min(20, rate))
+        }
+        return ESTIMATED_SECONDS_PER_LEG
+    }
+
+    function _abortApply() {
+        if (!_state.apply.inFlight) return
+        const batch = window.AesAfpAutoApplyBatch
+        if (!batch || typeof batch.abort !== "function") {
+            _toast("Apply-batch module not loaded — can't abort.", "error")
+            return
+        }
+        try { batch.abort() }
+        catch (e) {
+            console.warn("[AES auto-5d] abort threw", e)
+            _toast("Abort failed: " + ((e && e.message) || e), "error")
+        }
+    }
+
+    /**
+     * Slice 5e wires the actual retry pipeline. For 5d we surface the
+     * intent on the bus + emit a toast hint so the user sees the click
+     * landed; the `_state.apply.results` list carries enough context
+     * (`{legIdx, seq, ok: false, error}`) for 5e's queue.
+     */
+    function _retryFailed() {
+        const failedSeqs = (_state.apply.results || [])
+            .filter(r => r && !r.ok)
+            .map(r => r.seq)
+        if (!failedSeqs.length) return
+        const failedLegs = (_state.lastBuild && _state.lastBuild.flights || [])
+            .filter(f => failedSeqs.indexOf(f.seq) !== -1)
+        if (!failedLegs.length) {
+            _toast("No matching legs in the current Build — re-run Auto-build first.", "warn")
+            return
+        }
+        const ctxR = _ctx()
+        const payload = {
+            ctx:         {server: ctxR.server || "", aircraftId: ctxR.aircraftId || "",
+                          currentLocationIata: ctxR.currentLocationIata || ""},
+            legs:        _materialiseFailedLegs(failedLegs),
+            requestedAt: Date.now(),
+            source:      "retry-failed"
+        }
+        if (window.AesAfp && AesAfp.bus) {
+            try { AesAfp.bus.emit("auto-apply:retry-requested", payload) }
+            catch (_) { /* bus self-isolates */ }
+        }
+        _applyAll(payload.legs, {source: "retry-failed"})
+    }
+
+    function _materialiseFailedLegs(buildLegs) {
+        const overlays = (_state.draft && _state.draft.perLegEdits) || {}
+        const dpct = (_state.settings && isFinite(Number(_state.settings.defaultPricePct)))
+            ? _state.settings.defaultPricePct : 100
+        const dsvc = (_state.settings && typeof _state.settings.defaultService === "string")
+            ? _state.settings.defaultService : ""
+        return buildLegs.map(f => {
+            const o = overlays[f.seq] || {}
+            const eff = Object.assign({}, f, o)
+            return {
+                seq:         f.seq,
+                waveId:      f.waveId,
+                waveLabel:   f.waveLabel,
+                direction:   eff.direction || f.direction,
+                origin:      eff.origin      || f.origin      || null,
+                destination: eff.destination || f.destination || null,
+                depTime:     eff.depTimeLocal || f.depTimeLocal || null,
+                distanceNm:  f.distanceNm,
+                pricePct:    isFinite(Number(eff.pricePct)) ? Number(eff.pricePct) : dpct,
+                service:     (typeof eff.service === "string") ? eff.service : dsvc
+            }
+        })
+    }
+
+    // Bus handlers fed by apply-batch.js.
+
+    function _onApplyStart(payload) {
+        const p = payload || {}
+        _state.apply.inFlight      = true
+        _state.apply.batchId       = p.batchId || null
+        _state.apply.total         = Number(p.total) || 0
+        _state.apply.completed     = 0
+        _state.apply.succeeded     = 0
+        _state.apply.failed        = 0
+        _state.apply.startedAt     = p.startedAt || Date.now()
+        _state.apply.finishedAt    = null
+        _state.apply.lastLegResult = null
+        _state.apply.currentLegIdx = null
+        _state.apply.phase         = "queued"
+        _state.apply.error         = null
+        _state.apply.aborted       = false
+        _state.apply.results       = []
+        _renderFooter()
+        _renderLegs()   // refresh appliedLegs styling
+        _startApplyTicker()
+    }
+
+    function _onApplyProgress(payload) {
+        const p = payload || {}
+        if (_state.apply.batchId && p.batchId && p.batchId !== _state.apply.batchId) return
+        if (p.phase) _state.apply.phase = p.phase
+        if (p.phase === "leg-start") {
+            _state.apply.currentLegIdx = (typeof p.legIdx === "number") ? p.legIdx : _state.apply.currentLegIdx
+        }
+        if (p.phase === "leg-done") {
+            _state.apply.completed = (_state.apply.completed || 0) + 1
+            if (p.ok) _state.apply.succeeded++
+            else      _state.apply.failed++
+            _state.apply.lastLegResult = {
+                legIdx: p.legIdx, seq: p.seq, ok: !!p.ok, error: p.error || null, at: Date.now()
+            }
+            _state.apply.results.push({
+                legIdx: p.legIdx, seq: p.seq, ok: !!p.ok, error: p.error || null
+            })
+        }
+        if (p.phase === "error" && p.error) _state.apply.error = p.error
+        _renderFooter()
+    }
+
+    function _onApplyDone(payload) {
+        const p = payload || {}
+        if (_state.apply.batchId && p.batchId && p.batchId !== _state.apply.batchId) return
+        _state.apply.inFlight   = false
+        _state.apply.finishedAt = p.finishedAt || Date.now()
+        _state.apply.aborted    = !!p.aborted
+        if (p.error && !_state.apply.error) _state.apply.error = p.error
+        if (Array.isArray(p.results) && p.results.length) {
+            _state.apply.results = p.results
+            _state.apply.succeeded = p.results.filter(r => r && r.ok).length
+            _state.apply.failed    = p.results.length - _state.apply.succeeded
+            _state.apply.completed = p.results.length
+        }
+        _stopApplyTicker()
+        _renderFooter()
+        // Refresh the per-leg list so successful seqs show the
+        // appliedLegs background tint via the active-draft listener
+        // (apply-batch.js writes appliedLegs[seq] on every ok leg-done).
+        _loadDraft().then(() => _renderLegs()).catch(() => _renderLegs())
+    }
+
+    function _onApplyAborted(payload) {
+        const p = payload || {}
+        if (_state.apply.batchId && p.batchId && p.batchId !== _state.apply.batchId) return
+        _state.apply.inFlight   = false
+        _state.apply.finishedAt = Date.now()
+        _state.apply.aborted    = true
+        _state.apply.phase      = "aborted"
+        _stopApplyTicker()
+        _renderFooter()
+    }
+
+    function _onApplyError(payload) {
+        const p = payload || {}
+        _state.apply.inFlight   = false
+        _state.apply.finishedAt = Date.now()
+        _state.apply.error      = p.error || "unknown error"
+        _state.apply.phase      = "error"
+        _stopApplyTicker()
+        _renderFooter()
+    }
+
+    /**
+     * 1Hz ticker so the progress bar's "elapsed" / "remaining" lines
+     * advance smoothly between leg-done events. Started on apply:start,
+     * stopped on done/aborted/error.
+     */
+    let _applyTickTimer = null
+    function _startApplyTicker() {
+        _stopApplyTicker()
+        _applyTickTimer = setInterval(() => {
+            if (!_state.apply.inFlight) {
+                _stopApplyTicker()
+                return
+            }
+            _renderFooter()
+        }, 1000)
+    }
+    function _stopApplyTicker() {
+        if (_applyTickTimer) {
+            clearInterval(_applyTickTimer)
+            _applyTickTimer = null
+        }
     }
 
     // ── Apply-all confirmation modal (slice 5b) ────────────────────────
@@ -1152,6 +1555,12 @@
         bus.on("auto-schedule:built", _onAutoBuilt)
         bus.on("maintenance:scraped", () => _loadBudget().then(_scheduleRender))
         bus.on("wear:updated",        () => _loadBudget().then(_scheduleRender))
+        // Slice 5d — apply-batch lifecycle.
+        bus.on("auto-apply:start",    _onApplyStart)
+        bus.on("auto-apply:progress", _onApplyProgress)
+        bus.on("auto-apply:done",     _onApplyDone)
+        bus.on("auto-apply:aborted",  _onApplyAborted)
+        bus.on("auto-apply:error",    _onApplyError)
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
