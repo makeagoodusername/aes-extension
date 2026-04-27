@@ -699,23 +699,21 @@ class RouteAssistantPanel {
     }
 
     /**
-     * Right-click context menu for table rows. Two items: the legacy
-     * override editor (default — preserves muscle memory) and a new
-     * "Open in ORS Sandbox" entry that switches to the sandbox mode and
-     * pins the row's destination as the simulated route.
+     * U4 — single discoverable entry point for every per-row action.
+     * Sections (separated by hairline rules): edit-data, memory
+     * (watchlist/note), workflow, AS deep-links, clipboard, multi-
+     * select. Items that anchor popovers (profit modifier, service
+     * config, route note) re-use the row `<tr>` as anchor so the
+     * popover opens beside the row even after the menu has closed.
      */
-    _openRowContextMenu(row, x, y) {
+    _openRowContextMenu(row, x, y, anchorEl) {
         const existing = document.getElementById("aes-row-context-menu")
         if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
         const menu = document.createElement("div")
         menu.id = "aes-row-context-menu"
         menu.style.cssText = "position:fixed;background:#0f1623;border:1px solid #374151;"
             + "border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.4);z-index:10000;"
-            + "padding:4px 0;font:12px/1.4 sans-serif;color:#f3f4f6;min-width:220px;"
-        // Position via fixed coords; clamp to viewport.
-        const vw = window.innerWidth, vh = window.innerHeight
-        menu.style.top  = Math.min(vh - 80, y) + "px"
-        menu.style.left = Math.min(vw - 230, x) + "px"
+            + "padding:4px 0;font:12px/1.4 sans-serif;color:#f3f4f6;min-width:240px;"
         const close = () => {
             if (menu.parentNode) menu.parentNode.removeChild(menu)
             document.removeEventListener("click",   onDocClick, true)
@@ -730,44 +728,104 @@ class RouteAssistantPanel {
             item.addEventListener("click", () => { close(); fn() })
             return item
         }
+        const mkSep = () => {
+            const sep = document.createElement("div")
+            sep.style.cssText = "height:1px;background:#1f2937;margin:4px 0;"
+            return sep
+        }
         const onDocClick = (e) => { if (!menu.contains(e.target)) close() }
         const onKey = (e) => { if (e.key === "Escape") close() }
+
+        const hubU    = String(this.hubIata || "").toUpperCase()
+        const destU   = String(row.destIata || "").toUpperCase()
+        const pairKey = hubU + "-" + destU
+        const watchlistOn = !!(this._watchlist && this._watchlist.has(pairKey))
+
+        // --- Edit data ---
         menu.append(
-            mkItem("Modify yield / LF…",        () => this._openOverrideEditor(row)),
-            mkItem("Open in ORS Sandbox 🧪",   () => this._openInOrsSandbox(row)),
+            mkItem("Modify yield / LF…",      () => this._openOverrideEditor(row)),
+            mkItem("Edit profit modifier…",   () => this._openProfitModifierPopover(row, anchorEl)),
+            mkItem("Edit service config…",    () => this._openServiceConfigPopover(row, anchorEl)),
+            mkItem(row.routeNoteText ? "Edit note…" : "Add note…",
+                                              () => this._openRouteNotePopover(row, anchorEl)),
+            mkSep()
+        )
+
+        // --- Memory ---
+        menu.append(
+            mkItem(watchlistOn ? "★ Remove from watchlist" : "☆ Add to watchlist",
+                                              () => this._toggleWatchlist(hubU, destU)),
+            mkSep()
+        )
+
+        // --- Workflow ---
+        menu.append(
+            mkItem("Open in ORS Sandbox 🧪",  () => this._openInOrsSandbox(row)),
             // Tier 3 — Apply price entry. Always rendered (even before a
             // markets scrape lands) because the modal does its own fresh
             // GET handshake against /app/com/markets/<HUB><DEST>; cached
             // ownPricing only seeds the input defaults. In 3.1 the modal's
             // Apply button is hard-disabled with a "dry-run only" banner.
-            mkItem("Apply price…",              () => this._openPricingApplyModal({
-                hub: this.hubIata, dest: row.destIata,
-                source: "manual", row
+            mkItem("Apply price…",            () => this._openPricingApplyModal({
+                hub: hubU, dest: destU, source: "manual", row
             }))
         )
-        // Q10 — Opening checklist for NEW-status routes only. Pops a
-        // small popover with prerequisite ✓/✗ rows + "fix this" links.
+        // Q10 — Opening checklist for NEW-status routes only.
         if (row && row.status === "NEW") {
             menu.append(mkItem("Opening checklist…", () => this._openRouteOpeningChecklist(row)))
         }
+        menu.append(mkSep())
+
+        // --- AS deep-links ---
+        const openTab = (path) => () => window.open(path, "_blank")
+        menu.append(
+            mkItem("↗ Scheduling page",       openTab("/app/com/scheduling/" + hubU + destU)),
+            mkItem("↗ Markets page",          openTab("/app/com/markets/"    + hubU + destU)),
+            mkItem("↗ ORS info page",         openTab("/app/info/ors")),
+            mkSep()
+        )
+
+        // --- Clipboard ---
+        const writeClip = (text) => async () => {
+            try {
+                await navigator.clipboard.writeText(text)
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.success("Copied: " + text)
+                }
+            } catch (e) {
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.error("Copy failed: " + (e && e.message ? e.message : e))
+                }
+            }
+        }
+        menu.append(
+            mkItem("Copy " + destU,               writeClip(destU)),
+            mkItem("Copy " + hubU + "→" + destU,  writeClip(hubU + "→" + destU))
+        )
+
         // U5 multi-select — conditional Add/Remove entry. Only when ≥1
         // route is already selected (avoids cluttering the menu in the
         // 0-selected default case). Avoids duplicating "Edit overrides
         // for N+1" / "Compare with" — those live in the U12 footer.
-        const destU = String(row.destIata || "").toUpperCase()
         const selSize = this._selectedRoutes ? this._selectedRoutes.size : 0
         if (selSize > 0) {
             const inSel = this._selectedRoutes.has(destU)
             const label = inSel
                 ? "Remove " + destU + " from selection (" + selSize + ")"
                 : "Add " + destU + " to selection (" + selSize + ")"
-            menu.append(mkItem(label, () => {
+            menu.append(mkSep(), mkItem(label, () => {
                 this._toggleRouteSelection(destU)
                 this._selectAnchorDest = destU
                 this._renderRows()
             }))
         }
+
         document.body.appendChild(menu)
+        // Position via fixed coords AFTER measuring height — clamp to viewport.
+        const vw = window.innerWidth, vh = window.innerHeight
+        const mh = menu.offsetHeight || 320, mw = menu.offsetWidth || 240
+        menu.style.top  = Math.min(vh - mh - 4, y) + "px"
+        menu.style.left = Math.min(vw - mw - 4, x) + "px"
         setTimeout(() => {
             document.addEventListener("click",   onDocClick, true)
             document.addEventListener("keydown", onKey)
@@ -4924,6 +4982,7 @@ class RouteAssistantPanel {
             + ":" + (hubRoutes ? hubRoutes.length : 0)
             + ":" + pickedHub
             + ":" + ovSig
+            + ":" + (wo.optimize ? "opt" : "greedy")
         if (!this._waveBuild
             || this._waveBuild._sig !== buildSig
             || this._waveBuildHub !== pickedHub) {
@@ -4934,7 +4993,8 @@ class RouteAssistantPanel {
                 selectedSpec:      this.selectedSpec,
                 topN:              topN,
                 carrierClassifier: this._carrierClassifierForFlight(),
-                overrides:         overridesMap
+                overrides:         overridesMap,
+                optimize:          !!wo.optimize
             })
             this._waveBuild._sig = buildSig
             this._waveBuildHub   = pickedHub
@@ -5668,6 +5728,35 @@ class RouteAssistantPanel {
             this._renderRows()
         })
         wrap.append(connBtn)
+
+        // H slice 3 — Auto-optimise toggle. When ON, the build runs the
+        // hill-climb in `ScheduleBuilder.optimizeAssignment` to maximise
+        // the connection-graph score; OFF keeps the greedy bucket-fill.
+        // Composition counts become CAPS (not floors) when on — note
+        // surfaced in the tooltip so users aren't surprised by waves
+        // landing below their wanted count.
+        const optOn = wo.optimize === true
+        const optBtn = document.createElement("button")
+        optBtn.type = "button"
+        optBtn.textContent = optOn ? "🎯 Optimised" : "🎯 Optimise"
+        optBtn.title = optOn
+            ? "Click to fall back to the greedy bucket-fill placement."
+            : "Hill-climb route placements to maximise the connection-graph count. Composition counts become caps, not floors — waves may land below their wanted count if a different placement yields more connections. Forced (📌) overrides are preserved."
+        Object.assign(optBtn.style, smallBtnStyle())
+        optBtn.style.background = optOn ? "#7c2d12" : "#1f2937"
+        optBtn.style.borderColor = optOn ? "#7c2d12" : "#475569"
+        optBtn.style.color = optOn ? "#fed7aa" : "#cbd5e1"
+        optBtn.style.opacity = optOn ? "1" : "0.85"
+        optBtn.addEventListener("click", async () => {
+            const next = !optOn
+            this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
+                {optimize: next})
+            try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+            catch (e) { /* non-fatal */ }
+            this._waveBuild = null
+            this._renderRows()
+        })
+        wrap.append(optBtn)
 
         // Slice 2 — Save schedule CTA. Lifts the slice-1 read-only
         // invariant on the explicit-action path only: the click handler
@@ -7679,7 +7768,7 @@ class RouteAssistantPanel {
 
             trow.addEventListener("contextmenu", (e) => {
                 e.preventDefault()
-                this._openRowContextMenu(row, e.clientX, e.clientY)
+                this._openRowContextMenu(row, e.clientX, e.clientY, trow)
             })
             // U11 hover preview — schedule a 200ms dwell on enter; cancel
             // pending preview on leave with a 150ms grace period for the
@@ -8755,11 +8844,13 @@ class RouteAssistantPanel {
         // sees the dry-run audit trail accumulate as they explore.
         wrap.append(this._renderTier3ApplyBlock(cfg))
 
-        // Tier 4 — silent auto. Pre-staged but inert in 3.1.
+        // Tier 3.3 silent-auto loop is the next slice — pre-staged in
+        // settings (silentAutoEnabled / silentAutoMaxPerDay/Hour /
+        // silentAutoMinDeltaPct) but no loop runs yet.
         const futureNote = document.createElement("div")
         futureNote.style.cssText = "color:#6b7280;font-size:10px;margin-top:6px;line-height:1.4;"
-        futureNote.innerHTML = "Tier 3.2 (next): live one-click apply + Undo + post-write verify. "
-            + "Tier 3.3 (after): bulk apply across visible routes + silent auto-apply behind a separate explicit gate."
+        futureNote.innerHTML = "Tier 3.3 (next): silent auto-apply loop behind a separate explicit gate "
+            + "(<code>silentAutoEnabled</code>) with per-day / per-hour / min-Δ% caps."
         wrap.append(futureNote)
 
         this.settingsHost.append(wrap)
@@ -15220,94 +15311,314 @@ class RouteAssistantPanel {
 
     _openBulkPricingApplyModal() {
         this._closePricingApplyModal()
+        const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
+        const dryRunOnly = apply.dryRunOnly !== false
+        const liveAvailable = !dryRunOnly && !!apply.enabled
+
+        const rows = this._collectBulkApplyRows()
+        const state = {
+            selected:    new Set(),
+            deltaPct:    {Y: 0, C: 0, F: 0, Cargo: 0},
+            scope:       Object.assign({}, apply.defaultScope || {}),
+            running:     false,
+            results:     new Map(),  // destIata → {status, msg}
+            cooldownMap: new Map()   // destIata → minutes until cooldown clears
+        }
+
         const overlay = document.createElement("div")
         overlay.id = "aes-pricing-apply-modal"
         overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10001;"
             + "display:flex;align-items:flex-start;justify-content:center;padding:60px 20px 20px 20px;"
         const dialog = document.createElement("div")
         dialog.style.cssText = "background:#0f1623;color:#e5e7eb;border:1px solid #475569;border-radius:6px;"
-            + "padding:14px 18px;width:760px;max-width:95vw;font:12px/1.4 sans-serif;"
+            + "padding:14px 18px;width:880px;max-width:95vw;font:12px/1.4 sans-serif;"
             + "max-height:calc(100vh - 80px);overflow-y:auto;"
+        const stage = dryRunOnly ? "Dry-run only" : (apply.enabled ? "LIVE writes" : "Live writes disabled")
+        const stageColor = dryRunOnly ? "#fbbf24" : (apply.enabled ? "#34d399" : "#9ca3af")
         const head = document.createElement("div")
         head.innerHTML = "<strong style='font-size:13px;'>Bulk apply price · " + (this.hubIata || "?") + "</strong>"
+            + " <span style='color:" + stageColor + ";font-size:10px;font-weight:normal;'>" + stage + "</span>"
             + "<div style='color:#9ca3af;font-size:10px;margin-top:2px;'>"
-            + "Tier 3.1 preview — visible routes with cached pricing. "
-            + "Per-row Apply enables in 3.2; bulk Apply across selection enables in 3.3."
+            + "Apply a uniform Δ% to selected routes. Each route's current cached price × (1 + Δ%/100) "
+            + "becomes the new price. Empty fields are sent at their current value."
             + "</div>"
         dialog.append(head)
 
-        const rows = (this.scoredRows || this.rows || []).filter(r => r && r.destIata)
-        const tbl = document.createElement("table")
-        tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:11px;margin-top:8px;"
-        const thead = document.createElement("thead")
-        const tr = document.createElement("tr")
-        for (const h of ["Route", "Y now", "C now", "F now", "Cargo now", "Last apply", "Action"]) {
-            const th = document.createElement("th")
-            th.textContent = h
-            th.style.cssText = "text-align:left;padding:4px 6px;color:#9ca3af;font-size:10px;"
-                + "text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #1f2937;"
-            tr.append(th)
-        }
-        thead.append(tr); tbl.append(thead)
-        const tbody = document.createElement("tbody")
-        let visibleCount = 0
-        for (const r of rows) {
-            const cached = this._lookupCachedOwnPricing(this.hubIata, r.destIata)
-            if (!cached) continue
-            visibleCount++
-            const trr = document.createElement("tr")
-            trr.style.cssText = "border-bottom:1px solid rgba(31, 41, 55, 0.5);"
-            const mkCell = (txt, mono) => {
-                const td = document.createElement("td")
-                td.textContent = txt
-                td.style.cssText = "padding:3px 6px;color:#cbd5e1;"
-                    + (mono ? "font-variant-numeric:tabular-nums;" : "")
-                return td
-            }
-            trr.append(mkCell((r.destIata || "?")))
-            const p = cached.prices || {}
-            trr.append(mkCell(p.Y     != null ? String(p.Y)     : "—", true))
-            trr.append(mkCell(p.C     != null ? String(p.C)     : "—", true))
-            trr.append(mkCell(p.F     != null ? String(p.F)     : "—", true))
-            trr.append(mkCell(p.Cargo != null ? String(p.Cargo) : "—", true))
-            trr.append(mkCell("—"))
-            const actTd = document.createElement("td")
-            actTd.style.cssText = "padding:3px 6px;"
-            const editBtn = document.createElement("button")
-            editBtn.textContent = "Open…"
-            editBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #374151;"
-                + "border-radius:3px;padding:2px 8px;font-size:10px;cursor:pointer;"
-            editBtn.addEventListener("click", () => {
-                this._closePricingApplyModal()
-                this._openPricingApplyModal({hub: this.hubIata, dest: r.destIata, source: "batch", row: r})
-            })
-            actTd.append(editBtn)
-            trr.append(actTd)
-            tbody.append(trr)
-        }
-        tbl.append(tbody)
-        dialog.append(tbl)
-
-        if (!visibleCount) {
+        if (!rows.length) {
             const empty = document.createElement("div")
             empty.style.cssText = "color:#9ca3af;font-size:11px;margin:12px 0;"
             empty.textContent = "No routes have cached pricing yet — run the Market Analysis sync first."
             dialog.append(empty)
+            const foot = document.createElement("div")
+            foot.style.cssText = "display:flex;justify-content:flex-end;margin-top:10px;"
+            const closeBtn = document.createElement("button")
+            closeBtn.textContent = "Close"
+            closeBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #374151;"
+                + "border-radius:3px;padding:5px 14px;font-size:11px;cursor:pointer;"
+            closeBtn.addEventListener("click", () => this._closePricingApplyModal())
+            foot.append(closeBtn)
+            dialog.append(foot)
+            const onKeyEmpty = (e) => { if (e.key === "Escape") this._closePricingApplyModal() }
+            const onClickEmpty = (e) => { if (e.target === overlay) this._closePricingApplyModal() }
+            overlay.append(dialog)
+            document.body.append(overlay)
+            document.addEventListener("keydown", onKeyEmpty)
+            overlay.addEventListener("click", onClickEmpty)
+            this._pricingApplyModal = {overlay, onKey: onKeyEmpty}
+            return
         }
 
+        // Per-class Δ% editor.
+        const deltaWrap = document.createElement("div")
+        deltaWrap.style.cssText = "display:flex;gap:10px;align-items:center;flex-wrap:wrap;"
+            + "padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:4px;margin-top:8px;"
+        const deltaTitle = document.createElement("strong")
+        deltaTitle.textContent = "Δ%"
+        deltaTitle.style.cssText = "color:#c4b5fd;font-size:11px;"
+        deltaWrap.append(deltaTitle)
+        const deltaInputs = {}
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
+            const lbl = document.createElement("label")
+            lbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#cbd5e1;font-size:11px;"
+            lbl.append(document.createTextNode(cls))
+            const input = document.createElement("input")
+            input.type = "number"
+            input.step = "0.5"
+            input.value = "0"
+            input.style.cssText = "width:62px;background:#1e293b;color:#fff;border:1px solid #475569;"
+                + "border-radius:3px;padding:3px 5px;font-size:11px;font-variant-numeric:tabular-nums;"
+            input.addEventListener("input", () => {
+                const v = parseFloat(input.value)
+                state.deltaPct[cls] = isFinite(v) ? v : 0
+                renderTable()
+                refreshFooter()
+            })
+            lbl.append(input)
+            deltaInputs[cls] = input
+            deltaWrap.append(lbl)
+        }
+        const allBtn = document.createElement("button")
+        allBtn.textContent = "Match Y across C/F/Cargo"
+        Object.assign(allBtn.style, smallBtnStyle())
+        allBtn.style.fontSize = "10px"
+        allBtn.addEventListener("click", () => {
+            const v = parseFloat(deltaInputs.Y.value)
+            const pct = isFinite(v) ? v : 0
+            for (const cls of ["C", "F", "Cargo"]) {
+                deltaInputs[cls].value = String(pct)
+                state.deltaPct[cls] = pct
+            }
+            renderTable()
+            refreshFooter()
+        })
+        deltaWrap.append(allBtn)
+        dialog.append(deltaWrap)
+
+        // Selection summary row.
+        const selRow = document.createElement("div")
+        selRow.style.cssText = "display:flex;gap:10px;align-items:center;margin-top:8px;font-size:11px;"
+        const selCount = document.createElement("span")
+        selCount.style.cssText = "color:#c4b5fd;"
+        const selectAllBtn = document.createElement("button")
+        selectAllBtn.textContent = "Select all"
+        Object.assign(selectAllBtn.style, smallBtnStyle())
+        selectAllBtn.style.fontSize = "10px"
+        selectAllBtn.addEventListener("click", () => {
+            for (const {r} of rows) state.selected.add(r.destIata)
+            renderTable()
+            refreshFooter()
+        })
+        const clearBtn = document.createElement("button")
+        clearBtn.textContent = "Clear"
+        Object.assign(clearBtn.style, smallBtnStyle())
+        clearBtn.style.fontSize = "10px"
+        clearBtn.addEventListener("click", () => {
+            state.selected.clear()
+            renderTable()
+            refreshFooter()
+        })
+        selRow.append(selCount, selectAllBtn, clearBtn)
+        dialog.append(selRow)
+
+        // Table.
+        const tableWrap = document.createElement("div")
+        tableWrap.style.cssText = "max-height:380px;overflow-y:auto;margin-top:6px;border:1px solid #1f2937;border-radius:4px;"
+        const tbl = document.createElement("table")
+        tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:11px;"
+        const thead = document.createElement("thead")
+        thead.style.cssText = "background:#0b1220;position:sticky;top:0;"
+        const trH = document.createElement("tr")
+        for (const h of ["", "Route", "Y now → new", "C now → new", "F now → new", "Cargo now → new", "Cooldown", "Status"]) {
+            const th = document.createElement("th")
+            th.textContent = h
+            th.style.cssText = "text-align:left;padding:4px 6px;color:#9ca3af;font-size:10px;"
+                + "text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #1f2937;"
+            trH.append(th)
+        }
+        thead.append(trH); tbl.append(thead)
+        const tbody = document.createElement("tbody")
+        tbl.append(tbody)
+        tableWrap.append(tbl)
+        dialog.append(tableWrap)
+
+        this._hydrateBulkCooldownMap(rows, state.cooldownMap).then(() => renderTable())
+
+        const renderTable = () => {
+            tbody.innerHTML = ""
+            for (const {r, cached} of rows) {
+                const dest = r.destIata
+                const trr = document.createElement("tr")
+                trr.style.cssText = "border-bottom:1px solid rgba(31, 41, 55, 0.5);"
+                if (state.selected.has(dest)) trr.style.background = "rgba(124, 58, 237, 0.08)"
+                const cbTd = document.createElement("td")
+                cbTd.style.cssText = "padding:3px 6px;"
+                const cb = document.createElement("input")
+                cb.type = "checkbox"
+                cb.checked = state.selected.has(dest)
+                cb.disabled = state.running
+                cb.addEventListener("change", () => {
+                    if (cb.checked) state.selected.add(dest)
+                    else state.selected.delete(dest)
+                    trr.style.background = cb.checked ? "rgba(124, 58, 237, 0.08)" : ""
+                    refreshFooter()
+                })
+                cbTd.append(cb)
+                trr.append(cbTd)
+                const routeTd = document.createElement("td")
+                routeTd.textContent = dest
+                routeTd.style.cssText = "padding:3px 6px;color:#cbd5e1;font-weight:600;"
+                trr.append(routeTd)
+                const p = cached.prices || {}
+                for (const cls of ["Y", "C", "F", "Cargo"]) {
+                    const cur = p[cls]
+                    const td = document.createElement("td")
+                    td.style.cssText = "padding:3px 6px;font-variant-numeric:tabular-nums;color:#cbd5e1;"
+                    if (cur == null) {
+                        td.textContent = "—"
+                    } else {
+                        const prop = this._computeBulkProposedPrice(cur, state.deltaPct[cls])
+                        if (prop === cur) {
+                            td.textContent = String(cur)
+                        } else {
+                            const arrow = prop > cur ? "↑" : "↓"
+                            const color = prop > cur ? "#34d399" : "#f87171"
+                            td.innerHTML = String(cur) + " → <span style='color:" + color + ";font-weight:600;'>"
+                                + String(prop) + " " + arrow + "</span>"
+                        }
+                    }
+                    trr.append(td)
+                }
+                const cdTd = document.createElement("td")
+                cdTd.style.cssText = "padding:3px 6px;font-size:10px;"
+                const cdMin = state.cooldownMap.get(dest)
+                if (isFinite(cdMin) && cdMin > 0) {
+                    cdTd.innerHTML = "<span style='color:#fbbf24;'>" + cdMin + "m left</span>"
+                    trr.style.opacity = "0.65"
+                } else {
+                    cdTd.textContent = "—"
+                }
+                trr.append(cdTd)
+                const stTd = document.createElement("td")
+                stTd.style.cssText = "padding:3px 6px;font-size:10px;"
+                const res = state.results.get(dest)
+                if (res) {
+                    const palette = {
+                        verified: "#34d399", posted: "#34d399",
+                        "dry-run": "#60a5fa",
+                        skipped:  "#9ca3af",
+                        failed:   "#f87171", aborted: "#f87171"
+                    }
+                    stTd.innerHTML = "<span style='color:" + (palette[res.status] || "#cbd5e1") + ";'>"
+                        + res.status + (res.msg ? " · " + res.msg : "") + "</span>"
+                }
+                trr.append(stTd)
+                tbody.append(trr)
+            }
+        }
+        renderTable()
+
+        // Footer.
         const foot = document.createElement("div")
         foot.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-top:10px;"
             + "padding-top:8px;border-top:1px solid #1f2937;"
         const summary = document.createElement("span")
-        summary.textContent = visibleCount + " routes · click Open… on any row for the per-route apply modal"
         summary.style.cssText = "color:#9ca3af;font-size:10px;"
+        const actBtns = document.createElement("div")
+        actBtns.style.cssText = "display:flex;gap:6px;"
         const closeBtn = document.createElement("button")
         closeBtn.textContent = "Close"
         closeBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #374151;"
             + "border-radius:3px;padding:5px 14px;font-size:11px;cursor:pointer;"
         closeBtn.addEventListener("click", () => this._closePricingApplyModal())
-        foot.append(summary, closeBtn)
+        const dryBtn = document.createElement("button")
+        dryBtn.textContent = "Dry-run all"
+        Object.assign(dryBtn.style, smallBtnStyle())
+        dryBtn.style.background = "#334155"
+        const applyBtn = document.createElement("button")
+        applyBtn.textContent = "Apply selected"
+        Object.assign(applyBtn.style, smallBtnStyle())
+        applyBtn.style.background = liveAvailable ? "#7c3aed" : "#374151"
+        applyBtn.style.borderColor = liveAvailable ? "#6d28d9" : "#475569"
+        applyBtn.style.color = liveAvailable ? "#fff" : "#9ca3af"
+        applyBtn.addEventListener("click", () => onApplyClick(false))
+        dryBtn.addEventListener("click", () => onApplyClick(true))
+        actBtns.append(closeBtn, dryBtn, applyBtn)
+        foot.append(summary, actBtns)
         dialog.append(foot)
+
+        const refreshFooter = () => {
+            const n = state.selected.size
+            const anyDelta = ["Y", "C", "F", "Cargo"].some(c => state.deltaPct[c] !== 0)
+            selCount.textContent = n + " of " + rows.length + " selected"
+            summary.textContent = n + " selected · "
+                + (anyDelta ? "Δ% set — proposed prices in green/red" : "no Δ% — Apply round-trips current prices")
+            const armed = n > 0 && !state.running
+            applyBtn.disabled = !armed || !liveAvailable
+            applyBtn.title = !liveAvailable
+                ? (dryRunOnly
+                    ? "Dry-run gate is on. Settings → Auto-Pricing → turn off \"Dry-run only\" to commit writes."
+                    : "Apply enabled is off. Settings → Auto-Pricing → flip \"Apply enabled\" to commit writes.")
+                : (n === 0 ? "Select at least one route." : "POST new prices to AS for " + n + " routes.")
+            dryBtn.disabled = !armed
+            dryBtn.title = n === 0 ? "Select at least one route." : "Dry-run preflight + body for " + n + " routes (no POST)."
+        }
+        refreshFooter()
+
+        const onApplyClick = async (forcedDryRun) => {
+            if (state.running) return
+            if (!state.selected.size) return
+            const selected = rows.filter(({r}) => state.selected.has(r.destIata))
+            if (!forcedDryRun) {
+                const ok = await this._openBulkApplyConfirmModal({
+                    selected, deltaPct: state.deltaPct, hub: this.hubIata
+                })
+                if (!ok) return
+            }
+            state.running = true
+            applyBtn.disabled = true
+            dryBtn.disabled = true
+            applyBtn.textContent = "Applying…"
+            try {
+                await this._runBulkPricingApply({
+                    selected, deltaPct: state.deltaPct, scope: state.scope, dryRun: forcedDryRun,
+                    onRowResult: (dest, result) => {
+                        state.results.set(dest, this._summariseBulkResult(result))
+                        renderTable()
+                    }
+                })
+                this._refreshAllOpenTier3LogPreviews()
+            } catch (e) {
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.error("Bulk apply threw: " + (e && e.message || e))
+                }
+            } finally {
+                state.running = false
+                applyBtn.disabled = false
+                dryBtn.disabled = false
+                applyBtn.textContent = "Apply selected"
+                refreshFooter()
+            }
+        }
 
         const onKey = (e) => { if (e.key === "Escape") this._closePricingApplyModal() }
         const onOverlayClick = (e) => { if (e.target === overlay) this._closePricingApplyModal() }
@@ -15316,6 +15627,222 @@ class RouteAssistantPanel {
         document.addEventListener("keydown", onKey)
         overlay.addEventListener("click", onOverlayClick)
         this._pricingApplyModal = {overlay, onKey}
+    }
+
+    /**
+     * Returns [{r, cached}] for every visible row whose ownPricing snapshot
+     * is in cache. Bulk-apply runs only against this set — without cached
+     * prices we can't compute a Δ% transformation.
+     */
+    _collectBulkApplyRows() {
+        const out = []
+        const rows = (this.scoredRows || this.rows || []).filter(r => r && r.destIata)
+        for (const r of rows) {
+            const cached = this._lookupCachedOwnPricing(this.hubIata, r.destIata)
+            if (cached) out.push({r, cached})
+        }
+        return out
+    }
+
+    _computeBulkProposedPrice(currentPrice, deltaPct) {
+        if (!isFinite(currentPrice) || currentPrice <= 0) return currentPrice
+        if (!isFinite(deltaPct) || deltaPct === 0) return currentPrice
+        const factor = 1 + (deltaPct / 100)
+        return Math.max(1, Math.round(currentPrice * factor))
+    }
+
+    /**
+     * Reads getLastSuccessAt for every (hub, dest) pair and populates
+     * cooldownMap with minutes-until-cooldown-clear when the route is
+     * still in cooldown. Routes outside cooldown stay absent from the
+     * map; the table renders them with a "—" badge.
+     */
+    async _hydrateBulkCooldownMap(rows, cooldownMap) {
+        const log = this._getPricingApplyLog()
+        if (!log || typeof log.getLastSuccessAt !== "function") return
+        const cfg = (this.settings.pricing && this.settings.pricing.apply) || {}
+        const cdMin = isFinite(cfg.cooldownMinPerRoute) ? cfg.cooldownMinPerRoute : 60
+        if (cdMin <= 0) return
+        await Promise.all(rows.map(async ({r}) => {
+            try {
+                const last = await log.getLastSuccessAt(this.hubIata, r.destIata)
+                if (!last) return
+                const minsSince = (Date.now() - last) / 60000
+                const remaining = Math.ceil(cdMin - minsSince)
+                if (remaining > 0) cooldownMap.set(r.destIata, remaining)
+            } catch (e) { /* ignore per-row failure */ }
+        }))
+    }
+
+    _summariseBulkResult(result) {
+        const out = {status: result.status, msg: ""}
+        if (result.error) {
+            const code = result.error.code
+            if (code === "rateLimit") {
+                out.msg = "HTTP " + (result.error.httpStatus || "?")
+                if (result.error.breakerTripped) out.msg += " · breaker"
+            } else if (code === "breakerCooldown") {
+                out.msg = "breaker · " + (result.error.remainingMin || "?") + "m"
+            } else if (code === "cooldownActive") {
+                out.msg = "cooldown"
+                out.status = "skipped"
+            } else if (code) {
+                out.msg = code
+            }
+        }
+        return out
+    }
+
+    /**
+     * Confirmation sub-modal — listing per-route from→to per class plus
+     * the required ack checkbox. Returns Promise<boolean> resolving to
+     * true on confirm, false on cancel/Escape/outside-click.
+     */
+    _openBulkApplyConfirmModal({selected, deltaPct, hub}) {
+        return new Promise((resolve) => {
+            const overlay = document.createElement("div")
+            overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:10002;"
+                + "display:flex;align-items:center;justify-content:center;padding:30px;"
+            const dialog = document.createElement("div")
+            dialog.style.cssText = "background:#0f1623;color:#e5e7eb;border:1px solid #475569;border-radius:6px;"
+                + "padding:14px 18px;width:760px;max-width:95vw;font:12px/1.4 sans-serif;"
+                + "max-height:80vh;overflow-y:auto;"
+            const close = (ok) => {
+                if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
+                document.removeEventListener("keydown", onKey)
+                resolve(ok)
+            }
+            const onKey = (e) => { if (e.key === "Escape") close(false) }
+            const head = document.createElement("div")
+            head.innerHTML = "<strong style='font-size:13px;'>Confirm bulk apply</strong>"
+                + "<div style='color:#9ca3af;font-size:10px;margin-top:2px;'>"
+                + selected.length + " routes from " + hub + " · review price changes before committing."
+                + "</div>"
+            dialog.append(head)
+            const tbl = document.createElement("table")
+            tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:11px;margin-top:8px;"
+            const thead = document.createElement("thead")
+            const trH = document.createElement("tr")
+            for (const h of ["Route", "Y", "C", "F", "Cargo"]) {
+                const th = document.createElement("th")
+                th.textContent = h
+                th.style.cssText = "text-align:left;padding:4px 6px;color:#9ca3af;font-size:10px;"
+                    + "text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #1f2937;"
+                trH.append(th)
+            }
+            thead.append(trH); tbl.append(thead)
+            const tbody = document.createElement("tbody")
+            for (const {r, cached} of selected) {
+                const trr = document.createElement("tr")
+                trr.style.cssText = "border-bottom:1px solid rgba(31, 41, 55, 0.5);"
+                const routeTd = document.createElement("td")
+                routeTd.textContent = r.destIata
+                routeTd.style.cssText = "padding:3px 6px;color:#cbd5e1;font-weight:600;"
+                trr.append(routeTd)
+                const p = cached.prices || {}
+                for (const cls of ["Y", "C", "F", "Cargo"]) {
+                    const cur = p[cls]
+                    const td = document.createElement("td")
+                    td.style.cssText = "padding:3px 6px;font-variant-numeric:tabular-nums;color:#cbd5e1;"
+                    if (cur == null) {
+                        td.textContent = "—"
+                    } else {
+                        const prop = this._computeBulkProposedPrice(cur, deltaPct[cls])
+                        if (prop === cur) td.textContent = String(cur)
+                        else {
+                            const color = prop > cur ? "#34d399" : "#f87171"
+                            td.innerHTML = String(cur) + " → <span style='color:" + color + ";font-weight:600;'>"
+                                + String(prop) + "</span>"
+                        }
+                    }
+                    trr.append(td)
+                }
+                tbody.append(trr)
+            }
+            tbl.append(tbody)
+            dialog.append(tbl)
+
+            const ack = document.createElement("label")
+            ack.style.cssText = "display:flex;gap:6px;align-items:center;margin-top:10px;color:#cbd5e1;font-size:11px;"
+            const ackCb = document.createElement("input")
+            ackCb.type = "checkbox"
+            ack.append(ackCb, document.createTextNode("I understand this will POST " + selected.length + " price updates to AirlineSim."))
+            dialog.append(ack)
+
+            const foot = document.createElement("div")
+            foot.style.cssText = "display:flex;justify-content:flex-end;gap:6px;margin-top:10px;"
+            const cancelBtn = document.createElement("button")
+            cancelBtn.textContent = "Cancel"
+            Object.assign(cancelBtn.style, smallBtnStyle())
+            cancelBtn.addEventListener("click", () => close(false))
+            const okBtn = document.createElement("button")
+            okBtn.textContent = "Apply " + selected.length + " routes"
+            Object.assign(okBtn.style, smallBtnStyle())
+            okBtn.style.background = "#7c3aed"
+            okBtn.style.borderColor = "#6d28d9"
+            okBtn.disabled = true
+            ackCb.addEventListener("change", () => { okBtn.disabled = !ackCb.checked })
+            okBtn.addEventListener("click", () => close(true))
+            foot.append(cancelBtn, okBtn)
+            dialog.append(foot)
+
+            overlay.addEventListener("click", (e) => { if (e.target === overlay) close(false) })
+            document.addEventListener("keydown", onKey)
+            overlay.append(dialog)
+            document.body.append(overlay)
+        })
+    }
+
+    /**
+     * Bulk apply orchestrator. Iterates selected routes serially —
+     * concurrency 1 is the right call here because (a) AS Wicket sessions
+     * don't parallelise across applies on the same session anyway and (b)
+     * a serial loop keeps the circuit-breaker counter monotonic. A single
+     * applier instance is reused across every row so the breaker state
+     * spans the whole batch (a 429 on row 3 trips for rows 4+).
+     */
+    async _runBulkPricingApply({selected, deltaPct, scope, dryRun, onRowResult}) {
+        const applier = this._getPricingApplier()
+        const log = this._getPricingApplyLog()
+        const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
+        const submitButton = apply.submitButton || "submit-prices"
+        let okCount = 0
+        let failCount = 0
+        for (const {r, cached} of selected) {
+            const dest = r.destIata
+            const p = cached.prices || {}
+            const prices = {}
+            for (const cls of ["Y", "C", "F", "Cargo"]) {
+                const cur = p[cls]
+                if (cur == null) continue
+                prices[cls] = this._computeBulkProposedPrice(cur, deltaPct[cls])
+            }
+            let lastApplyAt = null
+            try {
+                if (!dryRun && log && typeof log.getLastSuccessAt === "function") {
+                    lastApplyAt = await log.getLastSuccessAt(this.hubIata, dest)
+                }
+            } catch (e) { /* ignore */ }
+            try {
+                const result = await applier.apply(this.hubIata, dest, prices, {
+                    scope, source: "bulk", submitButton, lastApplyAt, dryRun
+                })
+                if (typeof onRowResult === "function") onRowResult(dest, result)
+                if (result.status === "verified" || result.status === "posted" || result.status === "dry-run") okCount++
+                else failCount++
+            } catch (e) {
+                const fakeResult = {status: "failed", error: {code: "applierThrew", message: String(e && e.message || e)}}
+                if (typeof onRowResult === "function") onRowResult(dest, fakeResult)
+                failCount++
+            }
+        }
+        if (typeof RouteAssistantToast !== "undefined") {
+            const verb = dryRun ? "Bulk dry-run" : "Bulk apply"
+            const msg = verb + " complete · " + okCount + " ok · " + failCount + " failed"
+            if (failCount === 0) RouteAssistantToast.success(msg)
+            else if (okCount === 0) RouteAssistantToast.error(msg)
+            else RouteAssistantToast.warn(msg)
+        }
     }
 
     _buildTier3PreflightView(pf) {

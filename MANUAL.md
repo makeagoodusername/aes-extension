@@ -986,7 +986,7 @@ From `HANDOVER.md §12` plus Phase 2 additions:
 
 ---
 
-## 18 · Auto-Pricing (Tier 1 + 2a + 2b + 3.1 + 3.2 shipped, 3.3 open)
+## 18 · Auto-Pricing (Tier 1 + 2a + 2b + 3.1 + 3.2 + 3.3a shipped, 3.3b open)
 
 End-to-end roadmap for the per-route pricing surface. Four-tier rollout, user-confirmed:
 
@@ -995,7 +995,8 @@ End-to-end roadmap for the per-route pricing surface. Four-tier rollout, user-co
 - **Tier 2b — ORS rank (shipped).** See §21 (ORS Rank) for the full design. Per-route GET → POST handshake against `/app/info/ors`, walks every result page, parses each connection's overall rating + per-leg flight code/ID/aircraft/price/status. Stores **all rank flavors** + ratings + the **full connection list** so any metric is re-derivable at render time without re-scraping. Concurrency=2, stagger=1500ms, circuit breaker on 3× consecutive 429/503.
 - **Tier 3.1 — dry-run apply (shipped).** `RouteAssistantPricingApplier` + `RouteAssistantPricingApplyLog` plus the per-route apply modal, sandbox-bridge, row context menu, and bulk-listing modal. Full pipeline (GET → preflight → form-body construction → audit log) runs but no POST hits AS. Two-gate model: `apply.enabled === true` + `apply.dryRunOnly === false`; both blocked in 3.1.
 - **Tier 3.2 — live single-route writes (shipped).** `apply.dryRunOnly` default flipped to `false` (`enabled` stays opt-in); the per-route modal's Apply button POSTs to the markets-page form, awaits `getLastSuccessAt(hub, dest)` to enforce per-route cooldown, runs receipt-verify by re-fetching + comparing prices, fires a 6-second Undo toast on `verified` / `posted` that re-runs the applier with `prevPrices`. Circuit breaker mirrors `ors-scraper.js`: three consecutive 429 / 503 trips persist `circuitBreakerTrippedAt` to settings, render a red banner with Reset in the expander, and short-circuit subsequent applies until the 10-min cooldown expires. First successful write resets the breaker counter and clears trippedAt. New panel checkbox lets users re-arm dry-run after the default flip.
-- **Tier 3.3 — bulk + silent-auto (OPEN).** Bulk apply modal turns into selection table with Apply across N routes; silent-auto loop behind `silentAutoEnabled` with hard caps (`silentAutoMaxPerDay`, `silentAutoMaxPerHour`, `silentAutoMinDeltaPct`); confirmation modal on first activation. Settings pre-staged in 3.1.
+- **Tier 3.3a — bulk apply selection table (shipped).** The Auto-Pricing expander's "Open bulk apply…" CTA opens a selection table with per-class Δ% inputs (Y / C / F / Cargo), checkbox column, in-table `current → proposed` preview, per-row cooldown badge, confirmation sub-modal listing every change with required ack, serial Promise loop. The same `RouteAssistantPricingApplier` instance is reused across the batch so the circuit breaker spans rows (a 429 storm trips the breaker mid-batch and short-circuits subsequent rows until Reset). Per-row status badges surface every error code (`HTTP 429`, `breaker · 8m`, `cooldown`, `applierThrew`); final outcome toast reports ok/fail counts. Apply log entries carry `source: "bulk"`.
+- **Tier 3.3b — silent-auto loop (OPEN).** `chrome.alarms` periodic check behind `silentAutoEnabled` with hard caps (`silentAutoMaxPerDay`, `silentAutoMaxPerHour`, `silentAutoMinDeltaPct`); confirmation modal on first activation. Settings pre-staged in 3.1. Likely calls the same `_runBulkPricingApply` helper with auto-derived deltas (sandbox-driven or rule-based).
 - **Tier 4 — yield feedback.** Subsumed by Roadmap G; see §20 (Yield Feedback).
 
 **Order is fixed.** No skip-ahead between tiers — a write-back that ships before T2 visibility would be flying blind.
