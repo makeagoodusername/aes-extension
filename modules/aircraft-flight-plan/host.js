@@ -774,20 +774,51 @@
         wrap.appendChild(raBtn)
 
         // Force-recompute candidates + re-read the persisted schedule
-        // without leaving the page. Same debounced path the bus uses
-        // (spec:resolved / ctx:ready / schedule:updated) so spamming the
-        // button is safe. Read-only — preserves the panel-CTA write
-        // gateway invariant.
-        const refreshEnabled = typeof AesAfpRouteCandidates !== "undefined"
-            && typeof AesAfpRouteCandidates.refresh === "function"
-        const refreshBtn = mkToolButton("↻ Update",
-            refreshEnabled
-                ? "Re-fetch candidates and re-read the persisted schedule for this hub."
-                : "Route candidates module not loaded.",
-            refreshEnabled,
-            () => {
-                try { AesAfpRouteCandidates.refresh() } catch (_) { /* noop */ }
-            })
+        // without leaving the page. Bypasses the bus-subscription debounce
+        // (see AesAfpRouteCandidates.refresh) so a click never gets
+        // swallowed by a near-simultaneous spec/ctx/schedule event.
+        // Read-only — preserves the panel-CTA write gateway invariant.
+        // Click feedback (⏳ → ✓) is the user-visible signal that the
+        // recompute ran even when the result is byte-identical to before.
+        const refreshBtn = document.createElement("button")
+        refreshBtn.type = "button"
+        refreshBtn.textContent = "↻ Update"
+        refreshBtn.title = "Re-fetch candidates and re-read the persisted schedule for this hub."
+        refreshBtn.style.cssText = toolButtonCss(true)
+        let _refreshFlashTimer = 0
+        const _flashRefresh = (text, bg, ms) => {
+            if (_refreshFlashTimer) clearTimeout(_refreshFlashTimer)
+            refreshBtn.textContent = text
+            refreshBtn.style.background = bg
+            _refreshFlashTimer = setTimeout(() => {
+                refreshBtn.textContent = "↻ Update"
+                refreshBtn.style.background = "#0f1623"
+                _refreshFlashTimer = 0
+            }, ms)
+        }
+        refreshBtn.addEventListener("click", () => {
+            _flashRefresh("⏳ Updating…", "#1e3a8a", 1500)
+            try {
+                if (typeof AesAfpRouteCandidates !== "undefined"
+                    && typeof AesAfpRouteCandidates.refresh === "function") {
+                    AesAfpRouteCandidates.refresh()
+                }
+            } catch (_) { /* noop */ }
+        })
+        // Confirm completion via the existing candidates:updated event so
+        // the user sees explicit "✓ Updated" feedback after the compute
+        // finishes (works for both clicks AND background bus-driven runs,
+        // which is fine — the flash is short and benign). Wicket re-mounts
+        // this strip on every form submit, so detach the prior handler to
+        // avoid leaking closures on dead DOM nodes.
+        if (window.AesAfp && AesAfp.bus) {
+            try {
+                if (_refreshUpdatedHandler) AesAfp.bus.off("candidates:updated", _refreshUpdatedHandler)
+                const onUpdated = () => _flashRefresh("✓ Updated", "#15803d", 900)
+                AesAfp.bus.on("candidates:updated", onUpdated)
+                _refreshUpdatedHandler = onUpdated
+            } catch (_) { /* noop */ }
+        }
         wrap.appendChild(refreshBtn)
 
         // Hub-watchlist toggle. Watchlist keys are "<HUB>-<DEST>"; we use
@@ -844,6 +875,7 @@
     let _observer = null
     let _remountTimer = null
     let _candidatesUpdatedHandler = null
+    let _refreshUpdatedHandler = null
 
     /**
      * Attach a MutationObserver to the page row. Wicket re-renders the

@@ -724,12 +724,16 @@
         },
 
         /** Public refresh entry — host.js's "Update" tool button calls this
-         *  so users can force a recompute without navigating away. Re-uses
-         *  the same debounced `_scheduleRun` path as the bus subscriptions
-         *  so multiple rapid clicks coalesce into one compute. Read-only:
+         *  so users can force a recompute without navigating away. Bypasses
+         *  the 150 ms debounce that the bus subscriptions use, so a click
+         *  can't be swallowed by a `spec:resolved` / `ctx:ready` /
+         *  `schedule:updated` event that arrived a few ms earlier. Read-only:
          *  re-reads schedule + FlightsFrom + demand + α + watchlist stores
          *  and re-renders; never writes. */
-        refresh() { _scheduleRun() },
+        refresh() {
+            if (_scheduledRun) { clearTimeout(_scheduledRun); _scheduledRun = 0 }
+            _runCompute()
+        },
 
         async _loadDefaultDepTime() {
             if (this._depTimeLoaded) return
