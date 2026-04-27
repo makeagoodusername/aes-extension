@@ -329,13 +329,17 @@ function _afpNewBatchId() {
 }
 
 /**
- * Broadcast a progress message back to the originating tab so the AFP
- * page's apply-batch.js content script can update the live progress UI.
- * Falls back to runtime.sendMessage when sender.tab.id isn't known
- * (e.g., the request came from the popup or a service worker call).
+ * Broadcast a progress message back to the originating tab so a content-side
+ * orchestrator (apply-batch.js, flight-deleter.js, ...) can update the live
+ * progress UI. Falls back to runtime.sendMessage when sender.tab.id isn't
+ * known (e.g., the request came from the popup or a service worker call).
+ *
+ * `type` is the chrome.runtime message type (e.g.
+ * 'aes:afp:apply-batch:progress' or 'aes:afp:delete-batch:progress'); the
+ * receiving content script filters on it.
  */
-function _afpBroadcastBatchProgress(senderTabId, payload) {
-  const msg = Object.assign({type: 'aes:afp:apply-batch:progress'}, payload);
+function _afpBroadcastProgress(senderTabId, type, payload) {
+  const msg = Object.assign({type}, payload);
   if (senderTabId != null) {
     try {
       chrome.tabs.sendMessage(senderTabId, msg, () => {
@@ -361,8 +365,9 @@ async function _afpRunBatchSubmit(req, sender) {
   const totalDeadline = Date.now() + AFP_BATCH_TOTAL_TIMEOUT_MS;
   const results = [];
 
-  const progress = (extra) => _afpBroadcastBatchProgress(
+  const progress = (extra) => _afpBroadcastProgress(
     senderTabId,
+    'aes:afp:apply-batch:progress',
     Object.assign({batchId, aircraftId: req.aircraftId, total}, extra)
   );
 
@@ -479,15 +484,177 @@ async function _afpRunBatchSubmit(req, sender) {
   }
 }
 
-function _afpEnqueueBatch(req, sender) {
+function _afpEnqueueOnAircraft(req, sender, runner) {
   const key = String(req.aircraftId);
   const tail = _afpSubmitQueues.get(key) || Promise.resolve();
-  const next = tail.catch(() => null).then(() => _afpRunBatchSubmit(req, sender));
+  const next = tail.catch(() => null).then(() => runner(req, sender));
   _afpSubmitQueues.set(key, next);
   next.finally(() => {
     if (_afpSubmitQueues.get(key) === next) _afpSubmitQueues.delete(key);
   });
   return next;
+}
+
+const _afpEnqueueBatch       = (req, sender) => _afpEnqueueOnAircraft(req, sender, _afpRunBatchSubmit);
+const _afpEnqueueDeleteBatch = (req, sender) => _afpEnqueueOnAircraft(req, sender, _afpRunDeleteBatch);
+
+// ── AFP delete-batch pipeline (Track 6 slice 6c) ───────────────────────
+//
+// Mirror of the apply-batch pipeline above but for deleting AS flight
+// numbers via /app/com/numbers/<flightId>. AS's delete UI is a one-step
+// Wicket POST — the form's `action` ends with `-delete~form`. Verified
+// against captures of flights 9441 and 9437; the Wicket session id and
+// component path drift but the suffix is stable. The bulk-delete on the
+// list page only handles "unused" flights, so per-flight detail-page
+// POSTs are the right choice for the wipe-and-rebuild use case.
+//
+// Reuses the per-aircraft submit queue (_afpSubmitQueues) so a delete
+// batch can't race a single-leg Apply or Apply-all batch on the same
+// aircraft. Reuses _afpBatchState so abort routing is identical.
+//
+// Per-flight sequence (one hidden tab, navigated in place):
+//   1. tabs.update(tabId, {url: '/app/com/numbers/<id>'}) → wait complete
+//   2. send 'aes:afp:delete-flight-form' to the content script — that
+//      script verifies the URL matches the flightId and submits the
+//      `form[action$="-delete~form"]` form. Replies {ok:true, posting:true}.
+//   3. wait for AS's post-submit redirect (status === 'complete').
+//   4. inter-flight 500ms delay (AS rate-limits Wicket POSTs).
+
+async function _afpRunDeleteBatch(req, sender) {
+  const batchId = req.batchId || _afpNewBatchId();
+  const senderTabId = (sender && sender.tab && sender.tab.id != null)
+    ? sender.tab.id : null;
+  const flights = Array.isArray(req.flights) ? req.flights : [];
+  const total = flights.length;
+  const host = _afpHostFromSender(sender);
+  const totalDeadline = Date.now() + AFP_BATCH_TOTAL_TIMEOUT_MS;
+  const results = [];
+
+  const progress = (extra) => _afpBroadcastProgress(
+    senderTabId,
+    'aes:afp:delete-batch:progress',
+    Object.assign({batchId, aircraftId: req.aircraftId, total}, extra)
+  );
+
+  if (!total) {
+    progress({phase: 'done', ok: true, results: [], emptyBatch: true});
+    return {ok: true, batchId, results: [], total: 0};
+  }
+
+  const stateEntry = {tabId: null, abort: false, senderTabId, aircraftId: req.aircraftId};
+  _afpBatchState.set(batchId, stateEntry);
+  progress({phase: 'queued'});
+
+  const numbersUrl = (flightId) => host + '/app/com/numbers/' + String(flightId);
+
+  let tab = null;
+  try {
+    // Open at the first flight's detail URL so the initial load lands
+    // already on the page we're going to delete from.
+    tab = await new Promise((resolve, reject) => {
+      chrome.tabs.create({url: numbersUrl(flights[0].flightId), active: false}, (t) => {
+        const lastErr = chrome.runtime.lastError;
+        if (lastErr) reject(new Error(lastErr.message || 'tabs.create failed'));
+        else resolve(t);
+      });
+    });
+    stateEntry.tabId = tab.id;
+    progress({phase: 'tab-opened', tabId: tab.id});
+
+    await _waitForTabComplete(tab.id, AFP_SUBMIT_INITIAL_LOAD_TIMEOUT_MS);
+    progress({phase: 'tab-loaded'});
+
+    for (let i = 0; i < total; i++) {
+      const cur = _afpBatchState.get(batchId);
+      if (!cur || cur.abort) {
+        progress({phase: 'aborted', flightIdx: i, completed: i, results});
+        return {ok: false, batchId, error: 'aborted', results, aborted: true, total};
+      }
+      if (Date.now() > totalDeadline) {
+        progress({phase: 'timeout', flightIdx: i, completed: i, results});
+        return {ok: false, batchId, error: 'batch total wall-clock timeout', results, timedOut: true, total};
+      }
+
+      const flight = flights[i] || {};
+      const flightId = flight.flightId != null ? String(flight.flightId) : '';
+      progress({phase: 'flight-start', flightIdx: i, flightId});
+
+      // For i > 0, navigate the existing tab to the next flight's URL.
+      // First iteration's URL was set in tabs.create above.
+      if (i > 0) {
+        try {
+          await new Promise((resolve, reject) => {
+            chrome.tabs.update(tab.id, {url: numbersUrl(flightId)}, (t) => {
+              const lastErr = chrome.runtime.lastError;
+              if (lastErr) reject(new Error(lastErr.message || 'tabs.update failed'));
+              else resolve(t);
+            });
+          });
+          await _waitForTabComplete(tab.id, AFP_BATCH_RELOAD_TIMEOUT_MS);
+        } catch (e) {
+          const err = 'navigate failed: ' + ((e && e.message) || String(e));
+          results.push({flightIdx: i, flightId, ok: false, error: err});
+          progress({phase: 'flight-done', flightIdx: i, flightId, ok: false, error: err});
+          if (i < total - 1) {
+            await new Promise(r => setTimeout(r, AFP_BATCH_INTER_LEG_DELAY_MS));
+          }
+          continue;
+        }
+      }
+
+      try {
+        const resp = await _sendTabMessageWithTimeout(
+          tab.id,
+          {type: 'aes:afp:delete-flight-form', flightId},
+          AFP_BATCH_FILL_TIMEOUT_MS
+        );
+        if (!resp || !resp.ok) {
+          const err = (resp && resp.error) || 'delete-flight-form returned no/non-ok response';
+          results.push({flightIdx: i, flightId, ok: false, error: err});
+          progress({phase: 'flight-done', flightIdx: i, flightId, ok: false, error: err});
+        } else if (resp.posting) {
+          // Form submission triggers a Wicket POST + redirect. Wait for
+          // the tab to finish before moving on or closing.
+          try {
+            await _waitForTabComplete(tab.id, AFP_BATCH_RELOAD_TIMEOUT_MS);
+            results.push({flightIdx: i, flightId, ok: true});
+            progress({phase: 'flight-done', flightIdx: i, flightId, ok: true});
+          } catch (e) {
+            const err = 'post-delete reload did not complete: ' + ((e && e.message) || String(e));
+            results.push({flightIdx: i, flightId, ok: false, error: err});
+            progress({phase: 'flight-done', flightIdx: i, flightId, ok: false, error: err});
+          }
+        } else {
+          // Unexpected: ok but posting false — record success but flag.
+          results.push({flightIdx: i, flightId, ok: true, posting: false});
+          progress({phase: 'flight-done', flightIdx: i, flightId, ok: true, posting: false});
+        }
+      } catch (e) {
+        const err = (e && e.message) || String(e);
+        results.push({flightIdx: i, flightId, ok: false, error: err});
+        progress({phase: 'flight-done', flightIdx: i, flightId, ok: false, error: err});
+      }
+
+      // Inter-flight delay — AS rate-limits Wicket form posts. Skip the
+      // wait after the last flight so completion feels snappy.
+      if (i < total - 1) {
+        await new Promise(r => setTimeout(r, AFP_BATCH_INTER_LEG_DELAY_MS));
+      }
+    }
+
+    const okCount = results.filter(r => r && r.ok).length;
+    progress({phase: 'done', ok: okCount === total, completed: total, results});
+    return {ok: okCount > 0, batchId, results, total, succeeded: okCount, failed: total - okCount};
+  } catch (e) {
+    const err = (e && e.message) || String(e);
+    progress({phase: 'error', error: err, results});
+    return {ok: false, batchId, error: err, results, total};
+  } finally {
+    _afpBatchState.delete(batchId);
+    if (tab && tab.id != null) {
+      try { chrome.tabs.remove(tab.id); } catch (_) { /* noop */ }
+    }
+  }
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -521,9 +688,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || msg.type !== 'aes:afp:apply-batch:abort') return false;
+  if (!msg || msg.type !== 'aes:afp:delete-batch') return false;
+  if (!msg.aircraftId || !Array.isArray(msg.flights)) {
+    sendResponse({ok: false, error: 'delete-batch: missing aircraftId or flights[]'});
+    return false;
+  }
+  _afpEnqueueDeleteBatch(msg, sender).then(resp => {
+    try { sendResponse(resp); } catch (_) { /* caller may have gone */ }
+  }).catch(err => {
+    try { sendResponse({ok: false, error: (err && err.message) || String(err)}); }
+    catch (_) { /* noop */ }
+  });
+  return true;   // keep the message channel open for async response
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg) return false;
+  if (msg.type !== 'aes:afp:apply-batch:abort'
+   && msg.type !== 'aes:afp:delete-batch:abort') return false;
+  const tag = msg.type === 'aes:afp:apply-batch:abort' ? 'apply-batch:abort' : 'delete-batch:abort';
   if (!msg.batchId) {
-    sendResponse({ok: false, error: 'apply-batch:abort: missing batchId'});
+    sendResponse({ok: false, error: tag + ': missing batchId'});
     return false;
   }
   const state = _afpBatchState.get(msg.batchId);

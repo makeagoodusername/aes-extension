@@ -23,7 +23,11 @@
  *   AesAfp.host               — sidebar `.as-panel` root (back-compat)
  *   AesAfp.wideHost           — main-column `.as-panel` root
  *   AesAfp.slot(name)         — returns div[data-aes-afp-slot=name]
- *   AesAfp.getCurrentSchedule()  — VFP reader → Leg[]
+ *   AesAfp.getCurrentSchedule()  — VFP reader → Leg[] (legacy shape)
+ *   AesAfp.getSchedule()         — Slice 7a — full Schedule (every block
+ *                                  kind + planning matrix + summary)
+ *                                  via AesAfpVfpReader. null when 7a
+ *                                  modules aren't loaded.
  *   AesAfp.getNewFlightForm()    — form locator → FormHandles | null
  *   AesAfp.mount()            — idempotent; re-runs from MutationObserver
  */
@@ -39,7 +43,11 @@
     // under "tools" so the auto-build summary + Apply-all CTA become the
     // first thing the user sees in the wide host, sitting visually above
     // the candidate table and the legacy form-driver toolbar.
-    const WIDE_SLOT_NAMES    = ["tools", "auto-preview", "candidates", "driver", "wave"]
+    // "studio" is owned by Track 9's flight-studio/panel.js (Slice S1).
+    // Sits between auto-preview and candidates so the compose surface is
+    // visually adjacent to the auto-build readout — both are "what would
+    // be applied" surfaces.
+    const WIDE_SLOT_NAMES    = ["tools", "auto-preview", "studio", "candidates", "driver", "wave"]
     const REMOUNT_DEBOUNCE_MS = 200
 
     /** Wrap a thunk; swallow errors and return null on throw. */
@@ -168,44 +176,36 @@
     }
 
     /**
-     * Visual Flight Plan reader. Walks `.day .blocks` Mon-Sun and emits
-     * one entry per `.block.flight` child (skipping the location /
-     * turnaround / ready slivers around each flight bar).
-     *
-     * Time encoding: AS positions every block by CSS `margin-left` /
-     * `width` as a percentage of the 24h day. So a flight block with
-     * `margin-left: 25.0%` starts at 6:00 (25% × 1440min = 360min). The
-     * `<span class="start">` text inside is unreliable across short vs
-     * long bars (HHMM for long, just minutes for short), so we treat
-     * margin-left as the source of truth and round to the nearest minute.
-     *
-     * Origin / destination: the location bars sandwiching the flight bar
-     * carry the IATA in `<span class="outbound" title>` (the bar before)
-     * and `<span class="inbound" title>` (the bar after). We prefer the
-     * `title` attribute over textContent because AS sometimes wraps the
-     * label in extra elements.
-     *
-     * Each leg gets a synthetic 1-based `seq` ordered by (dayIdx, depTime)
-     * so callers (Track 6's ScheduleDiff) can refer to a current leg by
-     * an integer key the way ScheduleBuilder-produced legs do.
-     *
-     * Slice 6a-followup: a long-haul flight that visually splits across
-     * midnight (a `block flight started` half on day N + a
-     * `block flight ended` half on day N+1, sharing the same `flightId`)
-     * is now collapsed into ONE merged leg with `crossesMidnight: true`.
-     * The pre-followup `spansIntoNext` / `spansFromPrev` flags are
-     * stripped from output legs; only `crossesMidnight` survives. See
-     * `_collapseDayCrossPairs` for the pairing rules.
-     *
-     * Validated against:
-     * - `CLAUDE/...:13536:0?6 flight plan.html` — 14 same-day flights;
-     *   collapse is a no-op (no `started`/`ended` halves).
-     * - `CLAUDE/...:21944:0?13 MULTIDAYROUTES.html` — 20 raw flight bars
-     *   collapse to 14 logical legs (8 same-day + 6 cross-midnight).
-     * - The 6968 capture's empty .blocks paths still return [].
-     * See `CLAUDE/handover-fragments/AFP-VFP-parser.md` for the audit.
+     * Visual Flight Plan reader. Returns the legacy `Leg[]` shape — one
+     * entry per logical flight across Mon-Sun, sorted by (dayIdx, depTime),
+     * each with a 1-based `seq`. Day-crossing flights are collapsed into
+     * one merged leg with `crossesMidnight: true`. Callers that need the
+     * full schedule shape (location / maintenance / turnaround / ready /
+     * overlap blocks + planning-matrix) should use `AesAfp.getSchedule()`.
      */
     function readVisualFlightPlan() {
+        if (typeof window.AesAfpVfpReader     !== "undefined"
+         && typeof window.AesAfpScheduleModel !== "undefined") {
+            try {
+                const schedule = window.AesAfpVfpReader.read({
+                    server:     AesAfp && AesAfp.ctx ? AesAfp.ctx.server     : "",
+                    aircraftId: AesAfp && AesAfp.ctx ? AesAfp.ctx.aircraftId : "",
+                    hubIata:    AesAfp && AesAfp.ctx ? AesAfp.ctx.currentLocationIata : null
+                })
+                return _collapseDayCrossPairs(window.AesAfpScheduleModel.legsFromSchedule(schedule))
+            } catch (e) {
+                console.warn("[AES AFP] vfp-reader threw, falling back to legacy reader", e)
+            }
+        }
+        return _collapseDayCrossPairs(_legacyReadVisualFlightPlan())
+    }
+
+    /**
+     * Inline VFP reader fallback used only when AesAfpVfpReader or
+     * AesAfpScheduleModel haven't loaded — preserves the legacy Leg[]
+     * contract.
+     */
+    function _legacyReadVisualFlightPlan() {
         const out = []
         const days = document.querySelectorAll(".as-panel.visual-flight-plan .vfp.vfp-main .day")
         days.forEach((day, dayIdx) => {
@@ -226,7 +226,27 @@
             return (aMin == null ? 1e9 : aMin) - (bMin == null ? 1e9 : bMin)
         })
         for (let s = 0; s < out.length; s++) out[s].seq = s + 1
-        return _collapseDayCrossPairs(out)
+        return out
+    }
+
+    /**
+     * Returns the full Schedule shape (all block kinds + flat legs[] +
+     * summary), or null when AesAfpVfpReader hasn't loaded. Synchronous
+     * + DOM-bound — for an async store-backed read use
+     * AesAfpScheduleStore.load().
+     */
+    function readSchedule() {
+        if (typeof window.AesAfpVfpReader === "undefined") return null
+        try {
+            return window.AesAfpVfpReader.read({
+                server:     AesAfp && AesAfp.ctx ? AesAfp.ctx.server     : "",
+                aircraftId: AesAfp && AesAfp.ctx ? AesAfp.ctx.aircraftId : "",
+                hubIata:    AesAfp && AesAfp.ctx ? AesAfp.ctx.currentLocationIata : null
+            })
+        } catch (e) {
+            console.warn("[AES AFP] readSchedule threw", e)
+            return null
+        }
     }
 
     /** Internal: extract one flight leg from a `.block.flight` element. */
@@ -364,8 +384,8 @@
      * in the output as same-day legs (`crossesMidnight: false`) so
      * downstream consumers can still see them.
      *
-     * No-op when no leg carries the span flags (e.g. when a future
-     * upstream reader already collapsed pairs internally) — the
+     * No-op when no leg carries the span flags (e.g. when the Slice 7a
+     * `legsFromSchedule` already collapsed pairs internally) — the
      * function still strips the retired flags + stamps `crossesMidnight`
      * for shape consistency.
      */
@@ -631,28 +651,96 @@
         label.textContent = hub ? ("Hub: " + hub) : "Hub: unresolved"
         wrap.appendChild(label)
 
-        // Open Stations modal — opens with the current hub pre-selected.
+        // Open Stations — primary opens the modal seeded with the visible
+        // candidate-list rows, secondary "▾" exposes the legacy bulk-open
+        // (top routes / watchlist / FlightsFrom / demand). Both require
+        // OpenStationsModal + a resolved hub + server/airlineCode in ctx.
+        const baseEnabled = !!hub && typeof OpenStationsModal !== "undefined"
+            && !!ctx.server && !!ctx.airlineCode
+        const openModal = (extraOpts) => {
+            if (typeof OpenStationsModal === "undefined") {
+                console.warn("[AES AFP] OpenStationsModal not loaded — check manifest order")
+                return
+            }
+            try {
+                const modal = new OpenStationsModal(Object.assign({
+                    server:      ctx.server,
+                    airlineCode: ctx.airlineCode || ctx.airlineId || "",
+                    currentHub:  hub
+                }, extraOpts || {}))
+                modal.open()
+            } catch (e) {
+                console.warn("[AES AFP] OpenStationsModal threw", e)
+            }
+        }
+        const visibleIatas = () =>
+            (typeof AesAfpRouteCandidates !== "undefined"
+                && typeof AesAfpRouteCandidates.visibleIatas === "function")
+                ? AesAfpRouteCandidates.visibleIatas() : []
+
+        const group = document.createElement("span")
+        group.style.cssText = "display:inline-flex;gap:0;"
+
         const stationsBtn = mkToolButton("Open stations…",
-            hub ? "Bulk-open stations using top routes / watchlist / FlightsFrom for " + hub
-                : "Hub not yet resolved — refresh once Slice A finds the aircraft's last airport.",
-            !!hub && typeof OpenStationsModal !== "undefined" && !!ctx.server && !!ctx.airlineCode,
+            "", // tooltip set dynamically below
+            baseEnabled,
             () => {
-                if (typeof OpenStationsModal === "undefined") {
-                    console.warn("[AES AFP] OpenStationsModal not loaded — check manifest order")
-                    return
-                }
-                try {
-                    const modal = new OpenStationsModal({
-                        server:      ctx.server,
-                        airlineCode: ctx.airlineCode || ctx.airlineId || "",
-                        currentHub:  hub
-                    })
-                    modal.open()
-                } catch (e) {
-                    console.warn("[AES AFP] OpenStationsModal threw", e)
-                }
+                const seed = visibleIatas()
+                if (!seed.length) return
+                openModal({seedIatas: seed, seedSource: "candidates"})
             })
-        wrap.appendChild(stationsBtn)
+        // Override the corner radius so it sits flush with the caret.
+        stationsBtn.style.borderTopRightRadius    = "0"
+        stationsBtn.style.borderBottomRightRadius = "0"
+        stationsBtn.style.borderRight             = "1px solid #1f2937"
+        const refreshStationsBtn = () => {
+            const seed = visibleIatas()
+            const hasSeed = baseEnabled && seed.length > 0
+            stationsBtn.disabled = !hasSeed
+            stationsBtn.style.cursor = hasSeed ? "pointer" : "not-allowed"
+            stationsBtn.style.background = hasSeed ? "#0f1623" : "#1f2937"
+            stationsBtn.style.color      = hasSeed ? "#cbd5e1" : "#6b7280"
+            if (!baseEnabled) {
+                stationsBtn.title = "Hub not yet resolved — refresh once Slice A finds the aircraft's last airport."
+            } else if (!seed.length) {
+                stationsBtn.title = "Open Stations — no candidates visible yet. The button activates once the candidate list above renders."
+            } else {
+                stationsBtn.title = `Open the ${seed.length} destination${seed.length === 1 ? "" : "s"} currently visible in the candidate list above (respects Range-fit / Hide scheduled / Top filters).`
+            }
+        }
+        refreshStationsBtn()
+        // Re-evaluate enabled state when the candidate list re-renders.
+        // Wicket re-mounts this strip on every form submit, so detach the
+        // previous handler first to avoid leaking stale closures + DOM refs.
+        if (window.AesAfp && AesAfp.bus) {
+            try {
+                if (_candidatesUpdatedHandler) AesAfp.bus.off("candidates:updated", _candidatesUpdatedHandler)
+                AesAfp.bus.on("candidates:updated", refreshStationsBtn)
+                _candidatesUpdatedHandler = refreshStationsBtn
+            } catch (_) {}
+        }
+
+        // Caret = legacy bulk-open path (top routes / watchlist / FlightsFrom
+        // / demand). Single secondary action so we skip the dropdown menu —
+        // the tooltip carries the discovery weight.
+        const caretBtn = document.createElement("button")
+        caretBtn.type = "button"
+        caretBtn.textContent = "▾"
+        caretBtn.title = hub
+            ? `Bulk-open from watchlist / top routes / FlightsFrom / demand (scoped to ${hub} for the watchlist source).`
+            : "Bulk-open from watchlist / top routes / FlightsFrom / demand."
+        caretBtn.style.cssText = "background:" + (baseEnabled ? "#0f1623" : "#1f2937") + ";"
+            + "color:" + (baseEnabled ? "#cbd5e1" : "#6b7280") + ";"
+            + "border:1px solid #374151;border-left:none;"
+            + "border-top-left-radius:0;border-bottom-left-radius:0;"
+            + "border-top-right-radius:4px;border-bottom-right-radius:4px;"
+            + "padding:4px 6px;font-size:11px;font-weight:600;"
+            + "cursor:" + (baseEnabled ? "pointer" : "not-allowed") + ";"
+        caretBtn.disabled = !baseEnabled
+        if (baseEnabled) caretBtn.addEventListener("click", () => openModal({}))
+
+        group.append(stationsBtn, caretBtn)
+        wrap.appendChild(group)
 
         // Jump to the full Route Assistant panel on the scheduling page,
         // pre-rooted at this aircraft's hub (the panel reads ?origin).
@@ -720,6 +808,7 @@
 
     let _observer = null
     let _remountTimer = null
+    let _candidatesUpdatedHandler = null
 
     /**
      * Attach a MutationObserver to the page row. Wicket re-renders the
@@ -844,7 +933,8 @@
         host: null,
         wideHost: null,
         slot: resolveSlot,
-        getCurrentSchedule: readVisualFlightPlan,
+        getCurrentSchedule: readVisualFlightPlan,   // legacy Leg[] shape
+        getSchedule:        readSchedule,           // Slice 7a — rich Schedule
         getNewFlightForm:   findNewFlightForm,
         getFormTabs:        findFormTabs,
         mount

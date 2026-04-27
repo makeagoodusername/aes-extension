@@ -85,6 +85,20 @@
             batchId:  null,
             legs:     [],
             loadedAt: null
+        },
+        // Slice 8a — fleet-apply orchestrator mirror. Refreshed on each
+        // `fleet-apply:*` bus event so the footer can render fleet-level
+        // progress (alongside the per-aircraft `apply` block above).
+        fleetApply: {
+            inFlight:        false,
+            runId:           null,
+            total:           0,
+            idx:             0,
+            currentAircraft: null,
+            startedAt:       null,
+            finishedAt:      null,
+            aborted:         false,
+            perAircraft:     []
         }
     }
 
@@ -220,9 +234,22 @@
         const weeklyHours = meta && isFinite(meta.budgetUsedHours)
             ? meta.budgetUsedHours.toFixed(1) + "h"
             : "—"
+        // Track 7 slice 7e — when the budget reserved hours for AS-managed
+        // maintenance windows, surface the breakdown in the tooltip so the
+        // user understands why the ceiling tightened.
+        const reservedMaint = (_state.budget
+            && isFinite(_state.budget.scheduledMaintenanceHoursPerWeek))
+            ? Number(_state.budget.scheduledMaintenanceHoursPerWeek) : 0
+        const rawMax = (_state.budget && isFinite(_state.budget.rawMaxWeeklyBlockHours))
+            ? Number(_state.budget.rawMaxWeeklyBlockHours)
+            : (meta && isFinite(meta.budgetMaxHours) ? meta.budgetMaxHours : null)
         const weeklyTitle = meta && isFinite(meta.budgetMaxHours)
-            ? "Used " + meta.budgetUsedHours.toFixed(1)
+            ? ("Used " + meta.budgetUsedHours.toFixed(1)
               + "h of " + meta.budgetMaxHours.toFixed(0) + "h ceiling"
+              + (reservedMaint > 0 && rawMax != null
+                  ? " (raw " + rawMax.toFixed(0) + "h − "
+                    + reservedMaint.toFixed(1) + "h scheduled maintenance)"
+                  : ""))
             : null
         _summaryEl.appendChild(_summaryCell("Weekly", weeklyHours, weeklyTitle))
 
@@ -623,6 +650,19 @@
     function _renderFooter() {
         if (!_footerEl) return
         _footerEl.innerHTML = ""
+
+        // Slice 8a — fleet apply takes precedence over per-aircraft apply
+        // since the orchestrator runs them in serial and a per-aircraft
+        // `apply.inFlight` flips on between aircraft. Surface the fleet
+        // banner so the user sees the larger context.
+        if (_state.fleetApply.inFlight) {
+            _footerEl.appendChild(_renderFleetApplyProgress())
+            return
+        }
+        if (_state.fleetApply.finishedAt && !_state.apply.inFlight) {
+            _footerEl.appendChild(_renderFleetApplyResultBanner())
+            return
+        }
 
         // Live progress UI when a batch is in flight (slice 5d).
         if (_state.apply.inFlight) {
@@ -1410,8 +1450,20 @@
      * downstream wiring (audit log, retry queue) can observe the request
      * and toasts a "pipeline not loaded" message. Keeps the no-programmatic-
      * submit invariant intact — there is no AS POST here.
+     *
+     * Slice 6d (locked-confirm modal): before dispatch, run schedule-diff
+     * against the current VFP and surface AesAfpLockedConfirmModal when
+     * the request involves locked legs (proposed legs marked immutable +
+     * current locked legs that won't be deletable). Three outcomes:
+     *   - continue → original dispatch (apply-batch silently skips locked
+     *                proposed legs; current locked stay in place)
+     *   - override → run delete-batch on the current locked legs first,
+     *                then dispatch the apply (defensive: if delete-batch
+     *                refuses or partially fails, the apply still proceeds
+     *                so the user gets some progress)
+     *   - cancel   → bail completely; no apply, no delete
      */
-    function _applyAll(legs, opts) {
+    async function _applyAll(legs, opts) {
         const list = Array.isArray(legs) ? legs : []
         if (!list.length) return
         const ctxR = _ctx()
@@ -1426,6 +1478,56 @@
             try { AesAfp.bus.emit("auto-apply:requested", payload) }
             catch (_) { /* bus self-isolates */ }
         }
+
+        // Slice 6d — locked-leg pre-flight. Cheap synchronous detection on
+        // proposed legs runs unconditionally; the schedule-diff comparison
+        // (more expensive, requires the VFP reader) runs only if the AFP
+        // page has it loaded. When the modal isn't loaded (manifest order
+        // regression on a non-AFP page), fall through to the legacy path
+        // so the apply still works.
+        let diffResult = null
+        try {
+            if (typeof window.AesAfpScheduleDiff !== "undefined"
+                    && window.AesAfp && typeof window.AesAfp.getCurrentSchedule === "function") {
+                const currentLegs = window.AesAfp.getCurrentSchedule() || []
+                if (Array.isArray(currentLegs) && currentLegs.length) {
+                    diffResult = window.AesAfpScheduleDiff.compare(currentLegs, list)
+                }
+            }
+        } catch (e) {
+            console.warn("[AES auto-6d] schedule-diff for locked-confirm failed", e)
+        }
+
+        const lockedSurface = (typeof window.AesAfpLockedConfirmModal !== "undefined"
+                && typeof window.AesAfpLockedConfirmModal.detect === "function")
+            ? window.AesAfpLockedConfirmModal.detect({legs: list, diffResult: diffResult})
+            : null
+
+        if (lockedSurface) {
+            let choice
+            try {
+                const r = await window.AesAfpLockedConfirmModal.open({
+                    proposedLockedLegs: lockedSurface.proposedLockedLegs,
+                    currentLockedStays: lockedSurface.currentLockedStays,
+                    aircraftId:         payload.ctx.aircraftId,
+                    hub:                payload.ctx.currentLocationIata,
+                    allowOverride:      lockedSurface.currentLockedStays.length > 0
+                })
+                choice = r && r.choice
+            } catch (e) {
+                console.warn("[AES auto-6d] locked-confirm modal threw; treating as cancel", e)
+                _toast("Locked-leg confirmation threw — apply cancelled.", "error")
+                return
+            }
+            if (choice === "cancel") {
+                _toast("Apply cancelled (locked-leg confirmation).", "info")
+                return
+            }
+            if (choice === "override" && lockedSurface.currentLockedStays.length) {
+                await _runOverrideDelete(lockedSurface.currentLockedStays, payload.ctx)
+            }
+        }
+
         const batch = window.AesAfpAutoApplyBatch
         if (batch && typeof batch.start === "function") {
             try { batch.start(payload) }
@@ -1438,6 +1540,46 @@
         // Slice 5c hasn't shipped — surface the dormant state so the user
         // doesn't think the click silently failed.
         _toast("Apply-batch pipeline not loaded yet (slice 5c).", "warn")
+    }
+
+    /**
+     * Slice 6d "override" path — fire a delete-batch for the current
+     * locked legs before continuing with the apply. Best-effort: AS may
+     * refuse to delete its own locked legs; per-leg errors land in the
+     * audit log via the flight-deleter pipeline. We always proceed to the
+     * apply step regardless, so the user gets the value of their other
+     * proposed legs even when the override partially fails.
+     */
+    async function _runOverrideDelete(lockedLegs, ctx) {
+        const flights = (lockedLegs || [])
+            .filter(l => l && l.flightId != null)
+            .map(l => ({
+                flightId:   String(l.flightId),
+                origin:     l.origin || "",
+                destination: l.destination || "",
+                depTime:    l.depTimeLocal || "",
+                seq:        l.seq != null ? l.seq : null
+            }))
+        if (!flights.length) {
+            _toast("Override skipped — no deletable flightIds on the locked legs.", "warn")
+            return
+        }
+        const deleter = window.AesAfpAutoFlightDeleter
+        if (!deleter || typeof deleter.start !== "function") {
+            _toast("Delete-batch pipeline not loaded; skipping override.", "warn")
+            return
+        }
+        try {
+            await deleter.start({
+                ctx:    {server: ctx.server, aircraftId: ctx.aircraftId,
+                         currentLocationIata: ctx.currentLocationIata},
+                flights: flights,
+                source: "locked-confirm-override"
+            })
+        } catch (e) {
+            console.warn("[AES auto-6d] override delete-batch threw", e)
+            _toast("Override delete-batch threw — continuing with apply.", "warn")
+        }
     }
 
     function _toast(msg, kind) {
@@ -1524,15 +1666,17 @@
         _renderStatus()
         try {
             const ctxR = _ctx()
+            const scheduleInputs = await _scheduleDerivedInputs(ctxR.server, ctxR.aircraftId)
             const build = await AesAfpAutoScheduler.run({
-                aircraftId: ctxR.aircraftId,
-                spec:       _state.spec || undefined,
-                persist:    true
+                aircraftId:              ctxR.aircraftId,
+                spec:                    _state.spec || undefined,
+                persist:                 true,
+                maintenanceWindows:      scheduleInputs.maintenanceWindows,
+                perStationTurnaroundMin: scheduleInputs.perStationTurnaroundMin
             })
             _state.lastBuild = build || null
             // Re-pull the draft so per-leg edits show against the new flights.
-            await _loadDraft()
-            await _loadBudget()
+            await Promise.all([_loadDraft(), _loadBudget()])
         } catch (e) {
             _state.runError = (e && e.message) || String(e)
             console.warn("[AES auto-5a] run threw", e)
@@ -1545,6 +1689,65 @@
             _renderLegs()
             _renderFooter()
         }
+    }
+
+    /** Track 7d — derive `maintenanceWindows` + `perStationTurnaroundMin`
+     *  from the cached Schedule so the allocator can pre-seed real
+     *  maintenance bars and use observed station turnarounds.
+     *  Returns `{maintenanceWindows: [], perStationTurnaroundMin: {}}`
+     *  when the schedule is missing/stale — allocator treats both as
+     *  empty and falls back to preset behaviour. */
+    async function _scheduleDerivedInputs(server, aircraftId) {
+        const empty = {maintenanceWindows: [], perStationTurnaroundMin: {}}
+        if (!server || !aircraftId) return empty
+        if (typeof AesAfpScheduleStore === "undefined") return empty
+        let schedule = null
+        try { schedule = await AesAfpScheduleStore.load(server, aircraftId) }
+        catch (e) { console.warn("[AES auto-7d] schedule load failed", e); return empty }
+        if (!schedule) return empty
+
+        const maintenanceWindows = []
+        const days = Array.isArray(schedule.days) ? schedule.days : []
+        for (const day of days) {
+            const blocks = (day && Array.isArray(day.blocks)) ? day.blocks : []
+            for (const b of blocks) {
+                if (!b || b.kind !== "maintenance") continue
+                if (!Number.isInteger(b.dayIdx)) continue
+                const sm = Number(b.startMin)
+                const em = Number(b.endMin)
+                if (!isFinite(sm) || !isFinite(em) || em <= sm) continue
+                maintenanceWindows.push({dayIdx: b.dayIdx, startMin: sm, endMin: em})
+            }
+        }
+
+        // Per-station turnaround: collect every observation of ground time
+        // at each IATA — `turnaroundAfterMin` (after landing at destination)
+        // and `turnaroundBeforeMin` (before departing from origin) — then
+        // take the median. Median resists the occasional ULB-padded outlier.
+        const samples = {}   // iata -> number[]
+        const legs = Array.isArray(schedule.legs) ? schedule.legs : []
+        for (const L of legs) {
+            if (!L) continue
+            const dest = String(L.destination || "").toUpperCase()
+            const orig = String(L.origin || "").toUpperCase()
+            const after  = Number(L.turnaroundAfterMin)
+            const before = Number(L.turnaroundBeforeMin)
+            if (dest && isFinite(after) && after > 0) {
+                (samples[dest] = samples[dest] || []).push(after)
+            }
+            if (orig && isFinite(before) && before > 0) {
+                (samples[orig] = samples[orig] || []).push(before)
+            }
+        }
+        const perStationTurnaroundMin = {}
+        for (const iata of Object.keys(samples)) {
+            const arr = samples[iata].slice().sort((a, b) => a - b)
+            const mid = Math.floor(arr.length / 2)
+            const median = (arr.length % 2 === 1) ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2
+            perStationTurnaroundMin[iata] = Math.round(median)
+        }
+
+        return {maintenanceWindows, perStationTurnaroundMin}
     }
 
     // ── Draft + budget loaders ─────────────────────────────────────────
@@ -1681,12 +1884,154 @@
         bus.on("auto-schedule:built", _onAutoBuilt)
         bus.on("maintenance:scraped", () => _loadBudget().then(_scheduleRender))
         bus.on("wear:updated",        () => _loadBudget().then(_scheduleRender))
+        // Track 7 slice 7e — schedule edits change reserved-maintenance hours,
+        // so the wear ceiling shifts; reload the budget to repaint Weekly cell.
+        bus.on("schedule:updated",    () => _loadBudget().then(_scheduleRender))
         // Slice 5d — apply-batch lifecycle.
         bus.on("auto-apply:start",    _onApplyStart)
         bus.on("auto-apply:progress", _onApplyProgress)
         bus.on("auto-apply:done",     _onApplyDone)
         bus.on("auto-apply:aborted",  _onApplyAborted)
         bus.on("auto-apply:error",    _onApplyError)
+        // Slice 8a — fleet-apply orchestrator lifecycle.
+        bus.on("fleet-apply:start",          _onFleetApplyStart)
+        bus.on("fleet-apply:aircraft-start", _onFleetApplyAircraftStart)
+        bus.on("fleet-apply:aircraft-done",  _onFleetApplyAircraftDone)
+        bus.on("fleet-apply:done",           _onFleetApplyDone)
+        bus.on("fleet-apply:aborted",        _onFleetApplyAborted)
+    }
+
+    // ── Slice 8a — fleet-apply orchestrator handlers + renderers ─────
+
+    function _onFleetApplyStart(p) {
+        const f = _state.fleetApply
+        f.inFlight        = true
+        f.runId           = (p && p.runId) || null
+        f.total           = (p && Number(p.total)) || 0
+        f.idx             = 0
+        f.currentAircraft = null
+        f.startedAt       = Date.now()
+        f.finishedAt      = null
+        f.aborted         = false
+        f.perAircraft     = []
+        _renderFooter()
+    }
+    function _onFleetApplyAircraftStart(p) {
+        const f = _state.fleetApply
+        if (!p || (f.runId && p.runId && p.runId !== f.runId)) return
+        f.idx             = (typeof p.idx === "number") ? p.idx : f.idx
+        f.currentAircraft = p.aircraftId || null
+        _renderFooter()
+    }
+    function _onFleetApplyAircraftDone(p) {
+        const f = _state.fleetApply
+        if (!p || (f.runId && p.runId && p.runId !== f.runId)) return
+        f.perAircraft.push({
+            aircraftId: p.aircraftId,
+            ok:         !!p.ok,
+            succeeded:  Number(p.succeeded) || 0,
+            failed:     Number(p.failed)    || 0,
+            error:      p.error || null
+        })
+        _renderFooter()
+    }
+    function _onFleetApplyDone(p) {
+        const f = _state.fleetApply
+        if (!p || (f.runId && p.runId && p.runId !== f.runId)) return
+        f.inFlight    = false
+        f.finishedAt  = Date.now()
+        f.aborted     = false
+        if (p.perAircraft) f.perAircraft = p.perAircraft.slice()
+        _renderFooter()
+    }
+    function _onFleetApplyAborted(p) {
+        const f = _state.fleetApply
+        if (!p || (f.runId && p.runId && p.runId !== f.runId)) return
+        f.inFlight    = false
+        f.finishedAt  = Date.now()
+        f.aborted     = true
+        _renderFooter()
+    }
+
+    function _renderFleetApplyProgress() {
+        const f = _state.fleetApply
+        const wrap = document.createElement("div")
+        wrap.className = "aes-afp-fleet-apply-progress"
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:4px;"
+            + "padding:6px 8px;background:rgba(124,45,18,0.12);"
+            + "border:1px solid rgba(154,52,18,0.55);border-radius:3px;"
+        const head = document.createElement("div")
+        head.style.cssText = "font-size:11px;font-weight:600;color:#fdba74;"
+            + "display:flex;align-items:center;gap:8px;"
+        const title = document.createElement("span")
+        title.textContent = "Fleet apply — aircraft "
+            + ((f.idx | 0) + 1) + " of " + (f.total | 0)
+            + (f.currentAircraft ? " (" + f.currentAircraft + ")" : "")
+        head.appendChild(title)
+        const abortBtn = document.createElement("button")
+        abortBtn.type = "button"
+        abortBtn.textContent = "Abort"
+        abortBtn.style.cssText = "background:transparent;color:#f87171;"
+            + "border:1px solid #b91c1c;border-radius:3px;padding:1px 7px;"
+            + "font-size:10px;cursor:pointer;"
+        abortBtn.addEventListener("click", () => {
+            if (typeof window.AesAfpFleetApplyOrchestrator !== "undefined"
+                    && typeof window.AesAfpFleetApplyOrchestrator.abort === "function") {
+                window.AesAfpFleetApplyOrchestrator.abort()
+            }
+        })
+        head.appendChild(abortBtn)
+        wrap.appendChild(head)
+
+        // Per-aircraft mini-results so far.
+        if (f.perAircraft.length) {
+            const list = document.createElement("div")
+            list.style.cssText = "font-size:10px;color:#cbd5e1;font-family:monospace;"
+            for (const r of f.perAircraft.slice(-5)) {
+                const line = document.createElement("div")
+                line.textContent = (r.ok ? "✓ " : "✗ ") + r.aircraftId
+                    + " — " + (r.succeeded || 0) + "/" + ((r.succeeded || 0) + (r.failed || 0))
+                    + (r.error ? " · " + r.error : "")
+                line.style.color = r.ok ? "#10b981" : "#f87171"
+                list.appendChild(line)
+            }
+            wrap.appendChild(list)
+        }
+        return wrap
+    }
+
+    function _renderFleetApplyResultBanner() {
+        const f = _state.fleetApply
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "padding:6px 8px;border-radius:3px;font-size:11px;"
+            + "display:flex;align-items:center;gap:10px;"
+        const totalSucc = f.perAircraft.reduce((s, r) => s + (r.succeeded || 0), 0)
+        const totalFail = f.perAircraft.reduce((s, r) => s + (r.failed    || 0), 0)
+        const allOk = totalFail === 0 && !f.aborted
+        wrap.style.background = allOk
+            ? "rgba(16,185,129,0.10)"
+            : "rgba(239,68,68,0.10)"
+        wrap.style.border = "1px solid " + (allOk ? "rgba(16,185,129,0.35)" : "rgba(239,68,68,0.40)")
+        wrap.style.color = allOk ? "#34d399" : "#fca5a5"
+        const text = document.createElement("span")
+        text.style.flex = "1 1 auto"
+        text.textContent = "Fleet apply " + (f.aborted ? "aborted" : "done")
+            + " — " + totalSucc + " ok / " + totalFail + " failed"
+            + " across " + f.perAircraft.length + " aircraft"
+        wrap.appendChild(text)
+        const dismiss = document.createElement("button")
+        dismiss.type = "button"
+        dismiss.textContent = "Dismiss"
+        dismiss.style.cssText = "background:transparent;color:inherit;"
+            + "border:1px solid currentColor;border-radius:3px;padding:1px 7px;"
+            + "font-size:10px;cursor:pointer;opacity:0.7;"
+        dismiss.addEventListener("click", () => {
+            _state.fleetApply.finishedAt  = null
+            _state.fleetApply.perAircraft = []
+            _renderFooter()
+        })
+        wrap.appendChild(dismiss)
+        return wrap
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
