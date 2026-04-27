@@ -1278,4 +1278,49 @@ The coarse Budget/Standard/Premium service-level model is preserved for now — 
 
 ---
 
+## 25 · Aircraft Flight Plan Assistant (six slices — all shipped)
+
+A sidebar panel that mounts on the per-aircraft Flight Plan page (`/app/fleets/aircraft/<id>/0`) and guides you through opening a new flight number — without ever submitting the form for you. The user always confirms by clicking AS's own green Submit button.
+
+**What you see when you land on the page:**
+- A compact aircraft spec card (seats, range, cruise speed, pax satisfaction) — derived from the same RA fleet store + AS aircraft-type-specs the panel uses on /app/com/scheduling.
+- A scored route-candidate list (FlightsFrom + AS demand + the panel's Score function) with chip filters: Range-fit only, Hide already scheduled (against the page's Visual Flight Plan), Watchlist-only, plus a Top-N cycler (5 → 10 → 25 → 50 → all).
+- A form-driver toolbar above AS's New Flight Number form: Fill latest pick, Reverse O/D, Clear, "Show what'd post" (collapsible body preview — shows you exactly what would POST, but does NOT send).
+- A wave-applier panel with a preset selector (sourced from the dashboard's SchedulePresets) and a Generate-wave-plan button. Renders the same Gantt swimlane the RA panel's Wave View uses, with per-leg Apply buttons that pre-fill the form for one leg at a time.
+- An audit log expander showing the recent activity for THIS aircraft + a global timeline link.
+
+**What it doesn't do.** It never POSTs. It never clicks Submit. The form-driver mutates input values + dispatches `input`/`change` events so AS's own JS sees them; you are the only thing that fires the actual write. Reverse O/D is allowed because that's a same-page UI toggle, not a form submission.
+
+**Settings.** `settings.aircraftFlightPlan` (a sibling of `settings.routeAssistant`, not a child) — `enabled`, `defaultTopN`, `defaultPricePct`, `defaultService`, `showWavePreview`, `candidateChips: {rangeFitOnly, hideAlreadyScheduled, watchlistOnly}`, `lastSelectedPresetId`. Loaded by every AFP mount; deep-merged with defaults so existing storage survives schema additions.
+
+**Storage.** Three keys — `aircraftFlightPlan:settings`, `aircraftFlightPlan:state:<server>:<aircraftId>` (per-aircraft state read by the Fleet Hub for the Loc column), `aircraftFlightPlan:auditLog` (global timeline, cap 200) + `aircraftFlightPlan:auditLog:aircraft:<server>:<aircraftId>` (per-aircraft ring, cap 50, dual-written atomically with the global key).
+
+**Bus events (for module authors).** Slice files don't import each other; they emit/subscribe via `window.AesAfp.bus`. Events: `ctx:ready`, `spec:resolved`, `candidates:updated`, `candidate:selected`, `form:filled`, `form:cleared`, `wave:built`, `audit:logged`. New cross-slice features should follow the bus contract — direct module-to-module references break the slice-isolation that makes partial-load + partial-failure recovery possible.
+
+---
+
+## 26 · Schedule Control (Fleet Hub D chip — Tier 1 dry-run)
+
+A modal overlay on the fleet management page (`/app/fleets*`) that lets you compose schedules and inspect the would-be "New Flight Number" POST body for any aircraft in your fleet — without leaving the fleet view. Companion to AFP §25, and the first AES surface that will (in Tier 2+) write back to AS programmatically.
+
+**Where it lives.** The Fleet Hub inline table now renders a fourth action chip per row: **R** (routes), **S** (schedule overlay), **P** (open Flight Plan tab), **D** (Schedule Control). Clicking **D** opens a 560-px modal pinned to the top-right of the page (z-index 99999, scrolls independently of the main page).
+
+**What you see when you click D:**
+- **Header.** Aircraft tail · equipment · current location · "↗ Open in AS" deep-link (constructs `https://<server>.airlinesim.aero/app/fleets/aircraft/<id>/0?aes-debug` — opens the AFP page with diagnostics auto-enabled) · close ×.
+- **Preset picker + Generate.** Same SchedulePresets the AFP wave applier uses; defaults to the preset hub-stamped to this aircraft's location. Generate runs a single proxy GET against the aircraft's own URL (`credentials: "include"`), parses the New Flight Number form context (selects, hidden Wicket fields, submit button name+value, current location, existing scheduled destinations), then runs the AFP candidate pipeline + wave-applier off-page to produce a build.
+- **Status line.** hub · destinations available on the form · already scheduled · candidates · build legs.
+- **Build preview.** One row per placed leg with direction arrow, O/D, dep time, distance, and a **Dry-run** button. Click Dry-run → the applier composes the full URL-encoded POST body (origin, destination, departure:hours, departure:minutes, price, service, every hidden input, the submit name=value pair) and writes a `dry-run` entry to the audit log. The body preview inline-expands beneath the leg row so you can scan exactly what would have been sent.
+- **Recent applies (last 10).** Per-aircraft audit ring; expandable POST-body previews per entry.
+- **Gate footer.** A locked indicator strip explicitly stating Tier 1 is dry-run only and showing the two gates' values (`dryRunOnly=true`, `applyEnabled=false`).
+
+**What it doesn't do (Tier 1).** Zero POSTs to AS. Zero form submission. Every interaction with the modal is observable in the Network tab as at most one GET (the aircraft page handshake — cached for 60 sec across rapid Dry-run clicks). The applier's safety contract is the same `dryRunOnly` + `applyEnabled` double-gate that `pricing-applier.js` uses; in Tier 1 both gates are hard-coded in the constructor (the settings store is wired but `save()` is a no-op so storage editing can't unlock writes). Tier 2 will introduce the live single-leg POST with verify + undo behind both gates flipped explicitly; Tier 3 the bulk multi-aircraft loop with cooldowns + circuit breaker; Tier 4 the silent-auto via chrome.alarms.
+
+**Storage.** Two new keys — `aircraftFlightPlan:fnApplyLog` (global timeline, cap 200, newest-first) + `aircraftFlightPlan:fnApplyLog:<server>:<aircraftId>` (per-aircraft ring, cap 20). 5-min dedup on `(fingerprint+status)` tuples mirrors `pricing-apply-log.js` so back-to-back identical clicks bump a `count` instead of polluting the timeline.
+
+**Architecture.** Nine files in `modules/aircraft-flight-plan-dashboard/`. The dashboard reuses the existing AFP candidate pipeline + wave-overlay machinery off-page — `AesAfpRouteCandidates.compute` and `AesAfpWaveApplier.buildFromCandidates` are headless-safe, and the form parser is a static helper lifted out of `host.js:findNewFlightForm()`. The `submit-bridge.js` stub (already loaded on `/app/fleets*` from a prior session) is unused in Tier 1; Tier 2 may use it for an alternative "open AFP tab + fill" path.
+
+**Why the form-driver invariant is unchanged.** `modules/aircraft-flight-plan/form-driver.js` (Slice D on the AFP page itself) remains the read-only "never POSTs" path it always was — see HANDOVER §10. The dashboard applier is a SEPARATE module that only runs on the fleet list view; the AFP page sidebar driver doesn't know it exists. New write capability is gated behind its own double-gate convention to make the safety story explicit.
+
+---
+
 End of manual.
