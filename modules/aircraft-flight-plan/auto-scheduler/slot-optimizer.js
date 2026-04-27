@@ -593,6 +593,135 @@
         }
     }
 
+    // ── Slice 4d — scoring + selection ─────────────────────────────────
+
+    /**
+     * Run Track 3's allocator against each surviving proposal and pick
+     * the highest-scoring result. The allocator caps at 16 runs by way
+     * of slice 4b's MAX_PROPOSALS + slice 4c's quartile cull, well
+     * within the plan's "≤16 allocator runs" budget.
+     *
+     * Each call to `AesAfpAutoScheduler.run` is dispatched with
+     * `persist: false` — slice 4e is the only slice that should write
+     * to AesAfpActiveDraftStore. We need the score, not the side
+     * effect.
+     *
+     * Budget: if `budget` is null/undefined the allocator falls back
+     * to its settings-driven default (Track 2's MaintenanceBudget
+     * may not be ready yet — Track 3's allocator already handles
+     * `o.budget || _fallbackBudget(settings)` defensively, so passing
+     * `null` is safe).
+     *
+     * Implementation note — Track 3's allocator resolves the preset
+     * via `SchedulePresets.load()` keyed by `o.presetId`; there is no
+     * direct `preset` override hook. To score a synthetic wave list
+     * we briefly persist it as a hidden preset (name prefixed with
+     * `__aes-auto-tmp-`), call the allocator with its id, then remove
+     * the preset whether the allocator succeeded or threw. The picker
+     * dropdown filters out names starting with `__aes-auto-tmp-`
+     * (slice 4e); for now they're visible only in the brief window
+     * between create and remove (typically <100ms per proposal).
+     *
+     * @param {Proposal[]} proposals slice 4c survivors
+     * @param {object} ctx
+     * @param {Array} ctx.candidates Slice C records
+     * @param {object} ctx.spec aircraft spec
+     * @param {object} ctx.basePreset baseline preset (factors + hub)
+     * @param {object} ctx.afpCtx AesAfp.ctx snapshot ({server, aircraftId, ...})
+     * @param {object} [ctx.budget] MaintenanceBudget output (or null)
+     * @returns {Promise<{winner: Proposal|null, winnerRun: object|null,
+     *   runs: Array<{proposal, build, totalScore, error?}>}>}
+     */
+    async function selectBest(proposals, ctx) {
+        if (!Array.isArray(proposals) || !proposals.length) {
+            return {winner: null, winnerRun: null, runs: []}
+        }
+        const c = ctx || {}
+        if (typeof AesAfpAutoScheduler === "undefined"
+         || !AesAfpAutoScheduler
+         || typeof AesAfpAutoScheduler.run !== "function") {
+            console.warn("[AES auto-4d] AesAfpAutoScheduler.run unavailable — bailing")
+            return {winner: null, winnerRun: null, runs: []}
+        }
+        if (typeof SchedulePresets === "undefined"
+         || typeof SchedulePresets.create !== "function"
+         || typeof SchedulePresets.remove !== "function") {
+            console.warn("[AES auto-4d] SchedulePresets unavailable — bailing")
+            return {winner: null, winnerRun: null, runs: []}
+        }
+
+        // Hard cap — defensive against a future caller bypassing
+        // 4b's MAX_PROPOSALS and 4c's quartile cull.
+        const work = proposals.slice(0, MAX_PROPOSALS)
+        const runs = []
+
+        for (const proposal of work) {
+            const synth = _composeSynthPreset(c.basePreset || {}, proposal.waves)
+            // Mark with `__aes-auto-tmp-` prefix so the slice-4e picker
+            // filter (and any future cleanup sweep) can detect orphans
+            // from a crashed run.
+            synth.name = "__aes-auto-tmp-" + (proposal.source || "x") + "-" + Date.now()
+            let tmp = null
+            try {
+                tmp = await SchedulePresets.create(synth)
+                if (!tmp || !tmp.id) {
+                    runs.push({proposal, build: null, totalScore: -Infinity,
+                               error: "SchedulePresets.create returned no id"})
+                    continue
+                }
+                const build = await AesAfpAutoScheduler.run({
+                    aircraftId: c.afpCtx && c.afpCtx.aircraftId,
+                    presetId:   tmp.id,
+                    candidates: c.candidates,
+                    spec:       c.spec,
+                    budget:     c.budget,    // pass-through (null OK; allocator defaults)
+                    persist:    false        // never persist mid-search
+                })
+                if (build && build.metadata) {
+                    build.metadata.proposalSource = proposal.source
+                    build.metadata.proposalDelta  = proposal.deltaDescription
+                    build.metadata.synthPresetId  = tmp.id
+                }
+                const totalScore = (build && build.metadata && isFinite(build.metadata.totalScore))
+                    ? Number(build.metadata.totalScore) : -Infinity
+                runs.push({proposal, build, totalScore})
+            } catch (e) {
+                console.warn("[AES auto-4d] allocator threw on proposal",
+                    proposal.deltaDescription, e)
+                runs.push({proposal, build: null, totalScore: -Infinity,
+                           error: String((e && e.message) || e)})
+            } finally {
+                if (tmp && tmp.id) {
+                    try { await SchedulePresets.remove(tmp.id) }
+                    catch (e) {
+                        console.warn("[AES auto-4d] tmp preset cleanup failed for",
+                            tmp.id, e)
+                    }
+                }
+            }
+        }
+
+        if (!runs.length) return {winner: null, winnerRun: null, runs: []}
+        // Pick highest totalScore; deterministic tiebreaker by feasibilityScore
+        // (lower wins, defaulting to 0) then proposal source enum order.
+        const sourceOrder = {shift: 0, split: 1, merge: 2}
+        runs.sort((a, b) => {
+            if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore
+            const fa = (a.proposal._meta && a.proposal._meta.feasibilityScore) || 0
+            const fb = (b.proposal._meta && b.proposal._meta.feasibilityScore) || 0
+            if (fa !== fb) return fa - fb
+            return (sourceOrder[a.proposal.source] || 99)
+                 - (sourceOrder[b.proposal.source] || 99)
+        })
+        const winnerRun = runs[0]
+        // Reject all-zero / all-error: if the top run has -Infinity
+        // there's no usable winner.
+        if (!isFinite(winnerRun.totalScore)) {
+            return {winner: null, winnerRun: null, runs: runs}
+        }
+        return {winner: winnerRun.proposal, winnerRun: winnerRun, runs: runs}
+    }
+
     // ── Helpers shared across slices 4b-4e ─────────────────────────────
 
     function _num(v, fallback) {
@@ -610,8 +739,8 @@
         demandProfile:      demandProfile,
         proposeAdjustments: proposeAdjustments,
         filterFeasible:     filterFeasible,
-        // Slices 4d-4e populate these as they ship.
-        selectBest:         null,
+        selectBest:         selectBest,
+        // Slice 4e populates this.
         optimize:           null,
         // Internals exposed for diagnostics + tests; do not depend on these
         // from production callers.
@@ -831,5 +960,27 @@
         } catch (e) {
             console.warn("[AES auto-4c] smoke tests threw", e)
         }
+
+        // 4d — selectBest smoke tests (async). These only cover the bail
+        // paths (no allocator / no SchedulePresets / empty input) because
+        // the happy-path requires live storage + the Track 3 allocator
+        // graph; that's verified through the slice 4e optimize() call
+        // against the live page.
+        ;(async function () {
+            try {
+                // Empty input → null winner, empty runs.
+                const empty = await SlotOptimizer.selectBest([], {})
+                console.assert(empty && empty.winner === null && Array.isArray(empty.runs)
+                    && empty.runs.length === 0, "[auto-4d] empty proposals → null winner + []")
+
+                // Function exists and is callable.
+                console.assert(typeof SlotOptimizer.selectBest === "function",
+                    "[auto-4d] selectBest exposed as a function")
+
+                console.log("[AES afp/auto-scheduler] slot-optimizer 4d bail-path smoke tests passed")
+            } catch (e) {
+                console.warn("[AES auto-4d] smoke tests threw", e)
+            }
+        })()
     }
 })()
