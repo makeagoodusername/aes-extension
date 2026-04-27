@@ -78,6 +78,13 @@
             error:          null,
             aborted:        false,
             results:        []
+        },
+        // Slice 5e — persisted retry-queue mirror, refreshed on mount,
+        // on every `auto-apply:done`, and after the user clicks Dismiss.
+        retryQueue: {
+            batchId:  null,
+            legs:     [],
+            loadedAt: null
         }
     }
 
@@ -631,6 +638,13 @@
             return
         }
 
+        // Slice 5e — persisted retry queue (survives page reload after
+        // a partial batch). Only surfaces when there are legs to retry.
+        if (_state.retryQueue.legs && _state.retryQueue.legs.length) {
+            _footerEl.appendChild(_renderPersistedRetryBanner())
+            return
+        }
+
         // Default tip.
         const tip = document.createElement("div")
         const flights = (_state.lastBuild && _state.lastBuild.flights) || []
@@ -970,6 +984,9 @@
         // appliedLegs background tint via the active-draft listener
         // (apply-batch.js writes appliedLegs[seq] on every ok leg-done).
         _loadDraft().then(() => _renderLegs()).catch(() => _renderLegs())
+        // Slice 5e — refresh the persisted retry queue so the next
+        // mount (or the dismiss banner) sees the latest failed legs.
+        _loadRetryQueue().catch(() => {})
     }
 
     function _onApplyAborted(payload) {
@@ -991,6 +1008,115 @@
         _state.apply.phase      = "error"
         _stopApplyTicker()
         _renderFooter()
+    }
+
+    // ── Slice 5e — persisted retry queue ───────────────────────────────
+
+    function _renderPersistedRetryBanner() {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;align-items:center;gap:10px;"
+            + "padding:6px 8px;font-size:11px;"
+            + "background:rgba(127,29,29,0.15);"
+            + "border:1px solid rgba(220,38,38,0.40);border-radius:3px;"
+            + "color:#fecaca;"
+        const summary = document.createElement("span")
+        summary.style.cssText = "flex:1 1 auto;"
+        const n = _state.retryQueue.legs.length
+        summary.innerHTML = "<strong>" + n + " leg" + (n === 1 ? "" : "s")
+            + " failed</strong> in batch <code style=\"font-size:10px;\">"
+            + escapeHtml(_state.retryQueue.batchId || "?")
+            + "</code> — retry the failures?"
+        wrap.appendChild(summary)
+
+        const retry = document.createElement("button")
+        retry.type = "button"
+        retry.textContent = "Retry " + n
+        retry.title = "Re-dispatch the failed legs through the apply-batch pipeline. Modal is skipped."
+        retry.style.cssText = "background:#1d4ed8;color:#f8fafc;"
+            + "border:1px solid #1e3a8a;border-radius:3px;padding:3px 10px;"
+            + "font-size:11px;font-weight:600;cursor:pointer;"
+        retry.addEventListener("click", () => _retryPersistedQueue())
+        wrap.appendChild(retry)
+
+        const dismiss = document.createElement("button")
+        dismiss.type = "button"
+        dismiss.textContent = "Dismiss"
+        dismiss.title = "Hide the queue. Underlying entries stay in the audit log."
+        dismiss.style.cssText = "background:transparent;color:#fca5a5;"
+            + "border:1px solid #b91c1c;border-radius:3px;padding:3px 8px;"
+            + "font-size:11px;cursor:pointer;"
+        dismiss.addEventListener("click", () => _dismissPersistedQueue())
+        wrap.appendChild(dismiss)
+
+        return wrap
+    }
+
+    /**
+     * Materialise persisted retry-queue entries (which carry the leg's
+     * origin/dest/depTime/pricePct/service from when the batch ran)
+     * back into the form-driver leg shape and dispatch them through
+     * apply-batch.js (no confirmation modal — this IS the retry).
+     */
+    function _retryPersistedQueue() {
+        const queue = _state.retryQueue
+        if (!queue.legs.length) return
+        const ctxR = _ctx()
+        const dpct = (_state.settings && isFinite(Number(_state.settings.defaultPricePct)))
+            ? _state.settings.defaultPricePct : 100
+        const dsvc = (_state.settings && typeof _state.settings.defaultService === "string")
+            ? _state.settings.defaultService : ""
+        const legs = queue.legs.map(e => ({
+            seq:         e.seq,
+            origin:      e.origin || null,
+            destination: e.dest   || null,
+            depTime:     e.depTime || null,
+            direction:   e.direction || "outbound",
+            waveLabel:   e.waveLabel || null,
+            pricePct:    isFinite(Number(e.pricePct)) ? Number(e.pricePct) : dpct,
+            service:     (typeof e.service === "string") ? e.service : dsvc
+        })).filter(l => l.origin && l.destination)
+        if (!legs.length) {
+            _toast("Persisted retry queue couldn't be reconstructed (missing origin/dest).", "warn")
+            return
+        }
+        const payload = {
+            ctx:         {server: ctxR.server || "", aircraftId: ctxR.aircraftId || "",
+                          currentLocationIata: ctxR.currentLocationIata || ""},
+            legs:        legs,
+            requestedAt: Date.now(),
+            source:      "retry-persisted"
+        }
+        if (window.AesAfp && AesAfp.bus) {
+            try { AesAfp.bus.emit("auto-apply:retry-requested", payload) }
+            catch (_) { /* bus self-isolates */ }
+        }
+        _applyAll(legs, {source: "retry-persisted"})
+    }
+
+    function _dismissPersistedQueue() {
+        const ctxR = _ctx()
+        if (!ctxR.server || !ctxR.aircraftId) return
+        if (typeof AesAfpAutoApplyLog === "undefined") return
+        AesAfpAutoApplyLog.dismissRetryQueue(ctxR.server, ctxR.aircraftId)
+            .then(() => _loadRetryQueue())
+            .then(() => _renderFooter())
+            .catch(err => console.warn("[AES auto-5e] dismiss queue failed", err))
+    }
+
+    async function _loadRetryQueue() {
+        const ctxR = _ctx()
+        if (!ctxR.server || !ctxR.aircraftId) return
+        if (typeof AesAfpAutoApplyLog === "undefined") return
+        try {
+            const queue = await AesAfpAutoApplyLog.getRetryQueue(
+                ctxR.server, ctxR.aircraftId
+            )
+            _state.retryQueue.batchId  = queue.batchId
+            _state.retryQueue.legs     = Array.isArray(queue.legs) ? queue.legs : []
+            _state.retryQueue.loadedAt = Date.now()
+        } catch (err) {
+            console.warn("[AES auto-5e] retry-queue load failed", err)
+        }
     }
 
     /**
@@ -1515,7 +1641,7 @@
 
     function _onCtxReady() {
         _state.ctxReady = true
-        Promise.all([_loadSettings(), _loadDraft(), _loadBudget()]).then(() => {
+        Promise.all([_loadSettings(), _loadDraft(), _loadBudget(), _loadRetryQueue()]).then(() => {
             _renderRoot()
             _attachStorageListener()
         }).catch(err => {
