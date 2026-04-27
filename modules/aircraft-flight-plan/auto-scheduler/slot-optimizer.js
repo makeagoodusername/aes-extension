@@ -722,6 +722,195 @@
         return {winner: winnerRun.proposal, winnerRun: winnerRun, runs: runs}
     }
 
+    // ── Slice 4e — full pipeline + save tweaked variant ───────────────
+
+    /**
+     * Run the full Track-4 pipeline (4a → 4b → 4c → 4d) and save the
+     * winner as a new preset under the user's preset list with three
+     * provenance fields stamped on the record (tweakedFrom, tweakedAt,
+     * tweakedFor).
+     *
+     * Tier gate: dormant unless
+     *   `settings.aircraftFlightPlan.autoScheduler.enabled === true`.
+     * Off → returns `{skipped: true, reason: "autoScheduler disabled"}`
+     * without persisting anything.
+     *
+     * @param {object} args
+     * @param {string|number} args.aircraftId
+     * @param {string} args.presetId base preset id to tweak from
+     * @param {Array} [args.candidates] Slice C records (falls back to
+     *   AesAfpRouteCandidates.last)
+     * @param {object} [args.spec] aircraft spec (falls back to
+     *   AesAfpSpecResolver.last)
+     * @param {object} [args.ctx] AesAfp.ctx snapshot (falls back to
+     *   window.AesAfp.ctx)
+     * @param {object} [args.budget] MaintenanceBudget output (null OK)
+     * @returns {Promise<{savedPresetId: string|null, beforeWaves: object[],
+     *   afterWaves: object[]|null, scoreDelta: number|null,
+     *   skipped?: boolean, reason?: string, runs?: object[]}>}
+     */
+    async function optimize(args) {
+        const a = args || {}
+
+        // Tier gate.
+        let settings = null
+        try {
+            if (typeof AesAfpSettings !== "undefined" && AesAfpSettings.load) {
+                settings = await AesAfpSettings.load()
+            }
+        } catch (e) {
+            console.warn("[AES auto-4e] settings load failed", e)
+        }
+        const auto = settings && settings.autoScheduler
+        if (!auto || auto.enabled !== true) {
+            return {skipped: true, reason: "autoScheduler disabled",
+                    savedPresetId: null, beforeWaves: [], afterWaves: null,
+                    scoreDelta: null}
+        }
+
+        // Resolve dependencies.
+        if (typeof SchedulePresets === "undefined" || !SchedulePresets.load) {
+            return {skipped: true, reason: "SchedulePresets unavailable",
+                    savedPresetId: null, beforeWaves: [], afterWaves: null,
+                    scoreDelta: null}
+        }
+        if (typeof AesAfpAutoScheduler === "undefined"
+         || !AesAfpAutoScheduler
+         || typeof AesAfpAutoScheduler.run !== "function") {
+            return {skipped: true, reason: "AesAfpAutoScheduler unavailable",
+                    savedPresetId: null, beforeWaves: [], afterWaves: null,
+                    scoreDelta: null}
+        }
+
+        const ctx = a.ctx || (window.AesAfp && window.AesAfp.ctx) || {}
+        const aircraftId = a.aircraftId || ctx.aircraftId
+        if (!aircraftId) {
+            return {skipped: true, reason: "aircraftId not resolved",
+                    savedPresetId: null, beforeWaves: [], afterWaves: null,
+                    scoreDelta: null}
+        }
+
+        // Resolve base preset.
+        const presets = await SchedulePresets.load()
+        const list = (presets && Array.isArray(presets.presets)) ? presets.presets : []
+        const wantedId = a.presetId
+            || (settings && settings.lastSelectedPresetId)
+            || (presets && presets.defaultPresetId)
+            || (list[0] && list[0].id)
+        const basePreset = list.find(p => p && p.id === wantedId) || null
+        if (!basePreset) {
+            return {skipped: true, reason: "no base preset found",
+                    savedPresetId: null, beforeWaves: [], afterWaves: null,
+                    scoreDelta: null}
+        }
+
+        const candidates = Array.isArray(a.candidates) ? a.candidates
+            : (window.AesAfpRouteCandidates && window.AesAfpRouteCandidates.last) || null
+        if (!candidates || !candidates.length) {
+            return {skipped: true, reason: "no candidates — run AesAfpRouteCandidates.compute first",
+                    savedPresetId: null, beforeWaves: basePreset.waves || [],
+                    afterWaves: null, scoreDelta: null}
+        }
+        const spec = a.spec
+            || (window.AesAfpSpecResolver && window.AesAfpSpecResolver.last)
+            || null
+
+        // 4a — demand profile.
+        const profile = demandProfile({candidates, hubIata: basePreset.hub})
+
+        // 4b — proposals.
+        const proposals = proposeAdjustments({preset: basePreset, demandProfile: profile})
+        if (!proposals.length) {
+            return {skipped: true, reason: "no proposals generated",
+                    savedPresetId: null, beforeWaves: basePreset.waves || [],
+                    afterWaves: null, scoreDelta: null}
+        }
+
+        // 4c — feasibility filter.
+        const feasible = filterFeasible(proposals, {
+            basePreset:   basePreset,
+            candidates:   candidates,
+            selectedSpec: spec
+        })
+        if (!feasible.length) {
+            return {skipped: true, reason: "no feasible proposals after filter",
+                    savedPresetId: null, beforeWaves: basePreset.waves || [],
+                    afterWaves: null, scoreDelta: null}
+        }
+
+        // Score the BASELINE (untweaked) preset to compute scoreDelta
+        // — the user wants to know whether the tweaked variant is
+        // actually better than what they had. We piggyback on the
+        // selectBest temp-preset path by handing a single noop proposal.
+        const noopProposal = {
+            waves: basePreset.waves.slice(),
+            source: "shift",
+            deltaDescription: "baseline"
+        }
+        const baselineSelect = await selectBest([noopProposal], {
+            candidates: candidates,
+            spec:       spec,
+            basePreset: basePreset,
+            afpCtx:     ctx,
+            budget:     a.budget
+        })
+        const baselineScore = (baselineSelect && baselineSelect.winnerRun
+                            && isFinite(baselineSelect.winnerRun.totalScore))
+            ? baselineSelect.winnerRun.totalScore : null
+
+        // 4d — score + select.
+        const selection = await selectBest(feasible, {
+            candidates: candidates,
+            spec:       spec,
+            basePreset: basePreset,
+            afpCtx:     ctx,
+            budget:     a.budget
+        })
+        if (!selection.winner || !selection.winnerRun) {
+            return {skipped: true, reason: "no winner",
+                    savedPresetId: null, beforeWaves: basePreset.waves || [],
+                    afterWaves: null, scoreDelta: null,
+                    runs: selection.runs || []}
+        }
+
+        const winner = selection.winner
+        const winnerScore = selection.winnerRun.totalScore
+        const scoreDelta = (baselineScore != null && isFinite(baselineScore))
+            ? (winnerScore - baselineScore) : null
+
+        // Save the tweaked variant.
+        let savedPresetId = null
+        try {
+            const saved = await SchedulePresets.createTweaked({
+                base:       basePreset,
+                waves:      winner.waves,
+                tweakedFor: aircraftId
+            })
+            savedPresetId = saved && saved.id ? saved.id : null
+        } catch (e) {
+            console.warn("[AES auto-4e] save tweaked variant threw", e)
+            return {skipped: true, reason: "createTweaked failed: "
+                    + ((e && e.message) || String(e)),
+                    savedPresetId: null,
+                    beforeWaves: basePreset.waves || [],
+                    afterWaves: winner.waves || null,
+                    scoreDelta: scoreDelta,
+                    runs: selection.runs}
+        }
+
+        return {
+            savedPresetId: savedPresetId,
+            beforeWaves:   (basePreset.waves || []).slice(),
+            afterWaves:    (winner.waves || []).slice(),
+            scoreDelta:    scoreDelta,
+            baselineScore: baselineScore,
+            winnerScore:   winnerScore,
+            proposalSource: winner.source,
+            proposalDelta:  winner.deltaDescription,
+            runs:          selection.runs
+        }
+    }
+
     // ── Helpers shared across slices 4b-4e ─────────────────────────────
 
     function _num(v, fallback) {
@@ -740,8 +929,7 @@
         proposeAdjustments: proposeAdjustments,
         filterFeasible:     filterFeasible,
         selectBest:         selectBest,
-        // Slice 4e populates this.
-        optimize:           null,
+        optimize:           optimize,
         // Internals exposed for diagnostics + tests; do not depend on these
         // from production callers.
         _internal: {
@@ -961,25 +1149,43 @@
             console.warn("[AES auto-4c] smoke tests threw", e)
         }
 
-        // 4d — selectBest smoke tests (async). These only cover the bail
-        // paths (no allocator / no SchedulePresets / empty input) because
-        // the happy-path requires live storage + the Track 3 allocator
-        // graph; that's verified through the slice 4e optimize() call
-        // against the live page.
+        // 4d / 4e — selectBest + optimize smoke tests (async). Cover the
+        // bail paths only; the happy-path requires live storage + the
+        // Track 3 allocator graph and is verified manually per the plan's
+        // slice-4e verification spec ("With a deliberately-mistuned MCO
+        // preset (waves at 03:00 and 14:00), run the slot-optimizer —
+        // the saved variant should have waves nearer 09:00 and 17:00").
         ;(async function () {
             try {
-                // Empty input → null winner, empty runs.
                 const empty = await SlotOptimizer.selectBest([], {})
                 console.assert(empty && empty.winner === null && Array.isArray(empty.runs)
                     && empty.runs.length === 0, "[auto-4d] empty proposals → null winner + []")
-
-                // Function exists and is callable.
                 console.assert(typeof SlotOptimizer.selectBest === "function",
                     "[auto-4d] selectBest exposed as a function")
-
                 console.log("[AES afp/auto-scheduler] slot-optimizer 4d bail-path smoke tests passed")
             } catch (e) {
                 console.warn("[AES auto-4d] smoke tests threw", e)
+            }
+
+            try {
+                console.assert(typeof SlotOptimizer.optimize === "function",
+                    "[auto-4e] optimize exposed as a function")
+
+                // Tier-gate path — when autoScheduler.enabled defaults to
+                // false (Phase-1 ships disabled), optimize() must return
+                // {skipped: true} without reaching the allocator. This is
+                // the single most important invariant for the tier gate.
+                const gated = await SlotOptimizer.optimize({})
+                console.assert(gated && gated.skipped === true,
+                    "[auto-4e] tier-gate honoured (skipped: true when autoScheduler disabled)")
+                console.assert(gated.savedPresetId === null,
+                    "[auto-4e] tier-gate path → savedPresetId is null")
+                console.assert(typeof gated.reason === "string" && gated.reason.length > 0,
+                    "[auto-4e] tier-gate path supplies a reason string")
+
+                console.log("[AES afp/auto-scheduler] slot-optimizer 4e tier-gate smoke tests passed")
+            } catch (e) {
+                console.warn("[AES auto-4e] smoke tests threw", e)
             }
         })()
     }

@@ -24,6 +24,13 @@ class SchedulePresets {
     /**
      * Builds a fresh preset record with sensible factor defaults and one
      * empty wave. Caller is responsible for persisting via create() / save().
+     *
+     * Optional provenance fields (Track 4 slot optimizer, slice 4e):
+     *   - tweakedFrom:  source preset id when this is an auto-tweaked variant
+     *   - tweakedAt:    Date.now() of the tweak run
+     *   - tweakedFor:   aircraftId the tweak optimized against
+     * Plain user-created presets leave all three undefined; the picker UI
+     * keys on `tweakedFrom` to render the 🔧 glyph.
      */
     static newPreset(name) {
         return {
@@ -126,6 +133,45 @@ class SchedulePresets {
             defaultPresetId: block.defaultPresetId
         })
         return true
+    }
+
+    /**
+     * Track 4 slice 4e — saves an auto-tweaked variant of a base preset.
+     *
+     * Reuses `create()` (don't fork CRUD paths) but stamps three
+     * provenance fields onto the new record so the picker UI can mark
+     * tweaked variants with the 🔧 glyph and a future cleanup sweep
+     * can locate orphan auto-saves.
+     *
+     *   tweakedFrom: <base preset id>
+     *   tweakedAt:   Date.now()
+     *   tweakedFor:  <aircraftId> (server-scoped at the call site)
+     *
+     * @param {object} args
+     * @param {object} args.base source preset (must have id, hub, factors)
+     * @param {Array}  args.waves replacement wave list (deep-cloned by create)
+     * @param {string|number} args.tweakedFor aircraftId
+     * @param {string} [args.nameSuffix] override the default " · auto-tweaked"
+     * @returns {Promise<object>} the inserted preset (with id)
+     */
+    static async createTweaked(args) {
+        const a = args || {}
+        if (!a.base || !a.base.id) throw new Error("createTweaked: base.id required")
+        const suffix = (typeof a.nameSuffix === "string" && a.nameSuffix.length > 0)
+            ? a.nameSuffix
+            : " · auto-tweaked"
+        const partial = {
+            name:    String(a.base.name || "Schedule preset") + suffix,
+            hub:     a.base.hub || "",
+            waves:   Array.isArray(a.waves) ? a.waves : (a.base.waves || []),
+            // Deep-clone factors so a future tweak doesn't mutate the source.
+            factors: JSON.parse(JSON.stringify(a.base.factors || ScheduleFactors.defaultFactors())),
+            notes:   a.base.notes || "",
+            tweakedFrom: a.base.id,
+            tweakedAt:   Date.now(),
+            tweakedFor:  String(a.tweakedFor || "")
+        }
+        return await SchedulePresets.create(partial)
     }
 
     /**
