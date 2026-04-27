@@ -29,10 +29,28 @@ class RouteAssistantRatingAlphaStore {
     static ALPHA_LO = 0
     static ALPHA_HI = 50
 
-    static _key(hub, dest) {
+    static _legacyKey(hub, dest) {
         return RouteAssistantRatingAlphaStore.PREFIX
             + String(hub  || "").toUpperCase() + "-"
             + String(dest || "").toUpperCase()
+    }
+
+    static _key(hub, dest, accountId) {
+        const legacy = RouteAssistantRatingAlphaStore._legacyKey(hub, dest)
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(legacy, accountId)
+        }
+        return legacy
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
     }
 
     static _pairKey(hub, dest) {
@@ -40,29 +58,37 @@ class RouteAssistantRatingAlphaStore {
     }
 
     /** Returns `{hub, dest, Y?, C?, F?, createdAt, updatedAt}` or null. */
-    static async get(hub, dest) {
-        const key = RouteAssistantRatingAlphaStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+    static async get(hub, dest, opts) {
+        const acctId = RouteAssistantRatingAlphaStore._resolveAccountId(opts)
+        const scoped = RouteAssistantRatingAlphaStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantRatingAlphaStore._legacyKey(hub, dest)
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const out = await chrome.storage.local.get(reqKeys)
+        return out[scoped] || out[legacy] || null
     }
 
     /**
      * Bulk read for [hub, dest] pairs.
      * Returns Map<pairKey, record>.
      */
-    static async getMany(pairs) {
+    static async getMany(pairs, opts) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(p => {
+        const acctId = RouteAssistantRatingAlphaStore._resolveAccountId(opts)
+        const scopedKeys = []
+        const legacyKeys = []
+        const pairList   = []
+        for (const p of pairs) {
             const [h, d] = Array.isArray(p) ? p : [p.hub, p.dest]
-            return RouteAssistantRatingAlphaStore._key(h, d)
-        })
-        const out = await chrome.storage.local.get(keys)
+            scopedKeys.push(RouteAssistantRatingAlphaStore._key(h, d, acctId))
+            legacyKeys.push(RouteAssistantRatingAlphaStore._legacyKey(h, d))
+            pairList.push(RouteAssistantRatingAlphaStore._pairKey(h, d))
+        }
+        const reqKeys = acctId ? scopedKeys.concat(legacyKeys) : scopedKeys
+        const out = await chrome.storage.local.get(reqKeys)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
-            if (!rec) continue
-            const pair = k.substring(RouteAssistantRatingAlphaStore.PREFIX.length)
-            map.set(pair, rec)
+        for (let i = 0; i < pairList.length; i++) {
+            const rec = out[scopedKeys[i]] || out[legacyKeys[i]] || null
+            if (rec) map.set(pairList[i], rec)
         }
         return map
     }
@@ -73,19 +99,23 @@ class RouteAssistantRatingAlphaStore {
      * the cleaned record has no α set, the entire row is removed.
      * Returns the stored record (or null when cleared).
      */
-    static async save(hub, dest, fields) {
+    static async save(hub, dest, fields, opts) {
         const hubU  = String(hub  || "").toUpperCase()
         const destU = String(dest || "").toUpperCase()
         if (!hubU || !destU) return null
+        const acctId = RouteAssistantRatingAlphaStore._resolveAccountId(opts)
 
         const cleaned = RouteAssistantRatingAlphaStore._clean(fields || {})
         if (!RouteAssistantRatingAlphaStore._hasAnyValue(cleaned)) {
-            await RouteAssistantRatingAlphaStore.remove(hubU, destU)
+            await RouteAssistantRatingAlphaStore.remove(hubU, destU, {accountId: acctId})
             return null
         }
 
-        const key = RouteAssistantRatingAlphaStore._key(hubU, destU)
-        const existing = (await chrome.storage.local.get([key]))[key] || null
+        const key = RouteAssistantRatingAlphaStore._key(hubU, destU, acctId)
+        const legacy = RouteAssistantRatingAlphaStore._legacyKey(hubU, destU)
+        const reqKeys = key === legacy ? [key] : [key, legacy]
+        const existingMap = await chrome.storage.local.get(reqKeys)
+        const existing = existingMap[key] || existingMap[legacy] || null
         const now = Date.now()
         // Editor shows every class — fields not in cleaned were
         // intentionally cleared and must NOT carry over from existing.
@@ -98,9 +128,12 @@ class RouteAssistantRatingAlphaStore {
         return record
     }
 
-    static async remove(hub, dest) {
-        const key = RouteAssistantRatingAlphaStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+    static async remove(hub, dest, opts) {
+        const acctId = RouteAssistantRatingAlphaStore._resolveAccountId(opts)
+        const key = RouteAssistantRatingAlphaStore._key(hub, dest, acctId)
+        const legacy = RouteAssistantRatingAlphaStore._legacyKey(hub, dest)
+        const toRemove = key === legacy ? [key] : [key, legacy]
+        await chrome.storage.local.remove(toRemove)
     }
 
     /**

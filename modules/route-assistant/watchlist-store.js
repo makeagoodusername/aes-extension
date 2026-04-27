@@ -24,6 +24,24 @@
 class RouteAssistantWatchlistStore {
     static CACHE_KEY = "routeAssistant:watchlist"
 
+    static _scopedKey(accountId) {
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(
+                RouteAssistantWatchlistStore.CACHE_KEY, accountId)
+        }
+        return RouteAssistantWatchlistStore.CACHE_KEY
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
     /**
      * Fields whose "worse" delta (per the Diff-against-last-visit feature)
      * triggers the red alert dot on a starred row. Each entry is
@@ -51,9 +69,9 @@ class RouteAssistantWatchlistStore {
      * Returns an empty Map when the cache hasn't been written yet so
      * callers can iterate without null-checks.
      */
-    static async loadAll() {
-        const out = await chrome.storage.local.get([RouteAssistantWatchlistStore.CACHE_KEY])
-        const blob = out[RouteAssistantWatchlistStore.CACHE_KEY] || null
+    static async loadAll(opts) {
+        const acctId = RouteAssistantWatchlistStore._resolveAccountId(opts)
+        const blob = await RouteAssistantWatchlistStore._loadBlob(acctId)
         const m = new Map()
         if (blob && blob.routes && typeof blob.routes === "object") {
             for (const k in blob.routes) m.set(k, blob.routes[k])
@@ -64,13 +82,13 @@ class RouteAssistantWatchlistStore {
     /**
      * Convenience — Set<routeKey> for fast membership checks during render.
      */
-    static async loadKeys() {
-        const map = await RouteAssistantWatchlistStore.loadAll()
+    static async loadKeys(opts) {
+        const map = await RouteAssistantWatchlistStore.loadAll(opts)
         return new Set(map.keys())
     }
 
-    static async has(hub, dest) {
-        const set = await RouteAssistantWatchlistStore.loadKeys()
+    static async has(hub, dest, opts) {
+        const set = await RouteAssistantWatchlistStore.loadKeys(opts)
         return set.has(RouteAssistantWatchlistStore._routeKey(hub, dest))
     }
 
@@ -80,18 +98,19 @@ class RouteAssistantWatchlistStore {
      * back on after a remove.
      */
     static async toggle(hub, dest, opts) {
+        const acctId = RouteAssistantWatchlistStore._resolveAccountId(opts)
         const key = RouteAssistantWatchlistStore._routeKey(hub, dest)
-        const blob = await RouteAssistantWatchlistStore._loadBlob()
+        const blob = await RouteAssistantWatchlistStore._loadBlob(acctId)
         if (blob.routes[key]) {
             delete blob.routes[key]
-            await RouteAssistantWatchlistStore._saveBlob(blob)
+            await RouteAssistantWatchlistStore._saveBlob(blob, acctId)
             return false
         }
         blob.routes[key] = {
             addedAt: Date.now(),
             note:    (opts && typeof opts.note === "string") ? opts.note.trim().substring(0, 200) : null
         }
-        await RouteAssistantWatchlistStore._saveBlob(blob)
+        await RouteAssistantWatchlistStore._saveBlob(blob, acctId)
         return true
     }
 
@@ -100,35 +119,40 @@ class RouteAssistantWatchlistStore {
      * remove. Returns true if the call changed anything.
      */
     static async set(hub, dest, state, opts) {
+        const acctId = RouteAssistantWatchlistStore._resolveAccountId(opts)
         const key = RouteAssistantWatchlistStore._routeKey(hub, dest)
-        const blob = await RouteAssistantWatchlistStore._loadBlob()
+        const blob = await RouteAssistantWatchlistStore._loadBlob(acctId)
         const has = !!blob.routes[key]
         if (state && !has) {
             blob.routes[key] = {
                 addedAt: Date.now(),
                 note:    (opts && typeof opts.note === "string") ? opts.note.trim().substring(0, 200) : null
             }
-            await RouteAssistantWatchlistStore._saveBlob(blob)
+            await RouteAssistantWatchlistStore._saveBlob(blob, acctId)
             return true
         }
         if (!state && has) {
             delete blob.routes[key]
-            await RouteAssistantWatchlistStore._saveBlob(blob)
+            await RouteAssistantWatchlistStore._saveBlob(blob, acctId)
             return true
         }
         return false
     }
 
-    static async _loadBlob() {
-        const out = await chrome.storage.local.get([RouteAssistantWatchlistStore.CACHE_KEY])
-        const blob = out[RouteAssistantWatchlistStore.CACHE_KEY] || null
+    static async _loadBlob(accountId) {
+        const scoped = RouteAssistantWatchlistStore._scopedKey(accountId)
+        const legacy = RouteAssistantWatchlistStore.CACHE_KEY
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const out = await chrome.storage.local.get(reqKeys)
+        const blob = out[scoped] || out[legacy] || null
         return blob && blob.routes
             ? blob
             : {server: null, routes: {}, updatedAt: null}
     }
 
-    static async _saveBlob(blob) {
+    static async _saveBlob(blob, accountId) {
         blob.updatedAt = Date.now()
-        await chrome.storage.local.set({[RouteAssistantWatchlistStore.CACHE_KEY]: blob})
+        const scoped = RouteAssistantWatchlistStore._scopedKey(accountId)
+        await chrome.storage.local.set({[scoped]: blob})
     }
 }

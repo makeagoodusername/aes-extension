@@ -45,9 +45,31 @@ class RouteAssistantAlertRulesStore {
     static VALID_SCOPES    = ["watchlist", "all"]
     static VALID_SEVERITIES = ["info", "warn", "error"]
 
-    static async load() {
-        const data = await chrome.storage.local.get([RouteAssistantAlertRulesStore.STORAGE_KEY])
-        const rec = data[RouteAssistantAlertRulesStore.STORAGE_KEY]
+    static _scopedKey(accountId) {
+        if (typeof globalThis !== "undefined" && globalThis.AesAccountScopedKey) {
+            return globalThis.AesAccountScopedKey.acctKey(
+                RouteAssistantAlertRulesStore.STORAGE_KEY, accountId)
+        }
+        return RouteAssistantAlertRulesStore.STORAGE_KEY
+    }
+
+    static _resolveAccountId(opts) {
+        if (opts && typeof opts.accountId === "string" && opts.accountId) return opts.accountId
+        if (typeof globalThis !== "undefined"
+            && globalThis.AesAccountScopedKey
+            && typeof globalThis.AesAccountScopedKey.currentAccountIdSync === "function") {
+            return globalThis.AesAccountScopedKey.currentAccountIdSync()
+        }
+        return null
+    }
+
+    static async load(opts) {
+        const acctId = RouteAssistantAlertRulesStore._resolveAccountId(opts)
+        const scoped = RouteAssistantAlertRulesStore._scopedKey(acctId)
+        const legacy = RouteAssistantAlertRulesStore.STORAGE_KEY
+        const reqKeys = scoped === legacy ? [scoped] : [scoped, legacy]
+        const data = await chrome.storage.local.get(reqKeys)
+        const rec = data[scoped] || data[legacy]
         if (!rec || !Array.isArray(rec.rules)) return {rules: [], updatedAt: null}
         return {
             rules:     rec.rules.map(r => RouteAssistantAlertRulesStore._normalise(r)).filter(Boolean),
@@ -55,16 +77,19 @@ class RouteAssistantAlertRulesStore {
         }
     }
 
-    static async saveAll(rules) {
+    static async saveAll(rules, opts) {
+        const acctId = RouteAssistantAlertRulesStore._resolveAccountId(opts)
         const cleaned = (rules || []).map(r => RouteAssistantAlertRulesStore._normalise(r)).filter(Boolean)
         const rec = {rules: cleaned, updatedAt: Date.now()}
-        await chrome.storage.local.set({[RouteAssistantAlertRulesStore.STORAGE_KEY]: rec})
+        const scoped = RouteAssistantAlertRulesStore._scopedKey(acctId)
+        await chrome.storage.local.set({[scoped]: rec})
         return rec
     }
 
     /** Add a new rule — generates an id, fills timestamps, persists. */
-    static async add(partial) {
-        const {rules} = await RouteAssistantAlertRulesStore.load()
+    static async add(partial, opts) {
+        const acctId = RouteAssistantAlertRulesStore._resolveAccountId(opts)
+        const {rules} = await RouteAssistantAlertRulesStore.load({accountId: acctId})
         const id = "rule-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36)
         const rule = RouteAssistantAlertRulesStore._normalise(Object.assign({
             id:        id,
@@ -78,27 +103,29 @@ class RouteAssistantAlertRulesStore {
         }, partial || {}))
         if (!rule) throw new Error("RouteAssistantAlertRulesStore: invalid rule")
         rules.push(rule)
-        await RouteAssistantAlertRulesStore.saveAll(rules)
+        await RouteAssistantAlertRulesStore.saveAll(rules, {accountId: acctId})
         return rule
     }
 
     /** Patch an existing rule by id. Pass {enabled: false} etc. */
-    static async update(id, patch) {
-        const {rules} = await RouteAssistantAlertRulesStore.load()
+    static async update(id, patch, opts) {
+        const acctId = RouteAssistantAlertRulesStore._resolveAccountId(opts)
+        const {rules} = await RouteAssistantAlertRulesStore.load({accountId: acctId})
         const idx = rules.findIndex(r => r.id === id)
         if (idx < 0) return null
         const merged = Object.assign({}, rules[idx], patch || {}, {updatedAt: Date.now()})
         const cleaned = RouteAssistantAlertRulesStore._normalise(merged)
         if (!cleaned) return null
         rules[idx] = cleaned
-        await RouteAssistantAlertRulesStore.saveAll(rules)
+        await RouteAssistantAlertRulesStore.saveAll(rules, {accountId: acctId})
         return cleaned
     }
 
     /** Record that a rule fired for a route — feeds the cooldown check. */
-    static async recordFired(id, routeKey) {
+    static async recordFired(id, routeKey, opts) {
         if (!id || !routeKey) return
-        const {rules} = await RouteAssistantAlertRulesStore.load()
+        const acctId = RouteAssistantAlertRulesStore._resolveAccountId(opts)
+        const {rules} = await RouteAssistantAlertRulesStore.load({accountId: acctId})
         const idx = rules.findIndex(r => r.id === id)
         if (idx < 0) return
         const next = Object.assign({}, rules[idx])
@@ -106,13 +133,14 @@ class RouteAssistantAlertRulesStore {
         next.lastFiredByRoute[routeKey] = Date.now()
         next.updatedAt = Date.now()
         rules[idx] = next
-        await RouteAssistantAlertRulesStore.saveAll(rules)
+        await RouteAssistantAlertRulesStore.saveAll(rules, {accountId: acctId})
     }
 
-    static async remove(id) {
-        const {rules} = await RouteAssistantAlertRulesStore.load()
+    static async remove(id, opts) {
+        const acctId = RouteAssistantAlertRulesStore._resolveAccountId(opts)
+        const {rules} = await RouteAssistantAlertRulesStore.load({accountId: acctId})
         const next = rules.filter(r => r.id !== id)
-        await RouteAssistantAlertRulesStore.saveAll(next)
+        await RouteAssistantAlertRulesStore.saveAll(next, {accountId: acctId})
     }
 
     /** Validate + coerce a rule record. Returns the cleaned record or null. */

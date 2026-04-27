@@ -11196,11 +11196,19 @@ class RouteAssistantPanel {
         if (clearBtn.disabled) clearBtn.style.opacity = "0.5"
         clearBtn.addEventListener("click", async () => {
             const prev = row.override ? Object.assign({}, row.override) : null
+            // Slice L2 — capture acctId at click time; threaded through
+            // perform + restore so Undo lands in the right account.
+            const _acctId = (typeof window !== "undefined"
+                && window.AesAccountScopedKey
+                && typeof window.AesAccountScopedKey.currentAccountIdSync === "function")
+                ? window.AesAccountScopedKey.currentAccountIdSync()
+                : null
+            const _acctOpts = _acctId ? {accountId: _acctId} : undefined
             await this._undoableSave({
                 label: "Override cleared for " + hubU + "→" + destU,
                 type:  "info",
                 perform: async () => {
-                    await RouteAssistantRouteOverridesStore.remove(hubU, destU)
+                    await RouteAssistantRouteOverridesStore.remove(hubU, destU, _acctOpts)
                     row.override = null
                     this.overrideMap.delete(pairKey)
                     this._recomputeProfit()
@@ -11210,7 +11218,7 @@ class RouteAssistantPanel {
                         const restored = await RouteAssistantRouteOverridesStore.save(hubU, destU,
                             {paxLF: prev.paxLF, cargoLF: prev.cargoLF, yieldPerKm: prev.yieldPerKm,
                              cargoYieldPerKgKm: prev.cargoYieldPerKgKm, note: prev.note || "",
-                             expiresAt: prev.expiresAt != null ? prev.expiresAt : null})
+                             expiresAt: prev.expiresAt != null ? prev.expiresAt : null}, _acctOpts)
                         row.override = restored
                         if (restored) this.overrideMap.set(pairKey, restored)
                         this._recomputeProfit()
@@ -11251,10 +11259,18 @@ class RouteAssistantPanel {
                 expiresAt:         existing.expiresAt != null ? existing.expiresAt : null
             }
             const prev = row.override ? Object.assign({}, row.override) : null
+            // Slice L2 — capture acctId at click time; threaded into
+            // every store call below so Undo restores in the same account.
+            const _acctId = (typeof window !== "undefined"
+                && window.AesAccountScopedKey
+                && typeof window.AesAccountScopedKey.currentAccountIdSync === "function")
+                ? window.AesAccountScopedKey.currentAccountIdSync()
+                : null
+            const _acctOpts = _acctId ? {accountId: _acctId} : undefined
             await this._undoableSave({
                 label: "Override saved for " + hubU + "→" + destU,
                 perform: async () => {
-                    const saved = await RouteAssistantRouteOverridesStore.save(hubU, destU, fields)
+                    const saved = await RouteAssistantRouteOverridesStore.save(hubU, destU, fields, _acctOpts)
                     row.override = saved
                     if (saved) this.overrideMap.set(pairKey, saved)
                     else       this.overrideMap.delete(pairKey)
@@ -11265,11 +11281,11 @@ class RouteAssistantPanel {
                         const restored = await RouteAssistantRouteOverridesStore.save(hubU, destU,
                             {paxLF: prev.paxLF, cargoLF: prev.cargoLF, yieldPerKm: prev.yieldPerKm,
                              cargoYieldPerKgKm: prev.cargoYieldPerKgKm, note: prev.note || "",
-                             expiresAt: prev.expiresAt != null ? prev.expiresAt : null})
+                             expiresAt: prev.expiresAt != null ? prev.expiresAt : null}, _acctOpts)
                         row.override = restored
                         if (restored) this.overrideMap.set(pairKey, restored)
                     } else {
-                        await RouteAssistantRouteOverridesStore.remove(hubU, destU)
+                        await RouteAssistantRouteOverridesStore.remove(hubU, destU, _acctOpts)
                         row.override = null
                         this.overrideMap.delete(pairKey)
                     }
@@ -12415,6 +12431,16 @@ class RouteAssistantPanel {
     async _applyBulkOverride(selectedRows, fieldsToApply) {
         const N = selectedRows.length
         const hubU = String(this.hubIata || "").toUpperCase()
+        // Slice L2 — capture accountId at perform-time so the Undo
+        // restore lands in the same account even if the user navigates
+        // a different tab to a different airline before clicking Undo.
+        // Threaded through every store call below via opts.accountId.
+        const _acctId = (typeof window !== "undefined"
+            && window.AesAccountScopedKey
+            && typeof window.AesAccountScopedKey.currentAccountIdSync === "function")
+            ? window.AesAccountScopedKey.currentAccountIdSync()
+            : null
+        const _acctOpts = _acctId ? {accountId: _acctId} : undefined
         // Capture prev records BEFORE the apply so the Undo restore has a
         // closure over the right state. `overrideMap` is keyed by
         // "<HUB>-<DEST>" uppercased.
@@ -12463,7 +12489,7 @@ class RouteAssistantPanel {
                     const destU = String(r.destIata || "").toUpperCase()
                     const pairKey = hubU + "-" + destU
                     const merged = mergeRecord(prevByPair.get(pairKey))
-                    const saved = await RouteAssistantRouteOverridesStore.save(hubU, destU, merged)
+                    const saved = await RouteAssistantRouteOverridesStore.save(hubU, destU, merged, _acctOpts)
                     if (saved) this.overrideMap.set(pairKey, saved)
                     // Mirror onto in-memory row.
                     r.override = saved || null
@@ -12500,11 +12526,11 @@ class RouteAssistantPanel {
                             note:              prev.note || "",
                             // Q3 — preserve expiry on Undo restore
                             expiresAt:         prev.expiresAt != null ? prev.expiresAt : null
-                        })
+                        }, _acctOpts)
                         this.overrideMap.set(pairKey, restored)
                         r.override = restored
                     } else {
-                        await RouteAssistantRouteOverridesStore.remove(hubU, destU)
+                        await RouteAssistantRouteOverridesStore.remove(hubU, destU, _acctOpts)
                         this.overrideMap.delete(pairKey)
                         r.override = null
                     }
