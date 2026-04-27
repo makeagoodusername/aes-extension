@@ -16,3 +16,12 @@ aircraft.txt
 # named fixtures above — kept on disk for parser development, never
 # packaged in the .crx.
 https-:*
+
+# CLAUDE/ reference captures — plain-named browser saves of AS pages
+# (e.g. CLAUDE/ACCOUNTING.html + CLAUDE/ACCOUNTING_files/) and the
+# OLD REFERENCER subfolder. Tracked items under CLAUDE/ (handover-fragments
+# at the time of writing) are unaffected; only generated captures match.
+CLAUDE/*.html
+CLAUDE/*_files/
+CLAUDE/OLD REFERENCER/
+CLAUDE/.DS_Store
