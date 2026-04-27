@@ -502,16 +502,29 @@ class TypeFamilyMap {
      * Walks AS_TYPE_TO_FAMILY and returns one entry per family:
      * `[{family, category, types: string[]}, ...]` sorted by category
      * (commuter → widebody) then family name. Sole source for the dashboard
-     * family-card grid's structure. User typeFamilyOverrides are NOT walked
-     * here — they remain a scan-time concern; unknown labels in a preset land
-     * in the grid's "Custom" card instead.
+     * family-card grid's structure. When `overrides` is supplied (typically
+     * `settings.usedAircraftScanner.typeFamilyOverrides`), each override is
+     * folded into its target family card so user-redirected types appear in
+     * their actual family rather than the grid's "Custom" card. Overrides
+     * pointing at a family with zero static members create a new entry.
+     * Truly unknown labels (no override, not in the static map) still land
+     * in "Custom".
      */
-    static familyList() {
+    static familyList(overrides) {
         const byFamily = {}
         for (const type in AS_TYPE_TO_FAMILY) {
             const family = AS_TYPE_TO_FAMILY[type]
             if (!byFamily[family]) byFamily[family] = []
             byFamily[family].push(type)
+        }
+        if (overrides && typeof overrides === "object") {
+            for (const type in overrides) {
+                const family = overrides[type]
+                if (!family || typeof family !== "string") continue
+                if (AS_TYPE_TO_FAMILY[type] === family) continue  // already there
+                if (!byFamily[family]) byFamily[family] = []
+                if (!byFamily[family].includes(type)) byFamily[family].push(type)
+            }
         }
         const out = []
         for (const family in byFamily) {

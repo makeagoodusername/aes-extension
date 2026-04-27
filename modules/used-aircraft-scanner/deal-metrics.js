@@ -18,12 +18,27 @@
 class MarketScanDealMetrics {
 
     /**
-     * Daily block-hour budget assumed by the break-even estimator. AS
-     * utilisation varies by aircraft size — pick a conservative middle
-     * value so the metric reads as "earliest sensible payback" rather
-     * than an optimistic best case.
+     * Daily block-hour budget assumed by the break-even estimator. Varies
+     * by aircraft category — small regionals turn fewer hours/day than
+     * widebodies. Reads `row.familyCategory` (set by `_enrichFamily`
+     * before `decorate()`) and falls back to the legacy 10h default for
+     * rows without a category. Conservative middle values per band so the
+     * metric reads as "earliest sensible payback" rather than optimistic.
      */
-    static DAILY_BLOCK_HOURS = 10
+    static BLOCK_HOURS_BY_CATEGORY = {
+        commuter:   8,
+        turboprop:  8,
+        regional:   8,
+        narrowbody: 12,
+        widebody:   14
+    }
+    static DAILY_BLOCK_HOURS = 10  // legacy fallback / external alias
+
+    static _blockHoursFor(row) {
+        const cat = row && row.familyCategory
+        const h = cat && MarketScanDealMetrics.BLOCK_HOURS_BY_CATEGORY[cat]
+        return isFiniteNumber(h) && h > 0 ? h : MarketScanDealMetrics.DAILY_BLOCK_HOURS
+    }
 
     /**
      * Maximum service life used by `seatKmYearCost`. Most AS players
@@ -152,7 +167,7 @@ class MarketScanDealMetrics {
         const crew  = numOrDefault(economics.crewCostPerHour, 0)
         const maint = numOrDefault(economics.maintenanceCostPerHour, 0)
 
-        const hours       = MarketScanDealMetrics.DAILY_BLOCK_HOURS
+        const hours       = MarketScanDealMetrics._blockHoursFor(row)
         const dailyKm     = hours * speed
         const paxRev      = dailyKm * seats  * lf      * yieldKm
         const cargoRev    = dailyKm * cargo  * cargoLf * cargoY

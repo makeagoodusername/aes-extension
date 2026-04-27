@@ -54,7 +54,8 @@ class MarketScanFamilyGrid {
         this.activeCategory   = "all"        // all | <category> | custom
         this.expandedFamilies = new Set()    // family-name → expanded
 
-        this._index      = TypeFamilyMap.familyList()
+        this._overrides  = (options && options.typeFamilyOverrides) || null
+        this._index      = TypeFamilyMap.familyList(this._overrides)
         this._knownTypes = this._buildKnownTypeMap()
 
         // Cached element refs populated in _draw(); section refreshers read
