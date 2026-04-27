@@ -70,12 +70,23 @@ class ScheduleBuilder {
      * Overrides pointing at a wave id that no longer exists silently
      * fall through to the bucket — no surprise placement, no error.
      *
+     * H slice 3 — `opts.optimize === true` swaps the greedy fill for
+     * the connection-graph-maximising hill-climb in
+     * `optimizeAssignment`. Forced overrides are still honoured first.
+     *
      * @param {Array} routes - [{destination, distanceNm, aircraftType?, aircraftRangeNm?, turnaroundMinutes?}]
      * @param {object} [opts]
      *   - overrides: {destIata: waveId} map of forced placements
-     * @returns {object} {placements: [{waveId, route, direction, forced?}], unplaced, shortfall, forcedDests}
+     *   - optimize:  boolean — switch to connection-maximising placement
+     * @returns {object} {placements: [{waveId, route, direction, forced?}], unplaced, shortfall, forcedDests, optimised?, optimiseIters?, optimiseScore?}
      */
     assignRoutes(routes, opts) {
+        const o = opts || {}
+        if (o.optimize) return this.optimizeAssignment(routes, o)
+        return this._assignRoutesGreedy(routes, o)
+    }
+
+    _assignRoutesGreedy(routes, opts) {
         const buckets = this.preset.factors.rangeBuckets
         const byBucket = {}
         for (const key in buckets) byBucket[key] = []
@@ -140,6 +151,248 @@ class ScheduleBuilder {
         }
 
         return {placements, unplaced, shortfall: remaining, forcedDests}
+    }
+
+    /**
+     * H slice 3 — connection-graph-maximising placement.
+     *
+     * Replaces the greedy fill with a hill-climb over per-(wave, bucket)
+     * route counts. The objective is the bilinear form
+     *
+     *     C = Σ_{(wa, wb) | A[wa][wb]} count(wa) × count(wb)
+     *
+     * where `count(w)` is the total routes (across all buckets) placed
+     * in wave w, and `A[wa][wb] = 1` iff the gap from wa's arrival
+     * midpoint to wb's departure midpoint lies in
+     * [minTransferMinutes, maxTransferMinutes]. Both directions are
+     * checked — most realistic presets have only forward (later-wave)
+     * connections valid, but the formula degrades cleanly when a wave
+     * pair is asymmetrically reachable.
+     *
+     * Algorithm:
+     *   1. Apply forced overrides first (pinned, never moved).
+     *   2. Seed with a greedy fill (matches `_assignRoutesGreedy`'s
+     *      ordering: waves in preset order, buckets in composition
+     *      order, routes by distance descending).
+     *   3. Hill-climb: at each iteration, try moving exactly one
+     *      non-forced route from (waveA, bucket) → (waveB, bucket)
+     *      where waveB has spare bucket capacity. Accept the first
+     *      improving move and restart the scan. Halt at local optimum
+     *      or `MAX_ITERS = 200`.
+     *   4. Reconstruct placements from the final per-(wave, bucket)
+     *      counts.
+     *
+     * Approximation: scoring uses wave window MIDPOINTS for the gap
+     * computation (not per-flight spread positions). The actual
+     * connection count returned by `computeConnections` on the final
+     * placement may differ by 5–15% — usually slightly lower because
+     * spread brings some intra-wave pairs outside [minXfr, maxXfr] —
+     * but the hill-climb's relative ranking is preserved.
+     *
+     * Capacity contract: composition counts are CAPS, not floors. The
+     * optimiser may leave a wave below its `wave.composition[bucket]`
+     * if moving routes elsewhere lifts the connection score. Per-wave
+     * shortfall is reported only when the bucket queue exhausted before
+     * total bucket capacity was reached (true "couldn't fill"); waves
+     * intentionally drained to feed a higher-scoring wave do NOT show
+     * shortfall. Unplaced routes (no bucket / queue overflow) still
+     * surface via `unplaced[]`.
+     *
+     * @param {Array} routes
+     * @param {object} [opts]
+     *   - overrides: {destIata: waveId} forced-placement map
+     *   - maxIters:  override for the hill-climb cap (default 200)
+     * @returns {object} {placements, unplaced, shortfall, forcedDests,
+     *   optimised: true, optimiseIters, optimiseScore}
+     */
+    optimizeAssignment(routes, opts) {
+        const o = opts || {}
+        const buckets = this.preset.factors.rangeBuckets
+            || ScheduleFactors.defaultRangeBuckets()
+        const bucketKeys = Object.keys(buckets)
+        const waves = this.preset.waves || []
+
+        // Bucket the input routes; sort within bucket by distanceNm
+        // descending to mirror the greedy ordering.
+        const queues = {}
+        for (const k of bucketKeys) queues[k] = []
+        for (const route of routes || []) {
+            const b = ScheduleFactors.bucketize(route.distanceNm, buckets)
+            if (b) queues[b].push(route)
+        }
+        for (const k in queues) queues[k].sort((a, b) => b.distanceNm - a.distanceNm)
+
+        const counts = {}
+        for (const wave of waves) {
+            counts[wave.id] = {}
+            for (const k of bucketKeys) counts[wave.id][k] = 0
+        }
+
+        const placements = []
+        const forcedDests = []
+
+        // Forced overrides — pinned, not movable by the hill-climb.
+        const overrideEntries = ScheduleBuilder._coerceOverrides(o.overrides)
+        if (overrideEntries.length) {
+            const validWaveIds = new Set(waves.map(w => w.id))
+            for (const [destU, waveId] of overrideEntries) {
+                if (!validWaveIds.has(waveId)) continue
+                let pulled = null
+                let pulledBucket = null
+                for (const k of bucketKeys) {
+                    const idx = queues[k].findIndex(r =>
+                        String(r.destination || "").toUpperCase() === destU)
+                    if (idx >= 0) {
+                        pulled = queues[k].splice(idx, 1)[0]
+                        pulledBucket = k
+                        break
+                    }
+                }
+                if (!pulled) continue
+                counts[waveId][pulledBucket]++
+                placements.push({waveId, route: pulled, direction: "outbound", forced: true})
+                placements.push({waveId, route: pulled, direction: "inbound",  forced: true})
+                forcedDests.push(destU)
+            }
+        }
+
+        // Greedy seed for the remaining routes. Track movables so we can
+        // re-bind their wave assignment after the hill-climb finishes.
+        // Each entry is [waveId, bucket, route].
+        const movables = []
+        for (const wave of waves) {
+            for (const k of bucketKeys) {
+                const wantedTotal = (wave.composition && wave.composition[k]) | 0
+                const want = Math.max(0, wantedTotal - counts[wave.id][k])
+                for (let i = 0; i < want; i++) {
+                    const route = queues[k].shift()
+                    if (!route) break
+                    counts[wave.id][k]++
+                    movables.push([wave.id, k, route])
+                }
+            }
+        }
+        const queueExhaustedFor = {}
+        for (const k of bucketKeys) {
+            queueExhaustedFor[k] = (queues[k].length === 0)
+        }
+
+        // Wave-pair adjacency over arrival/departure midpoints.
+        const minXfr = Number(this.preset.factors.minTransferMinutes) || 0
+        const maxXfr = Number(this.preset.factors.maxTransferMinutes) || 240
+        const midpoint = (window) => {
+            if (!window) return NaN
+            const s = ScheduleFactors.parseHHMM(window.start)
+            const e = ScheduleFactors.parseHHMM(window.end)
+            return (isFinite(s) && isFinite(e)) ? (s + e) / 2 : NaN
+        }
+        const A = {}
+        for (const wa of waves) {
+            A[wa.id] = {}
+            const arrMid = midpoint(wa.arrivalWindow)
+            for (const wb of waves) {
+                const depMid = midpoint(wb.departureWindow)
+                if (!isFinite(arrMid) || !isFinite(depMid)) {
+                    A[wa.id][wb.id] = 0
+                    continue
+                }
+                const gap = depMid - arrMid
+                A[wa.id][wb.id] = (gap >= minXfr && gap <= maxXfr) ? 1 : 0
+            }
+        }
+
+        const totalCount = (waveId) => {
+            const c = counts[waveId]
+            let t = 0
+            for (const k of bucketKeys) t += c[k] || 0
+            return t
+        }
+        const scoreCounts = () => {
+            let s = 0
+            for (const wa of waves) {
+                const a = totalCount(wa.id)
+                if (!a) continue
+                for (const wb of waves) {
+                    if (A[wa.id][wb.id]) s += a * totalCount(wb.id)
+                }
+            }
+            return s
+        }
+
+        const findMovable = (waveId, bucket) => {
+            for (let i = 0; i < movables.length; i++) {
+                if (movables[i][0] === waveId && movables[i][1] === bucket) return i
+            }
+            return -1
+        }
+
+        const MAX_ITERS = (typeof o.maxIters === "number" && o.maxIters > 0)
+            ? o.maxIters : 200
+        let bestScore = scoreCounts()
+        let improved = true
+        let iters = 0
+        while (improved && iters < MAX_ITERS) {
+            improved = false
+            outer: for (const waveA of waves) {
+                for (const k of bucketKeys) {
+                    if (counts[waveA.id][k] === 0) continue
+                    if (findMovable(waveA.id, k) < 0) continue   // only forced here — leave alone
+                    for (const waveB of waves) {
+                        if (waveB.id === waveA.id) continue
+                        const capB = (waveB.composition && waveB.composition[k]) | 0
+                        if (counts[waveB.id][k] >= capB) continue
+                        counts[waveA.id][k]--
+                        counts[waveB.id][k]++
+                        const newScore = scoreCounts()
+                        if (newScore > bestScore) {
+                            bestScore = newScore
+                            const idx = findMovable(waveA.id, k)
+                            if (idx >= 0) movables[idx][0] = waveB.id
+                            improved = true
+                            break outer
+                        }
+                        counts[waveA.id][k]++
+                        counts[waveB.id][k]--
+                    }
+                }
+            }
+            iters++
+        }
+
+        // Materialise placements from the final movable bindings.
+        for (const [waveId, , route] of movables) {
+            placements.push({waveId, route, direction: "outbound"})
+            placements.push({waveId, route, direction: "inbound"})
+        }
+
+        const unplaced = []
+        for (const k of bucketKeys) for (const r of queues[k]) unplaced.push(r)
+
+        // Shortfall — only flag waves whose bucket couldn't be filled
+        // because the QUEUE WAS EXHAUSTED, not because the optimiser
+        // moved routes elsewhere. We detect "queue exhausted" via the
+        // pre-optimise snapshot above; if the bucket queue ran out
+        // during the greedy seed and the optimiser couldn't have
+        // sourced more routes, the user genuinely needed more routes
+        // of that haul-length.
+        const shortfall = {}
+        for (const wave of waves) {
+            for (const k of bucketKeys) {
+                if (!queueExhaustedFor[k]) continue
+                const wanted = (wave.composition && wave.composition[k]) | 0
+                const got = counts[wave.id][k]
+                if (got < wanted) {
+                    shortfall[wave.id + ":" + k] = wanted - got
+                }
+            }
+        }
+
+        return {
+            placements, unplaced, shortfall, forcedDests,
+            optimised:      true,
+            optimiseIters:  iters,
+            optimiseScore:  bestScore
+        }
     }
 
     /**

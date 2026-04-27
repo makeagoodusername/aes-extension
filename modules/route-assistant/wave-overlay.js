@@ -89,9 +89,10 @@ class RouteAssistantWaveOverlay {
      * @param {object} preset - SchedulePresets record
      * @param {Array} scoredRows
      * @param {object} ctx - {server, airlineCode, hubIata, selectedSpec, topN,
-     *                        carrierClassifier?}
+     *                        carrierClassifier?, overrides?, optimize?}
      * @returns {object} {validation, routes, flights, warnings, placements,
-     *   unplaced, shortfall, skipped, connections, preset}
+     *   unplaced, shortfall, skipped, connections, preset, optimised,
+     *   optimiseIters, optimiseScore}
      */
     static buildSchedule(preset, scoredRows, ctx) {
         const c = ctx || {}
@@ -128,11 +129,20 @@ class RouteAssistantWaveOverlay {
 
         // Slice E — pass user overrides into the assignment so dragged
         // routes land on their picked wave even if it's bucket-saturated.
-        const assignment = builder.assignRoutes(routes, {overrides: c.overrides})
+        // H slice 3 — `c.optimize` flips placement onto the
+        // connection-graph-maximising hill-climb (still respects
+        // overrides; forced routes stay pinned).
+        const assignment = builder.assignRoutes(routes, {
+            overrides: c.overrides,
+            optimize:  !!c.optimize
+        })
         out.placements   = assignment.placements
         out.unplaced     = assignment.unplaced
         out.shortfall    = assignment.shortfall
         out.forcedDests  = assignment.forcedDests || []
+        out.optimised    = !!assignment.optimised
+        out.optimiseIters = assignment.optimiseIters || 0
+        out.optimiseScore = assignment.optimiseScore || 0
 
         const evaluation = builder.evaluateFlights(assignment.placements)
         out.flights  = evaluation.flights

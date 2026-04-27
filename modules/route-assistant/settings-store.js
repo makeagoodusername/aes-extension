@@ -119,7 +119,13 @@ class RouteAssistantSettings {
                 // Slice 2 — toggle the SVG connection-graph overlay. The legend
                 // still renders even when off, so the user knows the feature
                 // exists. Default ON since the graph is the whole point.
-                showConnections: true
+                showConnections: true,
+                // H slice 3 — connection-graph-maximising placement. Defaults
+                // OFF so the panel matches the user's existing greedy mental
+                // model on first run. Toggling on re-runs the build with
+                // `ScheduleBuilder.optimizeAssignment` (composition counts
+                // become caps, not floors).
+                optimize:        false
             },
             // Q13 yield heatmap — hubs × destinations matrix view. New
             // panel mode toggled by 🗺 in the panel header. Mutually
