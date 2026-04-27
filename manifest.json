@@ -114,6 +114,7 @@
                 "modules/central-hub/nav.js",
                 "modules/central-hub/shell.js",
                 "modules/inventory/inventory-summary-store.js",
+                "modules/inventory/quick-price-apply-log.js",
                 "modules/inventory/quick-price-applier.js",
                 "modules/central-hub/tiles/general-tile.js",
                 "modules/central-hub/tiles/fleet-hub-tile.js",
