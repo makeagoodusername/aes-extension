@@ -39,6 +39,14 @@
     const SLOT_NAME = "auto-preview"
     const STORAGE_REPAINT_DEBOUNCE_MS = 200
 
+    // Per-leg pipeline cost estimate used to project total batch duration
+    // in slice 5b's confirmation modal. Calibrated against the existing
+    // background.js single-leg flow: tab-load wait (~3s) + form fill +
+    // submit + reload (~3s) + 500ms inter-leg gap. Slice 5c's progress
+    // UI uses live timing once the pipeline runs; this constant only
+    // drives the upfront estimate.
+    const ESTIMATED_SECONDS_PER_LEG = 7
+
     const _state = {
         ctxReady:      false,
         spec:          null,
@@ -65,8 +73,10 @@
     // Public surface (re-assigned at the bottom). Slices 5b-5e patch
     // additional handles onto this object as their CTAs / hooks ship.
     const AesAfpAutoSchedulerPreview = {
-        render:       () => _scheduleRender(),
-        runAutoBuild: () => _runAutoBuild(),
+        render:           () => _scheduleRender(),
+        runAutoBuild:     () => _runAutoBuild(),
+        openConfirmModal: () => _openConfirmModal(),
+        applyAll:         (legs, opts) => _applyAll(legs, opts),
         get lastBuild() { return _state.lastBuild }
     }
 
@@ -274,23 +284,64 @@
         btn.addEventListener("click", () => { if (enabled) _runAutoBuild() })
         _ctaEl.appendChild(btn)
 
-        // Slice 5b will append the "Apply all" CTA here once the tier
-        // gate flips to "apply-on-confirm". Render a placeholder hint
-        // describing the dormant state so the user knows where to look.
+        // Apply-all CTA — gated behind the autoScheduler tier + enabled flag.
+        // The button is always rendered (so the user knows it exists) but
+        // disabled with an explanatory tooltip in the dormant state.
+        const flights = (_state.lastBuild && _state.lastBuild.flights) || []
         const tier = _state.settings
             && _state.settings.autoScheduler
             && _state.settings.autoScheduler.tier
         const enabledFlag = _state.settings
             && _state.settings.autoScheduler
             && _state.settings.autoScheduler.enabled
-        if (_state.lastBuild && (!enabledFlag || tier !== "apply-on-confirm")) {
+        const armed = !!enabledFlag && tier === "apply-on-confirm"
+        const maxLegs = (_state.settings && _state.settings.autoScheduler
+            && Number(_state.settings.autoScheduler.maxLegsPerApply)) || 28
+        const applyEnabled = !_state.running
+            && _state.lastBuild
+            && flights.length > 0
+            && armed
+            && flights.length <= maxLegs
+        const applyBtn = document.createElement("button")
+        applyBtn.type = "button"
+        applyBtn.textContent = flights.length
+            ? "Apply all " + flights.length + " flights…"
+            : "Apply all flights…"
+        applyBtn.disabled = !applyEnabled
+        applyBtn.style.cssText = "background:" + (applyEnabled ? "#b91c1c" : "#374151") + ";"
+            + "color:" + (applyEnabled ? "#fef2f2" : "#9ca3af") + ";"
+            + "border:1px solid " + (applyEnabled ? "#7f1d1d" : "#374151") + ";"
+            + "border-radius:3px;padding:4px 12px;font-size:11px;font-weight:600;"
+            + "cursor:" + (applyEnabled ? "pointer" : "not-allowed") + ";"
+        applyBtn.title = applyEnabled
+            ? "Open the confirmation modal listing every leg AS will be POSTed."
+            : _applyBlockedReason({armed, flights, maxLegs, tier, enabled: enabledFlag})
+        applyBtn.addEventListener("click", () => {
+            if (applyEnabled) _openConfirmModal()
+        })
+        _ctaEl.appendChild(applyBtn)
+
+        // Tier-status hint for the dormant case so users know where to flip
+        // the gate. Settings live in chrome.storage.local.settings, edited
+        // via the diagnostics console (Phase-1 has no UI knob).
+        if (_state.lastBuild && !armed) {
             const hint = document.createElement("span")
             hint.style.cssText = "color:#6b7280;font-size:11px;"
-            hint.textContent = "Preview only — set"
-                + " settings.aircraftFlightPlan.autoScheduler.tier ="
-                + " \"apply-on-confirm\" + .enabled = true to unlock Apply-all."
+            hint.textContent = "Tier-gated — set"
+                + " settings.aircraftFlightPlan.autoScheduler.enabled = true"
+                + " + .tier = \"apply-on-confirm\" to unlock Apply-all."
             _ctaEl.appendChild(hint)
         }
+    }
+
+    function _applyBlockedReason(opts) {
+        if (_state.running)                  return "Auto-build still running."
+        if (!_state.lastBuild)               return "No build to apply — run Auto-build first."
+        if (!opts.flights.length)            return "Build returned 0 flights."
+        if (!opts.enabled)                   return "autoScheduler.enabled === false (default Phase-1 posture)."
+        if (opts.tier !== "apply-on-confirm") return "autoScheduler.tier === \"" + (opts.tier || "?") + "\" — needs \"apply-on-confirm\"."
+        if (opts.flights.length > opts.maxLegs) return "Build has " + opts.flights.length + " legs > maxLegsPerApply " + opts.maxLegs + "."
+        return ""
     }
 
     function _ctaBlockedReason() {
@@ -560,6 +611,334 @@
             tip.textContent = "Apply-all is gated behind settings.aircraftFlightPlan.autoScheduler.tier === \"apply-on-confirm\"."
         }
         _footerEl.appendChild(tip)
+    }
+
+    // ── Apply-all confirmation modal (slice 5b) ────────────────────────
+
+    let _modalEl = null
+
+    /**
+     * Resolve the effective leg payload — base flight from the build
+     * with `perLegEdits[seq]` overlay merged on top. Returns the shape
+     * `AesAfpFormDriver.fill` (and the background-tab pipeline) expects:
+     * `{seq, origin, destination, depTime, pricePct, service}`. Inbound
+     * legs reverse origin/dest as already encoded in the build's
+     * `direction` field.
+     */
+    function _materialiseLegs(build, draft) {
+        const flights = (build && build.flights) || []
+        const overlays = (draft && draft.perLegEdits) || {}
+        const dpct = (_state.settings && isFinite(Number(_state.settings.defaultPricePct)))
+            ? _state.settings.defaultPricePct : 100
+        const dsvc = (_state.settings && typeof _state.settings.defaultService === "string")
+            ? _state.settings.defaultService : ""
+        const out = []
+        for (const f of flights) {
+            const o = overlays[f.seq] || {}
+            const eff = Object.assign({}, f, o)
+            out.push({
+                seq:         f.seq,
+                waveId:      f.waveId,
+                waveLabel:   f.waveLabel,
+                direction:   eff.direction || f.direction,
+                origin:      eff.origin      || f.origin      || null,
+                destination: eff.destination || f.destination || null,
+                depTime:     eff.depTimeLocal || f.depTimeLocal || null,
+                distanceNm:  f.distanceNm,
+                pricePct:    isFinite(Number(eff.pricePct)) ? Number(eff.pricePct) : dpct,
+                service:     (typeof eff.service === "string") ? eff.service : dsvc
+            })
+        }
+        return out
+    }
+
+    function _openConfirmModal() {
+        if (!_state.lastBuild) return
+        const legs = _materialiseLegs(_state.lastBuild, _state.draft)
+        if (!legs.length) return
+        _closeConfirmModal()
+
+        const overlay = document.createElement("div")
+        overlay.className = "aes-overlay"
+        overlay.setAttribute("data-aes-afp-auto-confirm", "1")
+        overlay.style.cssText = "position:fixed;inset:0;"
+            + "background:rgba(15,23,42,0.78);z-index:99998;"
+            + "display:flex;align-items:center;justify-content:center;padding:24px;"
+        overlay.addEventListener("click", (e) => {
+            if (e.target === overlay) _closeConfirmModal()
+        })
+
+        const modal = document.createElement("div")
+        modal.className = "aes-afp-auto-confirm-modal"
+        modal.style.cssText = "background:#0f1623;color:#e5e7eb;"
+            + "border:1px solid #1f2937;border-radius:5px;"
+            + "max-width:min(720px,94vw);max-height:88vh;width:100%;"
+            + "display:flex;flex-direction:column;overflow:hidden;"
+            + "font-size:12px;font-family:inherit;"
+
+        // Header.
+        const header = document.createElement("div")
+        header.style.cssText = "display:flex;align-items:center;gap:8px;"
+            + "padding:10px 14px;border-bottom:1px solid #1f2937;"
+            + "background:#111827;"
+        const title = document.createElement("div")
+        title.style.cssText = "font-weight:700;font-size:13px;color:#f3f4f6;"
+            + "flex:1 1 auto;"
+        title.textContent = "Apply " + legs.length + " flights — confirm"
+        header.appendChild(title)
+        const closeX = document.createElement("button")
+        closeX.type = "button"
+        closeX.textContent = "×"
+        closeX.title = "Cancel"
+        closeX.style.cssText = "background:transparent;color:#9ca3af;"
+            + "border:0;font-size:18px;line-height:1;cursor:pointer;"
+            + "padding:0 4px;"
+        closeX.addEventListener("click", _closeConfirmModal)
+        header.appendChild(closeX)
+        modal.appendChild(header)
+
+        // Body — leg list with checkboxes.
+        const body = document.createElement("div")
+        body.style.cssText = "padding:8px 14px;overflow-y:auto;flex:1 1 auto;"
+
+        const subtitle = document.createElement("div")
+        subtitle.style.cssText = "color:#9ca3af;font-size:11px;margin-bottom:6px;"
+        const totalSecs = legs.length * ESTIMATED_SECONDS_PER_LEG
+        subtitle.textContent = "Each checked leg posts one new flight number to AS."
+            + " Estimated total: ~" + _fmtDuration(totalSecs)
+            + " (" + ESTIMATED_SECONDS_PER_LEG + "s per leg)."
+        body.appendChild(subtitle)
+
+        const checked = new Set(legs.map(l => l.seq))   // default all on
+
+        const list = document.createElement("div")
+        list.style.cssText = "display:flex;flex-direction:column;gap:0;"
+            + "border:1px solid #1f2937;border-radius:3px;"
+        legs.forEach((leg, idx) => {
+            const row = document.createElement("label")
+            row.style.cssText = "display:flex;align-items:center;gap:8px;"
+                + "padding:5px 8px;font-size:11px;color:#cbd5e1;cursor:pointer;"
+                + (idx % 2 ? "background:#0f1623;" : "background:#111827;")
+            const cb = document.createElement("input")
+            cb.type = "checkbox"
+            cb.checked = true
+            cb.style.cssText = "margin:0;flex:0 0 auto;"
+            cb.addEventListener("change", () => {
+                if (cb.checked) checked.add(leg.seq); else checked.delete(leg.seq)
+                _updateModalCounts()
+            })
+            row.appendChild(cb)
+
+            const idxLbl = document.createElement("span")
+            idxLbl.style.cssText = "color:#6b7280;width:24px;flex:0 0 auto;"
+                + "font-variant-numeric:tabular-nums;text-align:right;"
+            idxLbl.textContent = String(idx + 1) + "."
+            row.appendChild(idxLbl)
+
+            const dirCol = (leg.direction === "inbound") ? "#10b981" : "#3b82f6"
+            const dirAr  = (leg.direction === "inbound") ? "←" : "→"
+            const dir = document.createElement("span")
+            dir.style.cssText = "color:" + dirCol + ";font-weight:600;width:30px;flex:0 0 auto;"
+            dir.textContent = (leg.direction || "").slice(0, 3)
+            row.appendChild(dir)
+
+            const od = document.createElement("span")
+            od.style.cssText = "font-weight:600;color:#f8fafc;flex:1 1 auto;min-width:0;"
+                + "font-variant-numeric:tabular-nums;"
+            od.textContent = (leg.origin || "?") + " " + dirAr + " " + (leg.destination || "?")
+            row.appendChild(od)
+
+            const time = document.createElement("span")
+            time.style.cssText = "color:#9ca3af;width:46px;flex:0 0 auto;text-align:right;"
+                + "font-variant-numeric:tabular-nums;"
+            time.textContent = leg.depTime || "—"
+            row.appendChild(time)
+
+            const price = document.createElement("span")
+            price.style.cssText = "color:#9ca3af;width:42px;flex:0 0 auto;text-align:right;"
+                + "font-size:10px;font-variant-numeric:tabular-nums;"
+            price.textContent = (leg.pricePct != null ? leg.pricePct : 100) + "%"
+            row.appendChild(price)
+
+            const overlayTag = (_state.draft && _state.draft.perLegEdits
+                && _state.draft.perLegEdits[leg.seq]) ? "edited" : ""
+            if (overlayTag) {
+                const tag = document.createElement("span")
+                tag.style.cssText = "color:#fbbf24;font-size:10px;width:38px;flex:0 0 auto;"
+                tag.textContent = overlayTag
+                row.appendChild(tag)
+            }
+
+            list.appendChild(row)
+        })
+        body.appendChild(list)
+
+        // I-understand checkbox — required to enable Apply.
+        const ackWrap = document.createElement("label")
+        ackWrap.style.cssText = "display:flex;align-items:flex-start;gap:8px;"
+            + "padding:10px 8px 4px;font-size:11px;color:#fbbf24;cursor:pointer;"
+        const ack = document.createElement("input")
+        ack.type = "checkbox"
+        ack.checked = false
+        ack.style.cssText = "margin:3px 0 0;flex:0 0 auto;"
+        ackWrap.appendChild(ack)
+        const ackLbl = document.createElement("span")
+        ackLbl.innerHTML = "I understand AS will receive <strong data-aes-acked-count>"
+            + legs.length + "</strong> POSTs (one per leg) over"
+            + " ~<strong data-aes-acked-est>" + _fmtDuration(totalSecs) + "</strong>"
+            + ". Failed legs will surface in the audit log + retry queue."
+        ackWrap.appendChild(ackLbl)
+        body.appendChild(ackWrap)
+        ack.addEventListener("change", _updateModalCounts)
+
+        modal.appendChild(body)
+
+        // Footer — Cancel + Apply.
+        const footer = document.createElement("div")
+        footer.style.cssText = "display:flex;gap:6px;align-items:center;"
+            + "padding:8px 14px;border-top:1px solid #1f2937;background:#111827;"
+
+        const counter = document.createElement("span")
+        counter.setAttribute("data-aes-modal-counter", "1")
+        counter.style.cssText = "color:#9ca3af;font-size:11px;flex:1 1 auto;"
+        counter.textContent = legs.length + " of " + legs.length + " selected"
+        footer.appendChild(counter)
+
+        const cancel = document.createElement("button")
+        cancel.type = "button"
+        cancel.textContent = "Cancel"
+        cancel.style.cssText = "background:transparent;color:#cbd5e1;"
+            + "border:1px solid #374151;border-radius:3px;padding:4px 10px;"
+            + "font-size:11px;cursor:pointer;"
+        cancel.addEventListener("click", _closeConfirmModal)
+        footer.appendChild(cancel)
+
+        const apply = document.createElement("button")
+        apply.type = "button"
+        apply.setAttribute("data-aes-modal-apply", "1")
+        apply.textContent = "Apply"
+        apply.disabled = true
+        apply.style.cssText = "background:#374151;color:#9ca3af;"
+            + "border:1px solid #374151;border-radius:3px;padding:4px 14px;"
+            + "font-size:11px;font-weight:600;cursor:not-allowed;"
+        apply.addEventListener("click", () => {
+            if (apply.disabled) return
+            const selectedLegs = legs.filter(l => checked.has(l.seq))
+            _closeConfirmModal()
+            _applyAll(selectedLegs, {source: "confirm-modal"})
+        })
+        footer.appendChild(apply)
+
+        modal.appendChild(footer)
+        overlay.appendChild(modal)
+        document.body.appendChild(overlay)
+        _modalEl = overlay
+
+        // Esc closes — same convention as wave-applier's modals.
+        const onKey = (e) => {
+            if (e.key === "Escape") {
+                _closeConfirmModal()
+                document.removeEventListener("keydown", onKey)
+            }
+        }
+        document.addEventListener("keydown", onKey)
+
+        // Cache per-modal state so _updateModalCounts can read it.
+        _modalEl._aesState = {legs, checked, ack, totalSecs}
+        _updateModalCounts()
+    }
+
+    function _updateModalCounts() {
+        if (!_modalEl || !_modalEl._aesState) return
+        const {legs, checked, ack} = _modalEl._aesState
+        const counter = _modalEl.querySelector("[data-aes-modal-counter]")
+        const apply   = _modalEl.querySelector("[data-aes-modal-apply]")
+        const ackedCt = _modalEl.querySelector("[data-aes-acked-count]")
+        const ackedEst = _modalEl.querySelector("[data-aes-acked-est]")
+        const sel = checked.size
+        if (counter) counter.textContent = sel + " of " + legs.length + " selected"
+        if (ackedCt) ackedCt.textContent = String(sel)
+        if (ackedEst) ackedEst.textContent = _fmtDuration(sel * ESTIMATED_SECONDS_PER_LEG)
+        const enabled = !!(ack && ack.checked) && sel > 0
+        if (apply) {
+            apply.disabled = !enabled
+            apply.style.background = enabled ? "#b91c1c" : "#374151"
+            apply.style.color      = enabled ? "#fef2f2" : "#9ca3af"
+            apply.style.borderColor = enabled ? "#7f1d1d" : "#374151"
+            apply.style.cursor     = enabled ? "pointer" : "not-allowed"
+        }
+    }
+
+    function _closeConfirmModal() {
+        if (!_modalEl) return
+        try { _modalEl.remove() } catch (_) { /* noop */ }
+        _modalEl = null
+    }
+
+    /**
+     * Slice 5b stub. Hands off to slice 5c's apply-batch.js when present
+     * (`window.AesAfpAutoApplyBatch`); otherwise emits a bus event so
+     * downstream wiring (audit log, retry queue) can observe the request
+     * and toasts a "pipeline not loaded" message. Keeps the no-programmatic-
+     * submit invariant intact — there is no AS POST here.
+     */
+    function _applyAll(legs, opts) {
+        const list = Array.isArray(legs) ? legs : []
+        if (!list.length) return
+        const ctxR = _ctx()
+        const payload = {
+            ctx:       {server: ctxR.server || "", aircraftId: ctxR.aircraftId || "",
+                        currentLocationIata: ctxR.currentLocationIata || ""},
+            legs:      list,
+            requestedAt: Date.now(),
+            source:    (opts && opts.source) || "preview-panel"
+        }
+        if (window.AesAfp && AesAfp.bus) {
+            try { AesAfp.bus.emit("auto-apply:requested", payload) }
+            catch (_) { /* bus self-isolates */ }
+        }
+        const batch = window.AesAfpAutoApplyBatch
+        if (batch && typeof batch.start === "function") {
+            try { batch.start(payload) }
+            catch (e) {
+                console.warn("[AES auto-5b] apply-batch start threw", e)
+                _toast("Apply-batch pipeline threw: " + ((e && e.message) || e), "error")
+            }
+            return
+        }
+        // Slice 5c hasn't shipped — surface the dormant state so the user
+        // doesn't think the click silently failed.
+        _toast("Apply-batch pipeline not loaded yet (slice 5c).", "warn")
+    }
+
+    function _toast(msg, kind) {
+        if (typeof RouteAssistantToast === "undefined") {
+            console.warn("[AES auto-5b]", kind || "info", msg)
+            return
+        }
+        try {
+            const fn = (kind === "error") ? RouteAssistantToast.error
+                     : (kind === "warn")  ? RouteAssistantToast.warn
+                     : (kind === "success") ? RouteAssistantToast.success
+                     :                        RouteAssistantToast.info
+            if (typeof fn === "function") fn.call(RouteAssistantToast, msg)
+            else if (typeof RouteAssistantToast.info === "function")
+                RouteAssistantToast.info(msg)
+        } catch (_) { /* never let toast break the panel */ }
+    }
+
+    function _fmtDuration(seconds) {
+        const s = Math.max(0, Math.round(Number(seconds) || 0))
+        if (s < 60) return s + "s"
+        const m = Math.floor(s / 60)
+        const rem = s % 60
+        if (m < 60) {
+            return rem ? (m + "m" + String(rem).padStart(2, "0") + "s")
+                       : (m + "m")
+        }
+        const h = Math.floor(m / 60)
+        const mm = m % 60
+        return mm ? (h + "h" + String(mm).padStart(2, "0") + "m") : (h + "h")
     }
 
     // ── State mutators ─────────────────────────────────────────────────
