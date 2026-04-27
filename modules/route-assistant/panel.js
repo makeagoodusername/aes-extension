@@ -148,6 +148,13 @@ class RouteAssistantPanel {
 
         this._buildSkeleton()
         document.body.append(this.root)
+        // Slice F — restore inspector pane open state. The skeleton
+        // builds with `display:none` so we toggle here when persisted
+        // state says it should start open. Doing it after the skeleton
+        // mount keeps the toggle logic in one place.
+        if (this.settings.inspectorOpen && this.inspectorHost) {
+            this._toggleInspector()
+        }
         this._attachStorageListener()
         this._attachHubShortcuts()
         await this.refresh()
@@ -217,18 +224,37 @@ class RouteAssistantPanel {
         if (!chrome.storage || !chrome.storage.onChanged) return
         this._storageListener = (changes, areaName) => {
             if (areaName !== "local") return
-            let interesting = false
+            const myHub = String(this.hubIata || "").toUpperCase()
+            let needFullRefresh = false
+            let needScheduleRepaint = false
             for (const key in changes) {
-                if (key.endsWith("aircraftFleet")) interesting = true
-                else if (key.startsWith(RouteAssistantTypeSpecsStore.PREFIX)) interesting = true
-                if (interesting) break
+                if (key.endsWith("aircraftFleet")
+                 || key.startsWith(RouteAssistantTypeSpecsStore.PREFIX)) {
+                    needFullRefresh = true
+                    continue
+                }
+                if (typeof AesAfpScheduleStore !== "undefined"
+                 && key.startsWith(AesAfpScheduleStore.PREFIX)
+                 && myHub) {
+                    const change = changes[key]
+                    const newRec = change ? change.newValue : null
+                    const oldRec = change ? change.oldValue : null
+                    const wasOurs = oldRec && String(oldRec.hubIata || "").toUpperCase() === myHub
+                    const isOurs  = newRec && String(newRec.hubIata || "").toUpperCase() === myHub
+                    if (!wasOurs && !isOurs) continue
+                    if (this._hubScheduleRecords) {
+                        if (isOurs) this._hubScheduleRecords.set(key, newRec)
+                        else        this._hubScheduleRecords.delete(key)
+                    }
+                    needScheduleRepaint = true
+                }
             }
-            if (!interesting) return
-            // Debounce — a fleet rescan writes one big record, but the
-            // sibling specs enrichment writes one key per type. Avoid
-            // re-rendering N times.
-            clearTimeout(this._storageDebounceTimer)
-            this._storageDebounceTimer = setTimeout(() => this.refresh(), 500)
+            if (needFullRefresh) {
+                clearTimeout(this._storageDebounceTimer)
+                this._storageDebounceTimer = setTimeout(() => this.refresh(), 500)
+            } else if (needScheduleRepaint) {
+                this._renderHubSchedulesCard()
+            }
         }
         chrome.storage.onChanged.addListener(this._storageListener)
     }
@@ -1216,7 +1242,10 @@ class RouteAssistantPanel {
         `
         this.root.append(linkStyle)
 
-        const header = document.createElement("div")
+        // Slice C — store the header reference on `this` so the settings
+        // drawer's top-offset calc can find it (the drawer overlays only
+        // the body, not the header that hosts the ⚙ gear that toggles it).
+        const header = this._headerEl = document.createElement("div")
         Object.assign(header.style, {
             padding: "var(--aes-sp-2) var(--aes-sp-3)",
             background: "var(--aes-bone-2)",                  // dark theme: oxide-bg-2
@@ -1242,29 +1271,21 @@ class RouteAssistantPanel {
         })
 
         const refreshBtn = makeBtn("↻", "Refresh from cache", () => this.refresh())
-        // Compact toggle — collapses every settings-driven column group
-        // (Live route data, Actuals, Service, Market Analysis, ORS Rank)
-        // in one click so the table fits in narrow viewports. Persists
-        // via settings.routeAssistant.compactView.
-        this._compactBtn = makeBtn("◧", "Compact view (toggle heavy column groups)",
-            () => this._toggleCompactView())
-        // Wave View toggle (H slice 1) — replaces the table with a
-        // Gantt-style timeline of the recommended wave structure for
-        // the top-N scored rows. Reuses ScheduleBuilder / SchedulePresets.
-        this._waveBtn = makeBtn("📊", "Wave View (toggle Gantt timeline)",
-            () => this._toggleWaveView())
-        // ORS Sandbox toggle (Letter I slice 1) — replaces the table with
-        // a per-route pricing simulator. Mutually exclusive with Wave
-        // View; when both flags are on, Wave View wins (its render branch
-        // fires first in _renderRows).
-        this._orsSandboxBtn = makeBtn("🧪", "ORS Sandbox (toggle pricing simulator)",
-            () => this._toggleOrsSandbox())
-        // Q13 yield heatmap (cluster B) — hubs × destinations matrix
-        // view. Replaces the table; mutually exclusive with Wave View
-        // and ORS Sandbox (both win when active because their branches
-        // run first in _renderRows).
-        this._heatmapBtn = makeBtn("🗺", "Yield heatmap (toggle hubs × destinations matrix)",
-            () => this._toggleHeatmap())
+        // Slice F — inspector pane toggle. Opens a 360px right-side pane
+        // with the selected route's full breakdown (score, fleet fit,
+        // override, note, quick actions). Persists across mounts via
+        // settings.routeAssistant.inspectorOpen.
+        this._inspectorBtn = makeBtn("🔍", "Inspector pane (toggle route detail side panel)",
+            () => this._toggleInspector())
+        // Restructure slice B — Compact toggle, Wave/Sandbox/Heatmap mode
+        // toggles all moved out of the header. Modes live on the pill
+        // bar at the top of the body (`mode-tabs.js`); Compact lives on
+        // the right side of the same pill row, only visible in Table
+        // mode. The icon-only header buttons were easy to hit
+        // accidentally and gave no signal of their on/off state — the
+        // pill bar makes mode state always visible.
+        // The `_toggle*` methods are kept on the panel so external
+        // callers (e.g. the keyboard-shortcuts module) keep working.
         // Bulk-open stations from scraped airports — launches the same
         // OpenStationsModal the dashboard's Schedule Management uses, but
         // pre-seeded with the panel's current hub so distances and
@@ -1294,8 +1315,20 @@ class RouteAssistantPanel {
         // file; import shows a diff modal before committing.
         const configBtn = makeBtn("⇅", "Export / import config (JSON roundtrip)",
             (e) => this._openConfigMenu(e.currentTarget))
-        const toggleBtn = makeBtn("_", "Minimise", () => this._toggleCollapse())
-        header.append(title, refreshBtn, this._compactBtn, this._waveBtn, this._orsSandboxBtn, this._heatmapBtn, openStationsBtn, stationStatusHost, this._retireBtn, settingsBtn, this._notifBtn, configBtn, toggleBtn)
+        // Bidirectional collapse toggle. The label + title flip with state so
+        // a collapsed panel still tells the user how to bring the table back
+        // (the old static "_" / "Minimise" was unreadable once the body was
+        // hidden — the user only ever saw a button labelled with the action
+        // they had just performed). Glyphs follow the body's direction:
+        // ▴ when expanded (click pushes the panel up), ▾ when collapsed
+        // (click drops the panel back down).
+        const toggleBtn = makeBtn(
+            this.collapsed ? "▾" : "▴",
+            this.collapsed ? "Expand panel" : "Minimise panel",
+            () => this._toggleCollapse()
+        )
+        this._collapseBtn = toggleBtn
+        header.append(title, refreshBtn, openStationsBtn, stationStatusHost, this._retireBtn, this._inspectorBtn, settingsBtn, this._notifBtn, configBtn, toggleBtn)
 
         this.statusBar = document.createElement("div")
         Object.assign(this.statusBar.style, {
@@ -1329,23 +1362,55 @@ class RouteAssistantPanel {
             color: "var(--aes-oxide)"
         })
 
+        // Restructure slice C — Settings is now a slide-in side-drawer
+        // (was an inline section that crushed `body.maxHeight` to 25vh,
+        // making the route table effectively unreadable while open).
+        // The drawer slides in from the right edge of the panel,
+        // overlaying — not displacing — the body. The gear button stays
+        // visible in the header so the same control closes it; ESC,
+        // clicking the backdrop, and the drawer's own ✕ also close.
         this.settingsHost = document.createElement("div")
         Object.assign(this.settingsHost.style, {
-            padding: "var(--aes-sp-2) var(--aes-sp-3)",
-            background: "var(--aes-bone)",
-            borderBottom: "var(--aes-bw-1) solid var(--aes-paper-rule)",
-            display: "none",
-            // Cap at 50vh so the table below always gets meaningful
-            // space — the drawer grew with the pricing / yield /
-            // carriers / market-analysis expanders and was crowding
-            // body to 0 height. Settings scroll internally; user
-            // never loses the table.
-            maxHeight: "50vh",
-            overflowY: "auto",
-            flexShrink: "0",
-            fontFamily: "var(--aes-font-display)",
-            fontSize: "var(--aes-fs-small)",
-            color: "var(--aes-oxide)"
+            position:       "absolute",
+            top:            "0",            // refreshed in _toggleSettings to clear the header
+            right:          "0",
+            bottom:         "0",
+            width:          "520px",
+            maxWidth:       "70%",
+            background:     "var(--aes-bone)",
+            borderLeft:     "var(--aes-bw-2) solid var(--aes-oxide)",
+            boxShadow:      "calc(var(--aes-sp-2) * -1) 0 0 0 rgba(0,0,0,0.18)",
+            transform:      "translateX(100%)",
+            transition:     "transform 200ms ease",
+            overflowY:      "auto",
+            zIndex:         "10",
+            fontFamily:     "var(--aes-font-display)",
+            fontSize:       "var(--aes-fs-small)",
+            color:          "var(--aes-oxide)",
+            // Padding restored — the drawer header inside _renderSettings
+            // uses negative margin to escape these insets so the sticky
+            // header runs edge-to-edge while sections respect the inset.
+            padding:        "var(--aes-sp-2) var(--aes-sp-3)"
+        })
+
+        // Backdrop that dims the body when the drawer is open. Hidden by
+        // default; click → close. Lives inside root so it sits above
+        // body content but below the drawer (drawer z-index is higher).
+        this._settingsBackdrop = document.createElement("div")
+        Object.assign(this._settingsBackdrop.style, {
+            position:       "absolute",
+            top:            "0",
+            left:           "0",
+            right:          "0",
+            bottom:         "0",
+            background:     "rgba(15,22,35,0.40)",
+            display:        "none",
+            zIndex:         "9",
+            cursor:         "pointer"
+        })
+        this._settingsBackdrop.title = "Click to close settings"
+        this._settingsBackdrop.addEventListener("click", () => {
+            if (this.settingsHost.dataset.open === "1") this._toggleSettings()
         })
 
         this.body = document.createElement("div")
@@ -1373,10 +1438,53 @@ class RouteAssistantPanel {
         this.chipBar = document.createElement("div")
         this.body.append(this.chipBar)
 
-        this.tableHost = document.createElement("div")
-        this.body.append(this.tableHost)
+        // Restructure slice B — primary mode pill bar (Table / Waves /
+        // Sandbox / Heatmap). Lives above the hub-schedules card so the
+        // active mode is the first thing the user sees in the body, and
+        // so it survives every `tableHost.innerHTML = ""` reset (lives in
+        // `body`, not `tableHost`). Renderer is in `mode-tabs.js`.
+        this.modeTabsHost = document.createElement("div")
+        this.body.append(this.modeTabsHost)
 
-        this.root.append(header, this.statusBar, this.controlsHost, this.settingsHost, this.body)
+        // Track 7 slice 7f — "Aircraft schedules at this hub" sub-card.
+        // Lives between chipBar and tableHost so the user sees who's
+        // assigned to the hub without scrolling. Populated from
+        // `aircraftFlightPlan:schedule:*` keys filtered by hubIata.
+        // Hidden (display:none) when no schedules match — same UX as the
+        // tabBar/chipBar above when there's nothing to show.
+        this._hubSchedulesHost = document.createElement("div")
+        this.body.append(this._hubSchedulesHost)
+
+        // Slice F — split tableHost into a horizontal flex row that
+        // hosts the existing table area on the left and the inspector
+        // pane on the right. The inspector is hidden by default;
+        // toggling it via the 🔍 header button or selecting a row when
+        // it's already open populates it. The split is inside `body`
+        // so vertical scrolling still works on either side.
+        const tableSplit = document.createElement("div")
+        tableSplit.style.cssText = "display:flex;align-items:stretch;gap:0;flex:1;min-height:0;"
+        this.body.append(tableSplit)
+
+        this.tableHost = document.createElement("div")
+        this.tableHost.style.cssText = "flex:1;min-width:0;overflow:auto;"
+        tableSplit.append(this.tableHost)
+
+        // Inspector pane host. Hidden by default; `_toggleInspector`
+        // sets `display:flex` and `_renderInspector` populates it.
+        this.inspectorHost = document.createElement("div")
+        this.inspectorHost.style.cssText = "display:none;width:360px;flex-shrink:0;"
+            + "border-left:var(--aes-bw-1) solid var(--aes-paper-rule);"
+            + "background:var(--aes-bone);max-height:100%;"
+        tableSplit.append(this.inspectorHost)
+        this._inspectorOpen = false
+        this._inspectorSelectedDest = null
+
+        // Drawer + backdrop append AFTER body so they sit on top in the
+        // stacking order (z-index also enforces it). header / statusBar /
+        // controlsHost / body are normal flex children of the column;
+        // settingsHost + _settingsBackdrop are absolute overlays.
+        this.root.append(header, this.statusBar, this.controlsHost, this.body,
+            this._settingsBackdrop, this.settingsHost)
         if (this.collapsed) {
             this.statusBar.style.display = "none"
             this.controlsHost.style.display = "none"
@@ -1391,20 +1499,147 @@ class RouteAssistantPanel {
             ? "none"
             : (this.controlsHost.dataset.populated === "1" ? "flex" : "none")
         this.body.style.display = this.collapsed ? "none" : "block"
-        this.settingsHost.style.display = this.collapsed ? "none"
-            : (this.settingsHost.dataset.open === "1" ? "block" : "none")
+        // Refresh the toggle button affordance so the user can always tell
+        // which direction a click will move the panel.
+        if (this._collapseBtn) {
+            this._collapseBtn.textContent = this.collapsed ? "▾" : "▴"
+            this._collapseBtn.title = this.collapsed ? "Expand panel" : "Minimise panel"
+        }
+        // Slice C — settings drawer is now an absolute slide-in. When the
+        // panel collapses to header-only, force the drawer closed (it'd
+        // otherwise float over the hidden body region and the user can't
+        // reach the gear button to close it). The backdrop follows.
+        if (this.collapsed && this.settingsHost.dataset.open === "1") {
+            this._toggleSettings()
+        }
         RouteAssistantSettings.save({collapsed: this.collapsed})
     }
 
+    /**
+     * Restructure slice C — settings drawer slide-in/out.
+     *
+     * Was: opened the drawer inline and capped `body.maxHeight = 25vh`,
+     * crushing the table to almost nothing while open. The mode pill
+     * bar landed on top of that bug because the "table disappeared"
+     * complaint was really "table is 25% of normal height + I'm in
+     * Wave View at the same time, so I see no rows".
+     *
+     * Now: slides over the body from the right. Body retains its
+     * natural height; the user can keep an eye on the table behind the
+     * drawer. Backdrop catches outside clicks; ESC closes it too.
+     */
     _toggleSettings() {
         const open = this.settingsHost.dataset.open !== "1"
         this.settingsHost.dataset.open = open ? "1" : "0"
-        this.settingsHost.style.display = open ? "block" : "none"
-        // When drawer is open, cap the body so the drawer wins the height
-        // contest. Body keeps a small window so the user can still glance at
-        // top-scoring routes while tweaking settings.
-        this.body.style.maxHeight = open ? "25vh" : ""
-        if (open) this._renderSettings()
+        if (open) {
+            // Compute the drawer's top offset so it clears the panel
+            // header + status bar + controls bar (all variable-height).
+            // The body region is what we want to overlay; the header
+            // region must stay visible so the gear button still works.
+            const headerOffset = this._computeBodyTopOffset()
+            this.settingsHost.style.top = headerOffset + "px"
+            this._settingsBackdrop.style.top = headerOffset + "px"
+            this.settingsHost.style.transform = "translateX(0)"
+            this._settingsBackdrop.style.display = "block"
+            this._renderSettings()
+            // ESC handler — installed only while the drawer is open so
+            // we don't intercept the user's keystrokes the rest of the
+            // time (AS scheduling page has its own keyboard handlers).
+            if (!this._settingsEscHandler) {
+                this._settingsEscHandler = (e) => {
+                    if (e.key === "Escape" && this.settingsHost.dataset.open === "1") {
+                        this._toggleSettings()
+                    }
+                }
+                document.addEventListener("keydown", this._settingsEscHandler)
+            }
+        } else {
+            this.settingsHost.style.transform = "translateX(100%)"
+            this._settingsBackdrop.style.display = "none"
+            if (this._settingsEscHandler) {
+                document.removeEventListener("keydown", this._settingsEscHandler)
+                this._settingsEscHandler = null
+            }
+        }
+    }
+
+    /**
+     * Slice F — toggle the master-detail inspector pane on/off. State
+     * persists via `settings.routeAssistant.inspectorOpen` so the user
+     * doesn't have to re-open it each session.
+     */
+    async _toggleInspector() {
+        this._inspectorOpen = !this._inspectorOpen
+        if (this.inspectorHost) {
+            this.inspectorHost.style.display = this._inspectorOpen ? "flex" : "none"
+        }
+        if (this._inspectorBtn) {
+            this._inspectorBtn.style.opacity = this._inspectorOpen ? "1" : "0.6"
+        }
+        if (this.settings) this.settings.inspectorOpen = this._inspectorOpen
+        try { await RouteAssistantSettings.save({inspectorOpen: this._inspectorOpen}) }
+        catch (e) { /* non-fatal */ }
+        if (this._inspectorOpen) this._renderInspector(this.scoredRows)
+    }
+
+    /**
+     * Slice F — populate the inspector pane with the selected route's
+     * full breakdown. Re-runs at the tail of every `_renderRows` so the
+     * pane tracks the table's sort/filter changes; rows that vanish
+     * from view fall back to the empty state.
+     */
+    _renderInspector(sortedOrAll) {
+        if (!this.inspectorHost || !this._inspectorOpen) return
+        if (typeof RouteAssistantInspector === "undefined") return
+        const list = sortedOrAll || this.scoredRows || []
+        const destU = String(this._inspectorSelectedDest || "").toUpperCase()
+        const row = destU
+            ? list.find(r => String(r.destIata || "").toUpperCase() === destU)
+            : null
+        RouteAssistantInspector.render(this.inspectorHost, {
+            row:     row,
+            hubIata: this.hubIata,
+            onClose: () => this._toggleInspector(),
+            onPlaceOnWave: (destIata) => {
+                this._inspectorSelectedDest = destIata
+                this._switchPanelMode("waves")
+            }
+        })
+    }
+
+    /**
+     * Slice F — public entry the table view calls when the user clicks a
+     * row's IATA cell. Selects the route in the inspector and opens the
+     * pane if it isn't already; the pane populates from the panel's
+     * existing scoredRows data, no extra fetch.
+     */
+    inspectRoute(destIata) {
+        this._inspectorSelectedDest = String(destIata || "").toUpperCase() || null
+        if (!this._inspectorOpen) {
+            // Open + render once. _toggleInspector itself calls _renderInspector.
+            this._toggleInspector()
+        } else {
+            this._renderInspector(this.scoredRows)
+        }
+    }
+
+    /**
+     * Sum the heights of the panel-chrome rows that sit above the body
+     * (header, statusBar, populated controlsHost). Used by the slice C
+     * settings drawer so it overlays only the body region — never the
+     * header (which still hosts the ⚙ gear that toggles it).
+     */
+    _computeBodyTopOffset() {
+        let top = 0
+        for (const el of [this._headerEl, this.statusBar, this.controlsHost]) {
+            if (!el) continue
+            if (el.style.display === "none") continue
+            top += el.offsetHeight || 0
+        }
+        // Fallback if the layout hasn't laid out yet (first open after
+        // mount): use the body's offsetTop within root.
+        if (!top && this.body) top = this.body.offsetTop || 0
+        return top
     }
 
     _openStationsModal() {
@@ -1455,12 +1690,6 @@ class RouteAssistantPanel {
         if (this.settings) this.settings.compactView = next
         try { await RouteAssistantSettings.save({compactView: next}) }
         catch (e) { /* non-fatal */ }
-        if (this._compactBtn) {
-            this._compactBtn.style.opacity = next ? "1" : "0.6"
-            this._compactBtn.title = next
-                ? "Compact view ON — heavy column groups hidden. Click to show all."
-                : "Compact view OFF — all column groups visible. Click to hide heavy groups."
-        }
         this._render()
     }
 
@@ -1472,15 +1701,7 @@ class RouteAssistantPanel {
      */
     async _toggleWaveView() {
         const next = !(this.settings && this.settings.waveView)
-        if (this.settings) this.settings.waveView = next
-        try { await RouteAssistantSettings.save({waveView: next}) }
-        catch (e) { /* non-fatal */ }
-        if (this._waveBtn) {
-            this._waveBtn.style.opacity = next ? "1" : "0.6"
-            this._waveBtn.title = next
-                ? "Wave View ON — Gantt timeline of the recommended schedule. Click to return to the table."
-                : "Wave View OFF — table view. Click to switch to the Gantt wave overlay."
-        }
+        await this._setPanelMode(next ? "waves" : "table")
         // Invalidate cached build so toggling re-runs against current rows.
         this._waveBuild = null
         this._render()
@@ -1498,15 +1719,7 @@ class RouteAssistantPanel {
     async _toggleOrsSandbox() {
         const cfg = (this.settings && this.settings.orsSandbox) || {}
         const next = !cfg.enabled
-        if (this.settings) this.settings.orsSandbox = Object.assign({}, cfg, {enabled: next})
-        try { await RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox}) }
-        catch (e) { /* non-fatal */ }
-        if (this._orsSandboxBtn) {
-            this._orsSandboxBtn.style.opacity = next ? "1" : "0.6"
-            this._orsSandboxBtn.title = next
-                ? "ORS Sandbox ON — per-route pricing simulator. Click to return to the table."
-                : "ORS Sandbox OFF — table view. Click to switch to the pricing simulator."
-        }
+        await this._setPanelMode(next ? "sandbox" : "table")
         // Invalidate cached projection so toggling re-runs against current cache.
         this._orsSandboxResult = null
         this._render()
@@ -1520,16 +1733,39 @@ class RouteAssistantPanel {
     async _toggleHeatmap() {
         const cfg = (this.settings && this.settings.heatmap) || {}
         const next = !cfg.enabled
-        if (this.settings) this.settings.heatmap = Object.assign({}, cfg, {enabled: next})
-        try { await RouteAssistantSettings.save({heatmap: this.settings.heatmap}) }
-        catch (e) { /* non-fatal */ }
-        if (this._heatmapBtn) {
-            this._heatmapBtn.style.opacity = next ? "1" : "0.6"
-            this._heatmapBtn.title = next
-                ? "Yield heatmap ON — hubs × destinations matrix. Click to return to the table."
-                : "Yield heatmap OFF — table view. Click to switch to the matrix."
-        }
+        await this._setPanelMode(next ? "heatmap" : "table")
         this._render()
+    }
+
+    /**
+     * Restructure slice A — single source-of-truth setter for the active
+     * panel mode. Updates the canonical `panelMode` string AND keeps the
+     * three legacy booleans in sync (waveView / orsSandbox.enabled /
+     * heatmap.enabled) so any code still reading them — and any user who
+     * downgrades — sees the right state.
+     *
+     * Setting a non-table mode clears all sibling legacy flags so we
+     * never leave two modes "on" at once. The previous render-order
+     * mutex was implicit; now it's explicit.
+     */
+    async _setPanelMode(mode) {
+        const VALID = {table: 1, waves: 1, sandbox: 1, heatmap: 1}
+        if (!VALID[mode]) mode = "table"
+        if (!this.settings) return
+        this.settings.panelMode = mode
+        this.settings.waveView = (mode === "waves")
+        this.settings.orsSandbox = Object.assign({}, this.settings.orsSandbox || {},
+            {enabled: mode === "sandbox"})
+        this.settings.heatmap = Object.assign({}, this.settings.heatmap || {},
+            {enabled: mode === "heatmap"})
+        try {
+            await RouteAssistantSettings.save({
+                panelMode:  mode,
+                waveView:   this.settings.waveView,
+                orsSandbox: this.settings.orsSandbox,
+                heatmap:    this.settings.heatmap
+            })
+        } catch (e) { /* non-fatal */ }
     }
 
     // ---------- Data refresh ----------
@@ -1544,6 +1780,10 @@ class RouteAssistantPanel {
             this.hubIata = null
             this._renderEmpty("Couldn't detect the origin airport on this page. Set the origin in the scheduler and click ↻.")
             return
+        }
+        if (this.hubIata !== iata) {
+            this._hubScheduleRecords = null
+            this._hubSchedulesScannedFor = null
         }
         this.hubIata = iata
         this._trackRecentHub(iata)
@@ -1971,34 +2211,136 @@ class RouteAssistantPanel {
         if (!this.rows || !this.rows.length) return
         const cfg = (this.settings && this.settings.carriers) || {}
         const ids = new Set()
+        const stationIds = new Set()
         for (const r of this.rows) {
-            for (const list of [r.marketSharePax, r.marketShareCargo]) {
+            if (r.airportId != null) stationIds.add(String(r.airportId))
+            for (const list of [r.marketSharePax, r.marketShareCargo, r.competitorEntries]) {
                 if (!Array.isArray(list)) continue
                 for (const e of list) {
                     if (e && e.enterpriseId != null) ids.add(String(e.enterpriseId))
                 }
             }
         }
-        if (!ids.size) return
-        const cache = await RouteAssistantEnterpriseMetaScraper.bulkLoadCache(
-            Array.from(ids), {maxAgeDays: cfg.enterpriseMetaMaxAgeDays}
-        )
-        if (!cache.size) return
-        // Decorate every market-share entry that has a matching cache hit.
+
+        // Per-enterprise meta (deep-scraped name/iata) is optional —
+        // banner URLs are constructed from the enterpriseId below so
+        // logos render even on cold caches.
+        const metaCache = ids.size
+            ? await RouteAssistantEnterpriseMetaScraper.bulkLoadCache(
+                Array.from(ids), {maxAgeDays: cfg.enterpriseMetaMaxAgeDays})
+            : new Map()
+
+        // Airport-overview cache resolves alliance ids for every
+        // enterprise operating at a destination — one cache lookup per
+        // destination station yields a complete map for the popover.
+        let allianceMap = new Map()
+        if (typeof RouteAssistantAirportOverviewScraper !== "undefined" && stationIds.size) {
+            const overviewCache = await RouteAssistantAirportOverviewScraper.bulkLoadCache(
+                Array.from(stationIds), {maxAgeDays: cfg.airportOverviewMaxAgeDays}
+            )
+            allianceMap = RouteAssistantAirportOverviewScraper.buildAllianceMap(overviewCache)
+        }
+
+        const baseLogoUrl = `https://${this.server}.airlinesim.aero/app/logo/`
         for (const r of this.rows) {
             for (const list of [r.marketSharePax, r.marketShareCargo, r.competitorEntries]) {
                 if (!Array.isArray(list)) continue
                 for (const e of list) {
                     if (!e || e.enterpriseId == null) continue
-                    const meta = cache.get(String(e.enterpriseId))
-                    if (!meta) continue
-                    e.bannerUrl = meta.bannerUrl || null
-                    e.avatarUrl = meta.avatarUrl || null
-                    e.iata      = meta.iata || null
-                    if (!e.name && meta.name) e.name = meta.name
+                    const idStr = String(e.enterpriseId)
+                    // AS serves both alliance and enterprise logos at
+                    // the same /app/logo/<id>/enterprise-s.png endpoint
+                    // — banners are therefore constructable from the
+                    // enterprise id alone, no per-enterprise scrape
+                    // required.
+                    if (!e.bannerUrl) e.bannerUrl = baseLogoUrl + idStr + "/enterprise-s.png?strict=true"
+                    const meta = metaCache.get(idStr)
+                    if (meta) {
+                        if (meta.avatarUrl) e.avatarUrl = meta.avatarUrl
+                        if (meta.iata) e.iata = meta.iata
+                        if (!e.name && meta.name) e.name = meta.name
+                    }
+                    if (!e.allianceId && allianceMap.has(idStr)) {
+                        e.allianceId = allianceMap.get(idStr) || null
+                    }
+                    if (e.allianceId) {
+                        e.allianceLogoUrl = baseLogoUrl + String(e.allianceId) + "/enterprise-s.png?strict=true"
+                    }
                 }
             }
         }
+
+        // Kick off a background fetch for any destination station whose
+        // overview isn't yet cached so alliance logos appear on the
+        // next render — no manual sync required.
+        this._enrichAirportOverviewAsync(stationIds)
+    }
+
+    /**
+     * Fire-and-forget background scrape for airport-overview pages
+     * whose alliance map isn't in the cache yet. Re-decorates the
+     * affected entries and triggers a re-render once the scrape lands.
+     * Guarded by `_airportOverviewScrapeRunning` so concurrent panel
+     * mounts don't pile on duplicate fetches.
+     */
+    async _enrichAirportOverviewAsync(stationIds) {
+        if (typeof RouteAssistantAirportOverviewScraper === "undefined") return
+        if (!stationIds || !stationIds.size) return
+        if (this._airportOverviewScrapeRunning) return
+
+        const cfg = (this.settings && this.settings.carriers) || {}
+        const cached = await RouteAssistantAirportOverviewScraper.bulkLoadCache(
+            Array.from(stationIds), {maxAgeDays: cfg.airportOverviewMaxAgeDays}
+        )
+        const todo = []
+        for (const id of stationIds) if (!cached.has(id)) todo.push(id)
+        if (!todo.length) return
+
+        this._airportOverviewScrapeRunning = true
+        try {
+            if (!this.airportOverviewScraper) {
+                this.airportOverviewScraper = new RouteAssistantAirportOverviewScraper(this.server, {
+                    maxAgeDays: cfg.airportOverviewMaxAgeDays
+                })
+            }
+            await this.airportOverviewScraper.bulkScrape(todo, {
+                concurrency: 2,
+                staggerMs:   1000
+            })
+        } catch (e) {
+            console.warn("[AES airportOverview] background enrich failed:", e)
+        } finally {
+            this._airportOverviewScrapeRunning = false
+        }
+
+        // Re-load the now-fresh cache and decorate entries with the
+        // newly discovered alliance ids without recursing through
+        // `_applyCachedEnterpriseMeta` (which would re-trigger this
+        // method).
+        const fresh = await RouteAssistantAirportOverviewScraper.bulkLoadCache(
+            Array.from(stationIds), {maxAgeDays: cfg.airportOverviewMaxAgeDays}
+        )
+        const allianceMap = RouteAssistantAirportOverviewScraper.buildAllianceMap(fresh)
+        if (!allianceMap.size) return
+
+        const baseLogoUrl = `https://${this.server}.airlinesim.aero/app/logo/`
+        for (const r of this.rows) {
+            for (const list of [r.marketSharePax, r.marketShareCargo, r.competitorEntries]) {
+                if (!Array.isArray(list)) continue
+                for (const e of list) {
+                    if (!e || e.enterpriseId == null) continue
+                    if (e.allianceId) continue
+                    const idStr = String(e.enterpriseId)
+                    if (!allianceMap.has(idStr)) continue
+                    e.allianceId = allianceMap.get(idStr) || null
+                    if (e.allianceId) {
+                        e.allianceLogoUrl = baseLogoUrl + String(e.allianceId) + "/enterprise-s.png?strict=true"
+                    }
+                }
+            }
+        }
+
+        this._render()
     }
 
     /**
@@ -2277,6 +2619,63 @@ class RouteAssistantPanel {
             wrap.append(btn)
         }
         this.tabBar.append(wrap)
+    }
+
+    /**
+     * Restructure slice B — primary mode pill bar (Table / Waves /
+     * Sandbox / Heatmap). Renders into `modeTabsHost` via the
+     * `mode-tabs.js` module. Hides when collapsed; otherwise always
+     * visible so the active mode is one click from any other.
+     *
+     * Compact-view toggle (was the `◧` header button before slice B)
+     * lives in the pill bar's right slot, but only when Table mode is
+     * active — it has no effect in Waves/Sandbox/Heatmap.
+     */
+    _renderModeTabs() {
+        if (!this.modeTabsHost) return
+        if (typeof RouteAssistantModeTabs === "undefined") return
+        if (this.collapsed) {
+            this.modeTabsHost.innerHTML = ""
+            return
+        }
+        const activeMode = (this.settings && this.settings.panelMode) || "table"
+
+        const rightActions = []
+        if (activeMode === "table") {
+            const compactOn = !!(this.settings && this.settings.compactView)
+            rightActions.push({
+                glyph:  "◧",
+                label:  "Compact",
+                title:  compactOn
+                    ? "Compact view ON — heavy column groups hidden. Click to show all columns."
+                    : "Compact view OFF — all column groups visible. Click to hide heavy groups (Live route data, Markets, ORS Rank, etc.).",
+                active: compactOn,
+                onClick: () => this._toggleCompactView()
+            })
+        }
+
+        RouteAssistantModeTabs.render(this.modeTabsHost, {
+            activeMode:   activeMode,
+            summaries:    RouteAssistantModeTabs.buildSummaries(this),
+            onChange:     (mode) => this._switchPanelMode(mode),
+            rightActions: rightActions
+        })
+    }
+
+    /**
+     * Restructure slice B — pill-bar click handler. Centralises the
+     * cache invalidation that the legacy per-mode toggles used to do
+     * individually (clearing `_waveBuild`, `_orsSandboxResult`, etc.)
+     * so the pill never stales the next view.
+     */
+    async _switchPanelMode(mode) {
+        const current = (this.settings && this.settings.panelMode) || "table"
+        if (current === mode) return
+        await this._setPanelMode(mode)
+        // Invalidate per-view caches so the new mode renders fresh.
+        this._waveBuild = null
+        this._orsSandboxResult = null
+        this._render()
     }
 
     /**
@@ -2747,6 +3146,202 @@ class RouteAssistantPanel {
         this._renderControls()
     }
 
+    /**
+     * Q7 strategy presets — sibling of _renderSavedViewsControl. The
+     * difference is scope: savedViews snapshots table state (filters /
+     * sort / viewMode / compact); strategy presets snapshot the FULL
+     * RA configuration so the user can A/B test entire tunings —
+     * scoring weights, economics, ORS model params, service profiles,
+     * column layout. Apply path reuses the existing import-diff modal
+     * so the user previews every leaf change before committing.
+     */
+    _renderStrategyPresetsControl(host) {
+        const presets = (this.settings && Array.isArray(this.settings.strategyPresets))
+            ? this.settings.strategyPresets : []
+        const wrap = document.createElement("label")
+        wrap.style.cssText = "display:flex;gap:5px;align-items:center;color:#9ca3af;"
+        wrap.title = "Strategy presets — save the full RA config (scoring, filters, economics, ORS, service profiles, column layout) as a named profile and swap between them with a diff preview."
+        wrap.append(document.createTextNode("Strategy"))
+        const sel = document.createElement("select")
+        sel.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #475569;"
+            + "border-radius:3px;padding:1px 4px;font-size:11px;max-width:160px;"
+        const placeholder = document.createElement("option")
+        placeholder.value = ""
+        placeholder.textContent = presets.length ? "(apply preset…)" : "(no presets saved)"
+        sel.append(placeholder)
+        for (const p of presets) {
+            const opt = document.createElement("option")
+            opt.value = p.id
+            opt.textContent = p.name
+            sel.append(opt)
+        }
+        sel.addEventListener("change", () => {
+            const id = sel.value
+            if (!id) return
+            const p = presets.find(x => x.id === id)
+            if (!p) return
+            this._applyStrategyPreset(p)
+            sel.value = ""
+        })
+        wrap.append(sel)
+        const saveBtn = document.createElement("button")
+        saveBtn.type = "button"
+        saveBtn.textContent = "+"
+        saveBtn.title = "Save the current RA configuration as a new strategy preset."
+        saveBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #475569;"
+            + "border-radius:3px;padding:1px 7px;font-size:11px;cursor:pointer;line-height:1;"
+        saveBtn.addEventListener("click", () => this._saveCurrentStrategyPreset())
+        wrap.append(saveBtn)
+        if (presets.length) {
+            const delBtn = document.createElement("button")
+            delBtn.type = "button"
+            delBtn.textContent = "🗑"
+            delBtn.title = "Delete a saved preset (asks which one)."
+            delBtn.style.cssText = "background:#1f2937;color:#9ca3af;border:1px solid #475569;"
+                + "border-radius:3px;padding:1px 6px;font-size:11px;cursor:pointer;line-height:1;"
+            delBtn.addEventListener("click", () => this._deleteStrategyPresetPrompt())
+            wrap.append(delBtn)
+        }
+        host.append(wrap)
+    }
+
+    /**
+     * Build a preset snapshot — deep clone of the current settings tree
+     * minus per-route caches, self-references, and ephemeral run-state.
+     * The exclusion list is documented in the plan (see
+     * /Users/jihwan/.claude/plans/automatically-assign-according-to-flickering-torvalds.md).
+     * `columnPrefs` IS included — the column layout is part of the
+     * strategy. A console.warn fires when a hidden column overlaps an
+     * enabled scoring key — surfaces the (legitimate) case where the
+     * user has hidden a still-scored field and might be confused that
+     * the headline score doesn't change after re-applying the preset.
+     */
+    _buildPresetSnapshot() {
+        const cloned = JSON.parse(JSON.stringify(this.settings || {}))
+        const drop = (path) => {
+            const parts = path.split(".")
+            let obj = cloned
+            for (let i = 0; i < parts.length - 1; i++) {
+                if (!obj || typeof obj !== "object") return
+                obj = obj[parts[i]]
+            }
+            if (obj && typeof obj === "object") delete obj[parts[parts.length - 1]]
+        }
+        // Self-reference + per-mount ephemera
+        drop("savedViews")
+        drop("strategyPresets")
+        drop("recentHubs")
+        drop("searchQuery")
+        drop("collapsed")
+        drop("panelWidth")
+        // Scrape timestamps + circuit-breaker state — never part of a strategy
+        drop("marketAnalysis.lastBulkScrapeAt")
+        drop("marketAnalysis.lastAutoRefreshSkipAt")
+        drop("carriers.lastPartnersSyncAt")
+        drop("pricing.lastBulkScrapeAt")
+        drop("pricing.apply.lastApplyAt")
+        drop("pricing.circuitBreakerTrippedAt")
+        // Per-route ORS sandbox state — strategy is the model, not the
+        // last position the user left a slider in
+        drop("orsSandbox.lastRouteIata")
+        drop("orsSandbox.lastScenarioByRoute")
+        drop("orsSandbox.perRouteTemperature")
+        drop("orsSandbox.perRouteTemperatureCalibratedAt")
+        drop("orsSandbox._legacyLastScenario")
+        // Score-overlap warn — legitimate but surface it once
+        try {
+            const hidden = (this.settings && this.settings.columnPrefs && this.settings.columnPrefs.hiddenFields) || []
+            const scoring = (this.settings && this.settings.scoring) || {}
+            const overlap = hidden.filter(f => scoring[f] && scoring[f].enabled === true)
+            if (overlap.length) {
+                console.warn("[AES routeAssistant] strategy preset hides scored fields (still drives score):", overlap.join(", "))
+            }
+        } catch (e) { /* non-fatal */ }
+        return cloned
+    }
+
+    async _saveCurrentStrategyPreset() {
+        const name = window.prompt("Name this strategy preset (e.g. \"Premium hub-and-spoke\", \"Cargo focus\"):", "")
+        if (!name || !name.trim()) return
+        const trimmed = name.trim().substring(0, 60)
+        const id = "preset-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36)
+        const snapshot = this._buildPresetSnapshot()
+        const entry = {id: id, name: trimmed, createdAt: Date.now(), snapshot: snapshot}
+        const next = ((this.settings && this.settings.strategyPresets) || []).slice()
+        next.push(entry)
+        this.settings.strategyPresets = next
+        try {
+            await RouteAssistantSettings.save({strategyPresets: next})
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.success("Saved strategy preset: \"" + trimmed + "\"")
+            }
+        } catch (e) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.error("Save failed: " + (e && e.message ? e.message : e))
+            }
+        }
+        this._renderControls()
+    }
+
+    /**
+     * Apply a strategy preset by routing through _showImportDiffModal —
+     * the user sees every changed leaf path and confirms before save.
+     * Synthesizes an aes-config envelope so the existing modal works
+     * unchanged. The modal's Apply branch calls
+     * RouteAssistantSettings.save(parsed.routeAssistant) followed by
+     * a full reload + re-render — same behavior we want here.
+     */
+    async _applyStrategyPreset(preset) {
+        if (!preset || !preset.snapshot) return
+        const data = await chrome.storage.local.get(["settings"])
+        const cur = (data.settings && data.settings.routeAssistant) || {}
+        const envelope = {
+            format:       AES_CONFIG_FORMAT,
+            version:      "preset",
+            exportedAt:   preset.createdAt || Date.now(),
+            server:       this.server || "",
+            routeAssistant: preset.snapshot
+        }
+        const changes = _diffConfig(
+            {routeAssistant: cur, usedAircraftScanner: {}},
+            {routeAssistant: preset.snapshot, usedAircraftScanner: {}}
+        )
+        this._showImportDiffModal(envelope, changes)
+    }
+
+    async _deleteStrategyPresetPrompt() {
+        const presets = (this.settings && this.settings.strategyPresets) || []
+        if (!presets.length) return
+        const list = presets.map((p, i) => (i + 1) + ". " + p.name).join("\n")
+        const choice = window.prompt("Delete which strategy preset?  Type its number:\n\n" + list, "")
+        if (!choice) return
+        const idx = Number(choice) - 1
+        if (!isFinite(idx) || idx < 0 || idx >= presets.length) return
+        const removed = presets[idx]
+        const next = presets.slice()
+        next.splice(idx, 1)
+        this.settings.strategyPresets = next
+        try {
+            await RouteAssistantSettings.save({strategyPresets: next})
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Deleted preset: \"" + removed.name + "\"", {
+                    type: "info",
+                    action: {
+                        label: "Undo",
+                        fn: async () => {
+                            const restored = ((this.settings && this.settings.strategyPresets) || []).slice()
+                            restored.splice(idx, 0, removed)
+                            this.settings.strategyPresets = restored
+                            await RouteAssistantSettings.save({strategyPresets: restored}).catch(() => {})
+                            this._renderControls()
+                        }
+                    }
+                })
+            }
+        } catch (e) { /* non-fatal */ }
+        this._renderControls()
+    }
+
     _renderStatusBar() {
         this.statusBar.innerHTML = ""
         const hubText = document.createElement("span")
@@ -3184,6 +3779,13 @@ class RouteAssistantPanel {
             this._toggleRouteSelection(destU)
             this._selectAnchorDest = destU
         }
+        // Slice F — when the inspector pane is open, plain row clicks
+        // also drive the selected-route view in the inspector. Shift-
+        // click range selects don't override the inspector target —
+        // that would steal focus from the user's bulk-action workflow.
+        if (this._inspectorOpen && !isShift) {
+            this._inspectorSelectedDest = destU
+        }
         this._renderRows()
     }
 
@@ -3569,6 +4171,12 @@ class RouteAssistantPanel {
         // (e.g. "Pricing review" with markets columns front + minScore=60).
         this._renderSavedViewsControl(this.controlsHost)
 
+        // Q7 strategy presets — sibling control for whole-config tunings
+        // (scoring weights / economics / ORS / column layout). Apply path
+        // routes through the existing import-diff modal so the user sees
+        // every changed leaf before commit.
+        this._renderStrategyPresetsControl(this.controlsHost)
+
         const fleetEmpty = !this.fleet || !this.fleet.aircraft || !this.fleet.aircraft.length
         const a = this.settings.aircraft || {}
         const currentMode = a.mode || ""
@@ -3739,41 +4347,126 @@ class RouteAssistantPanel {
         RouteAssistantPanel._orsPrimaryColumn = (ors && ors.primaryColumn) || "ratingGapToTop"
         const wl = this.settings && this.settings.watchlist
         RouteAssistantPanel._showWatchTriggers = !wl || wl.showAlertBadges !== false
-        // Reflect Compact-view state on the header button so the user sees
-        // at a glance whether they're in Compact or Full mode.
-        const compact = !!(this.settings && this.settings.compactView)
-        if (this._compactBtn) {
-            this._compactBtn.style.opacity = compact ? "1" : "0.6"
-            this._compactBtn.title = compact
-                ? "Compact view ON — heavy column groups hidden. Click to show all."
-                : "Compact view OFF — all column groups visible. Click to hide heavy groups."
+    }
+
+    /**
+     * Render the "Aircraft schedules at this hub" sub-card. First call
+     * scans `chrome.storage.local` for matching `aircraftFlightPlan:schedule:*`
+     * keys, then caches the records in `this._hubScheduleRecords` keyed by
+     * storage key. Subsequent calls paint from the cache; the storage
+     * listener mutates the cache incrementally on change events. Cache is
+     * invalidated when `hubIata` changes (see `refresh()`).
+     */
+    _renderHubSchedulesCard() {
+        if (!this._hubSchedulesHost) return
+        if (!this.hubIata) {
+            this._hubSchedulesHost.style.display = "none"
+            this._hubSchedulesHost.innerHTML = ""
+            return
         }
-        // Wave View visual state.
-        const waveOn = !!(this.settings && this.settings.waveView)
-        if (this._waveBtn) {
-            this._waveBtn.style.opacity = waveOn ? "1" : "0.6"
-            this._waveBtn.title = waveOn
-                ? "Wave View ON — Gantt timeline of the recommended schedule. Click to return to the table."
-                : "Wave View OFF — table view. Click to switch to the Gantt wave overlay."
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
+            this._hubSchedulesHost.style.display = "none"; return
         }
-        // ORS Sandbox visual state.
-        const sbCfg  = (this.settings && this.settings.orsSandbox) || {}
-        const sbOn   = !!sbCfg.enabled
-        if (this._orsSandboxBtn) {
-            this._orsSandboxBtn.style.opacity = sbOn ? "1" : "0.6"
-            this._orsSandboxBtn.title = sbOn
-                ? "ORS Sandbox ON — per-route pricing simulator. Click to return to the table."
-                : "ORS Sandbox OFF — table view. Click to switch to the pricing simulator."
+        if (typeof AesAfpScheduleStore === "undefined") {
+            this._hubSchedulesHost.style.display = "none"; return
         }
-        // Q13 heatmap visual state.
-        const hmCfg = (this.settings && this.settings.heatmap) || {}
-        const hmOn  = !!hmCfg.enabled
-        if (this._heatmapBtn) {
-            this._heatmapBtn.style.opacity = hmOn ? "1" : "0.6"
-            this._heatmapBtn.title = hmOn
-                ? "Yield heatmap ON — hubs × destinations matrix. Click to return to the table."
-                : "Yield heatmap OFF — table view. Click to switch to the matrix."
+        if (this._hubSchedulesScannedFor === this.hubIata) {
+            this._paintHubSchedulesFromCache()
+            return
         }
+        const myHub = String(this.hubIata).toUpperCase()
+        chrome.storage.local.get(null).then(all => {
+            if (this._disposed || this.hubIata == null
+                || String(this.hubIata).toUpperCase() !== myHub) return
+            const cache = new Map()
+            for (const key of Object.keys(all)) {
+                if (key.indexOf(AesAfpScheduleStore.PREFIX) !== 0) continue
+                const rec = all[key]
+                if (!rec || typeof rec !== "object") continue
+                if (String(rec.hubIata || "").toUpperCase() !== myHub) continue
+                cache.set(key, rec)
+            }
+            this._hubScheduleRecords = cache
+            this._hubSchedulesScannedFor = this.hubIata
+            this._paintHubSchedulesFromCache()
+        }).catch(err => {
+            console.warn("[AES routeAssistant] hub schedules card load failed", err)
+            this._hubSchedulesHost.style.display = "none"
+        })
+    }
+
+    _paintHubSchedulesFromCache() {
+        if (!this._hubSchedulesHost) return
+        const records = this._hubScheduleRecords
+            ? Array.from(this._hubScheduleRecords.values())
+            : []
+        if (!records.length) {
+            this._hubSchedulesHost.style.display = "none"
+            this._hubSchedulesHost.innerHTML = ""
+            return
+        }
+        this._paintHubSchedulesCard(records)
+    }
+
+    _paintHubSchedulesCard(records) {
+        const host = this._hubSchedulesHost
+        host.innerHTML = ""
+        host.style.display = "block"
+        host.style.cssText += ";margin:6px 0;padding:6px 8px;border:1px solid var(--aes-paper-rule, #374151);"
+            + "border-radius:4px;background:var(--aes-bone-2, #0f1623);font-family:var(--aes-font-mono, monospace);"
+            + "font-size:11px;color:var(--aes-slate, #cbd5e1);"
+
+        const head = document.createElement("div")
+        head.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;color:#9ca3af;"
+        head.innerHTML = "<strong style=\"color:#f3f4f6;\">Aircraft schedules at " + escapeHtml(this.hubIata) + "</strong>"
+            + " <span style=\"color:#6b7280;\">· " + records.length + " cached"
+            + " · click to open</span>"
+        host.appendChild(head)
+
+        // Sort by registration / aircraftId for stable display.
+        records.sort((a, b) => String(a.aircraftId || "").localeCompare(String(b.aircraftId || "")))
+
+        const list = document.createElement("div")
+        list.style.cssText = "display:flex;flex-direction:column;gap:2px;"
+        for (const rec of records) {
+            const flightCount = (rec.summary && Number(rec.summary.flightCount)) || 0
+            const ageMs = AesAfpScheduleStore.getStaleness(rec)
+            const ageStr = isFinite(ageMs) ? this._raAgeLabel(ageMs) : "?"
+            const url = "https://" + (rec.server || this.server) + ".airlinesim.aero/app/fleets/aircraft/"
+                + encodeURIComponent(rec.aircraftId) + "/0"
+            const row = document.createElement("a")
+            row.href = url
+            row.target = "_blank"
+            row.rel = "noopener"
+            row.style.cssText = "display:flex;align-items:center;gap:8px;padding:2px 4px;"
+                + "color:inherit;text-decoration:none;border-radius:3px;cursor:pointer;"
+            row.addEventListener("mouseenter", () => row.style.background = "rgba(96,165,250,0.08)")
+            row.addEventListener("mouseleave", () => row.style.background = "")
+            row.title = "Open AFP page for aircraft " + rec.aircraftId
+                + " (" + flightCount + " legs, scraped " + ageStr + " ago)"
+            row.innerHTML = "<span style=\"color:#60a5fa;font-weight:600;\">"
+                + escapeHtml(String(rec.aircraftId || "—")) + "</span>"
+                + "<span style=\"flex:1 1 auto;color:#9ca3af;\">"
+                + flightCount + " leg" + (flightCount === 1 ? "" : "s")
+                + "</span>"
+                + "<span style=\"color:#6b7280;font-variant-numeric:tabular-nums;\">"
+                + escapeHtml(ageStr)
+                + "</span>"
+            list.appendChild(row)
+        }
+        host.appendChild(list)
+    }
+
+    _raAgeLabel(ms) {
+        if (!isFinite(ms) || ms < 0) return "?"
+        const s = Math.floor(ms / 1000)
+        if (s < 60)   return s + "s"
+        const m = Math.floor(s / 60)
+        if (m < 60)   return m + "m"
+        const h = Math.floor(m / 60)
+        if (h < 24)   return h + "h"
+        const d = Math.floor(h / 24)
+        return d + "d"
     }
 
     /**
@@ -3785,6 +4478,8 @@ class RouteAssistantPanel {
         this._renderStatusBar()
         this._renderTabBar()
         this._renderChipBar()
+        this._renderModeTabs()
+        this._renderHubSchedulesCard()
         if (!this.hubIata) return
         if (!this.ffData) {
             this._renderEmpty(`No flightsfrom.com data cached for ${this.hubIata}. Click "Scan flightsfrom" above.`)
@@ -3911,35 +4606,87 @@ class RouteAssistantPanel {
             }
         }
 
-        // H slice 1 — Wave View hands the sorted rows off to the Gantt
-        // renderer instead of drawing the table. We branch AFTER scoring
-        // + sorting so Wave View honours the same filters, the same view
-        // mode, and naturally promotes starred routes (they sort to the
-        // top via the watchlist comparator → land in the top-N).
-        if (this.settings && this.settings.waveView) {
-            this._renderWaveOverlay(sorted)
-            return
+        // Restructure slice A — single dispatcher for the four panel
+        // modes (table / waves / sandbox / heatmap). The render branches
+        // moved into per-mode view modules (`view-table.js`, etc.) so
+        // future slices can swap their UX in isolation. Mutual exclusion
+        // is structural: `panelMode` is a single string, not three
+        // overlapping booleans like before.
+        //
+        // Slice F — the dispatch is wrapped in a defensive shell so a
+        // throw inside any view's render lands as a visible inline error
+        // instead of an empty `tableHost` that the user can't diagnose.
+        // _drawTable already had its own try/catch (kept for the table
+        // path); this catches the wave / sandbox / heatmap paths too.
+        try {
+            this._activeView().render(this, sorted)
+        } catch (e) {
+            this._renderViewError(e)
         }
+        // Slice F — re-render the inspector pane against the freshly
+        // sorted rows so its "selected route" snapshot tracks the table.
+        if (this._inspectorOpen) this._renderInspector(sorted)
+    }
 
-        // Letter I slice 1 — ORS Sandbox replaces the table with a
-        // per-route pricing simulator. Mutually exclusive with Wave
-        // View; Wave wins because its branch runs first above.
-        const sbCfg = this.settings && this.settings.orsSandbox
-        if (sbCfg && sbCfg.enabled) {
-            this._renderOrsSandbox(sorted)
-            return
+    /**
+     * Slice F — visible inline error when a view module's render throws.
+     * Renders into `tableHost` so the user sees something instead of a
+     * blank panel. Includes a "📋 Copy" button so bug reports can paste
+     * the stack trace directly.
+     */
+    _renderViewError(e) {
+        if (!this.tableHost) return
+        console.error("[AES routeAssistant] view dispatch failed:", e)
+        this.tableHost.innerHTML = ""
+        const box = document.createElement("div")
+        box.style.cssText = "background:#7f1d1d;color:#fee2e2;padding:12px 16px;"
+            + "border-radius:4px;margin:8px 0;font-size:11px;line-height:1.4;"
+            + "font-family:ui-monospace,SFMono-Regular,monospace;"
+        const head = document.createElement("div")
+        head.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:6px;"
+        const title = document.createElement("strong")
+        const mode = (this.settings && this.settings.panelMode) || "?"
+        title.textContent = "View render failed (" + mode + " mode)"
+        title.style.cssText = "flex:1;font-size:12px;"
+        const copy = document.createElement("button")
+        copy.type = "button"
+        copy.textContent = "📋 Copy"
+        copy.title = "Copy the stack trace to the clipboard for bug reports."
+        copy.style.cssText = "background:#fee2e2;color:#7f1d1d;border:0;"
+            + "padding:3px 10px;cursor:pointer;font-size:11px;border-radius:3px;"
+        const stackText = (e && e.stack) ? String(e.stack) : String(e)
+        copy.addEventListener("click", () => {
+            try {
+                navigator.clipboard.writeText("AES routeAssistant view error ("
+                    + mode + " mode):\n" + stackText)
+                copy.textContent = "Copied"
+                setTimeout(() => { copy.textContent = "📋 Copy" }, 1500)
+            } catch (_) { /* clipboard blocked — leave button as-is */ }
+        })
+        head.append(title, copy)
+        box.append(head)
+        const stack = document.createElement("pre")
+        stack.style.cssText = "white-space:pre-wrap;margin:0;font-size:10px;"
+            + "max-height:240px;overflow-y:auto;color:#fecaca;"
+        stack.textContent = stackText
+        box.append(stack)
+        this.tableHost.append(box)
+    }
+
+    /**
+     * Restructure slice A — pick the active view module from
+     * `settings.panelMode`. Falls back to the table view for unknown /
+     * legacy values so the panel always has something to render.
+     */
+    _activeView() {
+        const mode = (this.settings && this.settings.panelMode) || "table"
+        const VIEWS = {
+            table:   typeof RouteAssistantTableView   !== "undefined" ? RouteAssistantTableView   : null,
+            waves:   typeof RouteAssistantWaveView    !== "undefined" ? RouteAssistantWaveView    : null,
+            sandbox: typeof RouteAssistantSandboxView !== "undefined" ? RouteAssistantSandboxView : null,
+            heatmap: typeof RouteAssistantHeatmapView !== "undefined" ? RouteAssistantHeatmapView : null
         }
-
-        // Q13 yield heatmap — hubs × destinations matrix. Mutually
-        // exclusive with Wave View and ORS Sandbox (both win above);
-        // when active replaces the table with a cross-hub colored grid.
-        const hmCfg = this.settings && this.settings.heatmap
-        if (hmCfg && hmCfg.enabled) {
-            this._renderHeatmap(sorted)
-            return
-        }
-
-        this._drawTable(sorted)
+        return VIEWS[mode] || VIEWS.table || {render: (panel, sorted) => panel._drawTable(sorted)}
     }
 
     _applyFilters(rows) {
@@ -4095,15 +4842,33 @@ class RouteAssistantPanel {
             this._buildWaveHeader(preset, presets, topN, pickedHub, recentHubs)
         )
 
+        // Slice D — empty-state CTA. Was a dead-end "open the dashboard"
+        // hint; now creates a starter preset directly via SchedulePresets.
         if (!preset) {
-            const empty = document.createElement("div")
-            empty.style.cssText = "margin:18px 0;padding:14px;border:1px dashed #4c1d95;"
-                + "background:rgba(124,58,237,0.06);border-radius:4px;color:#d8b4fe;"
-            empty.innerHTML = "<strong>No wave preset configured.</strong><br>"
-                + "<span style='color:#a78bfa;font-size:11px;'>"
-                + "Wave View needs at least one preset describing wave windows + composition counts. "
-                + "Open the AES dashboard → <em>Schedule Management</em> to create one.</span>"
-            this.tableHost.append(empty)
+            if (typeof RouteAssistantWaveEditor !== "undefined") {
+                const emptyHost = document.createElement("div")
+                this.tableHost.append(emptyHost)
+                RouteAssistantWaveEditor.renderEmptyState(emptyHost, pickedHub, {
+                    dashboardUrl: "/app/enterprise/dashboard",
+                    onCreated: async (created) => {
+                        // Make the new preset the active one + reload caches
+                        // so the next render shows the editable Gantt.
+                        this._wavePresets = null
+                        this.settings.waveOverlay = Object.assign({},
+                            this.settings.waveOverlay || {}, {lastPresetId: created.id})
+                        try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+                        catch (e) { /* non-fatal */ }
+                        this._waveBuild = null
+                        this._renderRows()
+                    }
+                })
+            } else {
+                const empty = document.createElement("div")
+                empty.style.cssText = "margin:18px 0;padding:14px;border:1px dashed #4c1d95;"
+                    + "background:rgba(124,58,237,0.06);border-radius:4px;color:#d8b4fe;"
+                empty.innerHTML = "<strong>No wave preset configured.</strong>"
+                this.tableHost.append(empty)
+            }
             return
         }
 
@@ -4144,10 +4909,21 @@ class RouteAssistantPanel {
             this.tableHost.append(banner)
         }
 
+        // Slice E — load per-(hub, preset) wave overrides up front so
+        // the build signature includes them. GC stale entries pointing
+        // at deleted wave ids — slice D made delete a one-click action.
+        const overridesMap = (typeof RouteAssistantWaveOverridesStore !== "undefined")
+            ? await RouteAssistantWaveOverridesStore.pruneToWaves(
+                pickedHub, preset.id, (preset.waves || []).map(w => w.id))
+            : {}
+        const ovSig = Object.keys(overridesMap).sort()
+            .map(k => k + "=" + overridesMap[k]).join(",")
+
         const buildSig = (preset.id || "?") + ":" + topN
             + ":" + (this.selectedSpec ? this.selectedSpec.typeId : "none")
             + ":" + (hubRoutes ? hubRoutes.length : 0)
             + ":" + pickedHub
+            + ":" + ovSig
         if (!this._waveBuild
             || this._waveBuild._sig !== buildSig
             || this._waveBuildHub !== pickedHub) {
@@ -4157,7 +4933,8 @@ class RouteAssistantPanel {
                 hubIata:           pickedHub,
                 selectedSpec:      this.selectedSpec,
                 topN:              topN,
-                carrierClassifier: this._carrierClassifierForFlight()
+                carrierClassifier: this._carrierClassifierForFlight(),
+                overrides:         overridesMap
             })
             this._waveBuild._sig = buildSig
             this._waveBuildHub   = pickedHub
@@ -4192,10 +4969,82 @@ class RouteAssistantPanel {
             return
         }
 
+        // Slice 8a — Fleet apply CTA. Slots between the per-build banners
+        // and the Gantt so the action is visible above the fold. Loaded
+        // only when both fleet modules are present (manifest-gated to
+        // /app/com/scheduling and AFP pages); otherwise we skip the strip
+        // silently rather than confuse the user with a dead button.
+        if (typeof window.AesAfpFleetPickerModal !== "undefined"
+                && typeof window.AesAfpFleetApplyOrchestrator !== "undefined"
+                && this._waveBuild && Array.isArray(this._waveBuild.flights)
+                && this._waveBuild.flights.length) {
+            const strip = document.createElement("div")
+            strip.style.cssText = "margin:6px 0;padding:6px 10px;font-size:11px;"
+                + "background:rgba(124,45,18,0.10);border:1px solid rgba(154,52,18,0.50);"
+                + "border-radius:3px;color:#fed7aa;display:flex;align-items:center;gap:10px;"
+            const text = document.createElement("span")
+            text.style.cssText = "flex:1 1 auto;color:#fdba74;"
+            text.textContent = this._waveBuild.flights.length + " leg(s) ready · "
+                + (preset.name || "preset") + " · hub " + pickedHub
+            const btnOne = document.createElement("button")
+            btnOne.type = "button"
+            btnOne.textContent = "Open in flight plan…"
+            btnOne.style.cssText = "background:transparent;color:#fdba74;"
+                + "border:1px solid #9a3412;border-radius:3px;padding:3px 10px;"
+                + "font-size:11px;cursor:pointer;"
+            btnOne.title = "Pick a single aircraft, hand the wave plan off via the"
+                + " shared handoff store, and open its AFP page with the preset preloaded."
+            btnOne.addEventListener("click", () =>
+                this._handoffWaveToAircraft(preset, pickedHub))
+            const btn = document.createElement("button")
+            btn.type = "button"
+            btn.textContent = "Apply to fleet…"
+            btn.style.cssText = "background:#7c2d12;color:#fed7aa;border:1px solid #9a3412;"
+                + "border-radius:3px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;"
+            btn.title = "Pick fleet aircraft and run aes:afp:apply-batch per aircraft serially."
+            btn.addEventListener("click", () => this._applyWaveToFleet(preset, pickedHub))
+            strip.appendChild(text)
+            strip.appendChild(btnOne)
+            strip.appendChild(btn)
+            this.tableHost.append(strip)
+        }
+
         const ganttHost = document.createElement("div")
         ganttHost.style.marginTop = "4px"
         this.tableHost.append(ganttHost)
-        RouteAssistantWaveOverlay.renderGantt(ganttHost, this._waveBuild, {
+
+        // Slice D — wire the wave-editor callbacks so each lane label
+        // becomes a live editor (composition spinners, time inputs,
+        // delete) and the gantt grows an "+ Add wave" footer.
+        const editorOpts = (typeof RouteAssistantWaveEditor !== "undefined") ? {
+            onEnhanceLabel: (labelEl, wave, p) => {
+                RouteAssistantWaveEditor.enhanceLaneLabel(labelEl, wave, p, {
+                    onComposition: (waveId, partial) =>
+                        this._editWaveComposition(preset.id, waveId, partial),
+                    onTime: (waveId, field, time) =>
+                        this._editWaveTime(preset.id, waveId, field, time),
+                    onRemoveWave: (waveId) =>
+                        this._editRemoveWave(preset.id, waveId)
+                })
+            },
+            onAddWave: () => this._editAddWave(preset.id)
+        } : {}
+
+        // Slice E — drag/drop + forced-release + auto-fill callbacks.
+        // The Unplaced strip turns chips into drag sources; lane strips
+        // become drop targets; clicking a 📌-marked bar releases the
+        // override; Auto-fill bumps composition counts until everything
+        // unplaced fits.
+        const dndOpts = (typeof RouteAssistantWaveOverridesStore !== "undefined") ? {
+            onPlace:         (destIata, waveId) =>
+                this._waveOverridePlace(pickedHub, preset.id, destIata, waveId),
+            onReleaseForced: (destIata) =>
+                this._waveOverrideRelease(pickedHub, preset.id, destIata),
+            onAutoFill:      () =>
+                this._waveAutoFill(preset.id, this._waveBuild.unplaced || [])
+        } : {}
+
+        RouteAssistantWaveOverlay.renderGantt(ganttHost, this._waveBuild, Object.assign({
             hubIata:         pickedHub,
             showConnections: wo.showConnections !== false,
             onFlightClick: (flight) => {
@@ -4208,7 +5057,260 @@ class RouteAssistantPanel {
                     window.open(url, "_blank", "noopener")
                 }
             }
-        })
+        }, editorOpts, dndOpts))
+    }
+
+    /**
+     * Slice E — write a forced placement to the overrides store and
+     * re-render so the route appears in the picked wave with a 📌 badge.
+     */
+    async _waveOverridePlace(hubIata, presetId, destIata, waveId) {
+        if (typeof RouteAssistantWaveOverridesStore === "undefined") return
+        await RouteAssistantWaveOverridesStore.set(hubIata, presetId, destIata, waveId)
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show(destIata + " → " + (waveId || "wave") + " (forced placement saved)",
+                {duration: 3000})
+        }
+        await this._afterWavePresetEdit()
+    }
+
+    /**
+     * Slice E — drop one route's override and re-render. Toast offers a
+     * quick-undo by re-placing on the same wave id we just released from.
+     */
+    async _waveOverrideRelease(hubIata, presetId, destIata) {
+        if (typeof RouteAssistantWaveOverridesStore === "undefined") return
+        const before = await RouteAssistantWaveOverridesStore.load(hubIata, presetId)
+        const releasedFrom = before[String(destIata).toUpperCase()] || null
+        await RouteAssistantWaveOverridesStore.clear(hubIata, presetId, destIata)
+        if (typeof RouteAssistantToast !== "undefined" && releasedFrom) {
+            RouteAssistantToast.show(destIata + " override released — back to greedy fill",
+                {duration: 4000})
+        }
+        await this._afterWavePresetEdit()
+    }
+
+    /**
+     * Slice E — bump composition counts on the active preset until every
+     * `unplaced` route has a home. Walks through unplaced descending,
+     * finds the route's haul bucket, and increments the first wave that
+     * has the smallest count of that bucket (cheap balance heuristic).
+     */
+    async _waveAutoFill(presetId, unplaced) {
+        if (!unplaced || !unplaced.length) return
+        if (typeof RouteAssistantWaveEditor === "undefined") return
+        const block = await SchedulePresets.load()
+        const preset = block.presets.find(p => p.id === presetId)
+        if (!preset || !preset.waves || !preset.waves.length) return
+        const buckets = (preset.factors && preset.factors.rangeBuckets) || {}
+        // Mutate composition in-memory then save once at the end so we
+        // don't thrash storage with N writes.
+        let bumped = 0
+        for (const r of unplaced) {
+            const bucket = ScheduleFactors.bucketize(r.distanceNm, buckets)
+            if (!bucket) continue
+            // Pick the wave with the smallest current count for this bucket.
+            let target = preset.waves[0]
+            let min = (target.composition && target.composition[bucket]) || 0
+            for (const w of preset.waves) {
+                const c = (w.composition && w.composition[bucket]) || 0
+                if (c < min) { min = c; target = w }
+            }
+            target.composition = Object.assign(
+                {shortHaul: 0, mediumHaul: 0, longHaul: 0},
+                target.composition || {})
+            target.composition[bucket] = (target.composition[bucket] || 0) + 1
+            bumped++
+        }
+        await SchedulePresets.update(presetId, {waves: preset.waves})
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show("Auto-filled — added " + bumped + " seat"
+                + (bumped === 1 ? "" : "s") + " across waves",
+                {duration: 4000})
+        }
+        await this._afterWavePresetEdit()
+    }
+
+    /**
+     * Slice D — wave-editor callback handlers. Each one delegates to the
+     * static method on `RouteAssistantWaveEditor` (which writes to
+     * `SchedulePresets`) then invalidates the panel's wave cache so the
+     * Gantt re-runs with the new preset. Re-render is via the same
+     * `_renderRows` path the rest of the panel uses.
+     */
+    async _editWaveComposition(presetId, waveId, partial) {
+        if (typeof RouteAssistantWaveEditor === "undefined") return
+        await RouteAssistantWaveEditor.updateWaveComposition(presetId, waveId, partial)
+        await this._afterWavePresetEdit()
+    }
+    async _editWaveTime(presetId, waveId, field, time) {
+        if (typeof RouteAssistantWaveEditor === "undefined") return
+        await RouteAssistantWaveEditor.updateWaveTime(presetId, waveId, field, time)
+        await this._afterWavePresetEdit()
+    }
+    async _editAddWave(presetId) {
+        if (typeof RouteAssistantWaveEditor === "undefined") return
+        await RouteAssistantWaveEditor.addWave(presetId)
+        await this._afterWavePresetEdit()
+    }
+    async _editRemoveWave(presetId, waveId) {
+        if (typeof RouteAssistantWaveEditor === "undefined") return
+        const block = await SchedulePresets.load()
+        const p = block.presets.find(x => x.id === presetId)
+        if (p && p.waves && p.waves.length <= 1) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Can't delete the only wave — add another first.",
+                    {type: "warn"})
+            }
+            return
+        }
+        await RouteAssistantWaveEditor.removeWave(presetId, waveId)
+        await this._afterWavePresetEdit()
+    }
+    /** Shared post-edit refresh: bust caches + re-render. */
+    async _afterWavePresetEdit() {
+        this._wavePresets = null
+        this._waveBuild = null
+        this._renderRows()
+    }
+
+    /**
+     * Slice 8c — single-aircraft handoff. Picks one aircraft via the
+     * fleet picker, writes the wave-designer handoff record, then opens
+     * the aircraft's AFP page in a new tab. The wave-applier on the
+     * other side consumes the handoff and pre-selects the matching
+     * preset + auto-Generates so the user lands on a populated Gantt.
+     *
+     * Why this lives next to _applyWaveToFleet: same picker, same
+     * preset / hub context, just one selection instead of N. The
+     * difference is the post-pick branch — we write a handoff and
+     * navigate, not run the orchestrator.
+     */
+    async _handoffWaveToAircraft(preset, hub) {
+        if (!this._waveBuild || !Array.isArray(this._waveBuild.flights)) return
+        if (!preset || !preset.id) return
+        if (typeof window.AesAfpFleetPickerModal === "undefined"
+                || typeof window.AesHandoffStore === "undefined") {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Handoff modules not loaded — reload the page.",
+                    {type: "warn"})
+            }
+            return
+        }
+        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        let pick
+        try {
+            pick = await window.AesAfpFleetPickerModal.open({
+                preset:      preset,
+                hub:         hub,
+                title:       "Open wave plan in one aircraft's flight plan",
+                server:      this.server,
+                airlineCode: airlineCode
+            })
+        } catch (e) {
+            console.warn("[RA-8c] picker threw", e)
+            return
+        }
+        if (!pick || pick.cancelled || !pick.aircraftIds || !pick.aircraftIds.length) return
+        // Single-select intent — take the first checked aircraft. (The
+        // picker doesn't currently enforce single-select; we just use
+        // the first pick. A future iteration can pass `singleSelect:true`
+        // to the picker if multi-pick on this CTA proves confusing.)
+        const aircraftId = String(pick.aircraftIds[0])
+        try {
+            await window.AesHandoffStore.set({
+                aircraftId: aircraftId,
+                presetId:   preset.id,
+                hub:        hub,
+                generatedAt: Date.now(),
+                source:     "wave-designer"
+            })
+        } catch (e) {
+            console.warn("[RA-8c] handoff store write failed", e)
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Handoff write failed: " + ((e && e.message) || e),
+                    {type: "warn"})
+            }
+            return
+        }
+        const url = "/app/fleets/aircraft/" + encodeURIComponent(aircraftId) + "/0"
+        try { window.open(url, "_blank", "noopener") }
+        catch (e) {
+            console.warn("[RA-8c] window.open threw", e)
+            window.location.href = url
+        }
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show("Opened aircraft " + aircraftId
+                + " — wave plan handoff written (60s TTL).", {duration: 5000})
+        }
+    }
+
+    /**
+     * Slice 8a — open the fleet picker, then orchestrate per-aircraft
+     * apply across the picked aircraft using the current build's flights.
+     *
+     * Identical contract to wave-applier's _onApplyToFleet (AFP page) —
+     * this is the route-assistant Wave View counterpart so users can
+     * fan out from /app/com/scheduling/<HUB> without round-tripping to
+     * each aircraft. Same legs land on every selected aircraft; the
+     * picker's range-fit filter excludes aircraft that can't fly them.
+     */
+    async _applyWaveToFleet(preset, hub) {
+        if (!this._waveBuild || !Array.isArray(this._waveBuild.flights)) return
+        const flights = this._waveBuild.flights
+        if (!flights.length) return
+        if (typeof window.AesAfpFleetPickerModal === "undefined"
+                || typeof window.AesAfpFleetApplyOrchestrator === "undefined") {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Fleet apply pipeline not loaded — reload the page.",
+                    {type: "warn"})
+            }
+            return
+        }
+        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        let pick
+        try {
+            pick = await window.AesAfpFleetPickerModal.open({
+                preset:      preset,
+                hub:         hub,
+                title:       "Apply wave plan to fleet — " + (preset.name || "wave"),
+                server:      this.server,
+                airlineCode: airlineCode
+            })
+        } catch (e) {
+            console.warn("[RA-8a] fleet picker threw", e)
+            return
+        }
+        if (!pick || pick.cancelled || !pick.aircraftIds || !pick.aircraftIds.length) return
+
+        const runs = pick.aircraftIds.map(aircraftId => ({
+            aircraftId: aircraftId,
+            legs:       flights.slice(),
+            hub:        hub
+        }))
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show("Fleet apply: " + runs.length + " aircraft × "
+                + flights.length + " legs queued.")
+        }
+        try {
+            const result = await window.AesAfpFleetApplyOrchestrator.start({
+                runs:   runs,
+                ctx:    {server: this.server},
+                source: "wave-designer-fleet"
+            })
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Fleet apply " + (result.aborted ? "aborted" : "done")
+                    + " — " + (result.totalSucceeded || 0) + " ok / "
+                    + (result.totalFailed || 0) + " failed across " + runs.length + " aircraft.",
+                    {duration: 6000})
+            }
+        } catch (e) {
+            console.warn("[RA-8a] fleet orchestrator threw", e)
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Fleet apply threw: " + ((e && e.message) || e),
+                    {type: "warn"})
+            }
+        }
     }
 
     /**
@@ -4487,14 +5589,50 @@ class RouteAssistantPanel {
         })
         wrap.append(connBtn)
 
-        const editLink = document.createElement("a")
-        editLink.href = "/app/enterprise/dashboard"
-        editLink.target = "_blank"
-        editLink.rel = "noopener"
-        editLink.textContent = "📅 Edit presets →"
-        editLink.style.cssText = "color:#93c5fd;text-decoration:none;font-size:11px;margin-left:auto;"
-        editLink.title = "Open the dashboard → Schedule Management to add or edit wave presets"
-        wrap.append(editLink)
+        // Slice D — in-panel preset CRUD strip. Replaces the read-only
+        // "📅 Edit presets →" link that dumped the user onto the dashboard.
+        // New / Duplicate / Rename / Delete all act on the active preset
+        // and write straight to SchedulePresets — no context switch.
+        if (typeof RouteAssistantWaveEditor !== "undefined") {
+            const crudWrap = document.createElement("span")
+            crudWrap.style.cssText = "display:flex;gap:4px;align-items:center;margin-left:auto;"
+            crudWrap.append(RouteAssistantWaveEditor.renderPresetActions(preset, presets, {
+                hubIata: pickedHub,
+                onPickPreset: async (id) => {
+                    this.settings.waveOverlay = Object.assign({},
+                        this.settings.waveOverlay || {}, {lastPresetId: id})
+                    try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+                    catch (e) { /* non-fatal */ }
+                    await this._afterWavePresetEdit()
+                },
+                onAfterCreate: async (created) => {
+                    this.settings.waveOverlay = Object.assign({},
+                        this.settings.waveOverlay || {}, {lastPresetId: created.id})
+                    try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+                    catch (e) { /* non-fatal */ }
+                    await this._afterWavePresetEdit()
+                },
+                onAfterDuplicate: async (dup) => {
+                    this.settings.waveOverlay = Object.assign({},
+                        this.settings.waveOverlay || {}, {lastPresetId: dup.id})
+                    try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+                    catch (e) { /* non-fatal */ }
+                    await this._afterWavePresetEdit()
+                },
+                onAfterRename: async () => { await this._afterWavePresetEdit() },
+                onAfterDelete: async () => {
+                    // Picker memory now points at a deleted id — clear it
+                    // so the next render falls back to the first preset
+                    // (or the empty-state CTA if none remain).
+                    this.settings.waveOverlay = Object.assign({},
+                        this.settings.waveOverlay || {}, {lastPresetId: null})
+                    try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+                    catch (e) { /* non-fatal */ }
+                    await this._afterWavePresetEdit()
+                }
+            }))
+            wrap.append(crudWrap)
+        }
 
         return wrap
     }
@@ -5169,6 +6307,8 @@ class RouteAssistantPanel {
                 prefilledPrices: sliderPrices,
                 sandboxScenario: result.scenario || null,
                 projectedDelta:  Object.keys(projectedDelta).length ? projectedDelta : null,
+                sandboxProjected:   (result && result.projected)   || null,
+                sandboxModelParams: (result && result.modelParams) || null,
                 row: this._orsSandboxRoute && this._orsSandboxRoute._row
             })
         })
@@ -6273,6 +7413,12 @@ class RouteAssistantPanel {
             + "background:" + STICKY_GROUP_BG + ";width:24px;"
         groupRow.append(selGroupTh)
 
+        // U3 — read the collapsed-groups Set from settings. _activeColumns
+        // already cached this on the panel, but we re-read defensively in
+        // case _buildTable is reached via a path that bypassed it.
+        const cpForHeader = (this.settings && this.settings.columnPrefs) || {collapsedGroups: []}
+        const collapsedHeader = new Set(cpForHeader.collapsedGroups || [])
+
         let groupTh = null
         let groupSpan = 0
         let prevGroup = null
@@ -6282,7 +7428,18 @@ class RouteAssistantPanel {
                 if (groupTh) groupTh.colSpan = groupSpan
                 const def = RouteAssistantPanel.COLUMN_GROUPS[col.group] || {}
                 groupTh = document.createElement("th")
-                groupTh.textContent = def.label || ""
+                // U3 — chevron prefix communicates collapsibility. ▾ when
+                // expanded, ▸ when collapsed. Clickable group headers add
+                // a 1px hint cursor so the affordance is discoverable
+                // without explanation. Skipping the chevron for groups
+                // without a label keeps the multi-select header (which
+                // shouldn't be collapsible) untouched.
+                const groupLabel = def.label || ""
+                const isCollapsed = collapsedHeader.has(col.group)
+                const isCollapsible = !!groupLabel && col.group !== "select"
+                groupTh.textContent = isCollapsible
+                    ? (isCollapsed ? "▸ " : "▾ ") + groupLabel
+                    : groupLabel
                 groupTh.dataset.group = col.group   // U15 — hover-highlight target
                 groupTh.dataset.groupHeader = "1"
                 // Single solid background for the whole group bar — the
@@ -6294,6 +7451,15 @@ class RouteAssistantPanel {
                     + "position:sticky;top:" + STICKY_GROUP_TOP + "px;z-index:3;"
                     + "background:" + STICKY_GROUP_BG + ";"
                     + "transition:color 120ms ease;"
+                    + (isCollapsible ? "cursor:pointer;user-select:none;" : "")
+                if (isCollapsible) {
+                    const groupKey = col.group
+                    groupTh.title = (isCollapsed ? "Click to expand" : "Click to collapse")
+                        + " the " + groupLabel + " group"
+                    groupTh.addEventListener("click", () => {
+                        this._toggleGroupCollapsed(groupKey)
+                    })
+                }
                 groupRow.append(groupTh)
                 groupHeaders.push(groupTh)
                 prevGroup = col.group
@@ -6467,6 +7633,11 @@ class RouteAssistantPanel {
             selTd.append(rowCb)
             trow.append(selTd)
 
+            // U3 — render placeholder cells for collapsed-group placeholder
+            // columns. Cached on the panel by _activeColumns above; falls
+            // back to empty maps when columnPrefs is null.
+            const collapsedGroupSet  = this._collapsedGroupSet || new Set()
+            const placeholderByGroup = this._collapsedPlaceholderField || {}
             for (const col of cols) {
                 const td = document.createElement("td")
                 td.dataset.group = col.group   // U15 — hover-highlight target
@@ -6493,7 +7664,20 @@ class RouteAssistantPanel {
                 td.style.cssText = "padding:3px 6px;border-bottom:1px solid #2a3444;"
                     + "text-align:" + (col.align || "left") + ";"
                     + bgDecl + stickyDecl
-                col.render(td, row)
+                if (collapsedGroupSet.has(col.group)
+                    && placeholderByGroup[col.group] === col.field
+                    && !Object.prototype.hasOwnProperty.call(FROZEN_FIELDS, col.field)) {
+                    // U3 placeholder cell — group is collapsed, render a
+                    // single muted ellipsis. Skip col.render entirely so
+                    // expensive per-row computations don't fire just to
+                    // be hidden.
+                    td.textContent = "…"
+                    td.style.color = "#6b7280"
+                    td.style.textAlign = "center"
+                    td.title = "Group collapsed — click " + (RouteAssistantPanel.COLUMN_GROUPS[col.group] || {}).label + " header to expand"
+                } else {
+                    col.render(td, row)
+                }
                 trow.append(td)
             }
             tbody.append(trow)
@@ -6550,7 +7734,17 @@ class RouteAssistantPanel {
             : this.settings.ors.showPerClassColumns !== false)
         const PER_CLASS_FIELDS = {orsClassY: 1, orsClassC: 1, orsClassF: 1}
         const viewMode = this._currentViewMode()
-        return RouteAssistantPanel.COLUMNS.filter(c => {
+        // U7 + U3 — user-driven column hide + group collapse. Frozen
+        // columns ("score", "destIata") are immune both layers; chooser
+        // modal renders them disabled-checked and _mergeColumnPrefs
+        // strips them defensively, so this is belt-and-braces.
+        const cp = (this.settings && this.settings.columnPrefs) || {hiddenFields: [], collapsedGroups: []}
+        const hidden    = new Set(cp.hiddenFields    || [])
+        const collapsed = new Set(cp.collapsedGroups || [])
+        const FROZEN    = {score: 1, destIata: 1}
+        const seenCollapsedGroup = new Set()
+        const placeholderByGroup = {}
+        const filtered = RouteAssistantPanel.COLUMNS.filter(c => {
             if (c.group === "aircraft"    && !showAircraft) return false
             if (c.group === "pricing"     && !showPricing)  return false
             if (c.group === "actuals"     && !showActuals)  return false
@@ -6566,8 +7760,212 @@ class RouteAssistantPanel {
             // today; everything else shows in all three tabs.
             const modes = RouteAssistantPanel._columnModes(c)
             if (modes.indexOf(viewMode) < 0) return false
+            // U7 — user-hidden columns drop entirely (frozen exempt).
+            if (!FROZEN[c.field] && hidden.has(c.field)) return false
+            // U3 — collapsed groups: keep the first column that survives
+            // every other filter as a placeholder slot; drop the rest.
+            // Frozen columns can't be in a collapsed group (score+dest
+            // each have their own pseudo-groups). The placeholder cell
+            // is rendered specially in _buildTable's body loop using
+            // the `_collapsedGroupsByCol` map below.
+            if (collapsed.has(c.group) && !FROZEN[c.field]) {
+                if (seenCollapsedGroup.has(c.group)) return false
+                seenCollapsedGroup.add(c.group)
+                placeholderByGroup[c.group] = c.field
+            }
             return true
         })
+        // Stash the placeholder field map on the panel so _buildTable
+        // can render the placeholder cell without recomputing membership.
+        this._collapsedPlaceholderField = placeholderByGroup
+        this._collapsedGroupSet = collapsed
+        return filtered
+    }
+
+    /**
+     * U3 — flip a group between collapsed and expanded. Wired both to
+     * the chevron click on the table's group-header and to the per-group
+     * toggle inside the chooser modal. Persists to columnPrefs and
+     * triggers a table-only re-render so the sticky sub-header rebuilds
+     * with the new chevron + colspans.
+     */
+    async _toggleGroupCollapsed(groupKey) {
+        if (!groupKey || !this.settings) return
+        const cp = Object.assign({hiddenFields: [], collapsedGroups: []},
+            this.settings.columnPrefs || {})
+        const list = Array.isArray(cp.collapsedGroups) ? cp.collapsedGroups.slice() : []
+        const idx = list.indexOf(groupKey)
+        if (idx >= 0) list.splice(idx, 1)
+        else list.push(groupKey)
+        cp.collapsedGroups = list
+        cp.hiddenFields = Array.isArray(cp.hiddenFields) ? cp.hiddenFields.slice() : []
+        this.settings.columnPrefs = cp
+        try { await RouteAssistantSettings.save({columnPrefs: cp}) } catch (e) { /* non-fatal */ }
+        this._renderRows()
+        if (this.settingsHost && this.settingsHost.dataset.open === "1") {
+            this._renderSettings()
+        }
+    }
+
+    /**
+     * U7 + U3 — column chooser modal. One fieldset per COLUMN_GROUPS entry;
+     * per-column checkboxes drive `columnPrefs.hiddenFields` and a per-group
+     * collapse toggle drives `columnPrefs.collapsedGroups`. Frozen columns
+     * (score / destIata) render disabled-checked since `_mergeColumnPrefs`
+     * strips them defensively from any incoming hiddenFields list. Each
+     * toggle persists immediately, but the table re-render is deferred to
+     * Close — multi-toggle inside the modal would otherwise repaint the
+     * grid on every click.
+     */
+    _openColumnPrefsModal() {
+        const FROZEN = {score: 1, destIata: 1}
+        const overlay = document.createElement("div")
+        overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);"
+            + "z-index:10001;display:flex;align-items:center;justify-content:center;"
+        const modal = document.createElement("div")
+        modal.style.cssText = "background:#1f2937;color:#f3f4f6;border:1px solid #374151;"
+            + "border-radius:6px;padding:12px 16px;min-width:520px;max-width:80vw;"
+            + "max-height:80vh;display:flex;flex-direction:column;font:12px/1.4 sans-serif;"
+
+        const head = document.createElement("strong")
+        head.textContent = "Configure columns & groups"
+        head.style.cssText = "font-size:14px;margin-bottom:4px;"
+        const meta = document.createElement("div")
+        meta.style.cssText = "color:#9ca3af;font-size:11px;margin-bottom:10px;"
+        meta.textContent = "Hide individual columns or collapse whole groups. "
+            + "Frozen columns (Sc, Dest) stay visible. Changes persist across reloads."
+
+        const body = document.createElement("div")
+        body.style.cssText = "overflow-y:auto;flex:1;border:1px solid #374151;"
+            + "border-radius:4px;padding:8px 10px;margin-bottom:10px;background:#0f1623;"
+
+        // Build a map of group → columns by walking COLUMNS in declaration
+        // order so the modal reflects the table's actual column ordering.
+        const groupOrder = []
+        const groupCols  = {}
+        for (const c of RouteAssistantPanel.COLUMNS) {
+            if (!groupCols[c.group]) {
+                groupCols[c.group] = []
+                groupOrder.push(c.group)
+            }
+            groupCols[c.group].push(c)
+        }
+
+        const cp = (this.settings && this.settings.columnPrefs) || {hiddenFields: [], collapsedGroups: []}
+        const hidden    = new Set(cp.hiddenFields    || [])
+        const collapsed = new Set(cp.collapsedGroups || [])
+
+        // Single funnel for every checkbox/toggle — keeps the in-memory
+        // Sets, the panel settings, and chrome.storage in lockstep.
+        const persist = async () => {
+            const next = {
+                hiddenFields:    Array.from(hidden),
+                collapsedGroups: Array.from(collapsed)
+            }
+            this.settings.columnPrefs = next
+            try { await RouteAssistantSettings.save({columnPrefs: next}) } catch (e) { /* non-fatal */ }
+        }
+
+        for (const groupKey of groupOrder) {
+            const def   = RouteAssistantPanel.COLUMN_GROUPS[groupKey] || {}
+            const label = def.label || "(unlabeled)"
+            const fset = document.createElement("fieldset")
+            fset.style.cssText = "border:1px solid #374151;border-radius:4px;"
+                + "padding:6px 10px 8px;margin:0 0 8px 0;"
+            const legend = document.createElement("legend")
+            legend.style.cssText = "padding:0 6px;color:#cbd5e1;font-size:11px;"
+                + "font-weight:600;display:flex;gap:6px;align-items:center;"
+
+            const collapseBtn = document.createElement("button")
+            collapseBtn.type = "button"
+            const refreshCollapseBtn = () => {
+                const isC = collapsed.has(groupKey)
+                collapseBtn.textContent = isC ? "▸ Expand group" : "▾ Collapse group"
+                collapseBtn.title = isC
+                    ? "Expand the " + label + " group in the table"
+                    : "Collapse the " + label + " group to a single … placeholder cell"
+            }
+            collapseBtn.style.cssText = "background:#1f2937;color:#cbd5e1;"
+                + "border:1px solid #475569;border-radius:3px;padding:1px 7px;"
+                + "font-size:10px;cursor:pointer;line-height:1.4;"
+            refreshCollapseBtn()
+            collapseBtn.addEventListener("click", async () => {
+                if (collapsed.has(groupKey)) collapsed.delete(groupKey)
+                else collapsed.add(groupKey)
+                refreshCollapseBtn()
+                await persist()
+            })
+
+            const labText = document.createElement("span")
+            labText.textContent = label
+            legend.append(labText, collapseBtn)
+            fset.append(legend)
+
+            const grid = document.createElement("div")
+            grid.style.cssText = "display:grid;grid-template-columns:repeat(3, 1fr);"
+                + "gap:2px 12px;margin-top:4px;"
+            for (const c of groupCols[groupKey]) {
+                const row = document.createElement("label")
+                row.style.cssText = "display:flex;gap:6px;align-items:center;"
+                    + "padding:1px 0;cursor:pointer;color:#e5e7eb;font-size:11px;"
+                const cb = document.createElement("input")
+                cb.type = "checkbox"
+                const isFrozen = !!FROZEN[c.field]
+                cb.checked  = isFrozen ? true : !hidden.has(c.field)
+                cb.disabled = isFrozen
+                if (isFrozen) {
+                    row.style.opacity = "0.55"
+                    row.style.cursor  = "default"
+                    row.title = "Frozen sticky-left column — always visible."
+                }
+                cb.addEventListener("change", async () => {
+                    if (isFrozen) return
+                    if (cb.checked) hidden.delete(c.field)
+                    else            hidden.add(c.field)
+                    await persist()
+                })
+                const txt = document.createElement("span")
+                txt.textContent = c.label + (isFrozen ? " · frozen" : "")
+                row.append(cb, txt)
+                grid.append(row)
+            }
+            fset.append(grid)
+            body.append(fset)
+        }
+
+        const btnRow = document.createElement("div")
+        btnRow.style.cssText = "display:flex;gap:8px;justify-content:space-between;align-items:center;"
+        const resetBtn = document.createElement("button")
+        resetBtn.type = "button"
+        resetBtn.textContent = "Show all columns"
+        Object.assign(resetBtn.style, smallBtnStyle())
+        resetBtn.style.background = "#374151"
+        resetBtn.addEventListener("click", async () => {
+            hidden.clear()
+            collapsed.clear()
+            await persist()
+            close()
+            this._render()
+        })
+        const closeBtn = document.createElement("button")
+        closeBtn.type = "button"
+        closeBtn.textContent = "Close"
+        Object.assign(closeBtn.style, smallBtnStyle())
+        const close = () => {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
+            document.removeEventListener("keydown", onKey)
+            overlay.removeEventListener("click", onOverlayClick)
+        }
+        const onKey = (e) => { if (e.key === "Escape") { close(); this._render() } }
+        const onOverlayClick = (e) => { if (e.target === overlay) { close(); this._render() } }
+        closeBtn.addEventListener("click", () => { close(); this._render() })
+        btnRow.append(resetBtn, closeBtn)
+
+        modal.append(head, meta, body, btnRow)
+        overlay.append(modal)
+        document.body.appendChild(overlay)
+        document.addEventListener("keydown", onKey)
+        overlay.addEventListener("click", onOverlayClick)
     }
 
     /** Resolve the active view tab safely; defaults to "all". */
@@ -6634,6 +8032,35 @@ class RouteAssistantPanel {
     _renderSettings() {
         this.settingsHost.innerHTML = ""
 
+        // Slice C — sticky drawer header (title + ✕ close). Pins to the
+        // top of the side-drawer's scroll area so the user always has one
+        // click to close even when scrolled deep into the section list.
+        // Negative margin escapes the host's padding so the bar runs
+        // edge-to-edge while content below respects the padded inset.
+        const drawerHead = document.createElement("div")
+        drawerHead.style.cssText = "position:sticky;top:0;z-index:2;"
+            + "display:flex;align-items:center;gap:var(--aes-sp-2);"
+            + "padding:var(--aes-sp-2) var(--aes-sp-3);"
+            + "margin:calc(var(--aes-sp-2) * -1) calc(var(--aes-sp-3) * -1) var(--aes-sp-2);"
+            + "background:var(--aes-bone-2);"
+            + "border-bottom:var(--aes-bw-1) solid var(--aes-paper-rule);"
+        const drawerTitle = document.createElement("strong")
+        drawerTitle.textContent = "SETTINGS"
+        drawerTitle.style.cssText = "flex:1;font-family:var(--aes-font-display);"
+            + "font-weight:var(--aes-fw-display);text-transform:uppercase;"
+            + "letter-spacing:var(--aes-tracking-caps);font-size:var(--aes-fs-lead);"
+            + "color:var(--aes-oxide);"
+        const drawerClose = document.createElement("button")
+        drawerClose.type = "button"
+        drawerClose.textContent = "✕"
+        drawerClose.title = "Close settings (Esc)"
+        drawerClose.style.cssText = "background:transparent;color:var(--aes-oxide);"
+            + "border:var(--aes-bw-1) solid var(--aes-paper-rule);"
+            + "padding:2px 10px;cursor:pointer;font-size:14px;line-height:1;"
+        drawerClose.addEventListener("click", () => this._toggleSettings())
+        drawerHead.append(drawerTitle, drawerClose)
+        this.settingsHost.append(drawerHead)
+
         // ----- Header
         const scoringHeader = document.createElement("div")
         scoringHeader.innerHTML = "<strong>Score weights & filters</strong>"
@@ -6659,6 +8086,38 @@ class RouteAssistantPanel {
             presetRow.append(btn)
         }
         this.settingsHost.append(presetRow)
+
+        // U7 + U3 — Columns & groups chooser entry point. One button
+        // opens a modal listing every column grouped by COLUMN_GROUPS;
+        // each group has a "Collapse group" toggle and per-column
+        // checkboxes. State persists to settings.columnPrefs.
+        const colsRow = document.createElement("div")
+        colsRow.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:8px;"
+        const colsLabel = document.createElement("span")
+        colsLabel.textContent = "Columns & groups:"
+        colsLabel.style.cssText = "color:#9ca3af;font-size:11px;"
+        colsRow.append(colsLabel)
+        const colsBtn = document.createElement("button")
+        colsBtn.type = "button"
+        colsBtn.textContent = "Configure columns…"
+        Object.assign(colsBtn.style, smallBtnStyle())
+        colsBtn.style.fontSize = "10px"
+        colsBtn.style.padding = "2px 7px"
+        colsBtn.addEventListener("click", () => this._openColumnPrefsModal())
+        colsRow.append(colsBtn)
+        const colsSummary = document.createElement("span")
+        colsSummary.style.cssText = "color:#9ca3af;font-size:10px;"
+        const cp = (this.settings && this.settings.columnPrefs) || {hiddenFields: [], collapsedGroups: []}
+        const nHidden    = (cp.hiddenFields || []).length
+        const nCollapsed = (cp.collapsedGroups || []).length
+        if (nHidden || nCollapsed) {
+            const parts = []
+            if (nHidden)    parts.push(nHidden    + " hidden")
+            if (nCollapsed) parts.push(nCollapsed + " collapsed")
+            colsSummary.textContent = "(" + parts.join(", ") + ")"
+        }
+        colsRow.append(colsSummary)
+        this.settingsHost.append(colsRow)
 
         // ----- Scoring table
         const scoringTable = document.createElement("table")
@@ -8435,6 +9894,18 @@ class RouteAssistantPanel {
             this._render()
         })
         togglesRow.append(alLbl)
+
+        const logoCb = mkInput("checkbox", null)
+        logoCb.checked = cfg.showAllianceLogos !== false
+        const logoLbl = document.createElement("label")
+        logoLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#c4b5fd;cursor:pointer;"
+        logoLbl.append(logoCb, document.createTextNode("Show alliance logos in popover"))
+        logoCb.addEventListener("change", async () => {
+            this.settings.carriers.showAllianceLogos = logoCb.checked
+            await RouteAssistantSettings.save({carriers: this.settings.carriers})
+            this._render()
+        })
+        togglesRow.append(logoLbl)
         partnersWrap.append(togglesRow)
 
         const partnersHint = document.createElement("div")
@@ -11773,22 +13244,40 @@ class RouteAssistantPanel {
         wrap.addEventListener("mouseenter", () => { wrap.style.background = "rgba(34,197,94,0.08)" })
         wrap.addEventListener("mouseleave", () => { wrap.style.background = "" })
 
-        const avatarBox = document.createElement("div")
-        avatarBox.style.cssText = "flex-shrink:0;width:32px;height:32px;border-radius:3px;background:#0f1623;display:flex;align-items:center;justify-content:center;overflow:hidden;"
-        if (entry.avatarUrl) {
-            const img = document.createElement("img")
-            img.src = entry.avatarUrl
-            img.alt = entry.name || ""
-            img.style.cssText = "width:100%;height:100%;object-fit:cover;"
-            img.addEventListener("error", () => {
-                if (img.parentNode === avatarBox) avatarBox.removeChild(img)
-                avatarBox.append(_initialBadge(entry.name))
-            })
-            avatarBox.append(img)
-        } else {
-            avatarBox.append(_initialBadge(entry.name))
+        const cfgC = (this.settings && this.settings.carriers) || {}
+        const showAllianceLogos = cfgC.showAllianceLogos !== false
+
+        // Alliance slot — small square that mirrors the AS native
+        // airport-overview Stations table. When the carrier has an
+        // allianceLogoUrl (constructed in `_applyCachedEnterpriseMeta`
+        // from the airport-overview cache) we render the logo wrapped
+        // in a link to the alliance page; otherwise an "X" placeholder
+        // makes the missing slot explicit so the grid stays aligned.
+        if (showAllianceLogos) {
+            const allianceBox = document.createElement("div")
+            allianceBox.style.cssText = "flex-shrink:0;width:22px;height:22px;display:flex;align-items:center;justify-content:center;"
+            if (entry.allianceLogoUrl && entry.allianceId) {
+                const link = document.createElement("a")
+                link.href = "/app/info/alliances/" + encodeURIComponent(entry.allianceId)
+                link.target = "_blank"
+                link.rel = "noreferrer noopener"
+                link.title = "Alliance #" + entry.allianceId
+                link.style.cssText = "display:flex;align-items:center;justify-content:center;text-decoration:none;"
+                const img = document.createElement("img")
+                img.src = entry.allianceLogoUrl
+                img.alt = "Alliance"
+                img.style.cssText = "width:22px;height:22px;object-fit:contain;border-radius:2px;"
+                img.addEventListener("error", () => {
+                    if (img.parentNode === link) link.removeChild(img)
+                    link.append(_logoPlaceholder({width: 22, height: 22}))
+                })
+                link.append(img)
+                allianceBox.append(link)
+            } else {
+                allianceBox.append(_logoPlaceholder({width: 22, height: 22}))
+            }
+            wrap.append(allianceBox)
         }
-        wrap.append(avatarBox)
 
         const middle = document.createElement("div")
         middle.style.cssText = "flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;"
@@ -11808,7 +13297,6 @@ class RouteAssistantPanel {
         // enterprise(s) contractual partners table. Inline next to the
         // name so a quick scan of the popover surfaces who you can
         // codeshare with at a glance.
-        const cfgC = (this.settings && this.settings.carriers) || {}
         const partnersMap = this._partnersByEnterpriseId
         const partnerKey = entry.enterpriseId != null ? String(entry.enterpriseId) : null
         const relations = (partnersMap && partnerKey) ? partnersMap.get(partnerKey) : null
@@ -11830,20 +13318,23 @@ class RouteAssistantPanel {
         }
         middle.append(nameRow)
 
+        // Enterprise name banner — sourced from /app/logo/<id>/enterprise-s.png
+        // (auto-constructed from the enterprise id, no per-enterprise
+        // scrape required). On 404/decode error the slot collapses to
+        // an "X" placeholder so a missing logo is obvious instead of
+        // silently empty.
         if (entry.bannerUrl) {
             const banner = document.createElement("img")
             banner.src = entry.bannerUrl
             banner.alt = entry.name || ""
-            banner.style.cssText = "max-width:100%;max-height:24px;object-fit:contain;border-radius:2px;"
+            banner.style.cssText = "max-height:24px;max-width:100%;object-fit:contain;border-radius:2px;align-self:flex-start;"
             banner.addEventListener("error", () => {
                 if (banner.parentNode === middle) middle.removeChild(banner)
+                middle.append(_logoPlaceholder({width: 24, height: 22}))
             })
             middle.append(banner)
         } else {
-            const sub = document.createElement("span")
-            sub.textContent = (entry.iata ? entry.iata + " · " : "") + "#" + (entry.enterpriseId || "?")
-            sub.style.cssText = "color:#6b7280;font-size:9px;"
-            middle.append(sub)
+            middle.append(_logoPlaceholder({width: 24, height: 22}))
         }
         wrap.append(middle)
 
@@ -13149,8 +14640,10 @@ class RouteAssistantPanel {
         const hub  = String(args.hub).toUpperCase()
         const dest = String(args.dest).toUpperCase()
         const source = args.source || "manual"
-        const sandboxScenario = args.sandboxScenario || null
-        const projectedDelta  = args.projectedDelta  || null
+        const sandboxScenario   = args.sandboxScenario   || null
+        const projectedDelta    = args.projectedDelta    || null
+        const sandboxProjected  = args.sandboxProjected  || null
+        const sandboxModelParams = args.sandboxModelParams || null
 
         const cachedOwn = this._lookupCachedOwnPricing(hub, dest)
         const cur = (cachedOwn && cachedOwn.prices) || {}
@@ -13403,6 +14896,33 @@ class RouteAssistantPanel {
                 } else {
                     RouteAssistantToast.warn(msg)
                 }
+            }
+
+            // Slice 3b — back-test log on Tier 3 apply. Only fires when the
+            // modal was launched from the ORS Sandbox (sandboxProjected is
+            // populated only on that path; manual row-context-menu applies
+            // have no projection to compare against). Real writes only
+            // ("verified"/"posted") — dry-run is skipped because the
+            // back-fill loop would otherwise associate the projected
+            // share with a marketShare snapshot whose prices never
+            // actually changed, corrupting slice 3c's bias/RMSE metric.
+            if (sandboxProjected
+                && (result.status === "verified" || result.status === "posted")
+                && typeof RouteAssistantSandboxBacktestStore !== "undefined") {
+                try {
+                    RouteAssistantSandboxBacktestStore.log(hub, dest, {
+                        ts:          Date.now(),
+                        trigger:     "tier3-apply",
+                        scenario:    sandboxScenario,
+                        modelParams: sandboxModelParams,
+                        projected:   {
+                            share:          sandboxProjected.share,
+                            paxPerWeek:     sandboxProjected.paxPerWeek,
+                            revenuePerWeek: sandboxProjected.revenuePerWeek,
+                            profitPerWeek:  sandboxProjected.profitPerWeek
+                        }
+                    }).catch((e) => console.warn("[AES sandboxBacktest] log on tier3-apply failed", e))
+                } catch (e) { console.warn("[AES sandboxBacktest] log on tier3-apply threw", e) }
             }
         }
 
@@ -15126,6 +16646,29 @@ function _initialBadge(name) {
     span.style.cssText = "width:32px;height:32px;display:flex;align-items:center;justify-content:center;"
         + "color:#0f172a;font-weight:700;font-size:14px;"
         + "background:hsl(" + hue + ", 60%, 70%);"
+    return span
+}
+
+/**
+ * "No logo available" placeholder — a small dashed box with a centered
+ * × glyph, sized to slot into either the alliance (22×22) or the
+ * enterprise-banner area (24×22 default) of `_buildCarrierRow`. Mirrors
+ * the AS native airport-overview behavior of leaving missing logo cells
+ * visually empty, while still occupying the grid slot so rows stay
+ * aligned column-to-column.
+ */
+function _logoPlaceholder(opts) {
+    opts = opts || {}
+    const w = opts.width  || 22
+    const h = opts.height || 22
+    const fontPx = Math.max(10, Math.min(14, Math.floor(h * 0.7)))
+    const span = document.createElement("span")
+    span.textContent = "✕"   // ✕
+    span.title = "no logo"
+    span.style.cssText = "display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;"
+        + "width:" + w + "px;height:" + h + "px;"
+        + "border:1px dashed #4b5563;border-radius:2px;background:transparent;"
+        + "color:#6b7280;font-size:" + fontPx + "px;line-height:1;font-weight:600;"
     return span
 }
 

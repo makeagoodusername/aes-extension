@@ -96,6 +96,7 @@ class RouteAssistantWaveOverlay {
             validation: [], routes: [], flights: [], warnings: [],
             placements: [], unplaced: [], shortfall: {}, skipped: [],
             connections: [],
+            forcedDests: [],
             preset: preset || null
         }
         if (!preset) {
@@ -122,10 +123,13 @@ class RouteAssistantWaveOverlay {
         if (out.validation.length) return out
         if (!routes.length) return out
 
-        const assignment = builder.assignRoutes(routes)
-        out.placements = assignment.placements
-        out.unplaced   = assignment.unplaced
-        out.shortfall  = assignment.shortfall
+        // Slice E — pass user overrides into the assignment so dragged
+        // routes land on their picked wave even if it's bucket-saturated.
+        const assignment = builder.assignRoutes(routes, {overrides: c.overrides})
+        out.placements   = assignment.placements
+        out.unplaced     = assignment.unplaced
+        out.shortfall    = assignment.shortfall
+        out.forcedDests  = assignment.forcedDests || []
 
         const evaluation = builder.evaluateFlights(assignment.placements)
         out.flights  = evaluation.flights
@@ -214,11 +218,44 @@ class RouteAssistantWaveOverlay {
             const lane = RouteAssistantWaveOverlay._renderLane(
                 wave, flightsByWave.get(wave.id) || [], build, {
                     cropMin, cropMax, startMin, totalMin,
-                    onFlightClick: o.onFlightClick,
-                    hubIata: o.hubIata
+                    onFlightClick:   o.onFlightClick,
+                    hubIata:         o.hubIata,
+                    // Slice D — editor mode. When `onEnhanceLabel` is
+                    // supplied, the lane's label column is handed to the
+                    // wave-editor for spinner / time-input / delete UI.
+                    // Read-only callers (other panel modes, eventual
+                    // dashboard preview) pass nothing → static label.
+                    onEnhanceLabel:  o.onEnhanceLabel,
+                    preset:          preset,
+                    // Slice E — drop target + forced-bar release wiring
+                    // travel down to the lane through ctx.
+                    onPlace:         o.onPlace,
+                    onReleaseForced: o.onReleaseForced
                 }
             )
             host.append(lane)
+        }
+
+        // Slice D — "+ Add wave" footer. Visible only in editor mode
+        // (i.e. when the panel passed an `onAddWave` callback). Sits
+        // below the swim lanes; clicking it appends a wave to the
+        // active preset and re-renders.
+        if (typeof o.onAddWave === "function") {
+            const addRow = document.createElement("div")
+            addRow.style.cssText = "margin-top:4px;display:flex;justify-content:flex-start;"
+            const addBtn = document.createElement("button")
+            addBtn.type = "button"
+            addBtn.textContent = "+ Add wave"
+            addBtn.title = "Append a new wave to this preset (staggered ~4h after the last)."
+            addBtn.style.cssText = "background:#1f2937;color:#cbd5e1;"
+                + "border:1px dashed #475569;border-radius:3px;padding:4px 12px;"
+                + "font-size:11px;cursor:pointer;"
+            addBtn.addEventListener("click", (e) => {
+                e.preventDefault()
+                o.onAddWave()
+            })
+            addRow.append(addBtn)
+            host.append(addRow)
         }
 
         // ----- Slice 2 connection-graph SVG overlay -----
@@ -256,24 +293,72 @@ class RouteAssistantWaveOverlay {
         }
 
         // ----- Unplaced strip -----
+        // Slice E — chips are now draggable. Drop on any wave lane to
+        // force-place a route there (override stored per (hub, preset)).
+        // The "Auto-fill" button bumps the haul-bucket on the first wave
+        // with capacity headroom for every unplaced route in one click.
         if (build.unplaced && build.unplaced.length) {
             const ubox = document.createElement("div")
             ubox.style.cssText = "margin-top:8px;padding:6px 8px;"
                 + "background:rgba(107,114,128,0.10);border:1px solid #374151;"
                 + "border-radius:4px;font-size:11px;color:#cbd5e1;"
+            const headRow = document.createElement("div")
+            headRow.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:4px;"
             const h = document.createElement("strong")
             h.textContent = "Unplaced (" + build.unplaced.length + ")"
-            h.style.cssText = "color:#cbd5e1;display:block;margin-bottom:4px;"
-            ubox.append(h)
+            h.style.cssText = "color:#cbd5e1;flex:1;"
+            headRow.append(h)
+            const draggable = typeof o.onPlace === "function"
+            if (draggable) {
+                const hint = document.createElement("span")
+                hint.textContent = "drag onto a wave →"
+                hint.style.cssText = "color:#6b7280;font-size:10px;font-style:italic;"
+                headRow.append(hint)
+                if (typeof o.onAutoFill === "function") {
+                    const auto = document.createElement("button")
+                    auto.type = "button"
+                    auto.textContent = "Auto-fill"
+                    auto.title = "Bump each wave's S/M/L capacity until every unplaced route fits."
+                    auto.style.cssText = "background:#1e40af;color:#dbeafe;"
+                        + "border:1px solid #3b82f6;border-radius:3px;"
+                        + "padding:2px 8px;font-size:10px;cursor:pointer;"
+                    auto.addEventListener("click", (e) => { e.preventDefault(); o.onAutoFill() })
+                    headRow.append(auto)
+                }
+            }
+            ubox.append(headRow)
             const chips = document.createElement("div")
             chips.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;"
             for (const r of build.unplaced) {
                 const chip = document.createElement("span")
                 chip.style.cssText = "padding:2px 6px;background:#374151;border-radius:3px;"
                     + "font-family:monospace;font-size:10px;color:#cbd5e1;"
+                    + (draggable ? "cursor:grab;" : "")
                 chip.textContent = r.destination + " " + r.distanceNm + "nm"
-                chip.title = "No wave with matching " + (ScheduleFactors.bucketize(r.distanceNm,
-                    preset.factors && preset.factors.rangeBuckets) || "?") + " capacity"
+                chip.title = draggable
+                    ? "Drag onto a wave to place. (No "
+                        + (ScheduleFactors.bucketize(r.distanceNm,
+                            preset.factors && preset.factors.rangeBuckets) || "?")
+                        + " capacity in any wave currently.)"
+                    : "No wave with matching "
+                        + (ScheduleFactors.bucketize(r.distanceNm,
+                            preset.factors && preset.factors.rangeBuckets) || "?")
+                        + " capacity"
+                if (draggable) {
+                    chip.draggable = true
+                    chip.dataset.dest = r.destination
+                    chip.addEventListener("dragstart", (e) => {
+                        chip.style.cursor = "grabbing"
+                        chip.style.opacity = "0.5"
+                        e.dataTransfer.effectAllowed = "move"
+                        e.dataTransfer.setData("text/plain",
+                            "aes-wave-route:" + r.destination)
+                    })
+                    chip.addEventListener("dragend", () => {
+                        chip.style.cursor = "grab"
+                        chip.style.opacity = "1"
+                    })
+                }
                 chips.append(chip)
             }
             ubox.append(chips)
@@ -306,25 +391,57 @@ class RouteAssistantWaveOverlay {
         lane.style.cssText = "display:flex;align-items:stretch;margin-bottom:3px;"
             + "border:1px solid #2a3444;border-radius:3px;background:#0f1623;"
 
-        // Wave label (fixed-width left column)
+        // Wave label (fixed-width left column). Slice D: when
+        // `ctx.onEnhanceLabel` is supplied, hand the label element to the
+        // editor so spinners / time inputs replace the static text.
+        // Read-only callers fall through to the original markup.
         const label = document.createElement("div")
-        label.style.cssText = "width:140px;flex-shrink:0;padding:6px 8px;"
+        label.style.cssText = "width:160px;flex-shrink:0;padding:6px 8px;"
             + "border-right:1px solid #2a3444;background:#111827;color:#cbd5e1;font-size:11px;"
         const comp = wave.composition || {}
         const compStr = [comp.shortHaul || 0, comp.mediumHaul || 0, comp.longHaul || 0].join("/")
-        label.innerHTML = "<strong>" + escapeHtml(wave.label || "Wave") + "</strong>"
-            + "<br><span style='color:#6b7280;font-size:9px;font-family:monospace;'>"
-            + compStr + " S/M/L</span>"
-            + "<br><span style='color:#6b7280;font-size:9px;'>"
-            + "arr " + escapeHtml(wave.arrivalWindow.start) + "–" + escapeHtml(wave.arrivalWindow.end)
-            + "<br>dep " + escapeHtml(wave.departureWindow.start) + "–" + escapeHtml(wave.departureWindow.end)
-            + "</span>"
+        if (typeof ctx.onEnhanceLabel === "function") {
+            ctx.onEnhanceLabel(label, wave, ctx.preset)
+        } else {
+            label.innerHTML = "<strong>" + escapeHtml(wave.label || "Wave") + "</strong>"
+                + "<br><span style='color:#6b7280;font-size:9px;font-family:monospace;'>"
+                + compStr + " S/M/L</span>"
+                + "<br><span style='color:#6b7280;font-size:9px;'>"
+                + "arr " + escapeHtml(wave.arrivalWindow.start) + "–" + escapeHtml(wave.arrivalWindow.end)
+                + "<br>dep " + escapeHtml(wave.departureWindow.start) + "–" + escapeHtml(wave.departureWindow.end)
+                + "</span>"
+        }
 
         // Flight strip (relative-positioned canvas for absolute children)
         const strip = document.createElement("div")
         strip.style.cssText = "position:relative;flex:1;height:48px;"
             + "background-image:linear-gradient(to right, #1a2233 1px, transparent 1px);"
             + "background-size:" + (100 / Math.max(1, ctx.cropMax - ctx.cropMin)) + "% 100%;"
+
+        // Slice E — drop target for dragged Unplaced chips. The
+        // wave-overlay's caller wires `onPlace(destIata, waveId)` to
+        // persist the override + re-render.
+        if (typeof ctx.onPlace === "function") {
+            strip.addEventListener("dragover", (e) => {
+                e.preventDefault()
+                e.dataTransfer.dropEffect = "move"
+                strip.style.outline = "2px dashed #60a5fa"
+                strip.style.outlineOffset = "-2px"
+            })
+            strip.addEventListener("dragleave", () => {
+                strip.style.outline = ""
+                strip.style.outlineOffset = ""
+            })
+            strip.addEventListener("drop", (e) => {
+                e.preventDefault()
+                strip.style.outline = ""
+                strip.style.outlineOffset = ""
+                const data = e.dataTransfer.getData("text/plain") || ""
+                const m = data.match(/^aes-wave-route:(.+)$/)
+                if (!m) return
+                ctx.onPlace(m[1], wave.id)
+            })
+        }
 
         // Wave window bands (subtle shaded backgrounds for arr+dep windows)
         const arrStart = ScheduleFactors.parseHHMM(wave.arrivalWindow.start)
@@ -373,34 +490,63 @@ class RouteAssistantWaveOverlay {
                 alignItems:   "center"
             })
             const peer = isOut ? f.destination : f.origin
-            bar.textContent = peer
+            // Slice E — surface forced placements with a 📌 prefix in
+            // both the bar text and the tooltip so the user can spot
+            // overridden routes at a glance and click → release.
+            bar.textContent = (f.forced ? "📌" : "") + peer
             bar.title = (isOut ? "OUT " : "IN  ")
                 + f.origin + "→" + f.destination
                 + "  " + f.depTimeLocal
                 + "  " + f.distanceNm + "nm"
                 + (f.aircraftType ? "  " + f.aircraftType : "")
                 + (f.rangeBucket ? "  [" + f.rangeBucket + "]" : "")
+                + (f.forced ? "  · FORCED (manual placement). Click → release override."
+                            : "")
             // Range bucket — colored left edge: short=lighter, long=darker
             if (f.rangeBucket === "longHaul")        bar.style.borderLeft = "3px solid #1e40af"
             else if (f.rangeBucket === "mediumHaul") bar.style.borderLeft = "3px solid #2563eb"
             else if (f.rangeBucket === "shortHaul")  bar.style.borderLeft = "3px solid #60a5fa"
+            // Slice E — dashed outline marks forced placements.
+            if (f.forced) {
+                bar.style.border = "1.5px dashed #fbbf24"
+                bar.style.background = isOut
+                    ? "linear-gradient(45deg, #3b82f6 75%, #2563eb 75%)"
+                    : "linear-gradient(45deg, #10b981 75%, #059669 75%)"
+            }
 
             if (ctx.onFlightClick) {
                 bar.addEventListener("click", (e) => {
                     e.preventDefault()
                     e.stopPropagation()
-                    ctx.onFlightClick(f, ctx.hubIata)
+                    // Slice E — click on a forced bar releases the
+                    // override (returns the route to the bucket-driven
+                    // assignment). Non-forced bars open the AS
+                    // scheduling page as before.
+                    if (f.forced && typeof ctx.onReleaseForced === "function") {
+                        ctx.onReleaseForced(isOut ? f.destination : f.origin)
+                    } else {
+                        ctx.onFlightClick(f, ctx.hubIata)
+                    }
                 })
             }
             strip.append(bar)
         }
 
-        // Empty-strip hint
+        // Empty-strip hint. Slice D: when this wave has zero capacity
+        // (composition 0/0/0) point the user at the spinners instead of
+        // the unhelpful "no flights placed" — that's the most common
+        // first-run reason a wave is empty, and the fix is one click left.
         if (!flights.length) {
             const hint = document.createElement("div")
             hint.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;"
                 + "justify-content:center;color:#4b5563;font-size:10px;font-style:italic;"
-            hint.textContent = "no flights placed in this wave"
+            const totalCap = (comp.shortHaul || 0) + (comp.mediumHaul || 0) + (comp.longHaul || 0)
+            if (totalCap === 0) {
+                hint.textContent = "← set S / M / L capacity to place flights here"
+                hint.style.color = "#fbbf24"
+            } else {
+                hint.textContent = "no flights placed in this wave"
+            }
             strip.append(hint)
         }
 

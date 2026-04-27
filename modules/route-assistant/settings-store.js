@@ -57,16 +57,55 @@ class RouteAssistantSettings {
             // createdAt}. Selecting one writes the snapshot back into
             // settings (deep-merge for filters.statuses) and re-renders.
             savedViews: [],
+            // Q7 strategy presets — named bookmarks of the FULL RA
+            // configuration (scoring weights, filters, economics, ORS,
+            // service profiles, columnPrefs, etc). Mirror of savedViews
+            // shape, but the snapshot scope is the whole settings tree
+            // minus per-route caches and self-references. Each entry:
+            // {id, name, createdAt, snapshot}. Apply via the existing
+            // import-diff modal so the user previews changes first.
+            strategyPresets: [],
+            // U7 + U3 — column visibility chooser + collapsible groups.
+            //   hiddenFields:    Array<COLUMNS[].field> hidden in the
+            //                    table. "score" + "destIata" are frozen
+            //                    sticky-left and filtered out of any
+            //                    incoming list defensively (see
+            //                    _mergeColumnPrefs). Empty = all visible.
+            //   collapsedGroups: Array<COLUMN_GROUPS key> rendered as a
+            //                    single "…" placeholder cell with a
+            //                    chevron group-header. Empty = all
+            //                    expanded — DO NOT seed with all keys.
+            columnPrefs: {
+                hiddenFields:    [],
+                collapsedGroups: []
+            },
             // Tabbed view selector (Pax / Cargo / All). Default "all"
             // preserves the existing combined table for users without a
             // strong mode preference. Tab switches column visibility
             // and the scoring-field set; the underlying row data is
             // shared across all three.
             viewMode: "all",
+            // Restructure slice A — single-source-of-truth for which of the
+            // four panel render branches is active (table / waves / sandbox
+            // / heatmap). Replaces the three separate booleans below
+            // (`waveView`, `orsSandbox.enabled`, `heatmap.enabled`) which
+            // were hidden behind icon-only toggles in the header — easy to
+            // hit accidentally, hard to discover the way back. Slice B
+            // exposes this as a pill bar; the legacy booleans stay for one
+            // version so unmigrated saves still light up the right view.
+            panelMode: "table",
+            // Restructure slice F — master-detail inspector pane. When ON,
+            // the body splits horizontally with a 360px right pane that
+            // shows the selected route's full record (score breakdown,
+            // fleet fit, override, note, quick actions). Persists so the
+            // user doesn't have to re-open it each session.
+            inspectorOpen: false,
             // H slice 1 — Wave View toggle. When ON, _renderRows hands
             // the sorted scoredRows to RouteAssistantWaveOverlay which
             // replaces the table with a Gantt-style timeline of the
             // recommended schedule for the top-N rows.
+            // Deprecated by `panelMode` in slice A; kept as a one-time
+            // migration source.
             waveView: false,
             waveOverlay: {
                 lastPresetId:    null,   // user's last picked SchedulePresets id
@@ -273,7 +312,15 @@ class RouteAssistantSettings {
                 partnersMaxAgeDays:        30,     // less generous than meta — agreements move
                 lastPartnersSyncAt:        null,
                 showInterliningGlyph:      true,   // ⇄ next to IL partners in the popover
-                showAllianceGlyph:         false   // ✦ for alliance partners (off by default)
+                showAllianceGlyph:         false,  // ✦ for alliance partners (off by default)
+                // Cmp popover logo strip — alliance + enterprise banner
+                // images sourced directly from /app/logo/<id>/enterprise-s.png
+                // (enterprise) and the airport-overview Stations table
+                // (alliance ids). When showAllianceLogos is off the
+                // alliance slot is suppressed and the banner column takes
+                // the row's full width.
+                showAllianceLogos:         true,
+                airportOverviewMaxAgeDays: 7       // alliance membership churns slowly
             },
             marketAnalysis: {
                 // Tier 2a — markets-page scraper for /app/com/markets/<HUB><DEST>.
@@ -420,9 +467,15 @@ class RouteAssistantSettings {
             savedViews:            Array.isArray(block.savedViews)
                                        ? block.savedViews.filter(v => v && typeof v === "object" && typeof v.id === "string" && typeof v.name === "string")
                                        : defaults.savedViews,
+            strategyPresets:       Array.isArray(block.strategyPresets)
+                                       ? block.strategyPresets.filter(p => p && typeof p === "object" && typeof p.id === "string" && typeof p.name === "string" && p.snapshot && typeof p.snapshot === "object")
+                                       : defaults.strategyPresets,
+            columnPrefs:           RouteAssistantSettings._mergeColumnPrefs(defaults.columnPrefs, block.columnPrefs),
             viewMode:              (block.viewMode === "pax" || block.viewMode === "cargo" || block.viewMode === "all")
                                        ? block.viewMode
                                        : defaults.viewMode,
+            panelMode:             RouteAssistantSettings._resolvePanelMode(block, defaults.panelMode),
+            inspectorOpen:         !!block.inspectorOpen,
             waveView:              !!block.waveView,
             waveOverlay:           Object.assign({}, defaults.waveOverlay,   block.waveOverlay   || {}),
             heatmap:               Object.assign({}, defaults.heatmap,       block.heatmap       || {}),
@@ -449,6 +502,29 @@ class RouteAssistantSettings {
             await chrome.storage.local.set({settings: settings})
         }
         return merged
+    }
+
+    /**
+     * Restructure slice A — resolve the active panel mode from either the
+     * new `panelMode` string or the legacy boolean trio. Priority:
+     *   1. explicit `panelMode` string (already migrated)
+     *   2. legacy `waveView` flag (Wave View was in mutex group, so it wins)
+     *   3. legacy `orsSandbox.enabled`
+     *   4. legacy `heatmap.enabled`
+     *   5. fall back to default ("table")
+     *
+     * The legacy booleans stay in storage for one release so a downgrade
+     * doesn't strand the user in an unrecognised mode.
+     */
+    static _resolvePanelMode(block, fallback) {
+        const VALID = {table: 1, waves: 1, sandbox: 1, heatmap: 1}
+        if (block && typeof block.panelMode === "string" && VALID[block.panelMode]) {
+            return block.panelMode
+        }
+        if (block && block.waveView) return "waves"
+        if (block && block.orsSandbox && block.orsSandbox.enabled) return "sandbox"
+        if (block && block.heatmap && block.heatmap.enabled) return "heatmap"
+        return fallback || "table"
     }
 
     /**
@@ -610,6 +686,29 @@ class RouteAssistantSettings {
             out._legacyLastScenario = Object.assign({}, b.lastScenario)
         }
         return out
+    }
+
+    /**
+     * U7 + U3 — coerce columnPrefs to the documented shape and drop
+     * frozen-column entries from `hiddenFields`. The chooser modal in
+     * panel.js renders `score` and `destIata` as disabled-checked but
+     * defensive layering keeps a malformed save from removing the
+     * sticky-left identity columns. `collapsedGroups` keys are NOT
+     * validated here against COLUMN_GROUPS — the panel filters at
+     * render time so a future group rename gets a graceful fallback
+     * (the unknown key is simply ignored, no rows lost).
+     */
+    static _mergeColumnPrefs(defaults, block) {
+        const def = defaults || {hiddenFields: [], collapsedGroups: []}
+        const b = block || {}
+        const FROZEN = {score: 1, destIata: 1}
+        const hidden = Array.isArray(b.hiddenFields)
+            ? b.hiddenFields.filter(f => typeof f === "string" && !FROZEN[f])
+            : (def.hiddenFields || []).slice()
+        const collapsed = Array.isArray(b.collapsedGroups)
+            ? b.collapsedGroups.filter(g => typeof g === "string")
+            : (def.collapsedGroups || []).slice()
+        return {hiddenFields: hidden, collapsedGroups: collapsed}
     }
 
     /**
