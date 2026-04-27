@@ -75,6 +75,43 @@
             color: var(--aes-slate);
             border: var(--aes-bw-1) dashed var(--aes-paper-rule);
         }
+        .aes-settings {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: var(--aes-sp-2) var(--aes-sp-4);
+            align-items: center;
+            padding: var(--aes-sp-3);
+            border: var(--aes-bw-2) solid var(--aes-oxide);
+            background: var(--aes-bone);
+            margin-bottom: var(--aes-sp-5);
+        }
+        .aes-settings__row-label {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-small);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            color: var(--aes-oxide);
+        }
+        .aes-settings__row-value {
+            display: flex;
+            align-items: center;
+            gap: var(--aes-sp-3);
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-body);
+        }
+        .aes-settings__hint {
+            color: var(--aes-slate);
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            grid-column: 1 / -1;
+            margin-top: var(--aes-sp-1);
+        }
+        .aes-settings input[type="checkbox"],
+        .aes-settings input[type="radio"] { accent-color: var(--aes-rust); margin-right: var(--aes-sp-1); }
+        .aes-settings label { cursor: pointer; }
     </style>
 </head>
 <body>
@@ -86,6 +123,25 @@
         <p class="aes-page__subtitle">AirlineSim Enhancement Suite — local snapshot inspector</p>
 
         <hr class="aes-double-rule" style="margin: 0 0 var(--aes-sp-4);">
+
+        <section class="aes-settings" aria-label="AES site-skin settings">
+            <span class="aes-settings__row-label">Brutalist Skin</span>
+            <div class="aes-settings__row-value">
+                <label><input type="checkbox" id="aes-skin-enabled"> Apply brutalist styling sitewide</label>
+            </div>
+
+            <span class="aes-settings__row-label">Density</span>
+            <div class="aes-settings__row-value">
+                <label><input type="radio" name="aes-skin-density" value="comfortable"> Comfortable</label>
+                <label><input type="radio" name="aes-skin-density" value="compact"> Compact</label>
+            </div>
+
+            <p class="aes-settings__hint">
+                Skin and density apply to AirlineSim pages. Toggle takes effect immediately —
+                no reload required. Press <code>Shift+D</code> on any AS page to cycle density,
+                <code>?</code> for the keyboard-shortcut list.
+            </p>
+        </section>
 
         <div class="aes-filter-row" id="aes-div-topSelect"></div>
 

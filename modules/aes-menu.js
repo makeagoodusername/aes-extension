@@ -73,6 +73,31 @@ class AESMenu {
         ].join(";")
 
         const content = [{
+            label: "Skin",
+            isHeader: true
+        },{
+            label: "Brutalist Skin",
+            stateLabel: () => window.AESSiteSkin?.isEnabled() ? "ON" : "OFF",
+            onClick: () => {
+                if (!window.AESSiteSkin) return
+                window.AESSiteSkin.setEnabled(!window.AESSiteSkin.isEnabled())
+            }
+        },{
+            label: "Density",
+            stateLabel: () => (window.AESSiteSkin?.getDensity() || "comfortable") === "compact" ? "COMPACT" : "COMFORT",
+            onClick: () => {
+                if (!window.AESSiteSkin) return
+                window.AESSiteSkin.cycleDensity()
+            }
+        },{
+            label: "Shortcuts",
+            icon: { className: "fa-keyboard-o" },
+            onClick: () => {
+                if (window.AESSiteSkin?.showShortcuts) window.AESSiteSkin.showShortcuts()
+            }
+        },{
+            isDivider: true
+        },{
             label: "Community",
             isHeader: true
         },{
@@ -116,6 +141,25 @@ class AESMenu {
 
         for (const item of content) {
             menu.append(this.#createMenuItem(item))
+        }
+
+        // Re-stamp the state badges on items that have a stateLabel() function
+        // whenever the storage values change. The bootstrap script in
+        // modules/site-skin/bootstrap.js drives the storage updates; we just
+        // listen and refresh the labels in place so the menu stays accurate
+        // without a full re-render.
+        if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
+            const skin = (typeof window !== "undefined" && window.AESSiteSkin) || {}
+            const skinKey    = skin.SKIN_KEY    || "aes_skin_enabled"
+            const densityKey = skin.DENSITY_KEY || "aes_skin_density"
+            chrome.storage.onChanged.addListener((changes, area) => {
+                if (area !== "sync") return
+                if (!changes[skinKey] && !changes[densityKey]) return
+                menu.querySelectorAll("[data-aes-state]").forEach(badge => {
+                    const fn = badge.__aesStateFn
+                    if (typeof fn === "function") badge.textContent = fn()
+                })
+            })
         }
 
         return menu
@@ -201,6 +245,14 @@ class AESMenu {
                 inner.setAttribute("target", "_blank")
                 inner.setAttribute("rel", "noreferrer noopener")
             }
+        } else if (content.onClick) {
+            inner = document.createElement("a")
+            inner.setAttribute("role", "button")
+            inner.setAttribute("tabindex", "0")
+            inner.addEventListener("click", (e) => {
+                e.preventDefault()
+                content.onClick(e)
+            })
         } else {
             inner = document.createElement("a")
         }
@@ -220,7 +272,26 @@ class AESMenu {
         if (icon) inner.append(icon)
         const labelEl = document.createElement("span")
         labelEl.textContent = content.label
+        labelEl.style.flex = "1 1 auto"
         inner.append(labelEl)
+
+        // Live state badge — e.g. "ON" / "OFF" / "COMPACT". The factory
+        // attaches the function to the badge so the menu's storage-change
+        // listener can re-invoke it without remembering the binding.
+        if (typeof content.stateLabel === "function") {
+            const badge = document.createElement("span")
+            badge.dataset.aesState = "1"
+            badge.style.cssText = [
+                "font-family:var(--aes-font-mono)",
+                "font-size:var(--aes-fs-micro)",
+                "letter-spacing:var(--aes-tracking-mono)",
+                "color:var(--aes-rust)",
+                "text-transform:uppercase"
+            ].join(";")
+            badge.textContent = content.stateLabel()
+            badge.__aesStateFn = content.stateLabel
+            inner.append(badge)
+        }
 
         menuItem.style.listStyle = "none"
         menuItem.append(inner)
