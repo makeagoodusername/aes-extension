@@ -112,6 +112,11 @@ class RouteAssistantPanel {
         this._orsSandboxRoute  = null
         this._orsSandboxResult = null
         this._orsSandboxRaf    = 0
+        // Slice 4b — pinned scenario snapshot (a frozen `project()` result)
+        // for A/B comparison against the live projection. Cleared when the
+        // user picks a different route so we never render a pin from a
+        // stale route on top of a fresh one.
+        this._orsSandboxPinnedResult = null
 
         // Active prompts — alert rules + per-mount fired set.
         // The fired set keeps the same rule+route from spamming toasts on
@@ -139,6 +144,17 @@ class RouteAssistantPanel {
         this._rowPreviewEl    = null
         this._rowPreviewTimer = 0
         this._rowPreviewLeaveTimer = 0
+
+        // Silent auto-pricing loop state. `_silentAutoRunning` guards
+        // re-entry when a slow tick (bulk apply pass) outlives the
+        // interval. `_silentAutoConsecutiveErrors` is the silent-loop's
+        // own auto-mute trigger; it's separate from the applier's
+        // 429/503 breaker so a non-rate-limit failure streak (auth,
+        // form-format change) still trips a pause.
+        this._silentAutoTimer    = null
+        this._silentAutoRunning  = false
+        this._silentAutoConsecutiveErrors = 0
+        this._silentAutoStartGraceTimer   = null
     }
 
     async mount() {
@@ -159,6 +175,20 @@ class RouteAssistantPanel {
         this._attachHubShortcuts()
         await this.refresh()
         this._maybeAutoSnapshot()
+        this._startSilentAutoLoopIfEnabled()
+        // Tier 3.4 — populate apply-status badge cache once so the route
+        // table gets badges on first paint. Fire-and-forget; missing
+        // cache means badges show up on next refresh.
+        this._refreshApplyBadgeMap().catch(() => {})
+        // Strategy-driven applies route through the same pricing /
+        // service-profile loggers we read; the live bus event lets the
+        // dest-column badge light up < 1s after a strategy apply
+        // instead of waiting for the next manual refresh / silent-auto tick.
+        this._attachStrategyApplyBusListener()
+        // Track B — refresh wave-overlay when an external surface
+        // (AFP wave-strip, etc.) edits the active SchedulePresets. Same-
+        // page only; cross-page edits arrive via chrome.storage.onChanged.
+        this._attachWavePresetBusListener()
     }
 
     /**
@@ -200,6 +230,9 @@ class RouteAssistantPanel {
         this._closeServicePopover()
         this._closeCarrierPopover()
         this._closeRouteNotePopover()
+        this._stopSilentAutoLoop()
+        this._detachStrategyApplyBusListener()
+        this._detachWavePresetBusListener()
         if (this._overrideEditor && this._overrideEditor.parentNode) {
             this._overrideEditor.parentNode.removeChild(this._overrideEditor)
             this._overrideEditor = null
@@ -776,6 +809,8 @@ class RouteAssistantPanel {
             mkItem("Edit service config…",    () => this._openServiceConfigPopover(row, anchorEl)),
             mkItem(row.routeNoteText ? "Edit note…" : "Add note…",
                                               () => this._openRouteNotePopover(row, anchorEl)),
+            mkItem("Interlining…",
+                                              () => this._openInterlinePopover(row, anchorEl)),
             mkSep()
         )
 
@@ -869,6 +904,7 @@ class RouteAssistantPanel {
         if (!row || !row.destIata) return
         this._orsSandboxRoute  = {hub: this.hubIata, dest: row.destIata, _row: row}
         this._orsSandboxResult = null
+        this._orsSandboxPinnedResult = null
         const cfg = Object.assign({}, this.settings.orsSandbox || {})
         cfg.enabled = true
         cfg.lastRouteIata = row.destIata
@@ -1808,6 +1844,7 @@ class RouteAssistantPanel {
         await this._setPanelMode(next ? "sandbox" : "table")
         // Invalidate cached projection so toggling re-runs against current cache.
         this._orsSandboxResult = null
+        this._orsSandboxPinnedResult = null
         this._render()
     }
 
@@ -2761,6 +2798,7 @@ class RouteAssistantPanel {
         // Invalidate per-view caches so the new mode renders fresh.
         this._waveBuild = null
         this._orsSandboxResult = null
+        this._orsSandboxPinnedResult = null
         this._render()
     }
 
@@ -2813,24 +2851,40 @@ class RouteAssistantPanel {
             toggle: () => this._toggleQuickFilter("watchlistOnly")
         }))
 
-        // Status chips. Active when the status is INCLUDED (filter shows it).
+        // Status chips split into two orthogonal axes:
+        //   • Operating: NEW (do I fly this route?) — keyed under
+        //     filters.statuses.NEW for back-compat with existing settings.
+        //   • Health: OK / UNDER / OVER / OOR — applies to every route
+        //     regardless of whether it's flown.
         const statuses = f.statuses || {}
-        const STATUS_CHIPS = [
-            ["NEW",   "#1e40af", "Show NEW (untouched candidates)"],
-            ["OK",    "#166534", "Show OK (frequency in line with demand)"],
-            ["UNDER", "#92400e", "Show UNDER (room to scale up)"],
-            ["OVER",  "#7c2d12", "Show OVER (possibly over-deployed)"],
+        const OP_CHIPS = [
+            ["NEW", "#1e40af", "Show routes you don't fly yet"]
+        ]
+        const HEALTH_CHIPS = [
+            ["OK",    "#166534", "Show OK (in line with real-world frequency)"],
+            ["UNDER", "#92400e", "Show UNDER (high demand, you fly < 1/10 of real-world)"],
+            ["OVER",  "#7c2d12", "Show OVER (you fly > 1/5 of real-world)"],
             ["OOR",   "#7f1d1d", "Show OOR (out of selected aircraft's range)"]
         ]
-        for (const [key, tint, tip] of STATUS_CHIPS) {
-            wrap.append(mkChip({
-                label: key,
-                tip:   tip,
-                active: statuses[key] !== false,
-                tint:  tint,
-                toggle: () => this._toggleStatusChip(key)
-            }))
+        const appendChips = (chips) => {
+            for (const [key, tint, tip] of chips) {
+                wrap.append(mkChip({
+                    label: key,
+                    tip:   tip,
+                    active: statuses[key] !== false,
+                    tint:  tint,
+                    toggle: () => this._toggleStatusChip(key)
+                }))
+            }
         }
+        appendChips(OP_CHIPS)
+        // Faint inline divider between the two status groups so the user
+        // sees that NEW is on a different axis from OK / UNDER / OVER / OOR.
+        const axisSep = document.createElement("span")
+        axisSep.style.cssText = "color:#374151;margin:0 1px;"
+        axisSep.textContent = "·"
+        wrap.append(axisSep)
+        appendChips(HEALTH_CHIPS)
 
         // Spacer between status group and content-based filters.
         const sep = document.createElement("span")
@@ -2872,7 +2926,8 @@ class RouteAssistantPanel {
         // OR a status is hidden, so it doesn't add clutter to the default state.
         const anyContentFilter = !!f.watchlistOnly || !!f.lossMakers || !!f.hasOverride
             || !!f.hasNote || !!f.onlyChanged
-        const anyStatusHidden = STATUS_CHIPS.some(([k]) => statuses[k] === false)
+        const anyStatusHidden = ["NEW", "OK", "UNDER", "OVER", "OOR"]
+            .some(k => statuses[k] === false)
         if (anyContentFilter || anyStatusHidden) {
             const spacer = document.createElement("span")
             spacer.style.cssText = "flex:1;"
@@ -4798,7 +4853,11 @@ class RouteAssistantPanel {
         const hubKey = String(this.hubIata || "").toUpperCase()
         const wlSet = this._watchlist || new Set()
         return rows.filter(r => {
-            if (statuses[r.status] === false) return false
+            // Two-axis status gate: an unflown row must pass the NEW chip,
+            // and every row must pass its health chip (OK/UNDER/OVER/OOR).
+            // Both gates AND together — hide if either chip is off.
+            if (!r.operating && statuses.NEW === false) return false
+            if (r.health && statuses[r.health] === false) return false
             if (maxDist !== null && r.distanceKm !== null && r.distanceKm > maxDist) return false
             // Fleet-flyable filter: only meaningful when an aircraft is picked.
             // OOR rows (or rows where the spec couldn't be evaluated) are dropped.
@@ -4892,6 +4951,17 @@ class RouteAssistantPanel {
         // current mount keeps showing "since last visit" against its own
         // baseline even though storage now holds the new state.
         _writeDiffSnapshot(this.hubIata, this.server, this.scoredRows)
+
+        // Tier 3.4 — populate apply-status badges. The dest column emits
+        // empty placeholders (no `this` available inside the static
+        // COLUMNS render); paint them now using the cached map. If the
+        // map hasn't been built yet, kick off a refresh which will
+        // repaint when it lands.
+        if (this._applyBadgeMap) {
+            this._repaintApplyBadges()
+        } else {
+            this._refreshApplyBadgeMap().catch(() => {})
+        }
     }
 
     /**
@@ -4924,9 +4994,28 @@ class RouteAssistantPanel {
             ? String(wo.lastHub).toUpperCase()
             : this.hubIata
 
+        // F slice 4 — Draft awareness. Load the per-hub draft record so
+        // the header / banner can detect "this preset is the draft of X"
+        // and surface the promote / discard / save-as-variant actions.
+        let draftRec = null
+        if (typeof RouteAssistantWaveDraftStore !== "undefined") {
+            draftRec = await RouteAssistantWaveDraftStore.load(pickedHub)
+        }
+        const isDraft = !!(draftRec && preset && preset.id === draftRec.draftPresetId)
+        this._waveDraftRecord = draftRec
+        this._waveIsDraft = isDraft
+
         this.tableHost.append(
-            this._buildWaveHeader(preset, presets, topN, pickedHub, recentHubs)
+            this._buildWaveHeader(preset, presets, topN, pickedHub, recentHubs, {
+                draftRecord: draftRec, isDraft: isDraft
+            })
         )
+
+        if (isDraft && typeof RouteAssistantWaveDraftStore !== "undefined") {
+            const draftBanner = await this._renderWaveDraftBanner(
+                draftRec, presets, pickedHub)
+            if (draftBanner) this.tableHost.append(draftBanner)
+        }
 
         // Slice D — empty-state CTA. Was a dead-end "open the dashboard"
         // hint; now creates a starter preset directly via SchedulePresets.
@@ -5005,12 +5094,22 @@ class RouteAssistantPanel {
         const ovSig = Object.keys(overridesMap).sort()
             .map(k => k + "=" + overridesMap[k]).join(",")
 
+        // F slice 3 — optimizeMode supersedes the legacy `optimize` boolean.
+        // Backwards-compat: `optimize: true` is read as "connection".
+        const optimizeMode = wo.optimizeMode
+            || (wo.optimize ? "connection" : "greedy")
+        const useProfit = optimizeMode === "profit"
+        const useConnection = optimizeMode === "connection"
+
+        const buildFleetCtx = (typeof this._fleetContext === "function")
+            ? this._fleetContext() : null
+
         const buildSig = (preset.id || "?") + ":" + topN
             + ":" + (this.selectedSpec ? this.selectedSpec.typeId : "none")
             + ":" + (hubRoutes ? hubRoutes.length : 0)
             + ":" + pickedHub
             + ":" + ovSig
-            + ":" + (wo.optimize ? "opt" : "greedy")
+            + ":" + optimizeMode
         if (!this._waveBuild
             || this._waveBuild._sig !== buildSig
             || this._waveBuildHub !== pickedHub) {
@@ -5022,7 +5121,9 @@ class RouteAssistantPanel {
                 topN:              topN,
                 carrierClassifier: this._carrierClassifierForFlight(),
                 overrides:         overridesMap,
-                optimize:          !!wo.optimize
+                optimize:          useConnection,
+                mode:              useProfit ? "profit" : null,
+                fleetSpecs:        buildFleetCtx && buildFleetCtx.fleetSpecs || null
             })
             this._waveBuild._sig = buildSig
             this._waveBuildHub   = pickedHub
@@ -5146,6 +5247,1040 @@ class RouteAssistantPanel {
                 }
             }
         }, editorOpts, dndOpts))
+
+        // F slice 1 — Plan diagnostics card. Pure additive: when the
+        // module isn't loaded (older manifest), or the build has no
+        // flights, render nothing. Score badge in the header gets its
+        // value backfilled here so the header doesn't have to wait on
+        // the build.
+        if (typeof RouteAssistantWavePlanDiagnostics !== "undefined"
+                && this._waveBuild && Array.isArray(this._waveBuild.flights)) {
+            const fleetCtx = (typeof this._fleetContext === "function")
+                ? this._fleetContext() : null
+            const fleetCount = fleetCtx
+                ? (Array.isArray(fleetCtx.fleetSpecs) && fleetCtx.fleetSpecs.length
+                    ? fleetCtx.fleetSpecs.length : 1)
+                : 0
+            const diag = RouteAssistantWavePlanDiagnostics.scorePlan(
+                this._waveBuild, this.scoredRows, {
+                    hubIata:           pickedHub,
+                    selectedSpec:      this.selectedSpec,
+                    carrierClassifier: this._carrierClassifierForFlight(),
+                    fleetCount:        fleetCount
+                })
+            this._waveDiagnostics = diag
+
+            const diagHost = document.createElement("div")
+            this.tableHost.append(diagHost)
+            this._renderDiagnosticsCard(diagHost, diag, {hubIata: pickedHub})
+
+            const slot = this.tableHost.querySelector("[data-aes-plan-score]")
+            if (slot) {
+                const color = RouteAssistantWavePlanDiagnostics.colorForScore(diag.planScore)
+                slot.textContent = "Score " + diag.planScore + "/100 · " + diag.planGrade
+                slot.style.color = color
+                slot.style.borderColor = color + "55"
+                slot.style.background = color + "12"
+            }
+        }
+
+        // F slice 2 — Route-fit-against-plan workspace. Renders below
+        // the diagnostics card when sub-mode is "routes" — every scored
+        // row categorised + ranked + actionable. Pure additive; older
+        // manifest just hides the toggle and skips the panel.
+        if ((wo.subMode === "routes")
+                && typeof RouteAssistantWaveRouteFitter !== "undefined"
+                && this._waveBuild) {
+            const fitFleetCtx = (typeof this._fleetContext === "function")
+                ? this._fleetContext() : null
+            const fit = RouteAssistantWaveRouteFitter.rankRoutesByPlanFit(
+                this.scoredRows, this._waveBuild, {
+                    hubIata:      pickedHub,
+                    selectedSpec: this.selectedSpec,
+                    fleetSpecs:   fitFleetCtx ? fitFleetCtx.fleetSpecs : null,
+                    topN:         topN
+                })
+            this._waveRouteFit = fit
+            const fitHost = document.createElement("div")
+            this.tableHost.append(fitHost)
+            this._renderRouteFitterPanel(fitHost, fit, {
+                hubIata:  pickedHub,
+                presetId: preset.id,
+                preset:   preset
+            })
+        }
+    }
+
+    /**
+     * F slice 1 — Render the plan diagnostics card below the Gantt.
+     *
+     * Layout: a plan-level summary strip at the top (score · profit ·
+     * utilisation · demand · connections), then the per-wave table, then
+     * an unplaceable + warnings footer. Click the title bar to collapse;
+     * collapsed state persists via `settings.waveOverlay.diagnosticsCollapsed`.
+     *
+     * Pure DOM render — the scorer already produced everything in `diag`.
+     */
+    _renderDiagnosticsCard(host, diag, opts) {
+        if (!host || !diag) return
+        const wo = (this.settings && this.settings.waveOverlay) || {}
+        const collapsed = wo.diagnosticsCollapsed === true
+
+        const card = document.createElement("div")
+        card.style.cssText = "margin-top:10px;padding:0;"
+            + "background:rgba(15,22,35,0.55);border:1px solid #1f2937;"
+            + "border-radius:4px;color:#e5e7eb;font-size:11px;overflow:hidden;"
+
+        const title = document.createElement("div")
+        title.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 10px;"
+            + "background:rgba(31,41,55,0.5);cursor:pointer;user-select:none;"
+            + "border-bottom:1px solid #1f2937;"
+        const caret = document.createElement("span")
+        caret.textContent = collapsed ? "▸" : "▾"
+        caret.style.cssText = "color:#9ca3af;font-size:10px;width:10px;"
+        const label = document.createElement("strong")
+        label.textContent = "📊 Plan diagnostics"
+        label.style.cssText = "color:#e5e7eb;font-size:11px;flex:1;"
+        const scoreColor = RouteAssistantWavePlanDiagnostics.colorForScore(diag.planScore)
+        const titleScore = document.createElement("span")
+        titleScore.style.cssText = "padding:1px 6px;border-radius:8px;font-size:10px;"
+            + "color:" + scoreColor + ";border:1px solid " + scoreColor + "55;"
+            + "background:" + scoreColor + "12;font-weight:600;"
+        titleScore.textContent = diag.planScore + "/100 · " + diag.planGrade
+        title.append(caret, label, titleScore)
+
+        const body = document.createElement("div")
+        body.style.cssText = "display:" + (collapsed ? "none" : "block")
+            + ";padding:8px 10px;"
+
+        title.addEventListener("click", async () => {
+            const next = body.style.display !== "none"
+            body.style.display = next ? "none" : "block"
+            caret.textContent  = next ? "▸"    : "▾"
+            this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
+                {diagnosticsCollapsed: next})
+            try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+            catch (e) { /* non-fatal */ }
+        })
+        card.append(title)
+
+        const fmtMoney = (v) => {
+            if (!isFinite(v) || v === 0) return "—"
+            const abs = Math.abs(v)
+            const sign = v < 0 ? "-" : ""
+            if (abs >= 1e9) return sign + "$" + (abs / 1e9).toFixed(2) + "B"
+            if (abs >= 1e6) return sign + "$" + (abs / 1e6).toFixed(2) + "M"
+            if (abs >= 1e3) return sign + "$" + (abs / 1e3).toFixed(0) + "k"
+            return sign + "$" + abs.toFixed(0)
+        }
+
+        const strip = document.createElement("div")
+        strip.style.cssText = "display:flex;flex-wrap:wrap;gap:14px;align-items:center;"
+            + "padding-bottom:8px;border-bottom:1px solid #1f2937;margin-bottom:8px;"
+        const mkStat = (lbl, value, color) => {
+            const wrap = document.createElement("div")
+            wrap.style.cssText = "display:flex;flex-direction:column;gap:1px;"
+            const k = document.createElement("span")
+            k.textContent = lbl
+            k.style.cssText = "color:#6b7280;font-size:9px;text-transform:uppercase;letter-spacing:0.5px;"
+            const v = document.createElement("span")
+            v.textContent = value
+            v.style.cssText = "color:" + (color || "#cbd5e1") + ";font-size:13px;font-weight:600;"
+                + "font-family:var(--aes-font-mono,monospace);"
+            wrap.append(k, v)
+            return wrap
+        }
+        strip.append(mkStat("PROFIT/WK", fmtMoney(diag.profitPerWeek),
+            diag.profitPerWeek > 0 ? "#10b981" : "#9ca3af"))
+        strip.append(mkStat("UTILIZATION", diag.componentScores.utilization + "%",
+            diag.componentScores.utilization >= 70 ? "#10b981"
+            : diag.componentScores.utilization >= 40 ? "#fbbf24" : "#ef4444"))
+        strip.append(mkStat("DEMAND COV.", Math.round(diag.demandCoverage * 100) + "%", null))
+        const mix = diag.connectionMix || {own: 0, interline: 0, alliance: 0}
+        const connStat = mkStat("CONNECTIONS", String(diag.connectionCount || 0), null)
+        connStat.title = mix.own + " own · " + mix.interline + " interline · "
+            + mix.alliance + " alliance"
+        strip.append(connStat)
+        if (!diag.hasFleetContext) {
+            const note = document.createElement("span")
+            note.textContent = "Estimates without fleet context — pick an aircraft for $/wk."
+            note.style.cssText = "color:#fbbf24;font-size:10px;font-style:italic;"
+                + "margin-left:auto;align-self:center;"
+            strip.append(note)
+        }
+        body.append(strip)
+
+        if (diag.perWave.length) {
+            const head = document.createElement("div")
+            head.style.cssText = "display:grid;grid-template-columns:90px 1fr 70px 90px 110px 18px;"
+                + "gap:8px;align-items:center;padding:2px 0;font-size:9px;color:#6b7280;"
+                + "text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #1f2937;"
+            for (const lbl of ["Wave", "Capacity", "Used", "Profit", "Connections", ""]) {
+                const c = document.createElement("span")
+                c.textContent = lbl
+                head.append(c)
+            }
+            body.append(head)
+            for (const pw of diag.perWave) {
+                body.append(this._renderWaveDiagnosticRow(pw, diag, fmtMoney))
+            }
+        }
+
+        const footer = document.createElement("div")
+        footer.style.cssText = "margin-top:8px;padding-top:8px;border-top:1px solid #1f2937;"
+            + "display:flex;flex-wrap:wrap;gap:14px;font-size:11px;"
+        if (diag.unplaceable.count > 0) {
+            const u = document.createElement("span")
+            const forgone = diag.unplaceable.totalProfitForgone > 0
+                ? " · " + fmtMoney(diag.unplaceable.totalProfitForgone) + "/wk forgone"
+                : ""
+            u.innerHTML = "<strong style='color:#fda4af;'>" + diag.unplaceable.count
+                + "</strong> route(s) unplaced" + forgone
+            u.style.color = "#fca5a5"
+            footer.append(u)
+        } else if (diag.perWave.length) {
+            const u = document.createElement("span")
+            u.textContent = "All scored routes placed."
+            u.style.color = "#86efac"
+            footer.append(u)
+        }
+        if (diag.warnings.length > 0) {
+            const w = document.createElement("span")
+            const high = diag.warnings.filter(x => x.severity === "high").length
+            w.innerHTML = "<strong style='color:#fcd34d;'>" + diag.warnings.length
+                + "</strong> warning(s)" + (high > 0 ? " · " + high + " high" : "")
+            w.style.color = "#fde68a"
+            w.style.cursor = "help"
+            w.title = diag.warnings.slice(0, 8).map(x => "• " + x.message).join("\n")
+                + (diag.warnings.length > 8 ? "\n…" : "")
+            footer.append(w)
+        }
+        if (footer.children.length) body.append(footer)
+
+        card.append(body)
+        host.append(card)
+    }
+
+    /**
+     * F slice 1 — One per-wave row in the diagnostics table. Includes a
+     * tiny utilization bar, profit, and connection mix pills.
+     */
+    _renderWaveDiagnosticRow(pw, diag, fmtMoney) {
+        const row = document.createElement("div")
+        row.style.cssText = "display:grid;grid-template-columns:90px 1fr 70px 90px 110px 18px;"
+            + "gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #161e2c;"
+            + "font-size:11px;"
+
+        const lbl = document.createElement("span")
+        lbl.textContent = pw.label
+        lbl.style.cssText = "color:#cbd5e1;font-weight:600;font-size:11px;"
+            + "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+        lbl.title = (pw.arrivalWindow ? "arr " + pw.arrivalWindow.start + "–" + pw.arrivalWindow.end : "")
+            + (pw.departureWindow ? "  ·  dep " + pw.departureWindow.start + "–" + pw.departureWindow.end : "")
+        row.append(lbl)
+
+        const barWrap = document.createElement("div")
+        barWrap.style.cssText = "position:relative;height:8px;background:#0f1623;"
+            + "border:1px solid #1f2937;border-radius:2px;overflow:hidden;"
+        const ratio = pw.slotsTotal > 0 ? Math.min(1, pw.slotsUsed / pw.slotsTotal) : 0
+        const barColor = pw.utilizationPct >= 80 ? "#10b981"
+            : pw.utilizationPct >= 50 ? "#fbbf24" : "#ef4444"
+        const bar = document.createElement("div")
+        bar.style.cssText = "position:absolute;inset:0;width:" + (ratio * 100) + "%;"
+            + "background:" + barColor + ";opacity:0.7;"
+        barWrap.append(bar)
+        row.append(barWrap)
+
+        const used = document.createElement("span")
+        used.textContent = pw.slotsUsed + "/" + pw.slotsTotal
+        used.style.cssText = "color:#cbd5e1;font-family:var(--aes-font-mono,monospace);"
+            + "font-size:11px;text-align:right;"
+        row.append(used)
+
+        const prof = document.createElement("span")
+        prof.textContent = pw.profitKnown ? fmtMoney(pw.profitPerWeek) : "—"
+        prof.style.cssText = "color:" + (pw.profitPerWeek > 0 ? "#86efac"
+            : pw.profitKnown ? "#fda4af" : "#6b7280") + ";"
+            + "font-family:var(--aes-font-mono,monospace);font-size:11px;text-align:right;"
+        if (pw.profitMissing > 0) {
+            prof.title = pw.profitMissing + " route(s) here have no profit estimate"
+                + " — pick an aircraft to populate."
+        }
+        row.append(prof)
+
+        const conn = document.createElement("div")
+        conn.style.cssText = "display:flex;gap:3px;font-size:9px;align-items:center;"
+        const total = pw.ownConn + pw.interlineConn + pw.allianceConn
+        if (total === 0) {
+            const empty = document.createElement("span")
+            empty.textContent = "no conn"
+            empty.style.cssText = "color:#6b7280;font-style:italic;"
+            conn.append(empty)
+        } else {
+            const mkPill = (n, color, glyph, title) => {
+                if (!n) return null
+                const p = document.createElement("span")
+                p.textContent = glyph + n
+                p.style.cssText = "padding:1px 4px;border-radius:6px;"
+                    + "color:" + color + ";border:1px solid " + color + "55;"
+                    + "background:" + color + "10;font-size:9px;"
+                p.title = title
+                return p
+            }
+            const own = mkPill(pw.ownConn, "#60a5fa", "● ", "Own / intra-airline")
+            const inl = mkPill(pw.interlineConn, "#fbbf24", "▬", "Interline")
+            const ali = mkPill(pw.allianceConn, "#a78bfa", "╴", "Alliance")
+            for (const p of [own, inl, ali]) if (p) conn.append(p)
+        }
+        row.append(conn)
+
+        const fitColor = RouteAssistantWavePlanDiagnostics.colorForFit(pw.fitQuality)
+        const fit = document.createElement("span")
+        fit.textContent = pw.fitQuality === "good" ? "✓"
+            : pw.fitQuality === "warn" ? "!" : "✗"
+        fit.title = pw.fitQuality === "good" ? "Healthy"
+            : pw.fitQuality === "warn" ? "Underutilised or no connections"
+            : pw.slotsTotal === 0 ? "No capacity configured" : "Empty / poor fit"
+        fit.style.cssText = "color:" + fitColor + ";font-weight:bold;text-align:center;"
+        row.append(fit)
+
+        return row
+    }
+
+    /**
+     * F slice 2 — Render the route-fit workspace.
+     *
+     * Three (or four) columns: In Plan / Candidates / No Fit / OOR. Each
+     * card shows a fit score, top reason, and quick actions. Actions
+     * write through `RouteAssistantWaveOverridesStore` and re-render via
+     * `_afterWavePresetEdit`, mirroring the slice-E drag-and-drop path.
+     */
+    _renderRouteFitterPanel(host, fit, opts) {
+        if (!host || !fit) return
+        const o = opts || {}
+        const waves = (o.preset && o.preset.waves) || []
+
+        const card = document.createElement("div")
+        card.style.cssText = "margin-top:10px;padding:0;"
+            + "background:rgba(15,22,35,0.55);border:1px solid #1f2937;"
+            + "border-radius:4px;color:#e5e7eb;font-size:11px;overflow:hidden;"
+
+        const title = document.createElement("div")
+        title.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 10px;"
+            + "background:rgba(124,58,237,0.15);border-bottom:1px solid #4c1d95;"
+        const t = document.createElement("strong")
+        t.textContent = "📋 Route fit workspace"
+        t.style.cssText = "color:#ddd6fe;font-size:11px;flex:1;"
+        title.append(t)
+        const counts = document.createElement("span")
+        counts.textContent = fit.inPlan.length + " in plan · "
+            + fit.candidates.length + " candidates · "
+            + fit.noFit.length + " no-fit · "
+            + fit.oor.length + " OOR"
+        counts.style.cssText = "color:#a78bfa;font-size:10px;"
+        title.append(counts)
+        card.append(title)
+
+        const body = document.createElement("div")
+        body.style.cssText = "padding:8px 10px;"
+
+        // Three-column grid (OOR drops to a footer strip — usually small
+        // and the actions there are nil, so it doesn't deserve a column).
+        const grid = document.createElement("div")
+        grid.style.cssText = "display:grid;grid-template-columns:repeat(3, 1fr);"
+            + "gap:10px;align-items:start;"
+        grid.append(this._renderRouteFitColumn("✅ In Plan",     fit.inPlan,
+            "in-plan",   "#10b981", o, waves))
+        grid.append(this._renderRouteFitColumn("⏳ Candidates",  fit.candidates,
+            "candidate", "#fbbf24", o, waves))
+        grid.append(this._renderRouteFitColumn("❌ No Fit",      fit.noFit,
+            "no-fit",    "#ef4444", o, waves))
+        body.append(grid)
+
+        if (fit.oor.length) {
+            const oorBox = document.createElement("div")
+            oorBox.style.cssText = "margin-top:10px;padding:6px 8px;"
+                + "background:rgba(75,85,99,0.10);border:1px solid #374151;"
+                + "border-radius:3px;font-size:10px;color:#cbd5e1;"
+            const head = document.createElement("strong")
+            head.textContent = "🚫 Out of range (" + fit.oor.length + ")"
+            head.style.cssText = "color:#fda4af;display:block;margin-bottom:3px;"
+            oorBox.append(head)
+            const list = document.createElement("div")
+            list.style.cssText = "color:#9ca3af;"
+            list.textContent = fit.oor.slice(0, 20)
+                .map(e => e.row.destIata).join(" · ")
+                + (fit.oor.length > 20 ? " · …" : "")
+            list.title = "No fleet aircraft can fly these routes from this hub."
+            oorBox.append(list)
+            body.append(oorBox)
+        }
+
+        card.append(body)
+        host.append(card)
+    }
+
+    /**
+     * F slice 2 — One column of the route-fit workspace.
+     */
+    _renderRouteFitColumn(label, entries, category, accent, opts, waves) {
+        const col = document.createElement("div")
+        col.style.cssText = "display:flex;flex-direction:column;gap:4px;min-width:0;"
+
+        const head = document.createElement("div")
+        head.style.cssText = "display:flex;align-items:center;gap:6px;padding:3px 6px;"
+            + "background:" + accent + "12;border:1px solid " + accent + "33;"
+            + "border-radius:3px;color:" + accent + ";font-size:10px;font-weight:600;"
+        const h = document.createElement("span")
+        h.textContent = label
+        h.style.flex = "1"
+        head.append(h)
+        const n = document.createElement("span")
+        n.textContent = entries.length
+        n.style.cssText = "padding:0 5px;background:" + accent + "33;border-radius:7px;"
+            + "font-size:9px;color:" + accent + ";"
+        head.append(n)
+        col.append(head)
+
+        if (!entries.length) {
+            const empty = document.createElement("div")
+            empty.textContent = category === "in-plan"
+                ? "No routes placed yet. Add capacity to a wave or promote candidates."
+                : category === "candidate"
+                ? "No candidates — every viable route is in the plan."
+                : "Nothing flagged here. ✓"
+            empty.style.cssText = "padding:8px 6px;color:#6b7280;font-size:10px;"
+                + "font-style:italic;text-align:center;"
+            col.append(empty)
+            return col
+        }
+
+        const VISIBLE_CAP = 15
+        const visible = entries.slice(0, VISIBLE_CAP)
+        for (const e of visible) {
+            col.append(this._renderRouteFitCard(e, category, opts, waves))
+        }
+        if (entries.length > VISIBLE_CAP) {
+            const more = document.createElement("div")
+            more.style.cssText = "padding:4px;color:#6b7280;font-size:10px;"
+                + "font-style:italic;text-align:center;"
+            more.textContent = "+" + (entries.length - VISIBLE_CAP) + " more"
+            col.append(more)
+        }
+        return col
+    }
+
+    /**
+     * F slice 2 — One route card. Compact layout with fit score, reason,
+     * and quick actions appropriate to the category.
+     */
+    _renderRouteFitCard(entry, category, opts, waves) {
+        const row = entry.row
+        const fit = entry.fit
+        const card = document.createElement("div")
+        card.style.cssText = "padding:5px 7px;background:#0f1623;"
+            + "border:1px solid #1f2937;border-radius:3px;"
+            + "display:flex;flex-direction:column;gap:3px;"
+        const fitColor = RouteAssistantWaveRouteFitter.colorForFit(fit.fitScore)
+
+        // Top row: dest + fit score + actions
+        const topRow = document.createElement("div")
+        topRow.style.cssText = "display:flex;align-items:center;gap:6px;"
+        const dest = document.createElement("strong")
+        dest.textContent = row.destIata
+        dest.style.cssText = "color:#cbd5e1;font-family:var(--aes-font-mono,monospace);"
+            + "font-size:11px;letter-spacing:0.5px;"
+        topRow.append(dest)
+        const dist = document.createElement("span")
+        if (typeof row.distanceKm === "number" && isFinite(row.distanceKm)) {
+            dist.textContent = Math.round(row.distanceKm).toLocaleString() + "km"
+            dist.style.cssText = "color:#6b7280;font-size:9px;"
+            topRow.append(dist)
+        }
+        const score = document.createElement("span")
+        score.textContent = fit.fitScore
+        score.title = RouteAssistantWaveRouteFitter.labelForFit(fit.fitScore)
+            + "  · breakdown:\n"
+            + "  bucket "    + fit.breakdown.bucketCapacity + "\n"
+            + "  profit "    + fit.breakdown.profitPotential + "\n"
+            + "  demand "    + fit.breakdown.demandSignal + "\n"
+            + "  conn "      + fit.breakdown.connectionPotential + "\n"
+            + "  aircraft "  + fit.breakdown.aircraftViability
+        score.style.cssText = "margin-left:auto;padding:0 5px;border-radius:7px;"
+            + "color:" + fitColor + ";border:1px solid " + fitColor + "55;"
+            + "background:" + fitColor + "12;font-size:10px;font-weight:600;"
+            + "font-family:var(--aes-font-mono,monospace);"
+        topRow.append(score)
+        card.append(topRow)
+
+        // Reason line
+        if (fit.reasons && fit.reasons.length) {
+            const rsn = document.createElement("span")
+            rsn.textContent = fit.reasons[0]
+            rsn.style.cssText = "color:#9ca3af;font-size:9px;font-style:italic;"
+                + "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+            rsn.title = fit.reasons.join(" · ")
+            card.append(rsn)
+        }
+
+        // Action row — varies per category
+        const actions = document.createElement("div")
+        actions.style.cssText = "display:flex;gap:3px;align-items:center;margin-top:1px;"
+        if (category === "in-plan") {
+            actions.append(this._mkRouteFitButton(
+                "⏬ Demote", "Release this route from the plan (reverts to bucket-greedy assignment).",
+                "#7c2d12", "#fed7aa",
+                () => this._waveOverrideRelease(opts.hubIata, opts.presetId, row.destIata)
+            ))
+        } else if (category === "candidate") {
+            const targetWave = fit.suggestedWaveId
+            const targetLabel = (waves.find(w => w.id === targetWave) || {}).label
+                || "wave"
+            if (targetWave) {
+                actions.append(this._mkRouteFitButton(
+                    "⏫ Promote", "Pin this route to " + targetLabel + ".",
+                    "#065f46", "#a7f3d0",
+                    () => this._waveOverridePlace(opts.hubIata, opts.presetId,
+                        row.destIata, targetWave)
+                ))
+            }
+        }
+        if (category !== "in-plan") {
+            actions.append(this._mkRouteFitWavePicker(row, opts, waves))
+        }
+        if (actions.children.length) card.append(actions)
+
+        return card
+    }
+
+    /** F slice 2 — small button used inside route-fit cards. */
+    _mkRouteFitButton(label, title, bg, fg, onClick) {
+        const b = document.createElement("button")
+        b.type = "button"
+        b.textContent = label
+        b.title = title
+        b.style.cssText = "background:" + bg + ";color:" + fg + ";"
+            + "border:1px solid " + bg + ";border-radius:2px;"
+            + "padding:1px 6px;font-size:9px;cursor:pointer;"
+        b.addEventListener("click", (e) => { e.preventDefault(); onClick() })
+        return b
+    }
+
+    /** F slice 2 — inline wave picker for pin-to-any-wave. */
+    _mkRouteFitWavePicker(row, opts, waves) {
+        const pick = document.createElement("select")
+        pick.title = "Pin this route to a specific wave (forces placement even if buckets are full)."
+        pick.style.cssText = "background:#0f1623;color:#cbd5e1;"
+            + "border:1px solid #475569;border-radius:2px;"
+            + "padding:1px 4px;font-size:9px;"
+        const placeholder = document.createElement("option")
+        placeholder.value = ""
+        placeholder.textContent = "📌 Pin to…"
+        pick.append(placeholder)
+        for (const w of waves) {
+            const o = document.createElement("option")
+            o.value = w.id
+            o.textContent = w.label || ("Wave " + (waves.indexOf(w) + 1))
+            pick.append(o)
+        }
+        pick.addEventListener("change", () => {
+            const wid = pick.value
+            if (!wid) return
+            this._waveOverridePlace(opts.hubIata, opts.presetId, row.destIata, wid)
+        })
+        return pick
+    }
+
+    /**
+     * F slice 4 — Render the amber draft banner shown beneath the
+     * header while a draft is active. Includes baseline name, Δ profit /
+     * Δ utilisation / Δ unplaced + three actions: Promote → live ·
+     * Save as variant · Discard.
+     */
+    async _renderWaveDraftBanner(draftRec, presets, pickedHub) {
+        if (!draftRec) return null
+        const baseline = (presets || []).find(p => p.id === draftRec.baselineId) || null
+        const drifted = baseline && Number(baseline.updatedAt || 0)
+            > Number(draftRec.baselineUpdatedAt || 0)
+
+        const banner = document.createElement("div")
+        banner.style.cssText = "margin:6px 0;padding:8px 12px;font-size:11px;"
+            + "background:rgba(251,146,60,0.10);"
+            + "border:1px solid rgba(251,146,60,0.50);border-radius:4px;"
+            + "color:#fed7aa;display:flex;flex-wrap:wrap;align-items:center;gap:10px;"
+
+        const head = document.createElement("strong")
+        head.textContent = "🟧 Draft mode"
+        head.style.color = "#fed7aa"
+        banner.append(head)
+
+        const text = document.createElement("span")
+        text.style.cssText = "color:#fdba74;flex:1 1 auto;min-width:120px;"
+        text.textContent = baseline
+            ? "comparing to “" + baseline.name + "”"
+            : "(baseline preset deleted — promote will save as a new preset)"
+        banner.append(text)
+
+        if (typeof RouteAssistantWavePlanDiagnostics !== "undefined"
+                && this._waveBuild && this.scoredRows && baseline) {
+            const baselineBuild = RouteAssistantWaveOverlay.buildSchedule(
+                baseline, this.scoredRows, {
+                    server:            this.server,
+                    airlineCode:       (this.ownSchedule && this.ownSchedule.airline) || null,
+                    hubIata:           pickedHub,
+                    selectedSpec:      this.selectedSpec,
+                    topN:              Math.max(1, Math.min(100,
+                                          Number((this.settings.waveOverlay || {}).topN) || 20)),
+                    carrierClassifier: this._carrierClassifierForFlight(),
+                    overrides:         {},
+                    optimize:          false
+                })
+            const baseDiag = RouteAssistantWavePlanDiagnostics.scorePlan(
+                baselineBuild, this.scoredRows, {
+                    hubIata:           pickedHub,
+                    selectedSpec:      this.selectedSpec,
+                    carrierClassifier: this._carrierClassifierForFlight(),
+                    fleetCount:        1
+                })
+            const draftDiag = this._waveDiagnostics
+            if (baseDiag && draftDiag) {
+                banner.append(this._renderDraftDeltaStrip(baseDiag, draftDiag))
+            }
+        }
+
+        const mkBtn = (label, title, bg, fg, onClick) => {
+            const b = document.createElement("button")
+            b.type = "button"
+            b.textContent = label
+            b.title = title
+            b.style.cssText = "background:" + bg + ";color:" + fg + ";"
+                + "border:1px solid " + bg + ";border-radius:3px;"
+                + "padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;"
+            b.addEventListener("click", (e) => { e.preventDefault(); onClick() })
+            return b
+        }
+        banner.append(mkBtn("Promote → live",
+            "Copy the draft's waves + factors back into the baseline preset, then delete the draft.",
+            "#065f46", "#a7f3d0",
+            () => this._draftPromote(pickedHub)))
+        banner.append(mkBtn("Save as variant",
+            "Keep the baseline untouched; rename the draft to a permanent variant.",
+            "#1e3a8a", "#bfdbfe",
+            () => this._draftSaveAsVariant(pickedHub)))
+        banner.append(mkBtn("Discard",
+            "Delete the draft and return to the baseline preset.",
+            "#7f1d1d", "#fecaca",
+            () => this._draftDiscard(pickedHub)))
+
+        if (drifted) {
+            const drift = document.createElement("div")
+            drift.style.cssText = "flex-basis:100%;color:#fcd34d;font-size:10px;"
+                + "font-style:italic;margin-top:4px;"
+            drift.textContent = "⚠ Live preset has been edited since this draft started."
+                + " The Δ values may be misleading."
+            banner.append(drift)
+        }
+
+        return banner
+    }
+
+    /** F slice 4 — Compact Δ strip rendered inside the draft banner. */
+    _renderDraftDeltaStrip(baseDiag, draftDiag) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;gap:10px;align-items:center;"
+            + "padding:0 6px;border-left:1px solid rgba(251,146,60,0.50);"
+            + "border-right:1px solid rgba(251,146,60,0.50);"
+        const fmtMoney = (v) => {
+            if (!isFinite(v) || v === 0) return "$0"
+            const abs = Math.abs(v), sign = v < 0 ? "−" : "+"
+            if (abs >= 1e6) return sign + "$" + (abs / 1e6).toFixed(2) + "M"
+            if (abs >= 1e3) return sign + "$" + (abs / 1e3).toFixed(0) + "k"
+            return sign + "$" + abs.toFixed(0)
+        }
+        const fmtPp = (v) => (v >= 0 ? "+" : "") + Math.round(v) + "pp"
+        const fmtN  = (v) => (v >= 0 ? "+" : "") + v
+        const colorFor = (v) => v > 0 ? "#86efac" : v < 0 ? "#fca5a5" : "#cbd5e1"
+
+        const dProfit = (draftDiag.profitPerWeek || 0) - (baseDiag.profitPerWeek || 0)
+        const dUtil   = (draftDiag.componentScores.utilization || 0)
+                      - (baseDiag.componentScores.utilization || 0)
+        const dUnpl   = (draftDiag.unplaceable.count || 0) - (baseDiag.unplaceable.count || 0)
+        const dConn   = (draftDiag.connectionCount || 0) - (baseDiag.connectionCount || 0)
+        const dScore  = (draftDiag.planScore || 0) - (baseDiag.planScore || 0)
+
+        const mkChip = (lbl, txt, color) => {
+            const span = document.createElement("span")
+            span.style.cssText = "color:" + color + ";font-size:10px;"
+                + "font-family:var(--aes-font-mono,monospace);"
+            span.innerHTML = "<span style='color:#9ca3af;'>" + lbl + "</span> " + txt
+            return span
+        }
+        wrap.append(mkChip("Δ score",   fmtN(dScore),     colorFor(dScore)))
+        wrap.append(mkChip("Δ profit",  fmtMoney(dProfit), colorFor(dProfit)))
+        wrap.append(mkChip("Δ util",    fmtPp(dUtil),     colorFor(dUtil)))
+        wrap.append(mkChip("Δ conn",    fmtN(dConn),      colorFor(dConn)))
+        // Unplaced is "lower-is-better" → invert color sign.
+        wrap.append(mkChip("Δ unplaced", fmtN(dUnpl),     colorFor(-dUnpl)))
+        return wrap
+    }
+
+    /**
+     * F slice 4 — Begin a new draft fork of the active preset. Switches
+     * the picker to the draft preset so subsequent edits land there.
+     */
+    async _draftStart(pickedHub, baselinePreset) {
+        if (typeof RouteAssistantWaveDraftStore === "undefined") return
+        const existing = await RouteAssistantWaveDraftStore.load(pickedHub)
+        if (existing) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Draft already in progress for "
+                    + pickedHub + " — promote or discard first.", {duration: 3000})
+            }
+            return
+        }
+        const draft = await RouteAssistantWaveDraftStore.beginDraft(
+            pickedHub, baselinePreset)
+        if (!draft) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Couldn't create draft — see console.",
+                    {duration: 4000})
+            }
+            return
+        }
+        this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
+            {lastPresetId: draft.id})
+        try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+        catch (e) { /* non-fatal */ }
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show("Draft created — edit freely. Promote when ready.",
+                {duration: 3500})
+        }
+        await this._afterWavePresetEdit()
+    }
+
+    /** F slice 4 — Promote the active draft back into its baseline. */
+    async _draftPromote(pickedHub) {
+        if (typeof RouteAssistantWaveDraftStore === "undefined") return
+        const promoted = await RouteAssistantWaveDraftStore.promoteToBaseline(pickedHub)
+        if (promoted) {
+            this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
+                {lastPresetId: promoted.id})
+            try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+            catch (e) { /* non-fatal */ }
+        }
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show("Draft promoted — baseline preset updated.",
+                {duration: 3500})
+        }
+        await this._afterWavePresetEdit()
+    }
+
+    /** F slice 4 — Save the draft as a new permanent variant. */
+    async _draftSaveAsVariant(pickedHub) {
+        if (typeof RouteAssistantWaveDraftStore === "undefined") return
+        await RouteAssistantWaveDraftStore.saveAsVariant(pickedHub)
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show("Saved as variant — baseline preset untouched.",
+                {duration: 3500})
+        }
+        await this._afterWavePresetEdit()
+    }
+
+    /** F slice 4 — Discard the active draft and return to the baseline. */
+    async _draftDiscard(pickedHub) {
+        if (typeof RouteAssistantWaveDraftStore === "undefined") return
+        const baselineId = await RouteAssistantWaveDraftStore.discard(pickedHub)
+        if (baselineId) {
+            this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
+                {lastPresetId: baselineId})
+            try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+            catch (e) { /* non-fatal */ }
+        }
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show("Draft discarded.", {duration: 2500})
+        }
+        await this._afterWavePresetEdit()
+    }
+
+    /**
+     * F slice 5 — Run the backtest engine against the active preset and
+     * render the results modal. Caches the result by (presetId, baseline
+     * updatedAt) on this._waveBacktest so re-opening is instant.
+     */
+    async _runWaveBacktest(pickedHub, preset) {
+        if (typeof RouteAssistantWavePlanBacktest === "undefined") return
+        if (typeof RouteAssistantYieldHistoryStore === "undefined") return
+        const cacheKey = (preset.id || "?") + ":" + (preset.updatedAt || 0)
+            + ":" + pickedHub
+        if (!this._waveBacktest || this._waveBacktest._cacheKey !== cacheKey) {
+            const pairs = []
+            for (const row of (this.scoredRows || [])) {
+                if (!row || !row.destIata) continue
+                pairs.push([pickedHub, String(row.destIata).toUpperCase()])
+            }
+            const yieldHistoryByPair = await RouteAssistantYieldHistoryStore.getMany(pairs)
+            const result = RouteAssistantWavePlanBacktest.backtestPlan(
+                preset, this.scoredRows, yieldHistoryByPair, {
+                    hubIata:      pickedHub,
+                    server:       this.server,
+                    airlineCode:  (this.ownSchedule && this.ownSchedule.airline) || null,
+                    selectedSpec: this.selectedSpec,
+                    weeksWindow:  RouteAssistantWavePlanBacktest.DEFAULT_WEEKS,
+                    topN:         50
+                })
+            result._cacheKey = cacheKey
+            this._waveBacktest = result
+        }
+        this._renderWaveBacktestModal(this._waveBacktest, preset, pickedHub)
+    }
+
+    /**
+     * F slice 5 — Modal: weekly chart + summary + winner/loser routes.
+     * Built fresh each time so dispose is clean (close-button removes it).
+     */
+    _renderWaveBacktestModal(result, preset, pickedHub) {
+        document.querySelectorAll("[data-aes-wave-backtest-modal]")
+            .forEach(n => n.remove())
+
+        const overlay = document.createElement("div")
+        overlay.dataset.aesWaveBacktestModal = "1"
+        overlay.style.cssText = "position:fixed;inset:0;z-index:99999;"
+            + "background:rgba(2,6,23,0.78);display:flex;align-items:center;"
+            + "justify-content:center;padding:24px;"
+
+        const modal = document.createElement("div")
+        modal.style.cssText = "max-width:760px;width:100%;max-height:85vh;"
+            + "overflow:auto;background:#0f1623;border:1px solid #1f2937;"
+            + "border-radius:6px;color:#e5e7eb;font-size:11px;"
+            + "box-shadow:0 20px 60px rgba(0,0,0,0.5);"
+
+        const header = document.createElement("div")
+        header.style.cssText = "display:flex;align-items:center;gap:10px;"
+            + "padding:10px 14px;background:#1e3a8a;border-bottom:1px solid #1e40af;"
+        const title = document.createElement("strong")
+        title.textContent = "📈 Plan backtest"
+        title.style.cssText = "color:#dbeafe;font-size:13px;flex:1;"
+        const sub = document.createElement("span")
+        sub.textContent = "“" + (preset.name || "preset") + "” · hub " + pickedHub
+        sub.style.cssText = "color:#bfdbfe;font-size:10px;"
+        header.append(title, sub)
+        const closeBtn = document.createElement("button")
+        closeBtn.type = "button"
+        closeBtn.textContent = "✕"
+        closeBtn.title = "Close"
+        closeBtn.style.cssText = "background:transparent;color:#dbeafe;border:0;"
+            + "font-size:14px;cursor:pointer;padding:0 6px;"
+        closeBtn.addEventListener("click", () => overlay.remove())
+        header.append(closeBtn)
+        modal.append(header)
+
+        const body = document.createElement("div")
+        body.style.cssText = "padding:14px;"
+
+        if (result.insufficient) {
+            const banner = document.createElement("div")
+            banner.style.cssText = "padding:12px;background:rgba(251,191,36,0.10);"
+                + "border:1px solid rgba(251,191,36,0.40);border-radius:4px;"
+                + "color:#fde68a;font-size:11px;"
+            banner.textContent = "Insufficient yield history — backtest needs at least "
+                + RouteAssistantWavePlanBacktest.MIN_WEEKS
+                + " weeks of snapshots across your scored routes."
+                + " Enable auto-snapshot in the Route Assistant settings, then return"
+                + " in a few weeks once data has accumulated."
+            body.append(banner)
+            modal.append(body)
+            overlay.append(modal)
+            document.body.append(overlay)
+            return
+        }
+
+        const caveat = document.createElement("div")
+        caveat.style.cssText = "padding:6px 10px;margin-bottom:10px;font-size:10px;"
+            + "background:rgba(99,102,241,0.10);border:1px solid rgba(99,102,241,0.30);"
+            + "border-radius:3px;color:#c7d2fe;"
+        caveat.innerHTML = "<strong>Note:</strong> this measures route-selection quality, "
+            + "not full counterfactual revenue. Demand reflects what you actually flew "
+            + "in those weeks; the plan may have benefited from network effects this "
+            + "model can't simulate."
+        body.append(caveat)
+
+        const fmtMoney = (v) => {
+            if (!isFinite(v) || v === 0) return "$0"
+            const abs = Math.abs(v), sign = v < 0 ? "−" : "+"
+            if (abs >= 1e6) return sign + "$" + (abs / 1e6).toFixed(2) + "M"
+            if (abs >= 1e3) return sign + "$" + (abs / 1e3).toFixed(0) + "k"
+            return sign + "$" + abs.toFixed(0)
+        }
+        const fmtMoneyAbs = (v) => {
+            if (!isFinite(v) || v === 0) return "$0"
+            const abs = Math.abs(v)
+            if (abs >= 1e6) return "$" + (abs / 1e6).toFixed(2) + "M"
+            if (abs >= 1e3) return "$" + (abs / 1e3).toFixed(0) + "k"
+            return "$" + abs.toFixed(0)
+        }
+        const sumStrip = document.createElement("div")
+        sumStrip.style.cssText = "display:grid;grid-template-columns:repeat(4,1fr);"
+            + "gap:10px;padding:10px;background:#0a1120;border:1px solid #1f2937;"
+            + "border-radius:4px;margin-bottom:14px;"
+        const mkSum = (lbl, val, color) => {
+            const w = document.createElement("div")
+            w.style.cssText = "display:flex;flex-direction:column;gap:2px;"
+            const k = document.createElement("span")
+            k.textContent = lbl
+            k.style.cssText = "color:#6b7280;font-size:9px;text-transform:uppercase;"
+                + "letter-spacing:0.5px;"
+            const v = document.createElement("span")
+            v.textContent = val
+            v.style.cssText = "color:" + (color || "#cbd5e1") + ";font-size:14px;"
+                + "font-weight:600;font-family:var(--aes-font-mono,monospace);"
+            w.append(k, v)
+            return w
+        }
+        const s = result.summary
+        sumStrip.append(mkSum("Avg Δ /wk", fmtMoney(s.avgDelta),
+            s.avgDelta >= 0 ? "#86efac" : "#fca5a5"))
+        sumStrip.append(mkSum("Total Δ ("  + s.weekCount + " wks)",
+            fmtMoney(s.totalDelta),
+            s.totalDelta >= 0 ? "#86efac" : "#fca5a5"))
+        sumStrip.append(mkSum("Win rate",
+            Math.round(s.winRate * 100) + "%",
+            s.winRate >= 0.5 ? "#86efac" : "#fcd34d"))
+        sumStrip.append(mkSum("Volatility", fmtMoneyAbs(s.volatility), null))
+        body.append(sumStrip)
+
+        body.append(this._renderBacktestSparkline(result))
+
+        const splits = document.createElement("div")
+        splits.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:14px;"
+            + "margin-top:14px;"
+        splits.append(this._renderBacktestRouteList("Top winners",
+            "Routes the plan kept that paid off",
+            "#10b981", result.winnerRoutes, fmtMoneyAbs))
+        splits.append(this._renderBacktestRouteList("Top losers",
+            "Routes the plan dropped that you actually earned on",
+            "#ef4444", result.loserRoutes, fmtMoneyAbs))
+        body.append(splits)
+
+        modal.append(body)
+        overlay.append(modal)
+        overlay.addEventListener("click", (e) => {
+            if (e.target === overlay) overlay.remove()
+        })
+        document.body.append(overlay)
+    }
+
+    /** F slice 5 — Render the weekly profit sparkline as inline SVG. */
+    _renderBacktestSparkline(result) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "padding:10px;background:#0a1120;border:1px solid #1f2937;"
+            + "border-radius:4px;"
+        const head = document.createElement("div")
+        head.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:6px;"
+            + "font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;"
+        head.innerHTML = "<strong style='color:#cbd5e1;'>Weekly profit</strong>"
+            + "<span style='color:#60a5fa;'>● Plan</span>"
+            + "<span style='color:#9ca3af;'>● Actual</span>"
+        wrap.append(head)
+
+        const W = 700, H = 160, M = 24
+        const SVGNS = "http://www.w3.org/2000/svg"
+        const svg = document.createElementNS(SVGNS, "svg")
+        svg.setAttribute("viewBox", "0 0 " + W + " " + H)
+        svg.setAttribute("width", "100%")
+        svg.setAttribute("height", "160")
+        svg.style.cssText = "display:block;"
+
+        const weeks = result.weeks || []
+        if (!weeks.length) { wrap.append(svg); return wrap }
+        let maxV = 0
+        for (const w of weeks) {
+            if (Math.abs(w.planProfit)   > maxV) maxV = Math.abs(w.planProfit)
+            if (Math.abs(w.actualProfit) > maxV) maxV = Math.abs(w.actualProfit)
+        }
+        if (maxV === 0) maxV = 1
+        const xStep = (W - M * 2) / Math.max(1, weeks.length - 1)
+        const yMid  = H / 2
+        const yScale = (H / 2 - M) / maxV
+        const ptFor = (i, v) => [M + i * xStep, yMid - v * yScale]
+        const mkPath = (key, color, dash) => {
+            let d = ""
+            for (let i = 0; i < weeks.length; i++) {
+                const [x, y] = ptFor(i, weeks[i][key])
+                d += (i === 0 ? "M " : " L ") + x.toFixed(1) + " " + y.toFixed(1)
+            }
+            const path = document.createElementNS(SVGNS, "path")
+            path.setAttribute("d", d)
+            path.setAttribute("fill", "none")
+            path.setAttribute("stroke", color)
+            path.setAttribute("stroke-width", "1.6")
+            if (dash) path.setAttribute("stroke-dasharray", dash)
+            return path
+        }
+        const zero = document.createElementNS(SVGNS, "line")
+        zero.setAttribute("x1", M); zero.setAttribute("x2", W - M)
+        zero.setAttribute("y1", yMid); zero.setAttribute("y2", yMid)
+        zero.setAttribute("stroke", "#1f2937")
+        zero.setAttribute("stroke-dasharray", "3 3")
+        svg.append(zero)
+
+        svg.append(mkPath("actualProfit", "#9ca3af", "3 2"))
+        svg.append(mkPath("planProfit",   "#60a5fa", null))
+
+        const ticks = [0, Math.floor(weeks.length / 2), weeks.length - 1]
+        for (const i of ticks) {
+            const lbl = document.createElementNS(SVGNS, "text")
+            lbl.setAttribute("x", M + i * xStep)
+            lbl.setAttribute("y", H - 4)
+            lbl.setAttribute("fill", "#6b7280")
+            lbl.setAttribute("font-size", "9")
+            lbl.setAttribute("text-anchor", "middle")
+            lbl.textContent = weeks[i].weekIso
+            svg.append(lbl)
+        }
+        wrap.append(svg)
+        return wrap
+    }
+
+    /** F slice 5 — Top-winners / top-losers list block. */
+    _renderBacktestRouteList(title, subtitle, accent, entries, fmtMoneyAbs) {
+        const block = document.createElement("div")
+        block.style.cssText = "padding:8px;background:#0a1120;"
+            + "border:1px solid #1f2937;border-radius:4px;"
+        const head = document.createElement("div")
+        head.style.cssText = "color:" + accent + ";font-size:11px;"
+            + "font-weight:600;margin-bottom:2px;"
+        head.textContent = title
+        const sub = document.createElement("div")
+        sub.style.cssText = "color:#6b7280;font-size:9px;font-style:italic;margin-bottom:6px;"
+        sub.textContent = subtitle
+        block.append(head, sub)
+        if (!entries || !entries.length) {
+            const empty = document.createElement("div")
+            empty.textContent = "(no data)"
+            empty.style.cssText = "color:#6b7280;font-size:10px;font-style:italic;"
+            block.append(empty)
+            return block
+        }
+        for (const e of entries) {
+            const row = document.createElement("div")
+            row.style.cssText = "display:flex;align-items:center;gap:6px;padding:2px 0;"
+                + "font-size:11px;"
+            const code = document.createElement("strong")
+            code.textContent = e.destIata
+            code.style.cssText = "font-family:var(--aes-font-mono,monospace);"
+                + "color:#cbd5e1;width:42px;"
+            const val = document.createElement("span")
+            const sign = e.totalDelta >= 0 ? "+" : "−"
+            val.textContent = sign + fmtMoneyAbs(e.totalDelta)
+            val.style.cssText = "color:" + (e.totalDelta >= 0 ? "#86efac" : "#fca5a5") + ";"
+                + "font-family:var(--aes-font-mono,monospace);font-size:10px;flex:1;"
+            const wks = document.createElement("span")
+            wks.textContent = e.weeks + "w"
+            wks.style.cssText = "color:#6b7280;font-size:9px;"
+            row.append(code, val, wks)
+            block.append(row)
+        }
+        return block
     }
 
     /**
@@ -5647,11 +6782,15 @@ class RouteAssistantPanel {
      * top-N + aircraft display + connection toggle (slice 2) + re-run +
      * edit-presets. Returns the assembled DOM node.
      */
-    _buildWaveHeader(preset, presets, topN, pickedHub, recentHubs) {
+    _buildWaveHeader(preset, presets, topN, pickedHub, recentHubs, hdrOpts) {
         const wrap = document.createElement("div")
+        const isDraft = !!(hdrOpts && hdrOpts.isDraft)
+        const headerBg = isDraft
+            ? "background:rgba(251,146,60,0.10);border:1px solid rgba(251,146,60,0.45);"
+            : "background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.25);"
         wrap.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
             + "padding:6px 8px;margin:4px 0 6px 0;font-size:11px;"
-            + "background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.25);"
+            + headerBg
             + "border-radius:4px;"
 
         const presetSel = document.createElement("select")
@@ -5685,6 +6824,21 @@ class RouteAssistantPanel {
         presetLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
         presetLbl.append(document.createTextNode("Preset:"), presetSel)
         wrap.append(presetLbl)
+
+        // F slice 1 — Plan score badge. Placeholder filled in by
+        // _renderWaveOverlay once diagnostics computes (the build runs
+        // after the header is mounted, so we backfill via querySelector).
+        if (preset && typeof RouteAssistantWavePlanDiagnostics !== "undefined") {
+            const scoreBadge = document.createElement("span")
+            scoreBadge.dataset.aesPlanScore = "1"
+            scoreBadge.style.cssText = "padding:1px 6px;border-radius:8px;font-size:10px;"
+                + "color:#9ca3af;border:1px solid #37415155;background:#37415112;"
+                + "font-weight:600;"
+            scoreBadge.textContent = "Score …"
+            scoreBadge.title = "Plan score — utilisation, profit, connections, demand,"
+                + " and warning health combined into a single 0–100 grade."
+            wrap.append(scoreBadge)
+        }
 
         // Slice 2 — multi-hub picker. Renders nothing when only one hub
         // has been visited (clean start; no controls bar clutter).
@@ -5737,6 +6891,34 @@ class RouteAssistantPanel {
         })
         wrap.append(rerunBtn)
 
+        // F slice 2 — Sub-mode toggle. "plan" shows Gantt + diagnostics
+        // card (default); "routes" adds a per-route fit-against-the-plan
+        // workspace below where the user can promote / demote / pin
+        // routes against the active wave plan without leaving Wave View.
+        if (typeof RouteAssistantWaveRouteFitter !== "undefined") {
+            const subMode = (this.settings && this.settings.waveOverlay
+                && this.settings.waveOverlay.subMode) || "plan"
+            const subBtn = document.createElement("button")
+            subBtn.type = "button"
+            subBtn.textContent = subMode === "routes" ? "📋 Routes" : "📊 Plan"
+            subBtn.title = subMode === "routes"
+                ? "Showing the route-fit workspace below the Gantt. Click to switch back to plan diagnostics."
+                : "Switch to the route-fit workspace — every scored route ranked by fit against this plan, with promote / demote actions."
+            Object.assign(subBtn.style, smallBtnStyle())
+            subBtn.style.background  = subMode === "routes" ? "#4c1d95" : "#1f2937"
+            subBtn.style.borderColor = subMode === "routes" ? "#4c1d95" : "#475569"
+            subBtn.style.color       = subMode === "routes" ? "#ddd6fe" : "#cbd5e1"
+            subBtn.addEventListener("click", async () => {
+                const next = subMode === "routes" ? "plan" : "routes"
+                this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
+                    {subMode: next})
+                try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+                catch (e) { /* non-fatal */ }
+                this._renderRows()
+            })
+            wrap.append(subBtn)
+        }
+
         // Slice 2 — Connections SVG toggle. Legend renders regardless so
         // the user knows the feature exists; this just gates the curves.
         const wo = (this.settings && this.settings.waveOverlay) || {}
@@ -5757,34 +6939,107 @@ class RouteAssistantPanel {
         })
         wrap.append(connBtn)
 
-        // H slice 3 — Auto-optimise toggle. When ON, the build runs the
-        // hill-climb in `ScheduleBuilder.optimizeAssignment` to maximise
-        // the connection-graph score; OFF keeps the greedy bucket-fill.
-        // Composition counts become CAPS (not floors) when on — note
-        // surfaced in the tooltip so users aren't surprised by waves
-        // landing below their wanted count.
-        const optOn = wo.optimize === true
-        const optBtn = document.createElement("button")
-        optBtn.type = "button"
-        optBtn.textContent = optOn ? "🎯 Optimised" : "🎯 Optimise"
-        optBtn.title = optOn
-            ? "Click to fall back to the greedy bucket-fill placement."
-            : "Hill-climb route placements to maximise the connection-graph count. Composition counts become caps, not floors — waves may land below their wanted count if a different placement yields more connections. Forced (📌) overrides are preserved."
-        Object.assign(optBtn.style, smallBtnStyle())
-        optBtn.style.background = optOn ? "#7c2d12" : "#1f2937"
-        optBtn.style.borderColor = optOn ? "#7c2d12" : "#475569"
-        optBtn.style.color = optOn ? "#fed7aa" : "#cbd5e1"
-        optBtn.style.opacity = optOn ? "1" : "0.85"
-        optBtn.addEventListener("click", async () => {
-            const next = !optOn
+        // H slice 3 + F slice 3 — Assignment-mode picker. Replaces the
+        // earlier two-state Optimise toggle with three modes:
+        //   greedy:     bucket-greedy fill (default; matches pre-F3)
+        //   connection: hill-climb maximising the connection-graph count
+        //   profit:     per-slot greedy-best-marginal scored by
+        //               RouteAssistantWaveSlotScorer
+        // Legacy `wo.optimize: true` reads as "connection" so users on
+        // older settings keep their previous behaviour.
+        const currentMode = wo.optimizeMode
+            || (wo.optimize ? "connection" : "greedy")
+        const modeLabel = (m) => m === "profit"     ? "💰 Per-slot profit"
+            : m === "connection" ? "🎯 Connection graph"
+            : "▦ Bucket greedy"
+        const modeBg = (m) => m === "profit" ? "#065f46"
+            : m === "connection" ? "#7c2d12"
+            : "#1f2937"
+        const modeFg = (m) => m === "profit" ? "#a7f3d0"
+            : m === "connection" ? "#fed7aa"
+            : "#cbd5e1"
+        const modeBtn = document.createElement("button")
+        modeBtn.type = "button"
+        const profitAvailable = typeof RouteAssistantWaveSlotScorer !== "undefined"
+        modeBtn.textContent = modeLabel(currentMode)
+        modeBtn.title = "Assignment mode — click to cycle.\n"
+            + "  ▦ Bucket greedy: fill each wave's S/M/L composition by distance.\n"
+            + "  🎯 Connection graph: hill-climb to maximise inbound→outbound pairs.\n"
+            + (profitAvailable
+                ? "  💰 Per-slot profit: rank (route × wave) by profit + range + demand + connections + aircraft fit, then greedy-best-marginal.\n"
+                : "  💰 Per-slot profit: (module not loaded — skipping)\n")
+            + "Composition counts are CAPS in connection / profit modes — waves may land below their wanted count."
+        Object.assign(modeBtn.style, smallBtnStyle())
+        modeBtn.style.background  = modeBg(currentMode)
+        modeBtn.style.borderColor = modeBg(currentMode)
+        modeBtn.style.color       = modeFg(currentMode)
+        modeBtn.addEventListener("click", async () => {
+            const cycle = profitAvailable
+                ? ["greedy", "connection", "profit"]
+                : ["greedy", "connection"]
+            const idx = cycle.indexOf(currentMode)
+            const next = cycle[(idx + 1) % cycle.length] || "greedy"
             this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
-                {optimize: next})
+                {optimizeMode: next, optimize: next === "connection"})
             try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
             catch (e) { /* non-fatal */ }
             this._waveBuild = null
             this._renderRows()
         })
-        wrap.append(optBtn)
+        wrap.append(modeBtn)
+
+        // F slice 4 — Draft toggle. Forks the active preset into a
+        // sandboxed copy so the user can iterate without polluting the
+        // live preset. While drafting, the header turns amber and a
+        // banner with promote / discard / save-as-variant appears
+        // beneath. Hidden when no preset is active (nothing to fork).
+        if (preset && typeof RouteAssistantWaveDraftStore !== "undefined") {
+            const draftBtn = document.createElement("button")
+            draftBtn.type = "button"
+            if (isDraft) {
+                draftBtn.textContent = "🟧 Drafting"
+                draftBtn.title = "Currently editing a draft fork of the live preset."
+                    + " See banner below for promote / discard / save-as-variant."
+                Object.assign(draftBtn.style, smallBtnStyle())
+                draftBtn.style.background  = "#7c2d12"
+                draftBtn.style.borderColor = "#7c2d12"
+                draftBtn.style.color       = "#fed7aa"
+                draftBtn.disabled = true
+                draftBtn.style.cursor = "default"
+                draftBtn.style.opacity = "0.85"
+            } else {
+                draftBtn.textContent = "🟧 Draft"
+                draftBtn.title = "Fork the active preset into a sandboxed draft."
+                    + " You can edit it freely; promote back to the live preset"
+                    + " when satisfied, or save as a new variant."
+                Object.assign(draftBtn.style, smallBtnStyle())
+                draftBtn.style.background  = "#1f2937"
+                draftBtn.style.borderColor = "#475569"
+                draftBtn.style.color       = "#cbd5e1"
+                draftBtn.addEventListener("click", () => this._draftStart(pickedHub, preset))
+            }
+            wrap.append(draftBtn)
+        }
+
+        // F slice 5 — Backtest button. Opens a modal that replays the
+        // active plan against historical yield-history snapshots and
+        // shows would-have-been profit per week. Hidden when no preset
+        // is active (nothing to backtest).
+        if (preset && typeof RouteAssistantWavePlanBacktest !== "undefined") {
+            const backtestBtn = document.createElement("button")
+            backtestBtn.type = "button"
+            backtestBtn.textContent = "📈 Backtest"
+            backtestBtn.title = "Replay this plan against historical yield-history"
+                + " snapshots to see how its route selection would have performed."
+                + " Needs at least 4 weeks of snapshots."
+            Object.assign(backtestBtn.style, smallBtnStyle())
+            backtestBtn.style.background  = "#1f2937"
+            backtestBtn.style.borderColor = "#475569"
+            backtestBtn.style.color       = "#cbd5e1"
+            backtestBtn.addEventListener("click", () =>
+                this._runWaveBacktest(pickedHub, preset))
+            wrap.append(backtestBtn)
+        }
 
         // Slice 2 — Save schedule CTA. Lifts the slice-1 read-only
         // invariant on the explicit-action path only: the click handler
@@ -5867,6 +7122,9 @@ class RouteAssistantPanel {
     // the model with the current scenario, render the result.
 
     _renderOrsSandbox(sorted) {
+        // Slice 4d — stash the visible row list so the batch-projection
+        // helper can reach top-N without re-running the score pipeline.
+        this._orsSandboxLastSorted = sorted || []
         this.tableHost.innerHTML = ""
         const cfg = (this.settings && this.settings.orsSandbox) || {}
 
@@ -6201,6 +7459,7 @@ class RouteAssistantPanel {
             pick.addEventListener("click", () => {
                 this._orsSandboxRoute = null
                 this._orsSandboxResult = null
+                this._orsSandboxPinnedResult = null
                 this._render()
             })
             wrap.append(pick)
@@ -6266,6 +7525,7 @@ class RouteAssistantPanel {
             if (!row) return
             this._orsSandboxRoute = {hub: this.hubIata, dest: row.destIata, _row: row}
             this._orsSandboxResult = null
+            this._orsSandboxPinnedResult = null
             // Persist last-used route.
             const cfg = Object.assign({}, this.settings.orsSandbox || {})
             cfg.lastRouteIata = row.destIata
@@ -6530,7 +7790,426 @@ class RouteAssistantPanel {
         applyRow.append(applyHint, applyBtn)
         card.append(applyRow)
 
+        // ----- Slice 4a — sweet-spot finder ------------------------------
+        // Scans a uniform price multiplier across [0.7, 1.3] in 5% steps
+        // and surfaces the profit-maximising point. Click the result line
+        // to apply: snaps every cabin slider to the optimal multiplier and
+        // dispatches their input event so the existing recompute pipeline
+        // picks the change up.
+        const scanRow = document.createElement("div")
+        scanRow.style.cssText = "margin-top:10px;padding-top:10px;border-top:1px solid rgba(100,116,139,0.30);"
+            + "display:flex;flex-direction:column;gap:4px;"
+        const scanBtn = document.createElement("button")
+        scanBtn.type = "button"
+        scanBtn.textContent = "Find optimal price"
+        scanBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #475569;"
+            + "border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;align-self:flex-start;"
+        const scanOut = document.createElement("div")
+        scanOut.style.cssText = "color:#9ca3af;font-size:11px;min-height:14px;"
+        scanBtn.addEventListener("click", () => {
+            const out = this._runOrsSandboxScan(route)
+            if (!out) {
+                scanOut.textContent = "No projection signal — need own connection + spec/fuel inputs."
+                scanOut.style.color = "#fbbf24"
+                return
+            }
+            const mult = out.optimal.multiplier
+            const pct  = (out.optimal.deltaPct != null)
+                ? ((out.optimal.deltaPct >= 0 ? "+" : "") + (out.optimal.deltaPct * 100).toFixed(1) + "%")
+                : "—"
+            scanOut.innerHTML = ""
+            const pre = document.createElement("span")
+            pre.textContent = "Optimal: "
+            const link = document.createElement("a")
+            link.href = "#"
+            link.textContent = mult.toFixed(2) + "× → " + pct + " profit/wk"
+            link.style.cssText = "color:#fbbf24;text-decoration:underline;cursor:pointer;"
+            link.addEventListener("click", (e) => {
+                e.preventDefault()
+                for (const cls of ["Y", "C", "F"]) {
+                    if (!sliders[cls]) continue
+                    sliders[cls].value = mult.toFixed(2)
+                    sliders[cls].dispatchEvent(new Event("input", {bubbles: true}))
+                }
+            })
+            scanOut.style.color = "#9ca3af"
+            scanOut.append(pre, link)
+            if (mult === 1) {
+                const tail = document.createElement("span")
+                tail.textContent = " (current price already optimal)"
+                tail.style.color = "#6b7280"
+                scanOut.append(tail)
+            }
+        })
+        scanRow.append(scanBtn, scanOut)
+        card.append(scanRow)
+
+        // ----- Slice 4d — multi-route batch projection -------------------
+        // Apply the live scenario to the top-N visible rows in one shot
+        // and roll up the profit delta. Read-only — never writes back.
+        const batchRow = document.createElement("div")
+        batchRow.style.cssText = "margin-top:10px;padding-top:10px;border-top:1px solid rgba(100,116,139,0.30);"
+            + "display:flex;flex-direction:column;gap:4px;"
+        const batchControls = document.createElement("div")
+        batchControls.style.cssText = "display:flex;align-items:center;gap:6px;"
+        const batchN = document.createElement("input")
+        batchN.type = "number"
+        batchN.min = "2"
+        batchN.max = "100"
+        batchN.step = "1"
+        batchN.value = "20"
+        batchN.style.cssText = "width:56px;background:#0f1623;color:#f3f4f6;border:1px solid #475569;"
+            + "border-radius:3px;padding:2px 4px;font-size:11px;"
+        const batchBtn = document.createElement("button")
+        batchBtn.type = "button"
+        batchBtn.textContent = "Run scenario across top-N routes"
+        batchBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #475569;"
+            + "border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;"
+        batchControls.append(batchN, batchBtn)
+        const batchOut = document.createElement("div")
+        batchOut.style.cssText = "color:#9ca3af;font-size:11px;"
+        batchBtn.addEventListener("click", () => {
+            const n = Math.max(2, Math.min(100, Number(batchN.value) || 20))
+            const scenario = this._readOrsSandboxControls(sliders, cargoSlider, freqInput, comfortSel)
+            const out = this._runOrsSandboxBatch(scenario, n)
+            batchOut.innerHTML = ""
+            batchOut.append(this._buildOrsSandboxBatchCard(out))
+        })
+        batchRow.append(batchControls, batchOut)
+        card.append(batchRow)
+
+        // ----- Slice 4c — saved named scenarios --------------------------
+        // Mounted ABOVE the sliders for quick "I want to revisit X" recall.
+        // Build the row now; populate it asynchronously once the per-route
+        // store has resolved. References sliders / cargoSlider / freqInput /
+        // comfortSel via closure — those `const`s are in scope by the time
+        // any click handler fires.
+        const savedRow = document.createElement("div")
+        savedRow.style.cssText = "margin:0 0 8px 0;padding:6px 8px;background:rgba(30,41,59,0.40);"
+            + "border:1px dashed rgba(100,116,139,0.30);border-radius:4px;display:flex;align-items:center;"
+            + "gap:6px;flex-wrap:wrap;font-size:11px;color:#9ca3af;"
+        savedRow.textContent = "Loading saved scenarios…"
+        // Insert immediately after the header so it sits above every control.
+        card.insertBefore(savedRow, h.nextSibling)
+        const renderSaved = (items) => {
+            savedRow.innerHTML = ""
+            const lab = document.createElement("span")
+            lab.textContent = "Saved:"
+            lab.style.color = "#cbd5e1"
+            savedRow.append(lab)
+            const sel = document.createElement("select")
+            sel.style.cssText = "background:#0f1623;color:#f3f4f6;border:1px solid #475569;"
+                + "border-radius:3px;padding:2px 4px;font-size:11px;min-width:160px;"
+            const placeholder = document.createElement("option")
+            placeholder.value = ""
+            placeholder.textContent = items.length
+                ? "— pick a scenario —"
+                : "(none yet)"
+            sel.append(placeholder)
+            for (const it of items) {
+                const o = document.createElement("option")
+                o.value = it.id
+                o.textContent = it.name
+                sel.append(o)
+            }
+            sel.addEventListener("change", () => {
+                const id = sel.value
+                if (!id) return
+                const item = items.find(x => x.id === id)
+                if (!item || !item.scenario) return
+                this._applyOrsSandboxScenarioToControls(item.scenario, sliders, cargoSlider, freqInput, comfortSel)
+                // Reset the select so re-picking the same item still re-applies.
+                sel.value = ""
+            })
+            savedRow.append(sel)
+
+            const saveBtn = document.createElement("button")
+            saveBtn.type = "button"
+            saveBtn.textContent = "Save current…"
+            saveBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #475569;"
+                + "border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;"
+            saveBtn.addEventListener("click", async () => {
+                const name = (typeof prompt === "function")
+                    ? prompt("Name this scenario (max 60 chars):", "") : null
+                if (name == null) return
+                const trimmed = String(name).trim()
+                if (!trimmed) return
+                const scenario = this._readOrsSandboxControls(sliders, cargoSlider, freqInput, comfortSel)
+                try {
+                    await RouteAssistantSandboxScenariosStore.save(
+                        route.hub || this.hubIata, route.dest, {name: trimmed, scenario}
+                    )
+                    const next = await RouteAssistantSandboxScenariosStore.list(
+                        route.hub || this.hubIata, route.dest
+                    )
+                    renderSaved(next)
+                } catch (e) { /* non-fatal */ }
+            })
+            savedRow.append(saveBtn)
+
+            if (items.length) {
+                const delBtn = document.createElement("button")
+                delBtn.type = "button"
+                delBtn.textContent = "Delete…"
+                delBtn.title = "Remove the scenario currently picked in the dropdown."
+                delBtn.style.cssText = "background:transparent;color:#f87171;border:1px solid rgba(248,113,113,0.5);"
+                    + "border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;"
+                delBtn.addEventListener("click", async () => {
+                    const id = sel.value
+                    if (!id) return
+                    try {
+                        await RouteAssistantSandboxScenariosStore.remove(
+                            route.hub || this.hubIata, route.dest, id
+                        )
+                        const next = await RouteAssistantSandboxScenariosStore.list(
+                            route.hub || this.hubIata, route.dest
+                        )
+                        renderSaved(next)
+                    } catch (e) { /* non-fatal */ }
+                })
+                savedRow.append(delBtn)
+                const hint = document.createElement("span")
+                hint.style.cssText = "color:#6b7280;font-size:10px;margin-left:auto;"
+                hint.textContent = items.length + "/5 saved · cap evicts oldest"
+                savedRow.append(hint)
+            }
+        }
+        if (typeof RouteAssistantSandboxScenariosStore !== "undefined") {
+            RouteAssistantSandboxScenariosStore.list(route.hub || this.hubIata, route.dest)
+                .then(renderSaved).catch(() => renderSaved([]))
+        } else {
+            renderSaved([])
+        }
+
         return card
+    }
+
+    /**
+     * Slice 4d — apply the given scenario to the top-N visible routes
+     * and return per-route projections + a roll-up. Reuses the same
+     * modelParams the live projection just used (cached on
+     * `_orsSandboxResult.modelParams`) so the batch matches what the
+     * single-route panel showed.
+     */
+    _runOrsSandboxBatch(scenario, n) {
+        const sorted = this._orsSandboxLastSorted || []
+        const top = sorted.slice(0, Math.max(2, Math.min(100, Number(n) || 20)))
+        const cached = this._orsSandboxResult || {}
+        const mp = (cached && cached.modelParams) || {}
+        const rows = []
+        const economics = this.settings.economics || {}
+        const useReal = !!(this.settings.demandDepth && this.settings.demandDepth.useRealDemandForLF)
+        let baseTotal = 0, projTotal = 0, baseAny = false, projAny = false, skipped = 0
+        for (const row of top) {
+            const route = this._assembleOrsSandboxRoute(row)
+            if (!route || !route.orsByClass || !Object.keys(route.orsByClass).length) {
+                skipped++
+                continue
+            }
+            const res = RouteAssistantOrsModel.project({
+                route:     route,
+                scenario:  scenario,
+                modelParams: {
+                    ratingPriceElasticity:        mp.ratingPriceElasticity,
+                    ratingComfortLift:            mp.ratingComfortLift,
+                    ratingPriceElasticityByClass: mp.ratingPriceElasticityByClass,
+                    alphaSourceByClass:           mp.alphaSourceByClass
+                    // Per-route T from the cached single-route projection
+                    // would bias every batch row toward that route's T —
+                    // intentionally omitted; the model falls back to the
+                    // global temperature for routes without their own.
+                },
+                economics:          economics,
+                useRealDemandForLF: useReal
+            })
+            const baseProfit = (res && res.baseline)  ? Number(res.baseline.profitPerWeek)  : null
+            const projProfit = (res && res.projected) ? Number(res.projected.profitPerWeek) : null
+            const delta = (isFinite(baseProfit) && isFinite(projProfit)) ? (projProfit - baseProfit) : null
+            if (isFinite(baseProfit)) { baseTotal += baseProfit; baseAny = true }
+            if (isFinite(projProfit)) { projTotal += projProfit; projAny = true }
+            rows.push({
+                hub:        route.hub || this.hubIata,
+                dest:       route.dest,
+                baseProfit: isFinite(baseProfit) ? baseProfit : null,
+                projProfit: isFinite(projProfit) ? projProfit : null,
+                delta:      delta
+            })
+        }
+        return {
+            scenario:  scenario,
+            rows:      rows,
+            skipped:   skipped,
+            requested: top.length,
+            totals: {
+                baseProfit: baseAny ? Math.round(baseTotal) : null,
+                projProfit: projAny ? Math.round(projTotal) : null,
+                deltaProfit: (baseAny && projAny) ? Math.round(projTotal - baseTotal) : null,
+                deltaPct:    (baseAny && projAny && baseTotal !== 0)
+                    ? (projTotal - baseTotal) / Math.abs(baseTotal) : null
+            }
+        }
+    }
+
+    /** Slice 4d — render the batch-projection summary card. */
+    _buildOrsSandboxBatchCard(out) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:6px;padding:8px;border:1px solid rgba(100,116,139,0.30);"
+            + "border-radius:4px;background:rgba(15,22,35,0.45);"
+        if (!out || !out.rows || !out.rows.length) {
+            wrap.style.color = "#fbbf24"
+            wrap.textContent = "No projectable routes in the visible set "
+                + "(need cached ORS data + spec + fuel inputs)."
+            return wrap
+        }
+        const totals = out.totals || {}
+        const fmtMoney = (v) => (v == null || !isFinite(v))
+            ? "—"
+            : (v >= 0 ? "" : "−") + "$" + Math.abs(Math.round(v)).toLocaleString()
+        const head = document.createElement("div")
+        head.style.cssText = "color:#cbd5e1;font-size:12px;margin-bottom:6px;"
+        const pct = (totals.deltaPct != null)
+            ? ((totals.deltaPct >= 0 ? "+" : "") + (totals.deltaPct * 100).toFixed(1) + "%")
+            : "—"
+        const deltaColor = (totals.deltaProfit == null) ? "#9ca3af"
+            : (totals.deltaProfit > 0 ? "#34d399" : (totals.deltaProfit < 0 ? "#f87171" : "#9ca3af"))
+        head.innerHTML = "<strong>" + out.rows.length + " routes</strong> "
+            + "<span style='color:#6b7280;'>across the top " + out.requested + " visible"
+            + (out.skipped ? " · " + out.skipped + " skipped (no ORS)" : "") + "</span>"
+            + " &nbsp; Σ profit/wk: <span style='color:#e5e7eb;'>" + fmtMoney(totals.baseProfit) + "</span>"
+            + " → <span style='color:#e5e7eb;'>" + fmtMoney(totals.projProfit) + "</span>"
+            + " (<span style='color:" + deltaColor + ";'>" + fmtMoney(totals.deltaProfit) + " · " + pct + "</span>)"
+        wrap.append(head)
+        const tbl = document.createElement("table")
+        tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:11px;"
+        const trH = document.createElement("tr")
+        for (const t of ["Route", "Base profit/wk", "Projected", "Δ"]) {
+            const th = document.createElement("th")
+            th.style.cssText = "padding:2px 6px;color:#6b7280;font-weight:normal;"
+                + "border-bottom:1px solid rgba(100,116,139,0.3);text-align:right;"
+            if (t === "Route") th.style.textAlign = "left"
+            th.textContent = t
+            trH.append(th)
+        }
+        tbl.append(trH)
+        // Sort the rows by absolute delta — the routes with the largest
+        // movement (positive or negative) are what the user wants to eyeball.
+        const ordered = out.rows.slice().sort((a, b) =>
+            Math.abs(b.delta || 0) - Math.abs(a.delta || 0))
+        for (const r of ordered) {
+            const tr = document.createElement("tr")
+            const lab = document.createElement("td")
+            lab.style.cssText = "padding:2px 6px;color:#cbd5e1;"
+            lab.textContent = (r.hub || "") + "→" + (r.dest || "")
+            tr.append(lab)
+            for (const v of [r.baseProfit, r.projProfit]) {
+                const td = document.createElement("td")
+                td.style.cssText = "padding:2px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#e5e7eb;"
+                td.textContent = fmtMoney(v)
+                tr.append(td)
+            }
+            const dtd = document.createElement("td")
+            dtd.style.cssText = "padding:2px 6px;text-align:right;font-variant-numeric:tabular-nums;width:80px;"
+            dtd.textContent = fmtMoney(r.delta)
+            dtd.style.color = (r.delta == null) ? "#6b7280"
+                : (r.delta > 0 ? "#34d399" : (r.delta < 0 ? "#f87171" : "#9ca3af"))
+            tr.append(dtd)
+            tbl.append(tr)
+        }
+        wrap.append(tbl)
+        return wrap
+    }
+
+    /**
+     * Slice 4c — read the current scenario card controls into a model-
+     * compatible scenario object. Mirrors the `onChange` reader inside
+     * `_buildOrsSandboxScenarioCard` so saving and live recompute stay
+     * in lockstep.
+     */
+    _readOrsSandboxControls(sliders, cargoSlider, freqInput, comfortSel) {
+        const pm = {Y: 1, C: 1, F: 1}
+        for (const cls of ["Y", "C", "F"]) {
+            if (sliders && sliders[cls]) pm[cls] = Number(sliders[cls].value) || 1
+        }
+        return {
+            priceMultipliers: pm,
+            cargoMultiplier:  cargoSlider ? (Number(cargoSlider.value) || 1) : 1,
+            frequency:        freqInput ? Number(freqInput.value) : null,
+            comfortDelta:     comfortSel ? (Number(comfortSel.value) || 0) : 0
+        }
+    }
+
+    /**
+     * Slice 4c — write a saved scenario back into the live controls and
+     * dispatch the events the live recompute pipeline listens to. Skips
+     * controls that don't exist on this route (e.g. a cabin without
+     * cached fares has no slider).
+     */
+    _applyOrsSandboxScenarioToControls(scenario, sliders, cargoSlider, freqInput, comfortSel) {
+        const pm = (scenario && scenario.priceMultipliers) || {}
+        for (const cls of ["Y", "C", "F"]) {
+            if (!sliders || !sliders[cls]) continue
+            const v = Number(pm[cls])
+            if (isFinite(v) && v > 0) {
+                sliders[cls].value = v.toFixed(2)
+                sliders[cls].dispatchEvent(new Event("input", {bubbles: true}))
+            }
+        }
+        if (cargoSlider && isFinite(Number(scenario && scenario.cargoMultiplier))) {
+            cargoSlider.value = Number(scenario.cargoMultiplier).toFixed(2)
+            cargoSlider.dispatchEvent(new Event("input", {bubbles: true}))
+        }
+        if (freqInput && scenario && scenario.frequency != null && isFinite(Number(scenario.frequency))) {
+            freqInput.value = String(Math.round(Number(scenario.frequency)))
+            freqInput.dispatchEvent(new Event("input", {bubbles: true}))
+        }
+        if (comfortSel && scenario && isFinite(Number(scenario.comfortDelta))) {
+            comfortSel.value = String(Math.round(Number(scenario.comfortDelta)))
+            comfortSel.dispatchEvent(new Event("change", {bubbles: true}))
+        }
+    }
+
+    /**
+     * Slice 4b — return the active pinned snapshot iff it belongs to the
+     * route currently displayed; null otherwise. Prevents a pin from one
+     * route bleeding into the results card after a route switch.
+     */
+    _orsSandboxPinForRoute(route) {
+        const p = this._orsSandboxPinnedResult
+        if (!p || !p.snapshot) return null
+        const rDest = String((route && route.dest) || "").toUpperCase()
+        const rHub  = String((route && route.hub)  || this.hubIata || "").toUpperCase()
+        if (String(p.dest || "").toUpperCase() !== rDest) return null
+        if (String(p.hub  || "").toUpperCase() !== rHub)  return null
+        return p
+    }
+
+    /**
+     * Slice 4a — run a uniform-multiplier price sweep against the model
+     * using the same modelParams the live projection just consumed (cached
+     * on `_orsSandboxResult.modelParams`). Returns null when no projection
+     * has run yet for this route.
+     */
+    _runOrsSandboxScan(route) {
+        if (!route) return null
+        const cached = this._orsSandboxResult || null
+        if (!cached || !cached.modelParams) return null
+        const mp = cached.modelParams
+        const baseScenario = (cached.scenario && typeof cached.scenario === "object")
+            ? cached.scenario : {}
+        return RouteAssistantOrsModel.scanPriceCurve({
+            route:              route,
+            scenario:           baseScenario,
+            modelParams: {
+                ratingPriceElasticity:        mp.ratingPriceElasticity,
+                ratingComfortLift:            mp.ratingComfortLift,
+                ratingPriceElasticityByClass: mp.ratingPriceElasticityByClass,
+                alphaSourceByClass:           mp.alphaSourceByClass,
+                perRouteT:                    mp.T
+            },
+            economics:          this.settings.economics || {},
+            useRealDemandForLF: !!(this.settings.demandDepth && this.settings.demandDepth.useRealDemandForLF),
+            scan: {lo: 0.7, hi: 1.3, step: 0.05}
+        })
     }
 
     /** Small label + sublabel + control container row. */
@@ -6638,9 +8317,42 @@ class RouteAssistantPanel {
         card.style.cssText = "padding:12px;border:1px solid rgba(100,116,139,0.35);border-radius:4px;"
             + "background:rgba(15,22,35,0.45);color:#e5e7eb;font-size:12px;"
         const h = document.createElement("div")
-        h.style.cssText = "color:#cbd5e1;margin-bottom:8px;"
-        h.innerHTML = "<strong>Outcome</strong> "
-            + "<span style='color:#6b7280;font-size:11px;'>— baseline · projected · Δ</span>"
+        h.style.cssText = "color:#cbd5e1;margin-bottom:8px;display:flex;align-items:center;gap:8px;"
+        const hLabel = document.createElement("span")
+        // Slice 4b — header copy mentions the pinned column when active.
+        const pinned = this._orsSandboxPinForRoute(route)
+        hLabel.innerHTML = pinned
+            ? "<strong>Outcome</strong> <span style='color:#6b7280;font-size:11px;'>— baseline · pinned · projected · Δ</span>"
+            : "<strong>Outcome</strong> <span style='color:#6b7280;font-size:11px;'>— baseline · projected · Δ</span>"
+        h.append(hLabel)
+        // Slice 4b — pin/unpin toggle.
+        const pinBtn = document.createElement("button")
+        pinBtn.type = "button"
+        pinBtn.style.cssText = "margin-left:auto;background:#1f2937;color:#cbd5e1;border:1px solid #475569;"
+            + "border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;"
+        pinBtn.textContent = pinned ? "✕ Clear pin" : "📌 Pin scenario"
+        pinBtn.title = pinned
+            ? "Drop the pinned A/B comparison column."
+            : "Snapshot this projection as 'A'; the live sliders become 'B' for side-by-side comparison."
+        pinBtn.addEventListener("click", () => {
+            if (this._orsSandboxPinForRoute(route)) {
+                this._orsSandboxPinnedResult = null
+            } else if (result && result.projected) {
+                this._orsSandboxPinnedResult = {
+                    hub:       (route && route.hub)  || this.hubIata,
+                    dest:      (route && route.dest) || null,
+                    snapshot:  result
+                }
+            }
+            // Re-render the results card via the recompute pipeline so the
+            // notes footer and pin label both stay in sync.
+            if (this._orsSandboxResultsHost && this._orsSandboxResultsHost.parentNode) {
+                const next = this._buildOrsSandboxResultsCard(this._orsSandboxResult, route)
+                this._orsSandboxResultsHost.parentNode.replaceChild(next, this._orsSandboxResultsHost)
+                this._orsSandboxResultsHost = next
+            }
+        })
+        h.append(pinBtn)
         card.append(h)
 
         // Slice 3a — confidence pill above the table.
@@ -6654,43 +8366,52 @@ class RouteAssistantPanel {
 
         const tbl = document.createElement("table")
         tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:12px;"
-        const renderRow = (label, fmtKey, baseVal, projVal, deltaVal, tooltip, annotation) => {
+        const fmt = this._formatOrsSandboxValue.bind(this)
+        // Slice 4b — when a pinned snapshot exists, inject a Pinned column
+        // (with its own delta-vs-baseline) between Base and the live
+        // Projected. `pinned` is null when no pin is active or when the
+        // pinned route doesn't match the visible one.
+        const renderRow = (label, fmtKey, baseVal, projVal, deltaVal, tooltip, annotation, pinVal, pinDelta) => {
             const tr = document.createElement("tr")
-            const cells = []
             const lab = document.createElement("td")
             lab.style.cssText = "padding:3px 6px;color:#9ca3af;width:90px;"
             lab.textContent = label
             if (tooltip) lab.title = tooltip
-            cells.push(lab)
-            const fmt = this._formatOrsSandboxValue.bind(this)
-            // Base + Projected cells. Annotation (e.g. clamp marker) attaches to the projected cell.
-            const slots = [{v: baseVal, isProjected: false}, {v: projVal, isProjected: true}]
-            for (const slot of slots) {
+            tr.append(lab)
+            const mkValueCell = (v, isProjected) => {
                 const td = document.createElement("td")
                 td.style.cssText = "padding:3px 6px;text-align:right;font-variant-numeric:tabular-nums;color:#e5e7eb;"
-                td.textContent = fmt(slot.v, fmtKey)
-                if (slot.isProjected && annotation && annotation.marker) {
+                td.textContent = fmt(v, fmtKey)
+                if (isProjected && annotation && annotation.marker) {
                     td.textContent = td.textContent + annotation.marker
                     td.style.color = "#fbbf24"
                     if (annotation.tooltip) td.title = annotation.tooltip
                 }
-                cells.push(td)
+                return td
             }
-            const dtd = document.createElement("td")
-            dtd.style.cssText = "padding:3px 6px;text-align:right;font-variant-numeric:tabular-nums;width:80px;"
-            const dStr = fmt(deltaVal, fmtKey, true)
-            dtd.textContent = dStr
-            if (typeof deltaVal === "number" && isFinite(deltaVal)) {
-                dtd.style.color = deltaVal > 0 ? "#34d399" : (deltaVal < 0 ? "#f87171" : "#9ca3af")
-            } else {
-                dtd.style.color = "#6b7280"
+            const mkDeltaCell = (d) => {
+                const td = document.createElement("td")
+                td.style.cssText = "padding:3px 6px;text-align:right;font-variant-numeric:tabular-nums;width:80px;"
+                td.textContent = fmt(d, fmtKey, true)
+                if (typeof d === "number" && isFinite(d)) {
+                    td.style.color = d > 0 ? "#34d399" : (d < 0 ? "#f87171" : "#9ca3af")
+                } else {
+                    td.style.color = "#6b7280"
+                }
+                return td
             }
-            cells.push(dtd)
-            for (const c of cells) tr.append(c)
+            tr.append(mkValueCell(baseVal, false))
+            if (pinned) {
+                tr.append(mkValueCell(pinVal, false))
+                tr.append(mkDeltaCell(pinDelta))
+            }
+            tr.append(mkValueCell(projVal, true))
+            tr.append(mkDeltaCell(deltaVal))
             return tr
         }
         const head = document.createElement("tr")
-        for (const t of ["", "Base", "Projected", "Δ"]) {
+        const headerCols = pinned ? ["", "Base", "Pinned", "Δ", "Projected", "Δ"] : ["", "Base", "Projected", "Δ"]
+        for (const t of headerCols) {
             const th = document.createElement("th")
             th.style.cssText = "padding:3px 6px;color:#6b7280;font-weight:normal;text-align:right;border-bottom:1px solid rgba(100,116,139,0.3);"
             if (t === "") th.style.textAlign = "left"
@@ -6702,22 +8423,31 @@ class RouteAssistantPanel {
         const baseline = (result && result.baseline) || {}
         const projected = (result && result.projected) || {}
         const delta = (result && result.delta) || {}
+        // Pinned snapshot — pulled from `_orsSandboxPinForRoute` above so we
+        // never render a pin from a stale route.
+        const pinSnap   = pinned ? (pinned.snapshot || {}) : null
+        const pinProj   = pinSnap ? (pinSnap.projected || {}) : null
+        const pinDelta  = pinSnap ? (pinSnap.delta     || {}) : null
+        const pin = (k) => pinProj ? pinProj[k] : null
+        const pinD = (k) => pinDelta ? pinDelta[k] : null
 
         // Rank — only show the most useful flavor (`nonstop` if any, else `any`).
         const baseRank = (baseline.rank && (baseline.rank.nonstop != null ? baseline.rank.nonstop : baseline.rank.any)) || null
         const projRank = (projected.rank && (projected.rank.nonstop != null ? projected.rank.nonstop : projected.rank.any)) || null
         const rankDelta = (typeof baseRank === "number" && typeof projRank === "number") ? (projRank - baseRank) : null
+        const pinRank = (pinProj && pinProj.rank) ? (pinProj.rank.nonstop != null ? pinProj.rank.nonstop : pinProj.rank.any) : null
+        const pinRankDelta = (typeof baseRank === "number" && typeof pinRank === "number") ? (pinRank - baseRank) : null
 
         const ratingAnnotation = this._clampedClasses(result)
-        tbl.append(renderRow("Rating",     "rating", baseline.rating,        projected.rating,        delta.rating, "Our top per-class rating from the cached connection list. Projection applies a linear-in-percent rating shift then clamps to ±50% of the baseline.", ratingAnnotation))
-        tbl.append(renderRow("Rank",       "rank",   baseRank,               projRank,                rankDelta != null ? -rankDelta : null, "Rank in the ORS connection list for the primary class (nonstop preferred over any). Lower rank position = better, so Δ is sign-flipped here."))
-        tbl.append(renderRow("Share",      "share",  baseline.share,         projected.share,         delta.share, "Numeric-stable softmax over connection ratings, summed across our connections. Default temperature T=25; calibrate per-route from the markets-page leaderboard."))
-        tbl.append(renderRow("Pax/wk",     "pax",    baseline.paxPerWeek,    projected.paxPerWeek,    delta.paxPerWeek, "Demand pool × projected share. Pool comes from the markets-page historic chart; price-side elasticity (from demand-derivator) shifts the pool proportionally to (newPrice/observedPrice)^elasticity."))
-        if (baseline.cargoPerWeek != null || projected.cargoPerWeek != null) {
-            tbl.append(renderRow("Cargo/wk", "pax", baseline.cargoPerWeek, projected.cargoPerWeek, delta.cargoPerWeek, "Cargo demand pool × projected cargo share. Cargo multiplier scales yield only — share doesn't shift with price in the current model."))
+        tbl.append(renderRow("Rating",     "rating", baseline.rating,        projected.rating,        delta.rating, "Our top per-class rating from the cached connection list. Projection applies a linear-in-percent rating shift then clamps to ±50% of the baseline.", ratingAnnotation, pin("rating"), pinD("rating")))
+        tbl.append(renderRow("Rank",       "rank",   baseRank,               projRank,                rankDelta != null ? -rankDelta : null, "Rank in the ORS connection list for the primary class (nonstop preferred over any). Lower rank position = better, so Δ is sign-flipped here.", null, pinRank, pinRankDelta != null ? -pinRankDelta : null))
+        tbl.append(renderRow("Share",      "share",  baseline.share,         projected.share,         delta.share, "Numeric-stable softmax over connection ratings, summed across our connections. Default temperature T=25; calibrate per-route from the markets-page leaderboard.", null, pin("share"), pinD("share")))
+        tbl.append(renderRow("Pax/wk",     "pax",    baseline.paxPerWeek,    projected.paxPerWeek,    delta.paxPerWeek, "Demand pool × projected share. Pool comes from the markets-page historic chart; price-side elasticity (from demand-derivator) shifts the pool proportionally to (newPrice/observedPrice)^elasticity.", null, pin("paxPerWeek"), pinD("paxPerWeek")))
+        if (baseline.cargoPerWeek != null || projected.cargoPerWeek != null || (pinProj && pinProj.cargoPerWeek != null)) {
+            tbl.append(renderRow("Cargo/wk", "pax", baseline.cargoPerWeek, projected.cargoPerWeek, delta.cargoPerWeek, "Cargo demand pool × projected cargo share. Cargo multiplier scales yield only — share doesn't shift with price in the current model.", null, pin("cargoPerWeek"), pinD("cargoPerWeek")))
         }
-        tbl.append(renderRow("Revenue/wk", "money",  baseline.revenuePerWeek, projected.revenuePerWeek, delta.revenuePerWeek, "Estimator's revenue × frequency. Override paxLF = projected pax/(seats×freq), override yieldPerKm = newPriceY/distance. Cargo revenue folds in via cargoLoadFactor × effectiveCargoYield × distance."))
-        tbl.append(renderRow("Profit/wk",  "money",  baseline.profitPerWeek,  projected.profitPerWeek,  delta.profitPerWeek, "Estimator's profit × frequency. Costs unchanged; revenue moves with both price and projected pax."))
+        tbl.append(renderRow("Revenue/wk", "money",  baseline.revenuePerWeek, projected.revenuePerWeek, delta.revenuePerWeek, "Estimator's revenue × frequency. Override paxLF = projected pax/(seats×freq), override yieldPerKm = newPriceY/distance. Cargo revenue folds in via cargoLoadFactor × effectiveCargoYield × distance.", null, pin("revenuePerWeek"), pinD("revenuePerWeek")))
+        tbl.append(renderRow("Profit/wk",  "money",  baseline.profitPerWeek,  projected.profitPerWeek,  delta.profitPerWeek, "Estimator's profit × frequency. Costs unchanged; revenue moves with both price and projected pax.", null, pin("profitPerWeek"), pinD("profitPerWeek")))
 
         card.append(tbl)
 
@@ -7499,35 +9229,61 @@ class RouteAssistantPanel {
     }
 
     /**
-     * Compact status legend pill row above the table — explains what NEW /
-     * OK / UNDER / OVER / OOR mean without forcing the user to hover every cell.
-     * OOR is only shown when an aircraft is selected (otherwise no row will
-     * carry that status).
+     * Compact two-axis legend above the table. The Operating axis describes
+     * whether you fly the route (NEW vs. weekly frequency); the Health axis
+     * describes whether your service is in line with real-world frequency
+     * (OK / UNDER / OVER / OOR) — applied to every route, flown or not.
+     * OOR only appears once an aircraft is picked.
      */
     _buildLegend() {
         const legend = document.createElement("div")
         legend.style.cssText = "display:flex;gap:10px;font-size:10px;margin:4px 0 8px 0;flex-wrap:wrap;align-items:center;"
-        const intro = document.createElement("span")
-        intro.textContent = "Status legend:"
-        intro.style.color = "#6b7280"
-        legend.append(intro)
         const shortDesc = {NEW: "you don't fly", OK: "healthy", UNDER: "scale up", OVER: "trim", OOR: "out of range"}
-        const keys = ["NEW", "OK", "UNDER", "OVER"]
-        if (this._fleetContext() !== null) keys.push("OOR")
-        for (const k of keys) {
-            const def = RouteAssistantPanel.STATUS_DEF[k]
+        const mkAxisIntro = (text) => {
+            const el = document.createElement("span")
+            el.textContent = text
+            el.style.color = "#6b7280"
+            return el
+        }
+        const mkPill = (key) => {
+            const def = RouteAssistantPanel.STATUS_DEF[key]
             const wrap = document.createElement("span")
             wrap.style.cssText = "display:inline-flex;align-items:center;gap:4px;"
             wrap.title = def.description
             const tag = document.createElement("strong")
-            tag.textContent = k
+            tag.textContent = key
             tag.style.color = def.color
             const desc = document.createElement("span")
-            desc.textContent = shortDesc[k] || ""
+            desc.textContent = shortDesc[key] || ""
             desc.style.color = "#9ca3af"
             wrap.append(tag, desc)
-            legend.append(wrap)
+            return wrap
         }
+
+        legend.append(mkAxisIntro("Operating:"))
+        legend.append(mkPill("NEW"))
+        const flying = document.createElement("span")
+        flying.style.cssText = "display:inline-flex;align-items:center;gap:4px;"
+        flying.title = "Your weekly frequency on this route, e.g. 5×."
+        const flyTag = document.createElement("strong")
+        flyTag.textContent = "N×"
+        flyTag.style.color = "#cbd5e1"
+        const flyDesc = document.createElement("span")
+        flyDesc.textContent = "weekly frequency"
+        flyDesc.style.color = "#9ca3af"
+        flying.append(flyTag, flyDesc)
+        legend.append(flying)
+
+        // Faint inline divider between the two axis groups.
+        const sep = document.createElement("span")
+        sep.style.cssText = "color:#374151;"
+        sep.textContent = "·"
+        legend.append(sep)
+
+        legend.append(mkAxisIntro("Health:"))
+        const healthKeys = ["OK", "UNDER", "OVER"]
+        if (this._fleetContext() !== null) healthKeys.push("OOR")
+        for (const k of healthKeys) legend.append(mkPill(k))
         return legend
     }
 
@@ -8548,22 +10304,31 @@ class RouteAssistantPanel {
         maxDistLbl.append(document.createTextNode("Max km"), maxDistSel)
         filtRow.append(maxDistLbl)
 
+        // Status checkboxes — split into Operating (NEW) and Health
+        // (OK/UNDER/OVER/OOR) groups so the settings drawer mirrors the
+        // chip-bar grouping.
         const statusBox = document.createElement("span")
-        statusBox.style.cssText = "display:flex;gap:8px;"
-        for (const s of ["NEW", "OK", "UNDER", "OVER", "OOR"]) {
+        statusBox.style.cssText = "display:flex;gap:8px;align-items:center;"
+        const buildStatusCheckbox = (s) => {
             const sCb = mkInput("checkbox", null)
             sCb.checked = (this.settings.filters.statuses[s] !== false)
             const lbl = document.createElement("label")
             lbl.style.cssText = "display:flex;gap:3px;align-items:center;color:" +
                 ((RouteAssistantPanel.STATUS_DEF[s] || {}).color || "#9ca3af") + ";"
             lbl.append(sCb, document.createTextNode(s))
-            statusBox.append(lbl)
             sCb.addEventListener("change", async () => {
                 this.settings.filters.statuses[s] = sCb.checked
                 await RouteAssistantSettings.save({filters: this.settings.filters})
                 this._render()
             })
+            return lbl
         }
+        statusBox.append(buildStatusCheckbox("NEW"))
+        const opSep = document.createElement("span")
+        opSep.style.cssText = "color:#374151;"
+        opSep.textContent = "·"
+        statusBox.append(opSep)
+        for (const s of ["OK", "UNDER", "OVER", "OOR"]) statusBox.append(buildStatusCheckbox(s))
         filtRow.append(statusBox)
 
         this.settingsHost.append(filtRow)
@@ -8972,20 +10737,22 @@ class RouteAssistantPanel {
 
         wrap.append(ctrlRow)
 
+        // Pricing diagnostics — single-glance status of WHY (or whether)
+        // prices are changing. Renders before the Tier 3 / silent-auto
+        // blocks so the user sees the chain of gates + data health at a
+        // glance. The blocks below own the actual toggles.
+        wrap.append(this._renderPricingDiagnostics(cfg))
+
         // Tier 3 — apply / write-back. Slice 3.1 ships dry-run only;
         // every gate has to be cleared (apply.enabled + apply.dryRunOnly=false)
         // before a real POST goes through. Always rendered so the user
         // sees the dry-run audit trail accumulate as they explore.
         wrap.append(this._renderTier3ApplyBlock(cfg))
 
-        // Tier 3.3 silent-auto loop is the next slice — pre-staged in
-        // settings (silentAutoEnabled / silentAutoMaxPerDay/Hour /
-        // silentAutoMinDeltaPct) but no loop runs yet.
-        const futureNote = document.createElement("div")
-        futureNote.style.cssText = "color:#6b7280;font-size:10px;margin-top:6px;line-height:1.4;"
-        futureNote.innerHTML = "Tier 3.3 (next): silent auto-apply loop behind a separate explicit gate "
-            + "(<code>silentAutoEnabled</code>) with per-day / per-hour / min-Δ% caps."
-        wrap.append(futureNote)
+        // Silent auto-pricing sub-block — always rendered so the user
+        // sees the activity feed even when the loop is off; the toggle
+        // gates first-activation behind a confirmation modal.
+        wrap.append(this._renderSilentAutoBlock(cfg))
 
         this.settingsHost.append(wrap)
     }
@@ -9011,6 +10778,7 @@ class RouteAssistantPanel {
             dryRunOnly: true,
             defaultScope: {airportPair: true, flightNumbers: true, returnAirportPair: false, returnFlightNumbers: false},
             cooldownMinPerRoute: 60,
+            cooldownMinGlobal: 5,
             warnAboveDeltaPct: 5,
             recentApplyPreviewCount: 10,
             showRecentApplies: true,
@@ -9083,6 +10851,105 @@ class RouteAssistantPanel {
         enableRow.append(enableLbl)
         block.append(enableRow)
 
+        // Tier 3.2 — cooldown tuning. Per-route is the primary throttle;
+        // global is the floor-level safety net for rapid-fire chains
+        // (single-route apply across N hubs in 30 s). Both 0 = disabled.
+        const cdRow = document.createElement("div")
+        cdRow.style.cssText = "display:flex;gap:14px;flex-wrap:wrap;align-items:center;"
+            + "font-size:11px;color:#c4b5fd;margin-bottom:4px;"
+        const perRouteWrap = document.createElement("label")
+        perRouteWrap.style.cssText = "display:flex;gap:4px;align-items:center;"
+        perRouteWrap.title = "Block apply on the same route within this many minutes "
+            + "after a successful write. 0 = disabled. Default 60 minutes."
+        const perRouteInput = mkNumberInput(apply.cooldownMinPerRoute,
+            {min: 0, max: 1440, step: 5, width: "55px"})
+        perRouteWrap.append(document.createTextNode("Per-route cooldown (min):"), perRouteInput)
+        const globalWrap = document.createElement("label")
+        globalWrap.style.cssText = "display:flex;gap:4px;align-items:center;"
+        globalWrap.title = "Block apply on ANY route within this many minutes after the "
+            + "most recent successful write — catches rapid-fire chains. Bulk applies "
+            + "bypass this gate (the bulk confirm modal is your guardrail there). "
+            + "0 = disabled. Default 5 minutes."
+        const globalInput = mkNumberInput(apply.cooldownMinGlobal,
+            {min: 0, max: 1440, step: 1, width: "55px"})
+        globalWrap.append(document.createTextNode("Global cooldown (min):"), globalInput)
+        const persistCd = async () => {
+            const pr = parseFloat(perRouteInput.value)
+            const gl = parseFloat(globalInput.value)
+            apply.cooldownMinPerRoute = (isFinite(pr) && pr >= 0) ? Math.floor(pr) : 60
+            apply.cooldownMinGlobal   = (isFinite(gl) && gl >= 0) ? Math.floor(gl) : 5
+            this.settings.pricing.apply = apply
+            try { await RouteAssistantSettings.save({pricing: this.settings.pricing}) } catch (e) { /* ignore */ }
+        }
+        perRouteInput.addEventListener("change", persistCd)
+        globalInput.addEventListener("change",   persistCd)
+        cdRow.append(perRouteWrap, globalWrap)
+        block.append(cdRow)
+
+        // Pre-apply refresh — runs the schedule + ORS orchestrator before
+        // each Apply (per-route + bulk). Catches the silent corruption
+        // path where ORS reads `getOurFlightNumbers` from the legacy cache
+        // and tags freshly-added routes as "not ours" — which would mislead
+        // the user into picking the wrong Δ%. Two freshness floors:
+        // projection (5 min default) for picking-time UI; apply (1 min
+        // default) tighter floor for the live POST.
+        const refreshRow = document.createElement("div")
+        refreshRow.style.cssText = "display:flex;gap:6px;align-items:center;font-size:11px;color:#c4b5fd;margin-bottom:4px;"
+        const refreshCb = mkInput("checkbox", null)
+        refreshCb.checked = apply.refreshBeforeApply !== false
+        const refreshLbl = document.createElement("label")
+        refreshLbl.style.cssText = "display:flex;gap:4px;align-items:center;cursor:pointer;"
+        refreshLbl.title = "Runs schedule + ORS scrapes before each apply, threading the freshly-harvested "
+            + "flight numbers into ORS so projections aren't fooled by a stale legacy cache. Recommended ON."
+        refreshLbl.append(refreshCb, document.createTextNode("Pre-apply data refresh"))
+        refreshCb.addEventListener("change", async () => {
+            apply.refreshBeforeApply = !!refreshCb.checked
+            this.settings.pricing.apply = apply
+            try { await RouteAssistantSettings.save({pricing: this.settings.pricing}) } catch (e) { /* ignore */ }
+            this._render()
+        })
+        refreshRow.append(refreshLbl)
+        block.append(refreshRow)
+
+        // Tuning row — freshness floors. Hidden behind the same row as the
+        // checkbox to keep the block compact; only visible when the master
+        // toggle is on.
+        if (refreshCb.checked) {
+            const ageRow = document.createElement("div")
+            ageRow.style.cssText = "display:flex;gap:14px;flex-wrap:wrap;align-items:center;"
+                + "font-size:10px;color:#9ca3af;margin:0 0 6px 18px;"
+            const projAgeWrap = document.createElement("label")
+            projAgeWrap.style.cssText = "display:flex;gap:4px;align-items:center;"
+            projAgeWrap.title = "Skip the orchestrator pass on modal-open and the bulk-modal "
+                + "Refresh visible button when cached data is fresher than this many minutes. "
+                + "Default 5 minutes."
+            const projAgeInput = mkNumberInput(
+                isFinite(apply.refreshMaxAgeMinProjection) ? apply.refreshMaxAgeMinProjection : 5,
+                {min: 0, max: 240, step: 1, width: "50px"})
+            projAgeWrap.append(document.createTextNode("Projection freshness (min):"), projAgeInput)
+            const applyAgeWrap = document.createElement("label")
+            applyAgeWrap.style.cssText = "display:flex;gap:4px;align-items:center;"
+            applyAgeWrap.title = "Skip the secondary orchestrator pass on Apply click when cached "
+                + "data is fresher than this many minutes. Tighter than projection because Apply "
+                + "commits real money. Default 1 minute."
+            const applyAgeInput = mkNumberInput(
+                isFinite(apply.refreshMaxAgeMinApply) ? apply.refreshMaxAgeMinApply : 1,
+                {min: 0, max: 240, step: 1, width: "50px"})
+            applyAgeWrap.append(document.createTextNode("Apply freshness (min):"), applyAgeInput)
+            const persistAge = async () => {
+                const pr = parseFloat(projAgeInput.value)
+                const ap = parseFloat(applyAgeInput.value)
+                apply.refreshMaxAgeMinProjection = (isFinite(pr) && pr >= 0) ? Math.floor(pr) : 5
+                apply.refreshMaxAgeMinApply      = (isFinite(ap) && ap >= 0) ? Math.floor(ap) : 1
+                this.settings.pricing.apply = apply
+                try { await RouteAssistantSettings.save({pricing: this.settings.pricing}) } catch (e) { /* ignore */ }
+            }
+            projAgeInput.addEventListener("change",  persistAge)
+            applyAgeInput.addEventListener("change", persistAge)
+            ageRow.append(projAgeWrap, applyAgeWrap)
+            block.append(ageRow)
+        }
+
         // Circuit-breaker cooldown banner. Appears only while a recent
         // 429/503 streak has tripped the breaker and the cooldown window
         // hasn't expired. Reset clears trippedAt; the next apply runs
@@ -9146,6 +11013,116 @@ class RouteAssistantPanel {
         scopeWrap.append(scopeRow)
         block.append(scopeWrap)
 
+        // Tier 3.4 — Live-writes scopes. Even when the top-level kill
+        // switch (`enabled`) and the dry-run gate (`dryRunOnly`) both
+        // permit a real POST, these per-axis flags can clamp specific
+        // call-sites back to dry-run. Default: only manual unlocked.
+        const liveScopes = apply.liveScopes = Object.assign(
+            {manual: true, bulk: false, silentAuto: false},
+            apply.liveScopes || {}
+        )
+        const lsWrap = document.createElement("div")
+        lsWrap.style.cssText = "display:flex;flex-direction:column;gap:2px;"
+            + "font-size:11px;color:#c4b5fd;margin-top:6px;"
+            + "border-top:1px dashed rgba(168,85,247,0.30);padding-top:6px;"
+        const lsHead = document.createElement("div")
+        lsHead.style.cssText = "color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;"
+        lsHead.textContent = "Live-write scopes"
+        lsWrap.append(lsHead)
+        const lsHint = document.createElement("div")
+        lsHint.style.cssText = "color:#9ca3af;font-size:10px;"
+        lsHint.textContent = "Each axis can clamp to dry-run independently. The top-level Apply enabled toggle still has to be on for any real write."
+        lsWrap.append(lsHint)
+        const lsRow = document.createElement("div")
+        lsRow.style.cssText = "display:flex;gap:14px;flex-wrap:wrap;align-items:center;"
+        for (const [k, lbl, hint] of [
+            ["manual",     "Manual",      "Single-route apply modal."],
+            ["bulk",       "Bulk",        "Multi-row bulk apply modal. Off by default — flip after manual is proven."],
+            ["silentAuto", "Silent-auto", "Background loop. Off by default — flip after bulk is proven."]
+        ]) {
+            const l = document.createElement("label")
+            l.style.cssText = "display:flex;gap:4px;align-items:center;cursor:pointer;"
+            l.title = hint
+            const cb = mkInput("checkbox", null)
+            cb.checked = !!liveScopes[k]
+            l.append(cb, document.createTextNode(lbl))
+            cb.addEventListener("change", async () => {
+                liveScopes[k] = cb.checked
+                this.settings.pricing.apply = apply
+                try { await RouteAssistantSettings.save({pricing: this.settings.pricing}) }
+                catch (e) { /* ignore */ }
+            })
+            lsRow.append(l)
+        }
+        lsWrap.append(lsRow)
+        block.append(lsWrap)
+
+        // Tier 3.4 — Advanced tunables. Surfaces values previously hard-
+        // coded in source (dedup window, competitor min count, ORS cache
+        // age, snapshot freshness, sync timeout, stale-competitor warn
+        // window). Defaults match prior baked-in behaviour. Wrapped in a
+        // <details> so it's collapsed by default.
+        const advWrap = document.createElement("details")
+        advWrap.style.cssText = "margin-top:6px;border-top:1px dashed rgba(168,85,247,0.30);padding-top:6px;"
+        const advSum = document.createElement("summary")
+        advSum.textContent = "Advanced (tunables — change with care)"
+        advSum.style.cssText = "cursor:pointer;color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;"
+        advWrap.append(advSum)
+        const advWarn = document.createElement("div")
+        advWarn.style.cssText = "color:#fbbf24;font-size:10px;margin:4px 0;"
+        advWarn.textContent = "These knobs can change pricing behaviour materially. Defaults match production. Reset by deleting the corresponding settings keys."
+        advWrap.append(advWarn)
+        const advGrid = document.createElement("div")
+        advGrid.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;font-size:11px;color:#c4b5fd;"
+        const advField = (key, label, def, min, max, step, hint) => {
+            const cur = isFinite(apply[key]) ? apply[key] : def
+            const l = document.createElement("label")
+            l.style.cssText = "display:flex;gap:4px;align-items:center;justify-content:space-between;"
+            l.title = hint
+            l.append(document.createTextNode(label))
+            const inp = mkNumberInput(cur, {min, max, step, width: "60px"})
+            inp.addEventListener("change", async () => {
+                const v = parseFloat(inp.value)
+                if (!isFinite(v)) { inp.value = String(cur); return }
+                const clamped = Math.max(min, Math.min(max, v))
+                apply[key] = clamped
+                inp.value = String(clamped)
+                this.settings.pricing.apply = apply
+                try { await RouteAssistantSettings.save({pricing: this.settings.pricing}) }
+                catch (e) { /* ignore */ }
+            })
+            l.append(inp)
+            advGrid.append(l)
+        }
+        advField("pricingApplyLogDedupWindowMin",        "Dedup window (min)",        5,     0,    60,  1,
+            "Collapse identical apply-log entries within this window into one with a count. 0 = disable dedup.")
+        advField("preApplySyncTimeoutMs",                "Pre-apply sync timeout (ms)", 30000, 5000, 300000, 1000,
+            "Hard timeout for the pre-apply orchestrator pass. On timeout the apply continues with cached data.")
+        advField("silentAutoCompetitorMinCount",         "Silent-auto · min competitors", 2,    1,    10,  1,
+            "Competitor-median proposer requires at least this many competitor Y prices before computing a median.")
+        advField("silentAutoOrsMaxAgeMin",               "Silent-auto · ORS max age (min)", 60,   1,    1440, 5,
+            "ors-elasticity proposer skips routes whose ORS cache is older than this. Stale ORS = bad projections.")
+        advField("silentAutoStrategySnapshotMaxAgeMin",  "Silent-auto · strategy snapshot age (min)", 10, 0, 240, 5,
+            "Reuse the AesStrategy snapshot for this many minutes before rebuilding. Snapshots are network-wide; rebuilding is mildly expensive.")
+        advField("silentAutoStaleCompetitorWarnDays",    "Silent-auto · stale competitor warn (days)", 7, 0,  90, 1,
+            "Surface a warning in the silent-auto trace when the last bulk competitor scrape is older than this. 0 = disabled.")
+        advWrap.append(advGrid)
+        const blockOnStaleRow = document.createElement("label")
+        blockOnStaleRow.style.cssText = "display:flex;gap:6px;align-items:center;font-size:11px;color:#c4b5fd;margin-top:6px;"
+        blockOnStaleRow.title = "When on, silent-auto refuses to apply when competitor data is older than the warn window above."
+        const blockOnStaleCb = mkInput("checkbox", null)
+        blockOnStaleCb.checked = !!apply.silentAutoBlockOnStaleCompetitors
+        blockOnStaleRow.append(blockOnStaleCb,
+            document.createTextNode("Block silent-auto when competitor data exceeds the warn window"))
+        blockOnStaleCb.addEventListener("change", async () => {
+            apply.silentAutoBlockOnStaleCompetitors = blockOnStaleCb.checked
+            this.settings.pricing.apply = apply
+            try { await RouteAssistantSettings.save({pricing: this.settings.pricing}) }
+            catch (e) { /* ignore */ }
+        })
+        advWrap.append(blockOnStaleRow)
+        block.append(advWrap)
+
         // Bulk-apply CTA.
         const bulkBtn = document.createElement("button")
         bulkBtn.textContent = "Open bulk apply…"
@@ -9155,10 +11132,26 @@ class RouteAssistantPanel {
         bulkBtn.addEventListener("click", () => this._openBulkPricingApplyModal())
         block.append(bulkBtn)
 
-        // Recent applies log preview.
+        // Recent applies log preview + Open audit log CTA.
         if (apply.showRecentApplies) {
+            const logHeaderRow = document.createElement("div")
+            logHeaderRow.style.cssText = "display:flex;justify-content:space-between;align-items:center;"
+                + "gap:8px;margin-top:8px;margin-bottom:2px;"
+            const logHeader = document.createElement("div")
+            logHeader.style.cssText = "color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;"
+            logHeader.textContent = "Recent applies (preview)"
+            const auditBtn = document.createElement("button")
+            auditBtn.textContent = "Open audit log…"
+            Object.assign(auditBtn.style, smallBtnStyle())
+            auditBtn.style.fontSize = "10px"
+            auditBtn.title = "Open the full audit log: every apply (manual, silent-auto, sandbox, batch) "
+                + "with filters, per-route history, and JSON/CSV export."
+            auditBtn.addEventListener("click", () => this._openAuditLogModal())
+            logHeaderRow.append(logHeader, auditBtn)
+            block.append(logHeaderRow)
+
             const logHost = document.createElement("div")
-            logHost.style.cssText = "margin-top:6px;font-size:10px;color:#9ca3af;"
+            logHost.style.cssText = "margin-top:4px;font-size:10px;color:#9ca3af;"
             logHost.textContent = "Loading apply log…"
             block.append(logHost)
             this._refreshTier3LogPreview(logHost, apply.recentApplyPreviewCount || 10)
@@ -9192,6 +11185,1281 @@ class RouteAssistantPanel {
         } catch (err) {
             host.textContent = "Apply log read failed: " + (err && err.message || err)
         }
+        // Tier 3.4 — keep the route-row apply badge cache in lockstep with
+        // the preview list. One storage round-trip reused across both.
+        this._refreshApplyBadgeMap().catch(() => { /* fail-silent */ })
+    }
+
+    /**
+     * Tier 3.4 — refresh the per-route apply-status cache used by the
+     * inline badge in the dest column of the route table. Reads the
+     * global timeline once (single storage call) and buckets entries by
+     * pair, keeping only the most recent per route. Called on panel
+     * mount, after every apply, and after undo. Synchronous reads from
+     * `this._applyBadgeMap` during render are then free.
+     */
+    async _refreshApplyBadgeMap() {
+        try {
+            const log = this._getPricingApplyLog()
+            const rec = await log.getRecent()
+            const map = new Map()
+            for (const e of (rec.entries || [])) {
+                if (!e || !e.hub || !e.dest) continue
+                const key = String(e.hub).toUpperCase() + "-" + String(e.dest).toUpperCase()
+                const existing = map.get(key)
+                if (!existing || (isFinite(e.ts) && e.ts > (existing.ts || 0))) {
+                    map.set(key, {
+                        status:   e.status || null,
+                        ts:       e.ts     || 0,
+                        dryRun:   !!e.dryRun,
+                        undone:   e.undone === true,
+                        source:   e.source || null
+                    })
+                }
+            }
+            this._applyBadgeMap = map
+            // Repaint just the badge cells if the table is already drawn —
+            // skip the full _renderRows so we don't churn the DOM.
+            this._repaintApplyBadges()
+        } catch (err) {
+            // Don't block on cache refresh failures; badges just stay stale.
+        }
+    }
+
+    /**
+     * Glyph + colour for a single apply state. Used by `_renderApplyBadgeHtml`
+     * (inline in the dest cell) and by the legend tooltip. Status reads:
+     *   verified  → ✓ green
+     *   posted    → ⚠ amber (posted but not verified yet)
+     *   dry-run   → 🔍 cyan (no real write)
+     *   failed    → ✗ red
+     *   aborted   → ✖ grey
+     *   skipped   → · grey
+     *   undone    → ↺ grey (overrides whatever status it had)
+     */
+    _applyBadgeStyle(state) {
+        if (!state) return null
+        if (state.undone) return {glyph: "↺", color: "#9ca3af", label: "undone"}
+        switch (state.status) {
+            case "verified": return {glyph: "✓", color: "#86efac", label: "verified"}
+            case "posted":   return {glyph: "⚠", color: "#fbbf24", label: "posted (unverified)"}
+            case "dry-run":  return {glyph: "🔍", color: "#7dd3fc", label: "dry-run"}
+            case "failed":   return {glyph: "✗", color: "#f87171", label: "failed"}
+            case "aborted":  return {glyph: "✖", color: "#9ca3af", label: "aborted"}
+            case "skipped":  return {glyph: "·", color: "#9ca3af", label: "skipped"}
+        }
+        return null
+    }
+
+    /**
+     * Build the inline badge HTML for a route's most-recent apply.
+     * Returns a small clickable span that opens the audit modal pre-
+     * filtered to this route. Returns "" when there's no record so the
+     * dest cell stays clean for fresh routes.
+     */
+    _renderApplyBadgeHtml(hub, dest) {
+        const map = this._applyBadgeMap
+        if (!map) return ""
+        const key = String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
+        const state = map.get(key)
+        if (!state) return ""
+        const style = this._applyBadgeStyle(state)
+        if (!style) return ""
+        const ageStr = isFinite(state.ts) ? this._auditLogAgeStr(state.ts) : "?"
+        const sourceTag = state.source ? " · " + state.source : ""
+        const title = "Last apply: " + style.label + sourceTag + " · " + ageStr
+            + " (click to open audit log)"
+        return ` <span data-applybadge-pair="${escapeHtml(key)}"`
+             + ` title="${escapeHtml(title)}"`
+             + ` style="display:inline-block;width:11px;height:11px;line-height:11px;`
+             + `font-size:10px;color:${style.color};cursor:pointer;text-align:center;`
+             + `border-radius:50%;border:1px solid ${style.color};">`
+             + escapeHtml(style.glyph)
+             + `</span>`
+    }
+
+    /**
+     * Repaint just the badge cells in the live table after a cache
+     * refresh. Walks `[data-applybadge-pair]` placeholders and replaces
+     * each with the current badge HTML. No-op when the table isn't
+     * currently rendered.
+     */
+    _repaintApplyBadges() {
+        if (!this.tableHost) return
+        const nodes = this.tableHost.querySelectorAll("[data-applybadge-pair]")
+        if (!nodes || !nodes.length) return
+        for (const n of nodes) {
+            const key = n.getAttribute("data-applybadge-pair") || ""
+            const dash = key.indexOf("-")
+            if (dash < 0) continue
+            const hub  = key.slice(0, dash)
+            const dest = key.slice(dash + 1)
+            const html = this._renderApplyBadgeHtml(hub, dest)
+            if (html) {
+                // Replace the placeholder with the fresh badge. Wrap in a
+                // throwaway element so we can extract the new node.
+                const tmp = document.createElement("span")
+                tmp.innerHTML = html.trim()
+                const fresh = tmp.firstChild
+                if (fresh) {
+                    // Click → open audit modal. Stop propagation so the row's
+                    // click handler (override editor, route inspect) doesn't
+                    // also fire.
+                    fresh.addEventListener("click", (ev) => {
+                        ev.stopPropagation()
+                        ev.preventDefault()
+                        this._openAuditLogModal()
+                    })
+                    if (n.parentNode) n.parentNode.replaceChild(fresh, n)
+                }
+            } else if (n.parentNode) {
+                n.parentNode.removeChild(n)
+            }
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Audit-log modal — full-screen viewer over the apply log.
+    // Entry point: _openAuditLogModal()
+    // The store at pricing-apply-log.js already captures everything we
+    // need (prevPrices, newPrices, verifiedPrices, status, source,
+    // preflight, error, bodyPreview, pre-apply sync). This is a viewer
+    // only — no schema changes, no retention bump.
+    // ──────────────────────────────────────────────────────────────────
+
+    async _openAuditLogModal() {
+        const log = this._getPricingApplyLog()
+        let allEntries = []
+        try {
+            const rec = await log.getRecent()
+            allEntries = Array.isArray(rec.entries) ? rec.entries : []
+        } catch (e) {
+            console.warn("[AES audit-log] read failed", e)
+        }
+
+        const filters = {
+            source:  "silent-auto",
+            status:  "all",
+            since:   7 * 24 * 3600 * 1000,
+            search:  "",
+            batchId: null
+        }
+        let viewMode = "global"
+        let routeContext = null
+
+        const overlay = document.createElement("div")
+        overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10004;"
+            + "display:flex;align-items:center;justify-content:center;"
+        const dialog = document.createElement("div")
+        dialog.style.cssText = "background:#0f1623;color:#e5e7eb;border:1px solid #38bdf8;border-radius:6px;"
+            + "width:880px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;"
+            + "font:12px/1.4 sans-serif;overflow:hidden;"
+
+        const head = document.createElement("div")
+        head.style.cssText = "display:flex;justify-content:space-between;align-items:center;"
+            + "padding:12px 18px;border-bottom:1px solid #1f2937;"
+        const title = document.createElement("div")
+        title.style.cssText = "color:#7dd3fc;font-size:13px;font-weight:600;"
+        title.textContent = "Auto-pricing audit log"
+        const closeBtn = document.createElement("button")
+        closeBtn.textContent = "✕"
+        closeBtn.style.cssText = "background:transparent;color:#94a3b8;border:none;cursor:pointer;"
+            + "font-size:14px;padding:0 4px;"
+        head.append(title, closeBtn)
+        dialog.append(head)
+
+        const body = document.createElement("div")
+        body.style.cssText = "display:flex;flex-direction:column;flex:1;min-height:0;"
+        dialog.append(body)
+
+        const controlsHost = document.createElement("div")
+        body.append(controlsHost)
+        const listHost = document.createElement("div")
+        listHost.style.cssText = "flex:1;min-height:0;overflow-y:auto;padding:10px 18px 12px 18px;"
+        body.append(listHost)
+
+        const footer = document.createElement("div")
+        footer.style.cssText = "display:flex;justify-content:space-between;align-items:center;"
+            + "padding:10px 18px;border-top:1px solid #1f2937;font-size:11px;color:#94a3b8;"
+        dialog.append(footer)
+
+        const cleanup = () => {
+            document.removeEventListener("keydown", onKey)
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
+        }
+        const onKey = (e) => { if (e.key === "Escape") cleanup() }
+        closeBtn.addEventListener("click", cleanup)
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) cleanup() })
+        document.addEventListener("keydown", onKey)
+
+        const visibleEntries = () => this._filterAuditLogEntries(allEntries, filters)
+
+        const renderAll = () => {
+            controlsHost.innerHTML = ""
+            listHost.innerHTML = ""
+            footer.innerHTML = ""
+            if (viewMode === "global") {
+                controlsHost.append(this._renderAuditLogControls({
+                    filters,
+                    onChange: () => renderAll(),
+                    onExport: (format) => this._exportAuditLog(visibleEntries(), format)
+                }))
+                const entries = visibleEntries()
+                const reloadAfterUndo = async () => {
+                    try {
+                        const rec = await log.getRecent()
+                        allEntries = Array.isArray(rec.entries) ? rec.entries : []
+                    } catch (err) { /* keep old snapshot on read failure */ }
+                    renderAll()
+                }
+                // Active-batch banner — shown when a batchId filter is
+                // engaged so the user can see what's narrowed and undo.
+                if (filters.batchId) {
+                    const banner = document.createElement("div")
+                    banner.style.cssText = "background:rgba(125,211,252,0.10);"
+                        + "border:1px solid rgba(125,211,252,0.30);border-radius:3px;"
+                        + "padding:6px 10px;margin-bottom:6px;font-size:11px;color:#7dd3fc;"
+                        + "display:flex;justify-content:space-between;align-items:center;"
+                    const txt = document.createElement("span")
+                    txt.textContent = "🔗 batch · " + filters.batchId
+                    const clear = document.createElement("button")
+                    clear.textContent = "Clear filter"
+                    Object.assign(clear.style, smallBtnStyle())
+                    clear.style.fontSize = "10px"
+                    clear.addEventListener("click", () => {
+                        filters.batchId = null
+                        renderAll()
+                    })
+                    banner.append(txt, clear)
+                    listHost.append(banner)
+                }
+                listHost.append(this._renderAuditLogList(entries, {
+                    onRouteClick: async (hub, dest) => {
+                        try {
+                            const rec = await log.getForRoute(hub, dest)
+                            routeContext = {hub, dest, entries: rec.entries || []}
+                            viewMode = "route"
+                            renderAll()
+                        } catch (err) {
+                            console.warn("[AES audit-log] per-route read failed", err)
+                        }
+                    },
+                    onUndone:      () => reloadAfterUndo(),
+                    onFilterBatch: (batchId) => {
+                        filters.batchId = batchId
+                        renderAll()
+                    }
+                }))
+                const summary = document.createElement("span")
+                summary.textContent = "Showing " + entries.length + " of " + allEntries.length + " entries"
+                const right = document.createElement("div")
+                right.style.cssText = "display:flex;gap:14px;align-items:center;"
+                const clearLink = document.createElement("a")
+                clearLink.textContent = "Clear log…"
+                clearLink.style.cssText = "color:#f87171;cursor:pointer;text-decoration:underline;"
+                clearLink.addEventListener("click", async (e) => {
+                    e.preventDefault()
+                    if (!confirm("Clear ALL pricing apply log entries?\n\nThis wipes the global timeline AND every per-route ring. Cannot be undone.")) return
+                    try {
+                        await log.clear()
+                        allEntries = []
+                        renderAll()
+                        if (typeof RouteAssistantToast !== "undefined") {
+                            RouteAssistantToast.success("Apply log cleared.")
+                        }
+                    } catch (err) {
+                        console.warn("[AES audit-log] clear failed", err)
+                    }
+                })
+                const doneBtn = document.createElement("button")
+                doneBtn.textContent = "Done"
+                doneBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #374151;"
+                    + "border-radius:3px;padding:5px 14px;font-size:11px;cursor:pointer;"
+                doneBtn.addEventListener("click", cleanup)
+                right.append(clearLink, doneBtn)
+                footer.append(summary, right)
+            } else {
+                const breadcrumb = document.createElement("div")
+                breadcrumb.style.cssText = "padding:10px 18px;display:flex;gap:10px;align-items:center;"
+                    + "font-size:11px;border-bottom:1px solid #1f2937;color:#cbd5e1;"
+                const backBtn = document.createElement("button")
+                backBtn.textContent = "← Back to all"
+                Object.assign(backBtn.style, smallBtnStyle())
+                backBtn.style.fontSize = "10px"
+                backBtn.addEventListener("click", () => {
+                    viewMode = "global"
+                    routeContext = null
+                    renderAll()
+                })
+                const lbl = document.createElement("span")
+                lbl.textContent = "Per-route timeline · " + routeContext.hub + "→" + routeContext.dest
+                    + " · last " + routeContext.entries.length + " events"
+                breadcrumb.append(backBtn, lbl)
+                controlsHost.append(breadcrumb)
+                const reloadRouteAfterUndo = async () => {
+                    try {
+                        const rec = await log.getForRoute(routeContext.hub, routeContext.dest)
+                        routeContext.entries = rec.entries || []
+                    } catch (err) { /* keep old snapshot on read failure */ }
+                    renderAll()
+                }
+                listHost.append(this._renderAuditLogList(routeContext.entries, {
+                    onRouteClick: null,
+                    onUndone:     () => reloadRouteAfterUndo()
+                }))
+                const summary = document.createElement("span")
+                summary.textContent = routeContext.hub + "→" + routeContext.dest
+                    + " · " + routeContext.entries.length + " events (per-route ring cap = 20)"
+                const doneBtn = document.createElement("button")
+                doneBtn.textContent = "Done"
+                doneBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #374151;"
+                    + "border-radius:3px;padding:5px 14px;font-size:11px;cursor:pointer;"
+                doneBtn.addEventListener("click", cleanup)
+                footer.append(summary, doneBtn)
+            }
+        }
+
+        renderAll()
+        overlay.append(dialog)
+        document.body.append(overlay)
+    }
+
+    /** Pure transform — reused by the modal AND export to keep visible
+     *  filtering and exported filtering in sync. */
+    _filterAuditLogEntries(all, filters) {
+        if (!Array.isArray(all)) return []
+        const now = Date.now()
+        const since = (filters && filters.since > 0) ? (now - filters.since) : 0
+        const term = (filters && filters.search || "").trim().toUpperCase()
+        const batchId = (filters && filters.batchId) || null
+        return all.filter(e => {
+            if (!e) return false
+            if (batchId) {
+                // Batch-only filter overrides every other filter so the
+                // user sees the full batch, including dry-run/skipped/
+                // failed members regardless of source/status pickers.
+                return e.batchId === batchId
+            }
+            if (filters.source !== "all" && e.source !== filters.source) return false
+            if (filters.status !== "all" && e.status !== filters.status) return false
+            if (since > 0 && (!isFinite(e.ts) || e.ts < since)) return false
+            if (term) {
+                const pair = ((e.hub || "") + "→" + (e.dest || "")).toUpperCase()
+                const hub  = (e.hub  || "").toUpperCase()
+                const dest = (e.dest || "").toUpperCase()
+                if (pair.indexOf(term) < 0 && hub.indexOf(term) < 0 && dest.indexOf(term) < 0) return false
+            }
+            return true
+        })
+    }
+
+    _renderAuditLogControls({filters, onChange, onExport}) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "padding:10px 18px;border-bottom:1px solid #1f2937;"
+            + "display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:11px;color:#cbd5e1;"
+
+        const mkSel = (label, key, options) => {
+            const lbl = document.createElement("label")
+            lbl.style.cssText = "display:flex;gap:4px;align-items:center;"
+            lbl.append(document.createTextNode(label))
+            const sel = document.createElement("select")
+            sel.style.cssText = "background:#1e293b;color:#fff;border:1px solid #475569;border-radius:3px;"
+                + "padding:2px 4px;font-size:11px;"
+            for (const [val, txt] of options) {
+                const opt = document.createElement("option")
+                opt.value = String(val); opt.textContent = txt
+                if (String(filters[key]) === String(val)) opt.selected = true
+                sel.append(opt)
+            }
+            sel.addEventListener("change", () => {
+                filters[key] = (key === "since") ? parseInt(sel.value, 10) : sel.value
+                onChange()
+            })
+            lbl.append(sel)
+            return lbl
+        }
+
+        wrap.append(mkSel("Source:", "source", [
+            ["silent-auto", "auto only"],
+            ["all",         "all"],
+            ["manual",      "manual"],
+            ["sandbox",     "sandbox"],
+            ["batch",       "batch"]
+        ]))
+        wrap.append(mkSel("Status:", "status", [
+            ["all",      "all"],
+            ["verified", "✅ verified"],
+            ["posted",   "⚠ posted"],
+            ["dry-run",  "🔍 dry-run"],
+            ["failed",   "❌ failed"],
+            ["aborted",  "✖ aborted"]
+        ]))
+        wrap.append(mkSel("Since:", "since", [
+            [3600 * 1000,           "1h"],
+            [24 * 3600 * 1000,      "24h"],
+            [7  * 24 * 3600 * 1000, "7d"],
+            [30 * 24 * 3600 * 1000, "30d"],
+            [0,                     "all"]
+        ]))
+
+        const searchLbl = document.createElement("label")
+        searchLbl.style.cssText = "display:flex;gap:4px;align-items:center;"
+        searchLbl.append(document.createTextNode("Search:"))
+        const searchInp = document.createElement("input")
+        searchInp.type = "text"
+        searchInp.placeholder = "LAX or LAX→JFK"
+        searchInp.value = filters.search || ""
+        searchInp.style.cssText = "background:#1e293b;color:#fff;border:1px solid #475569;"
+            + "border-radius:3px;padding:2px 6px;font-size:11px;width:140px;"
+        let searchTimer = null
+        searchInp.addEventListener("input", () => {
+            if (searchTimer) clearTimeout(searchTimer)
+            searchTimer = setTimeout(() => {
+                filters.search = searchInp.value
+                onChange()
+            }, 150)
+        })
+        searchLbl.append(searchInp)
+        wrap.append(searchLbl)
+
+        const spacer = document.createElement("div")
+        spacer.style.cssText = "flex:1;"
+        wrap.append(spacer)
+
+        const exportBtn = document.createElement("button")
+        exportBtn.textContent = "⬇ Export"
+        Object.assign(exportBtn.style, smallBtnStyle())
+        exportBtn.style.fontSize = "10px"
+        exportBtn.title = "Export visible entries (respects current filters) as JSON or CSV."
+        exportBtn.addEventListener("click", (e) => {
+            e.stopPropagation()
+            const existing = document.querySelector("[data-aes-audit-export-popover='1']")
+            if (existing) { existing.remove(); return }
+            const pop = document.createElement("div")
+            pop.setAttribute("data-aes-audit-export-popover", "1")
+            pop.style.cssText = "position:fixed;background:#0b1220;border:1px solid #1f2937;"
+                + "border-radius:3px;padding:4px;display:flex;flex-direction:column;gap:2px;"
+                + "box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:10005;min-width:120px;"
+            const rect = exportBtn.getBoundingClientRect()
+            pop.style.top  = (rect.bottom + 4) + "px"
+            pop.style.left = (rect.left)      + "px"
+            for (const fmt of ["json", "csv"]) {
+                const item = document.createElement("button")
+                item.textContent = "Download " + fmt.toUpperCase()
+                item.style.cssText = "background:transparent;color:#cbd5e1;border:none;text-align:left;"
+                    + "padding:4px 12px;font-size:11px;cursor:pointer;"
+                item.addEventListener("mouseenter", () => item.style.background = "#1f2937")
+                item.addEventListener("mouseleave", () => item.style.background = "transparent")
+                item.addEventListener("click", (ev) => {
+                    ev.stopPropagation()
+                    pop.remove()
+                    onExport(fmt)
+                })
+                pop.append(item)
+            }
+            const dismiss = (ev) => {
+                if (!pop.contains(ev.target)) {
+                    pop.remove()
+                    document.removeEventListener("click", dismiss, true)
+                }
+            }
+            setTimeout(() => document.addEventListener("click", dismiss, true), 0)
+            document.body.append(pop)
+        })
+        wrap.append(exportBtn)
+
+        return wrap
+    }
+
+    _renderAuditLogList(entries, opts) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:3px;"
+        if (!entries || !entries.length) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "padding:32px 0;text-align:center;color:#6b7280;font-size:11px;"
+            empty.textContent = "No entries match the current filters."
+            wrap.append(empty)
+            return wrap
+        }
+        for (const e of entries) {
+            wrap.append(this._buildAuditLogRow(e, opts || {}))
+        }
+        return wrap
+    }
+
+    _buildAuditLogRow(e, opts) {
+        const row = document.createElement("div")
+        const isUndone = e && e.undone === true
+        const isUndoEntry = !!(e && e.undoOf)
+        // Visual cue when the entry has been superseded by an undo apply:
+        // dim the row + strike-through, but keep it clickable so the user
+        // can still drill into the original detail.
+        row.style.cssText = "border:1px solid #1f2937;border-radius:3px;background:rgba(15,23,42,0.55);"
+            + "padding:6px 10px;font-size:11px;color:#cbd5e1;"
+            + (isUndone ? "opacity:0.55;" : "")
+
+        const headerRow = document.createElement("div")
+        headerRow.style.cssText = "display:flex;gap:8px;align-items:center;cursor:pointer;"
+        const dot = document.createElement("span")
+        dot.style.cssText = "width:8px;height:8px;border-radius:50%;flex-shrink:0;"
+            + "background:" + this._tier3StatusColor(e.status)
+        const status = document.createElement("span")
+        const statusLabel = (isUndoEntry ? "↺ undo · " : "")
+                          + this._auditLogStatusGlyph(e.status) + " " + (e.status || "?")
+                          + (isUndone ? " · undone" : "")
+        status.textContent = statusLabel
+        status.style.cssText = "color:" + this._tier3StatusColor(e.status)
+            + ";width:" + (isUndoEntry || isUndone ? "150px" : "96px") + ";flex-shrink:0;text-transform:lowercase;"
+            + (isUndone ? "text-decoration:line-through;" : "")
+        const source = document.createElement("span")
+        source.textContent = e.source || "?"
+        source.style.cssText = "color:#94a3b8;width:80px;flex-shrink:0;font-size:10px;"
+        const route = document.createElement("a")
+        route.textContent = (e.hub || "?") + "→" + (e.dest || "?")
+        const routeClickable = !!(opts && opts.onRouteClick)
+        route.style.cssText = "color:#7dd3fc;text-decoration:" + (routeClickable ? "underline" : "none")
+            + ";font-variant-numeric:tabular-nums;width:90px;flex-shrink:0;cursor:"
+            + (routeClickable ? "pointer" : "default") + ";"
+        if (routeClickable) {
+            route.addEventListener("click", (ev) => {
+                ev.stopPropagation()
+                opts.onRouteClick(e.hub, e.dest)
+            })
+        }
+        const delta = document.createElement("span")
+        delta.textContent = this._summariseTier3DeltaForLog(e)
+        delta.style.cssText = "color:#cbd5e1;flex:1;"
+        const time = document.createElement("span")
+        const tsLabel = isFinite(e.ts) ? new Date(e.ts).toLocaleString() : "—"
+        time.textContent = tsLabel
+        time.title = isFinite(e.ts) ? new Date(e.ts).toISOString() : ""
+        time.style.cssText = "color:#6b7280;font-size:10px;flex-shrink:0;"
+        headerRow.append(dot, status, source, route, delta, time)
+        row.append(headerRow)
+
+        let detail = null
+        headerRow.addEventListener("click", () => {
+            if (detail) {
+                detail.remove()
+                detail = null
+                return
+            }
+            detail = this._buildAuditLogDetail(e, opts || {})
+            row.append(detail)
+        })
+        return row
+    }
+
+    _auditLogStatusGlyph(status) {
+        switch (status) {
+            case "verified": return "✅"
+            case "posted":   return "⚠"
+            case "dry-run":  return "🔍"
+            case "failed":   return "❌"
+            case "aborted":  return "✖"
+            default:         return "·"
+        }
+    }
+
+    _buildAuditLogDetail(e, opts) {
+        const detail = document.createElement("div")
+        detail.style.cssText = "margin-top:6px;padding:8px 10px;border-top:1px solid #1f2937;"
+            + "background:rgba(15,23,42,0.4);border-radius:3px;font-size:11px;color:#cbd5e1;"
+            + "display:flex;flex-direction:column;gap:6px;"
+
+        const pricesTbl = this._buildAuditPricesTable(e)
+        if (pricesTbl) detail.append(pricesTbl)
+
+        const meta = document.createElement("div")
+        meta.style.cssText = "color:#94a3b8;line-height:1.5;font-size:10px;"
+        const pieces = []
+        if (e.source)       pieces.push("source: " + e.source)
+        if (e.status)       pieces.push("status: " + e.status)
+        if (e.httpStatus)   pieces.push("HTTP: " + e.httpStatus)
+        if (e.dryRun)       pieces.push("dry-run: yes")
+        if (e.submitButton) pieces.push("button: " + e.submitButton)
+        if (isFinite(e.count) && e.count > 1) pieces.push("merged ×" + e.count)
+        if (e.scope) {
+            const onScope = []
+            if (e.scope.airportPair)         onScope.push("airportPair")
+            if (e.scope.flightNumbers)       onScope.push("flightNumbers")
+            if (e.scope.returnAirportPair)   onScope.push("returnAirportPair")
+            if (e.scope.returnFlightNumbers) onScope.push("returnFlightNumbers")
+            if (onScope.length) pieces.push("scope: " + onScope.join("+"))
+        }
+        meta.textContent = pieces.join(" · ")
+        if (pieces.length) detail.append(meta)
+
+        if (e.reason) {
+            const r = document.createElement("div")
+            r.append(this._auditLogLabelEl("reason"), document.createTextNode(e.reason))
+            detail.append(r)
+        }
+
+        if (e.error) {
+            const err = document.createElement("div")
+            err.style.cssText = "color:#fca5a5;background:rgba(248,113,113,0.10);"
+                + "border:1px solid rgba(248,113,113,0.30);border-radius:3px;padding:4px 8px;"
+            err.append(this._auditLogLabelEl("error"))
+            const errTxt = (e.error.code ? "[" + e.error.code + "] " : "")
+                + (e.error.message || "")
+            err.append(document.createTextNode(errTxt))
+            detail.append(err)
+        }
+
+        if (e.warning) {
+            const w = document.createElement("div")
+            w.style.cssText = "color:#fcd34d;font-size:10px;"
+            w.append(this._auditLogLabelEl("warning"), document.createTextNode(e.warning))
+            detail.append(w)
+        }
+
+        if (e.preflight && ((e.preflight.blockers && e.preflight.blockers.length)
+                            || (e.preflight.warnings && e.preflight.warnings.length))) {
+            detail.append(this._buildTier3PreflightView(e.preflight))
+        }
+
+        if (e.preApplySync) {
+            const sync = document.createElement("div")
+            sync.style.cssText = "color:#94a3b8;font-size:10px;"
+            sync.append(this._auditLogLabelEl("pre-apply sync"))
+            const parts = []
+            if (e.preApplySync.scheduleAt) parts.push("schedule scrape " + this._auditLogAgeStr(e.preApplySync.scheduleAt))
+            if (e.preApplySync.orsAt)      parts.push("ORS scrape "      + this._auditLogAgeStr(e.preApplySync.orsAt))
+            if (e.preApplySync.halted)     parts.push("halted by orchestrator breaker")
+            sync.append(document.createTextNode(parts.join(" · ") || "n/a"))
+            detail.append(sync)
+        }
+
+        if (e.bodyPreview) {
+            const det = document.createElement("details")
+            det.style.cssText = "color:#cbd5e1;"
+            const sum = document.createElement("summary")
+            sum.style.cssText = "cursor:pointer;color:#94a3b8;font-size:10px;"
+            sum.textContent = "POST body preview"
+            det.append(sum)
+            const pre = document.createElement("pre")
+            pre.style.cssText = "margin:4px 0 0 0;padding:6px 8px;background:#0b1220;border:1px solid #1f2937;"
+                + "border-radius:3px;font:10px monospace;color:#cbd5e1;white-space:pre-wrap;"
+                + "word-break:break-all;max-height:160px;overflow-y:auto;"
+            pre.textContent = e.bodyPreview
+            det.append(pre)
+            detail.append(det)
+        }
+
+        // Tier 3.4 — proposer rationale / objective / batch grouping.
+        if (e.proposerStrategy) {
+            const ps = document.createElement("div")
+            ps.style.cssText = "color:#94a3b8;font-size:10px;"
+            ps.append(this._auditLogLabelEl("strategy"),
+                document.createTextNode(e.proposerStrategy))
+            detail.append(ps)
+        }
+        if (e.objective && e.objective.kind) {
+            const ob = document.createElement("div")
+            ob.style.cssText = "color:#94a3b8;font-size:10px;"
+            const w = e.objective.weights || {}
+            const wbits = []
+            if (isFinite(w.shareWeight))  wbits.push("share=" + Math.round(w.shareWeight * 100) / 100)
+            if (isFinite(w.profitWeight)) wbits.push("profit=" + Math.round(w.profitWeight * 100) / 100)
+            if (isFinite(w.rankWeight))   wbits.push("rank=" + Math.round(w.rankWeight * 100) / 100)
+            const txt = e.objective.kind + (wbits.length ? " · " + wbits.join(" ") : "")
+            ob.append(this._auditLogLabelEl("objective"), document.createTextNode(txt))
+            detail.append(ob)
+        }
+        if (Array.isArray(e.rationale) && e.rationale.length) {
+            const rt = document.createElement("ul")
+            rt.style.cssText = "margin:0;padding:0 0 0 18px;color:#cbd5e1;font-size:10px;"
+            for (const r of e.rationale) {
+                const li = document.createElement("li")
+                li.textContent = String(r)
+                rt.append(li)
+            }
+            detail.append(rt)
+        }
+        if (e.batchId) {
+            const b = document.createElement("div")
+            b.style.cssText = "color:#94a3b8;font-size:10px;display:flex;gap:4px;align-items:center;"
+            const txt = e.batchId + (isFinite(e.batchSize) ? " (size " + e.batchSize + ")" : "")
+            b.append(this._auditLogLabelEl("batch"), document.createTextNode(txt + "  "))
+            // Quick-filter pill: click → set the modal's filter to this
+            // batchId so the user sees only this batch's entries.
+            const pill = document.createElement("button")
+            pill.textContent = "🔗 show only this batch"
+            pill.style.cssText = "background:#1e293b;color:#7dd3fc;border:1px solid #475569;"
+                + "border-radius:3px;padding:2px 6px;font-size:10px;cursor:pointer;margin-left:6px;"
+            pill.addEventListener("click", (ev) => {
+                ev.stopPropagation()
+                if (opts && typeof opts.onFilterBatch === "function") {
+                    opts.onFilterBatch(e.batchId)
+                }
+            })
+            b.append(pill)
+            detail.append(b)
+        }
+        if (e.undoOf) {
+            const u = document.createElement("div")
+            u.style.cssText = "color:#94a3b8;font-size:10px;"
+            u.append(this._auditLogLabelEl("undoes"), document.createTextNode(e.undoOf))
+            detail.append(u)
+        }
+        if (e.undone && isFinite(e.undoneAt)) {
+            const u = document.createElement("div")
+            u.style.cssText = "color:#fcd34d;font-size:10px;"
+            u.append(this._auditLogLabelEl("undone"),
+                document.createTextNode(this._auditLogAgeStr(e.undoneAt)))
+            detail.append(u)
+        }
+
+        // Action row — undo button when the entry is undoable. Eligibility:
+        //  - terminal-success status (verified | posted)
+        //  - prevPrices recorded
+        //  - not already an undo entry (don't allow undo-of-undo from UI;
+        //    user can still flip prices manually if they want)
+        //  - not already undone
+        const undoEligible = (e.status === "verified" || e.status === "posted")
+                          && e.prevPrices
+                          && !e.undoOf
+                          && !e.undone
+        if (undoEligible) {
+            const act = document.createElement("div")
+            act.style.cssText = "display:flex;gap:8px;align-items:center;margin-top:2px;"
+            const undoBtn = document.createElement("button")
+            undoBtn.textContent = "↺ Undo this apply"
+            undoBtn.style.cssText = "background:#1e293b;color:#fcd34d;border:1px solid #b45309;"
+                + "border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;"
+            undoBtn.title = "Re-apply prevPrices for this route. Subject to the same "
+                + "preflight, cooldown, and circuit-breaker gates as a manual apply."
+            undoBtn.addEventListener("click", async (ev) => {
+                ev.stopPropagation()
+                undoBtn.disabled = true
+                undoBtn.textContent = "Undoing…"
+                try {
+                    const res = await this._undoApplyEntry(e)
+                    if (typeof RouteAssistantToast !== "undefined") {
+                        if (res && (res.status === "verified" || res.status === "posted" || res.status === "dry-run")) {
+                            RouteAssistantToast.success("Undo " + e.hub + "→" + e.dest + " · " + res.status)
+                        } else {
+                            const msg = res && res.error && res.error.message || "see audit log"
+                            RouteAssistantToast.error("Undo failed · " + msg)
+                        }
+                    }
+                    if (opts && typeof opts.onUndone === "function") opts.onUndone(e, res)
+                } catch (err) {
+                    if (typeof RouteAssistantToast !== "undefined") {
+                        RouteAssistantToast.error("Undo threw · " + (err && err.message || err))
+                    }
+                } finally {
+                    undoBtn.disabled = false
+                    undoBtn.textContent = "↺ Undo this apply"
+                }
+            })
+            act.append(undoBtn)
+            detail.append(act)
+        }
+
+        if (opts && opts.onRouteClick) {
+            const link = document.createElement("a")
+            link.textContent = "Open per-route timeline →"
+            link.style.cssText = "color:#7dd3fc;cursor:pointer;text-decoration:underline;"
+                + "font-size:10px;align-self:flex-start;"
+            link.addEventListener("click", (ev) => {
+                ev.stopPropagation()
+                opts.onRouteClick(e.hub, e.dest)
+            })
+            detail.append(link)
+        }
+
+        return detail
+    }
+
+    /**
+     * Tier 3.4 — undo helper. Fires a fresh apply with the entry's
+     * prevPrices, tagged source="undo" and undoOf=<entry.id>. Subject to
+     * the same applier gates (preflight, cooldown, breaker, dryRun) as a
+     * manual apply — we don't bypass anything; the operator pulled the
+     * trigger and the safety rails still apply. On success we mark the
+     * original entry undone (cosmetic — the actual price restore is the
+     * fresh apply that just landed).
+     *
+     * Returns the applier result envelope.
+     */
+    async _undoApplyEntry(entry) {
+        if (!entry || !entry.hub || !entry.dest || !entry.prevPrices) {
+            return {status: "failed", error: {code: "ineligible", message: "entry has no prevPrices"}}
+        }
+        const applier = this._getPricingApplier()
+        const log = this._getPricingApplyLog()
+        const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
+        const submitButton = apply.submitButton || "submit-prices"
+        // Per-route + global cooldown still apply — undo is a real write
+        // and shouldn't slip past the throttles. Pull both timestamps
+        // before dispatch.
+        let lastApplyAt = null, lastApplyAtGlobal = null
+        try {
+            if (log && typeof log.getLastSuccessAt === "function") {
+                lastApplyAt = await log.getLastSuccessAt(entry.hub, entry.dest)
+            }
+            if (log && typeof log.getLastSuccessGlobal === "function") {
+                lastApplyAtGlobal = await log.getLastSuccessGlobal()
+            }
+        } catch (err) { /* fail-open */ }
+
+        const result = await applier.apply(entry.hub, entry.dest, entry.prevPrices, {
+            scope:        entry.scope || undefined,
+            source:       "undo",
+            submitButton,
+            lastApplyAt,
+            lastApplyAtGlobal,
+            reason:       "Undo " + (entry.id || "<unknown>"),
+            undoOf:       entry.id || null
+        })
+        const ok = result && (result.status === "verified" || result.status === "posted" || result.status === "dry-run")
+        if (ok && entry.id && log && typeof log.markUndone === "function") {
+            try { await log.markUndone(entry.id) }
+            catch (err) { console.warn("[AES audit-log] markUndone failed", err) }
+        }
+        return result
+    }
+
+    _auditLogLabelEl(text) {
+        const el = document.createElement("strong")
+        el.textContent = text + ": "
+        el.style.cssText = "color:#cbd5e1;font-weight:600;"
+        return el
+    }
+
+    _auditLogAgeStr(ts) {
+        if (!isFinite(ts)) return "?"
+        const ageMin = Math.max(0, Math.round((Date.now() - ts) / 60000))
+        if (ageMin < 60)   return ageMin + " min ago"
+        if (ageMin < 1440) return Math.round(ageMin / 60) + " h ago"
+        return Math.round(ageMin / 1440) + " d ago"
+    }
+
+    _buildAuditPricesTable(e) {
+        const classes = ["Y", "C", "F", "Cargo"]
+        const prev = e.prevPrices     || {}
+        const next = e.newPrices      || e.requestedPrices || {}
+        const ver  = e.verifiedPrices || {}
+        let any = false
+        const tbl = document.createElement("div")
+        tbl.style.cssText = "display:grid;grid-template-columns:48px 1fr 1.4fr 1fr;gap:4px 12px;"
+            + "background:rgba(15,23,42,0.50);border:1px solid #1f2937;border-radius:3px;"
+            + "padding:6px 10px;font-variant-numeric:tabular-nums;"
+        for (const h of ["", "Was", "→ Requested", "Verified"]) {
+            const c = document.createElement("div")
+            c.textContent = h
+            c.style.cssText = "color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;"
+            tbl.append(c)
+        }
+        for (const cls of classes) {
+            const p = prev[cls], n = next[cls], v = ver[cls]
+            if (p == null && n == null && v == null) continue
+            any = true
+            const cn = document.createElement("div")
+            cn.textContent = cls
+            cn.style.cssText = "color:#cbd5e1;font-weight:600;"
+            const cp = document.createElement("div")
+            cp.textContent = p != null ? String(p) : "—"
+            cp.style.cssText = "color:#cbd5e1;"
+            const cnp = document.createElement("div")
+            cnp.style.cssText = "color:#cbd5e1;"
+            if (p != null && n != null && p !== n) {
+                const dPct = p > 0 ? ((n - p) / p * 100) : 0
+                const moveColor = n > p ? "#86efac" : "#fcd34d"
+                cnp.innerHTML = String(n) + " <span style=\"color:" + moveColor + "\">("
+                    + (n > p ? "+" : "") + dPct.toFixed(1) + "%)</span>"
+            } else {
+                cnp.textContent = n != null ? String(n) : "—"
+            }
+            const cv = document.createElement("div")
+            cv.style.cssText = "color:#cbd5e1;"
+            if (v != null && n != null && Math.round(v) !== Math.round(n)) {
+                cv.innerHTML = "<span style=\"color:#fca5a5\">" + v + " (mismatch)</span>"
+            } else {
+                cv.textContent = v != null ? String(v) : "—"
+            }
+            tbl.append(cn, cp, cnp, cv)
+        }
+        return any ? tbl : null
+    }
+
+    /**
+     * Download the supplied entries (already filtered) as JSON or CSV.
+     * Mirrors the Blob/anchor pattern in `_exportConfig` (panel.js
+     * top-level) so the download UX is consistent.
+     */
+    async _exportAuditLog(entries, format) {
+        const stamp = (() => {
+            const d = new Date()
+            const pad = (n) => String(n).padStart(2, "0")
+            return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate())
+                + "-" + pad(d.getHours()) + pad(d.getMinutes())
+        })()
+        const ext = format === "csv" ? "csv" : "json"
+        const filename = "aes-pricing-audit-" + stamp + "." + ext
+
+        let payload, mime
+        if (format === "csv") {
+            const cols = ["ts", "hub", "dest", "source", "status", "dryRun",
+                          "prevY", "newY", "verifiedY", "deltaPctY", "requestedY",
+                          "httpStatus", "errorCode", "errorMessage", "fingerprint", "reason"]
+            const escape = (v) => {
+                if (v == null) return ""
+                const s = String(v).replace(/"/g, '""')
+                return /[",\n\r]/.test(s) ? '"' + s + '"' : s
+            }
+            const lines = [cols.join(",")]
+            for (const e of entries) {
+                const prevY = e.prevPrices     && e.prevPrices.Y
+                const newY  = e.newPrices      && e.newPrices.Y
+                const verY  = e.verifiedPrices && e.verifiedPrices.Y
+                const reqY  = e.requestedPrices && e.requestedPrices.Y
+                const dPct  = (isFinite(prevY) && prevY > 0 && isFinite(newY))
+                    ? ((newY - prevY) / prevY * 100).toFixed(2) : ""
+                lines.push([
+                    isFinite(e.ts) ? new Date(e.ts).toISOString() : "",
+                    e.hub || "",
+                    e.dest || "",
+                    e.source || "",
+                    e.status || "",
+                    e.dryRun ? "yes" : "",
+                    prevY != null ? prevY : "",
+                    newY  != null ? newY  : "",
+                    verY  != null ? verY  : "",
+                    dPct,
+                    reqY  != null ? reqY  : "",
+                    e.httpStatus || "",
+                    (e.error && e.error.code)    || "",
+                    (e.error && e.error.message) || "",
+                    e.fingerprint || "",
+                    e.reason || ""
+                ].map(escape).join(","))
+            }
+            payload = lines.join("\n")
+            mime = "text/csv"
+        } else {
+            const envelope = {
+                format:     "aes-pricing-audit-1",
+                exportedAt: new Date().toISOString(),
+                server:     this.server || "",
+                count:      entries.length,
+                entries
+            }
+            payload = JSON.stringify(envelope, null, 2)
+            mime = "application/json"
+        }
+        const blob = new Blob([payload], {type: mime})
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.success("Exported " + filename + " (" + entries.length + " entries)")
+        }
+    }
+
+    /**
+     * Pricing diagnostics block — single-glance status of WHY (or
+     * whether) prices are changing. Three sections:
+     *   1. Outcome banner  — one sentence about what WILL happen
+     *   2. Pipeline gates  — checklist of dry-run / apply-enabled /
+     *                        breaker / silent-auto / mute, with one-line
+     *                        fix copy per blocked gate
+     *   3. Data health     — hub + visible-route counts at each stage
+     *                        of the silent-auto eligibility filter so
+     *                        the user can see whether the loop is fed
+     *
+     * The Tier 3 + silent-auto blocks below own the actual toggles;
+     * this one is purely a diagnostic.
+     */
+    _renderPricingDiagnostics(cfg) {
+        const apply = (cfg && cfg.apply) || {}
+        const sa = this._silentAutoCfg()
+        const now = Date.now()
+        const breakerMs = apply.circuitBreakerCooldownMs || 600000
+        const breakerCooling = !!apply.circuitBreakerTrippedAt
+            && (now - apply.circuitBreakerTrippedAt) < breakerMs
+        const breakerRemainingMin = breakerCooling
+            ? Math.ceil((breakerMs - (now - apply.circuitBreakerTrippedAt)) / 60000)
+            : 0
+        const muted = !!sa.silentAutoMutedUntil && sa.silentAutoMutedUntil > now
+        const muteRemainingMin = muted ? Math.ceil((sa.silentAutoMutedUntil - now) / 60000) : 0
+        const dryRunOnly = apply.dryRunOnly !== false
+        const applyEnabled = !!apply.enabled
+        const writesUnlocked = !dryRunOnly && applyEnabled && !breakerCooling
+
+        const block = document.createElement("div")
+        block.setAttribute("data-aes-pricing-diagnostics", "1")
+        block.style.cssText = "margin-top:8px;padding:8px 10px;"
+            + "background:rgba(56, 189, 248, 0.06);"
+            + "border:1px solid rgba(56, 189, 248, 0.30);border-radius:4px;"
+
+        const head = document.createElement("div")
+        head.style.cssText = "color:#7dd3fc;font-size:11px;margin-bottom:6px;font-weight:600;"
+        head.textContent = "Pricing diagnostics"
+        block.append(head)
+
+        block.append(this._buildPricingOutcomeBanner({
+            writesUnlocked, applyEnabled, dryRunOnly,
+            silentAutoEnabled: sa.silentAutoEnabled,
+            breakerCooling, breakerRemainingMin,
+            muted, muteRemainingMin,
+            tickMin: sa.silentAutoTickMin
+        }))
+
+        // ----- Pipeline gates checklist
+        const gates = document.createElement("div")
+        gates.style.cssText = "background:rgba(15, 23, 42, 0.55);"
+            + "border:1px solid #1f2937;border-radius:3px;"
+            + "padding:6px 8px;font-size:11px;color:#cbd5e1;"
+            + "margin:6px 0;display:flex;flex-direction:column;gap:2px;"
+        const gatesTitle = document.createElement("div")
+        gatesTitle.style.cssText = "color:#94a3b8;font-size:10px;"
+            + "text-transform:uppercase;letter-spacing:0.04em;margin-bottom:2px;"
+        gatesTitle.textContent = "Pipeline gates"
+        gates.append(gatesTitle)
+        gates.append(this._buildPricingDiagnosticsGate({
+            ok:    !dryRunOnly,
+            label: "Dry-run only",
+            state: dryRunOnly ? "ON" : "off",
+            hint:  dryRunOnly
+                ? "Preflight + body run, but POST is skipped. Toggle off below to commit real writes."
+                : null
+        }))
+        gates.append(this._buildPricingDiagnosticsGate({
+            ok:    applyEnabled,
+            label: "Apply enabled",
+            state: applyEnabled ? "on" : "OFF",
+            hint:  !applyEnabled
+                ? "Top-level kill switch — flip on below to commit real writes."
+                : null
+        }))
+        gates.append(this._buildPricingDiagnosticsGate({
+            ok:    !breakerCooling,
+            label: "Circuit breaker",
+            state: breakerCooling ? ("tripped (" + breakerRemainingMin + " min)") : "armed",
+            hint:  breakerCooling
+                ? "Wait for cooldown, or use Reset breaker in the Tier 3 block."
+                : null
+        }))
+        gates.append(this._buildPricingDiagnosticsGate({
+            ok:    sa.silentAutoEnabled,
+            label: "Silent-auto loop",
+            state: sa.silentAutoEnabled
+                ? ("running · " + (sa.silentAutoTickMin || 30) + " min cadence")
+                : "off",
+            hint:  !sa.silentAutoEnabled
+                ? "Manual Apply still works. Enable below for autonomous ticks."
+                : null
+        }))
+        if (sa.silentAutoEnabled) {
+            gates.append(this._buildPricingDiagnosticsGate({
+                ok:    !muted,
+                label: "Auto-mute",
+                state: muted ? ("active (" + muteRemainingMin + " min)") : "inactive",
+                hint:  muted
+                    ? "Auto-disabled after 5 consecutive failures. Click Resume now in the silent-auto block."
+                    : null
+            }))
+        }
+        block.append(gates)
+
+        // ----- Data health
+        const stats = this._computePricingDiagnostics(sa.silentAutoFollowMode)
+        const data = document.createElement("div")
+        data.style.cssText = gates.style.cssText
+        const dataTitle = document.createElement("div")
+        dataTitle.style.cssText = gatesTitle.style.cssText
+        dataTitle.textContent = "Data health · hub " + (this.hubIata || "?")
+        data.append(dataTitle)
+        const ageBulk = cfg.lastBulkScrapeAt
+            ? Math.round((now - cfg.lastBulkScrapeAt) / 60000) + " min ago"
+            : "never"
+        data.append(this._buildPricingDiagnosticsLine("Visible routes", stats.totalRows))
+        data.append(this._buildPricingDiagnosticsLine(
+            "Cached own pricing",
+            stats.withOwnPricing + " (last bulk sync " + ageBulk + ")",
+            stats.withOwnPricing === 0
+                ? "Click Sync route data above to populate own-pricing cache."
+                : null
+        ))
+        data.append(this._buildPricingDiagnosticsLine(
+            "≥2 cached competitors (Y)",
+            stats.withCompetitors,
+            stats.withCompetitors === 0 && stats.withOwnPricing > 0
+                ? "Silent-auto's competitor-median proposer requires ≥2 competitors per route."
+                : null
+        ))
+        data.append(this._buildPricingDiagnosticsLine("Watchlisted (★)", stats.starred))
+        const followLabel = sa.silentAutoFollowMode === "all" ? "all routes" : "watchlist"
+        data.append(this._buildPricingDiagnosticsLine(
+            "Eligible right now (follow: " + followLabel + ")",
+            stats.eligible,
+            stats.eligible === 0 && sa.silentAutoEnabled
+                ? "Silent-auto would skip every tick — no routes pass the eligibility filter."
+                : null
+        ))
+        block.append(data)
+
+        // ----- Run-now CTA
+        const ctrlRow = document.createElement("div")
+        ctrlRow.style.cssText = "display:flex;gap:8px;align-items:center;"
+            + "flex-wrap:wrap;font-size:11px;color:#94a3b8;margin-top:6px;"
+        const verboseBtn = document.createElement("button")
+        verboseBtn.textContent = this._silentAutoRunning
+            ? "Tick in flight…"
+            : "▶ Run silent-auto now"
+        Object.assign(verboseBtn.style, smallBtnStyle())
+        verboseBtn.style.fontSize = "11px"
+        const cantRun = !sa.silentAutoEnabled || !!this._silentAutoRunning
+        verboseBtn.disabled = cantRun
+        verboseBtn.title = !sa.silentAutoEnabled
+            ? "Enable silent-auto in the block below before firing a tick."
+            : "Fire one silent-auto tick immediately. Results land in the activity feed below with a per-route trace."
+        verboseBtn.addEventListener("click", async () => {
+            verboseBtn.disabled = true
+            verboseBtn.textContent = "Ticking…"
+            try { await this._silentAutoTickNow() }
+            finally {
+                verboseBtn.disabled = false
+                verboseBtn.textContent = "▶ Run silent-auto now"
+            }
+        })
+        ctrlRow.append(verboseBtn)
+        if (sa.silentAutoLastTickAt) {
+            const ago = Math.max(0, Math.round((now - sa.silentAutoLastTickAt) / 60000))
+            const lbl = document.createElement("span")
+            lbl.textContent = "Last tick " + ago + " min ago"
+            ctrlRow.append(lbl)
+        }
+        block.append(ctrlRow)
+
+        return block
+    }
+
+    _buildPricingOutcomeBanner({writesUnlocked, applyEnabled, dryRunOnly,
+                                silentAutoEnabled, breakerCooling, breakerRemainingMin,
+                                muted, muteRemainingMin, tickMin}) {
+        const banner = document.createElement("div")
+        let bg, border, fg, msg
+        if (breakerCooling) {
+            bg = "rgba(239, 68, 68, 0.10)"; border = "rgba(239, 68, 68, 0.40)"; fg = "#fca5a5"
+            msg = "🔴 BREAKER TRIPPED — silent-auto + manual Apply will not POST for "
+                + breakerRemainingMin + " min."
+        } else if (muted && silentAutoEnabled) {
+            bg = "rgba(239, 68, 68, 0.10)"; border = "rgba(239, 68, 68, 0.40)"; fg = "#fca5a5"
+            msg = "🔴 SILENT-AUTO MUTED — auto-disabled after 5 consecutive failures · "
+                + muteRemainingMin + " min remaining."
+        } else if (writesUnlocked && silentAutoEnabled) {
+            bg = "rgba(34, 197, 94, 0.10)"; border = "rgba(34, 197, 94, 0.40)"; fg = "#86efac"
+            msg = "🟢 LIVE — silent-auto will POST price updates to AS every "
+                + (tickMin || 30) + " min while this panel is open."
+        } else if (writesUnlocked) {
+            bg = "rgba(34, 197, 94, 0.10)"; border = "rgba(34, 197, 94, 0.40)"; fg = "#86efac"
+            msg = "🟢 MANUAL LIVE — manual Apply (modal / row right-click) will POST. "
+                + "Silent-auto loop is OFF."
+        } else if (silentAutoEnabled) {
+            bg = "rgba(251, 191, 36, 0.10)"; border = "rgba(251, 191, 36, 0.40)"; fg = "#fcd34d"
+            msg = "🟡 SILENT-AUTO IS DRY-RUN — every tick logs a dry-run entry but no AS POST happens. "
+                + (!applyEnabled
+                    ? "Flip Apply enabled below to commit writes."
+                    : "Turn off Dry-run only below to commit writes.")
+        } else {
+            bg = "rgba(148, 163, 184, 0.08)"; border = "rgba(148, 163, 184, 0.30)"; fg = "#cbd5e1"
+            msg = "⚪ NOTHING WILL HAPPEN — manual Apply is gated and silent-auto is off. "
+                + "Toggles are below."
+        }
+        banner.style.cssText = "padding:8px 10px;background:" + bg + ";"
+            + "border:1px solid " + border + ";border-radius:3px;"
+            + "color:" + fg + ";font-size:11px;line-height:1.5;font-weight:500;"
+        banner.textContent = msg
+        return banner
+    }
+
+    _buildPricingDiagnosticsGate({ok, label, state, hint}) {
+        const row = document.createElement("div")
+        row.style.cssText = "display:flex;gap:6px;align-items:flex-start;line-height:1.45;"
+        const icon = document.createElement("span")
+        icon.textContent = ok ? "✓" : "✗"
+        icon.style.cssText = "color:" + (ok ? "#34d399" : "#f87171")
+            + ";font-weight:600;width:12px;flex-shrink:0;"
+        const text = document.createElement("span")
+        text.style.cssText = "color:#cbd5e1;flex:1;"
+        const lbl = document.createElement("strong")
+        lbl.textContent = label + ": "
+        lbl.style.cssText = "color:#cbd5e1;font-weight:600;"
+        const st = document.createElement("span")
+        st.textContent = state
+        st.style.cssText = "color:" + (ok ? "#86efac" : "#fcd34d")
+            + ";font-variant-numeric:tabular-nums;"
+        text.append(lbl, st)
+        if (hint) {
+            const h = document.createElement("span")
+            h.textContent = " · " + hint
+            h.style.cssText = "color:#94a3b8;font-style:italic;"
+            text.append(h)
+        }
+        row.append(icon, text)
+        return row
+    }
+
+    _buildPricingDiagnosticsLine(label, value, hint) {
+        const row = document.createElement("div")
+        row.style.cssText = "display:flex;gap:6px;align-items:flex-start;line-height:1.45;"
+        const icon = document.createElement("span")
+        icon.textContent = "•"
+        icon.style.cssText = "color:#64748b;width:12px;flex-shrink:0;"
+        const text = document.createElement("span")
+        text.style.cssText = "color:#cbd5e1;flex:1;"
+        text.append(document.createTextNode(label + ": "))
+        const st = document.createElement("strong")
+        st.textContent = String(value)
+        st.style.cssText = "color:#e2e8f0;font-variant-numeric:tabular-nums;"
+        text.append(st)
+        if (hint) {
+            const h = document.createElement("span")
+            h.textContent = " · " + hint
+            h.style.cssText = "color:#94a3b8;font-style:italic;"
+            text.append(h)
+        }
+        row.append(icon, text)
+        return row
+    }
+
+    /**
+     * Mirror the silent-auto proposer's eligibility filter without
+     * dispatching anything. `followMode` filters the eligible count
+     * only — total / own-pricing / competitor / starred counts are
+     * mode-independent so the user can compare what would happen
+     * under each mode without flipping the setting.
+     */
+    _computePricingDiagnostics(followMode) {
+        const rows = (this.scoredRows || this.rows || []).filter(r => r && r.destIata)
+        let withOwnPricing = 0
+        let withCompetitors = 0
+        let starred = 0
+        let eligible = 0
+        for (const r of rows) {
+            const dest = String(r.destIata || "").toUpperCase()
+            const cached = this._lookupCachedOwnPricing(this.hubIata, dest)
+            const prices = this._silentAutoPrices(cached)
+            const hasOwn = !!(prices && Object.keys(prices).length)
+            if (hasOwn) withOwnPricing += 1
+            const cCount = isFinite(r.competitorYsCount) ? r.competitorYsCount : 0
+            if (cCount >= 2 && isFinite(r.competitorMedianPriceY) && r.competitorMedianPriceY > 0) {
+                withCompetitors += 1
+            }
+            if (r._starred) starred += 1
+            if (followMode === "watchlist" && !r._starred) continue
+            if (hasOwn) eligible += 1
+        }
+        return {totalRows: rows.length, withOwnPricing, withCompetitors, starred, eligible}
     }
 
     _buildTier3LogRow(e) {
@@ -9253,8 +12521,10 @@ class RouteAssistantPanel {
         if (!this._pricingApplyLog) {
             const cfg = (this.settings && this.settings.pricing && this.settings.pricing.apply) || {}
             this._pricingApplyLog = new RouteAssistantPricingApplyLog({
-                limit:         cfg.pricingApplyLogLimit  || 200,
-                perRouteLimit: cfg.perRouteApplyLogLimit || 20
+                limit:          cfg.pricingApplyLogLimit  || 200,
+                perRouteLimit:  cfg.perRouteApplyLogLimit || 20,
+                dedupWindowMin: isFinite(cfg.pricingApplyLogDedupWindowMin)
+                                    ? cfg.pricingApplyLogDedupWindowMin : 5
             })
         }
         return this._pricingApplyLog
@@ -9267,6 +12537,7 @@ class RouteAssistantPanel {
             dryRunOnly:               cfg.dryRunOnly !== false,
             applyEnabled:             !!cfg.enabled,
             cooldownMinPerRoute:      cfg.cooldownMinPerRoute,
+            cooldownMinGlobal:        cfg.cooldownMinGlobal,
             warnAboveDeltaPct:        cfg.warnAboveDeltaPct,
             applyLog:                 this._getPricingApplyLog(),
             circuitBreakerThreshold:  cfg.circuitBreakerThreshold,
@@ -10777,8 +14048,10 @@ class RouteAssistantPanel {
                     r.competitorMedianPriceY = competitorYs.length % 2
                         ? competitorYs[mid]
                         : Math.round((competitorYs[mid - 1] + competitorYs[mid]) / 2)
+                    r.competitorYsCount = competitorYs.length
                 } else {
                     r.competitorMedianPriceY = null
+                    r.competitorYsCount = 0
                 }
                 // Stash the raw prefix → flight-count map; the popover
                 // can render this when the leaderboard is empty.
@@ -12234,6 +15507,26 @@ class RouteAssistantPanel {
         scanBtn.addEventListener("click", () => this._runBulkOrsScrape())
         topRow.append(scanBtn)
 
+        // Combined "schedule + ORS" sync via the orchestrator. Runs the
+        // schedule scrape first (so flight numbers / freq / aircraft are
+        // fresh) then ORS (with the freshly-harvested fnSet unioned in).
+        // Disabled together with the per-scraper buttons so we never run
+        // two parallel write paths into the same caches.
+        const syncAllBtn = document.createElement("button")
+        Object.assign(syncAllBtn.style, smallBtnStyle())
+        syncAllBtn.style.background = "#0f766e"
+        syncAllBtn.disabled = !!this._orsScrapeRunning || !!this._priceScrapeRunning
+            || !!this._routeSyncRunning
+            || !this.hubIata || !(this.rows && this.rows.length) || tripped
+        syncAllBtn.title = "Schedule scrape → ORS scrape, in sequence per route. "
+            + "ORS picks up freshly-harvested flight numbers without waiting "
+            + "for the legacy enterprise-schedule cache to refresh."
+        syncAllBtn.textContent = this._routeSyncRunning
+            ? "Syncing route + ORS…"
+            : "Sync route data + ORS rank"
+        syncAllBtn.addEventListener("click", () => this._runBulkRouteSync())
+        topRow.append(syncAllBtn)
+
         // Recompute the sync button's label live whenever the user toggles
         // class checkboxes — wall-clock estimate scales with class count
         // (each class = one extra GET → POST handshake per route).
@@ -12376,6 +15669,45 @@ class RouteAssistantPanel {
         paramRow.append(showLbl)
 
         wrap.append(paramRow)
+
+        // ----- Snapshot archival — calibration set captured at scrape time.
+        // When on, every successful ORS scrape (bulk-sync button + per-route
+        // + bulk pre-apply paths) is copied to RouteAssistantOrsSnapshotStore
+        // alongside the route's service-config + price + aircraft context.
+        // Storage cap (`snapshotMaxPerRoute`) keeps things bounded; oldest
+        // snapshots evict when a new one would exceed the cap.
+        const snapRow = document.createElement("div")
+        snapRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
+            + "font-size:11px;margin-bottom:4px;color:#a78bfa;"
+        const snapCb = mkInput("checkbox", null)
+        snapCb.checked = !!cfg.snapshotOnScrape
+        const snapLbl = document.createElement("label")
+        snapLbl.style.cssText = "display:flex;gap:4px;align-items:center;cursor:pointer;"
+        snapLbl.title = "Archive a versioned snapshot of every ORS scrape — rank + rating "
+            + "+ connection list + the service-profile / price / aircraft context that produced it. "
+            + "Builds a (config → ORS rank) calibration dataset over time."
+        snapLbl.append(snapCb, document.createTextNode("Archive ORS snapshots on scrape"))
+        snapCb.addEventListener("change", async () => {
+            this.settings.ors.snapshotOnScrape = snapCb.checked
+            await RouteAssistantSettings.save({ors: this.settings.ors})
+        })
+        snapRow.append(snapLbl)
+        const capLbl = document.createElement("label")
+        capLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
+        capLbl.title = "Maximum snapshots per route — oldest evict when this is exceeded. "
+            + "Default 30 covers ~a month of weekly checkpoints."
+        const capInput = mkNumberInput(
+            isFinite(cfg.snapshotMaxPerRoute) ? cfg.snapshotMaxPerRoute : 30,
+            {min: 1, max: 200, step: 1, width: "55px"}
+        )
+        capInput.addEventListener("change", async () => {
+            const v = parseInt(capInput.value, 10)
+            this.settings.ors.snapshotMaxPerRoute = (isFinite(v) && v > 0) ? v : 30
+            await RouteAssistantSettings.save({ors: this.settings.ors})
+        })
+        capLbl.append(document.createTextNode("Cap per route:"), capInput)
+        snapRow.append(capLbl)
+        wrap.append(snapRow)
 
         // ----- Combine method + Preset (composite blending controls).
         // The composite ORS column blends per-class metrics into one
@@ -12720,6 +16052,539 @@ class RouteAssistantPanel {
                 : (totalCount + " routes scraped from /app/info/ors."),
             totalCount
         )
+    }
+
+    /**
+     * Run the route-sync orchestrator over every visible route. Schedule
+     * scrape feeds freshly-harvested flight numbers into the ORS scrape via
+     * `params.ourFlightNumbersOverride` (ors-scraper.js:570), so a route
+     * whose flights aren't in the legacy enterprise-schedule cache yet still
+     * gets correct rank flavors instead of silent all-null.
+     *
+     * Reuses both per-scraper config blocks: schedule pulls its maxAge from
+     * settings.pricing; ORS pulls classes/concurrency/staggers from
+     * settings.ors. The orchestrator's own concurrency=2/stagger=1500 default
+     * matches ORS bulkScrape because each route does up to 1 schedule + N
+     * cabin-class ORS fetches and the bottleneck is ORS.
+     *
+     * Mirrors `_runBulkOrsScrape` for the running-flag / progress-toast /
+     * post-run cache-apply pattern so the panel renders identically once
+     * either path completes. Both sets of running flags flip together so
+     * neither per-scraper button fires while the orchestrator owns both
+     * caches.
+     */
+    async _runBulkRouteSync() {
+        if (this._routeSyncRunning) return
+        if (this._priceScrapeRunning || this._orsScrapeRunning) return
+        if (!this.hubIata || !this.rows || !this.rows.length) return
+
+        const priceCfg = (this.settings && this.settings.pricing) || {}
+        const orsCfg   = (this.settings && this.settings.ors)     || {}
+
+        // Reuse cached scraper instances if the per-scraper paths already
+        // built them — keeps any in-session dedup map intact across paths.
+        if (!this.priceScraper) {
+            this.priceScraper = new RouteAssistantSchedulePageScraper(this.server, {
+                maxAgeDays: priceCfg.priceMaxAgeDays
+            })
+        }
+        if (!this.orsScraper) {
+            this.orsScraper = new RouteAssistantOrsScraper(this.server, {
+                maxAgeDays:               orsCfg.rankMaxAgeDays,
+                circuitBreakerCooldownMs: orsCfg.circuitBreakerCooldownMs
+            })
+        }
+        const orchestrator = new RouteAssistantRouteSync(this.server, {
+            priceScraper: this.priceScraper,
+            orsScraper:   this.orsScraper
+        })
+
+        const pairs = this.rows.map(r => ({hub: this.hubIata, dest: r.destIata}))
+        this._routeSyncRunning   = true
+        this._priceScrapeRunning = true
+        this._orsScrapeRunning   = true
+        this._renderSettings()
+
+        const progressHandle = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress("Syncing route + ORS…", {
+                id:   "route-sync-bulk",
+                type: "info"
+              })
+            : null
+
+        let halted = false, haltReason = null, doneCount = 0, totalCount = pairs.length
+        try {
+            const result = await orchestrator.bulkSync(pairs, {
+                concurrency: orsCfg.concurrency || 2,
+                staggerMs:   orsCfg.staggerMs   || 1500,
+                orsParams: {
+                    classesToScrape: orsCfg.classesToScrape,
+                    departureH:      orsCfg.defaultDepartureH,
+                    arrivalH:        orsCfg.defaultArrivalH,
+                    useGround:       orsCfg.defaultUseGround,
+                    carrierOverride: orsCfg.airlineCarrierPrefixOverride
+                },
+                contextBuilder: ({hub, dest, scheduleRec}) =>
+                    this._buildOrsContext(hub, dest, scheduleRec),
+                onProgress: (p) => {
+                    doneCount  = p.done
+                    totalCount = p.total
+                    let stageNote = ""
+                    if (p.phase === "stage" && p.route) {
+                        const tag = (p.route.hub || "") + "→" + (p.route.dest || "")
+                        stageNote = (p.stage === "schedule" ? " · scheduling " : " · ORS ") + tag
+                    }
+                    if (this._orsStatusEl) {
+                        let txt = "Syncing route + ORS: " + p.done + "/" + p.total + stageNote
+                        if (p.halted) txt = "⚠ Halted at " + p.done + "/" + p.total + ": " + (p.reason || "rate limit")
+                        this._orsStatusEl.textContent = txt
+                    }
+                    if (progressHandle) {
+                        progressHandle.update({
+                            message: p.halted
+                                ? ("⚠ Sync halted (" + p.done + "/" + p.total + ")")
+                                : ("Syncing route + ORS…" + stageNote),
+                            progressPct:   p.total ? (100 * p.done / p.total) : 0,
+                            progressLabel: p.done + " / " + p.total + " routes"
+                                + (p.halted ? " · " + (p.reason || "halted") : "")
+                        })
+                    }
+                }
+            })
+            halted     = !!(result && result.halted)
+            haltReason = result && result.reason
+            // Auto-archive snapshots when the user opted in. Each route that
+            // produced an ORS record gets one snapshot — calibration set grows
+            // with regular use without flooding storage (cap enforced by store).
+            await this._archiveOrsSnapshotsFromBulk(result, "post-scrape")
+        } catch (e) {
+            console.warn("[AES routeSync] bulk sync failed", e)
+            if (progressHandle) {
+                progressHandle.complete({
+                    type:    "error",
+                    message: "Route + ORS sync failed: " + ((e && e.message) ? e.message : e)
+                })
+            }
+        }
+
+        this._routeSyncRunning   = false
+        this._priceScrapeRunning = false
+        this._orsScrapeRunning   = false
+        const now = Date.now()
+        this.settings.pricing.lastBulkScrapeAt = now
+        this.settings.ors.lastBulkScrapeAt     = now
+        if (halted) {
+            this.settings.ors.circuitBreakerTrippedAt = now
+            console.warn("[AES routeSync] circuit breaker tripped: " + haltReason)
+        }
+        await RouteAssistantSettings.save({
+            pricing: this.settings.pricing,
+            ors:     this.settings.ors
+        })
+
+        await this._applyCachedPrices()
+        await this._applyCachedOrs()
+        this._render()
+
+        if (progressHandle) {
+            if (halted) {
+                progressHandle.complete({
+                    type:    "warn",
+                    message: "Route + ORS sync halted: " + (haltReason || "rate limit hit")
+                            + " · " + doneCount + "/" + totalCount + " done"
+                })
+            } else {
+                progressHandle.complete({
+                    type:    "success",
+                    message: "Route + ORS sync complete · " + totalCount + " routes"
+                })
+            }
+        }
+        this._notifyLongOpDone(
+            halted ? "AES — Route + ORS sync halted" : "AES — Route + ORS sync complete",
+            halted
+                ? ("Halted: " + (haltReason || "rate limit") + " · " + doneCount + "/" + totalCount + " routes done.")
+                : (totalCount + " routes scraped via the schedule + ORS pipeline."),
+            totalCount
+        )
+    }
+
+    /**
+     * Build the calibration-set context block for one (hub, dest). The
+     * orchestrator passes this as `opts.contextBuilder` so each ORS scrape
+     * lands with a snapshot of the route config that produced it —
+     * service-profile catalogue, current price, aircraft type, overrides,
+     * service-config — turning the resulting `routeAssistant:ors:*` record
+     * (and any archived snapshot) into a (config → ORS rank) calibration
+     * point. All sources are best-effort: a missing store loads as null
+     * rather than blocking the scrape.
+     *
+     * @param {string} hub
+     * @param {string} dest
+     * @param {object} [scheduleRec] — fresh schedule scrape result from
+     *   the orchestrator's phase 1; carries primaryAircraftType +
+     *   weeklyFlights for routes the user actually flies. May be null
+     *   when the schedule scraper failed.
+     */
+    async _buildOrsContext(hub, dest, scheduleRec) {
+        const hubU  = String(hub  || "").toUpperCase()
+        const destU = String(dest || "").toUpperCase()
+        if (!hubU || !destU) return null
+
+        const ctx = {capturedAt: Date.now()}
+
+        // ---- Aircraft (preferred source: fresh schedule scrape) ----------
+        if (scheduleRec) {
+            const ac = {
+                typeCode:      scheduleRec.primaryAircraftType   || null,
+                typeId:        scheduleRec.primaryAircraftTypeId || null,
+                weeklyFlights: isFinite(scheduleRec.weeklyFlights) ? scheduleRec.weeklyFlights : null,
+                daysPerWeek:   isFinite(scheduleRec.daysPerWeek)   ? scheduleRec.daysPerWeek   : null
+            }
+            // Fold seat capacity from the fleet store if we can resolve the type.
+            if (ac.typeId && this.fleet && typeof RouteAssistantFleetStore !== "undefined") {
+                try {
+                    const slot = RouteAssistantFleetStore.slotForTypeId(this.fleet, ac.typeId)
+                    if (slot) {
+                        ac.totalSeats    = isFinite(slot.totalSeats) ? slot.totalSeats : null
+                        ac.cruiseRangeKm = isFinite(slot.range)      ? slot.range      : null
+                    }
+                } catch (e) { /* aircraft lookup is best-effort */ }
+            }
+            // Drop the block if every field came back null — keeps storage tight.
+            if (ac.typeCode || ac.typeId || ac.weeklyFlights != null) ctx.aircraft = ac
+        }
+
+        // ---- Cached own pricing (the same snapshot the apply modal reads) -
+        try {
+            const cached = this._lookupCachedOwnPricing(hubU, destU)
+            if (cached && cached.prices && Object.keys(cached.prices).length) {
+                ctx.priceSnapshot = {
+                    Y:         cached.prices.Y     != null ? cached.prices.Y     : null,
+                    C:         cached.prices.C     != null ? cached.prices.C     : null,
+                    F:         cached.prices.F     != null ? cached.prices.F     : null,
+                    Cargo:     cached.prices.Cargo != null ? cached.prices.Cargo : null,
+                    scrapedAt: cached.scrapedAt || null
+                }
+            }
+        } catch (e) { console.warn("[AES orsContext] price lookup threw", e) }
+
+        // ---- Per-route overrides (LF / yield / cargo yield) --------------
+        try {
+            if (typeof RouteAssistantRouteOverridesStore !== "undefined") {
+                const ov = await RouteAssistantRouteOverridesStore.get(hubU, destU)
+                if (ov) {
+                    const block = {}
+                    if (isFinite(ov.paxLF))             block.paxLF             = ov.paxLF
+                    if (isFinite(ov.yieldPerKm))        block.yieldPerKm        = ov.yieldPerKm
+                    if (isFinite(ov.cargoYieldPerKgKm)) block.cargoYieldPerKgKm = ov.cargoYieldPerKgKm
+                    if (ov.expiresAt != null)           block.expiresAt         = ov.expiresAt
+                    if (ov.note)                        block.note              = String(ov.note).slice(0, 120)
+                    if (Object.keys(block).length) ctx.overrides = block
+                }
+            }
+        } catch (e) { console.warn("[AES orsContext] override lookup threw", e) }
+
+        // ---- Per-route service config (class-mix + service level) --------
+        try {
+            if (typeof RouteAssistantServiceConfigStore !== "undefined") {
+                const sc = await RouteAssistantServiceConfigStore.get(hubU, destU)
+                if (sc) {
+                    const block = {}
+                    if (sc.classMix)                         block.classMix     = Object.assign({}, sc.classMix)
+                    if (typeof sc.serviceLevel === "string") block.serviceLevel = sc.serviceLevel
+                    if (sc.classFares)                       block.classFares   = JSON.parse(JSON.stringify(sc.classFares))
+                    if (Object.keys(block).length) ctx.serviceConfig = block
+                }
+            }
+        } catch (e) { console.warn("[AES orsContext] serviceConfig lookup threw", e) }
+
+        // ---- Service-profile catalogue (airline-wide; no per-route
+        // assignment exists in our scrape today, so we record the catalogue
+        // identity so future analysis can join "which profiles were active
+        // at time T"). ----
+        try {
+            if (this.serviceProfilesCache && typeof this.serviceProfilesCache === "object") {
+                const profiles = []
+                for (const id in this.serviceProfilesCache) {
+                    const p = this.serviceProfilesCache[id]
+                    if (!p) continue
+                    profiles.push({id, name: p.name || null})
+                }
+                if (profiles.length) ctx.serviceProfiles = {catalogue: profiles}
+            }
+        } catch (e) { /* ignore */ }
+
+        // Collapse to null when literally nothing usable was captured —
+        // keeps the ORS record's `context` field absent rather than empty.
+        const hasAny = Object.keys(ctx).filter(k => k !== "capturedAt").length > 0
+        return hasAny ? ctx : null
+    }
+
+    /**
+     * Walk a `bulkSync` result and archive each successful per-route ORS
+     * record into the snapshot store. Gated by `settings.ors.snapshotOnScrape`
+     * so the user opts in once via the settings expander rather than getting
+     * flooded by default. Archive failures are logged + swallowed —
+     * snapshotting is best-effort metadata, never a blocker for the actual
+     * scrape work.
+     */
+    async _archiveOrsSnapshotsFromBulk(bulkResult, reason) {
+        if (!bulkResult || !Array.isArray(bulkResult.results)) return
+        const orsCfg = (this.settings && this.settings.ors) || {}
+        if (!orsCfg.snapshotOnScrape) return
+        if (typeof RouteAssistantOrsSnapshotStore === "undefined") return
+        const cap = isFinite(orsCfg.snapshotMaxPerRoute) && orsCfg.snapshotMaxPerRoute > 0
+            ? Math.floor(orsCfg.snapshotMaxPerRoute)
+            : RouteAssistantOrsSnapshotStore.MAX_PER_ROUTE
+        let archived = 0
+        for (const rec of bulkResult.results) {
+            if (!rec || !rec.ors || !rec.ors.hub || !rec.ors.dest) continue
+            // Only archive records that captured at least one class. Halted
+            // routes whose ORS rec is null naturally skip via the guard above.
+            if (!Array.isArray(rec.ors.classesScraped) || !rec.ors.classesScraped.length) continue
+            try {
+                await RouteAssistantOrsSnapshotStore.archive(
+                    rec.ors.hub, rec.ors.dest, rec.ors,
+                    {reason: reason || "post-scrape", maxPerRoute: cap}
+                )
+                archived++
+            } catch (e) {
+                console.warn("[AES orsSnapshot] archive threw for "
+                    + rec.ors.hub + "→" + rec.ors.dest, e)
+            }
+        }
+        if (archived > 0) {
+            console.log("[AES orsSnapshot] archived " + archived + " snapshot"
+                + (archived === 1 ? "" : "s") + " · reason=" + (reason || "post-scrape"))
+        }
+    }
+
+    /**
+     * Race a promise against a timeout. On timeout, returns
+     * `{timedOut: true, ms: <timeout>, info: <ctx>}` so the caller can
+     * branch without inspecting the original promise's shape. Use this
+     * for genuinely-blocking awaits (preapply sync, snapshot builds)
+     * where the underlying network call is bounded but a stuck Wicket
+     * session can still leave us pending forever. The original I/O is
+     * NOT cancelled — it continues in the background and its result is
+     * discarded; that's OK for idempotent reads but not for writes.
+     */
+    _raceWithTimeout(promise, ms, info) {
+        return new Promise((resolve) => {
+            let settled = false
+            const timer = setTimeout(() => {
+                if (settled) return
+                settled = true
+                resolve({timedOut: true, ms, info: info || null})
+            }, ms)
+            Promise.resolve(promise).then(
+                (val) => { if (settled) return; settled = true; clearTimeout(timer); resolve(val) },
+                (err) => { if (settled) return; settled = true; clearTimeout(timer); resolve({timedOut: false, error: err, info: info || null}) }
+            )
+        })
+    }
+
+    /**
+     * Pre-apply orchestrator pass — runs schedule + ORS scrapes for one or
+     * many routes before the auto-pricer commits. Reused by both the per-
+     * route apply modal (single pair) and the bulk apply pipeline (many
+     * pairs). Without this, ORS reads `getOurFlightNumbers` from the legacy
+     * scheduling cache and tags freshly-added routes as "not ours" — the
+     * sandbox projections then mislead the user into picking the wrong Δ%.
+     *
+     * Freshness gate: pairs whose row already has a `priceScrapedAt` AND
+     * `orsRecord.scrapedAt` newer than `opts.maxAgeMin × 60000` skip the
+     * scrape (the result map records the existing timestamps so the caller
+     * can still log a `preApplySync` envelope on the apply entry).
+     *
+     *   _orchestratorPreApplySync(pairs, {
+     *       maxAgeMin:   <minutes — 0 to force refresh of every pair>,
+     *       progressId:  <toast id — defaults to "route-sync-pre-apply">,
+     *       progressMessage: <toast headline>
+     *   })
+     *
+     * Returns:
+     *   {
+     *       results:      Map<destIata, {scheduleAt, orsAt, halted}>,
+     *       halted:       <bool>,
+     *       reason:       <string|null>,
+     *       doneCount:    <int — synced + skipped-fresh>,
+     *       totalCount:   <int — pairs.length>,
+     *       skippedFresh: <int — bypassed by freshness gate>
+     *   }
+     */
+    async _orchestratorPreApplySync(pairs, opts) {
+        opts = opts || {}
+        const maxAgeMs   = isFinite(opts.maxAgeMin) ? Math.max(0, opts.maxAgeMin) * 60000 : 0
+        const progressId = opts.progressId || "route-sync-pre-apply"
+        const headline   = opts.progressMessage || "Pre-apply sync…"
+        const orsCfg     = (this.settings && this.settings.ors)     || {}
+        const priceCfg   = (this.settings && this.settings.pricing) || {}
+
+        const out = {
+            results:      new Map(),
+            halted:       false,
+            reason:       null,
+            doneCount:    0,
+            totalCount:   (pairs && pairs.length) || 0,
+            skippedFresh: 0
+        }
+        if (!pairs || !pairs.length) return out
+
+        // ---- Freshness gate ---------------------------------------------
+        const now = Date.now()
+        const stalePairs = []
+        for (const pair of pairs) {
+            const row = (this.scoredRows || this.rows || []).find(r => r
+                && String(r.destIata || "").toUpperCase() === String(pair.dest || "").toUpperCase())
+            const scheduleAt = row && row.priceScrapedAt
+            const orsAt      = row && row.orsRecord && row.orsRecord.scrapedAt
+            if (maxAgeMs > 0
+                    && isFinite(scheduleAt) && (now - scheduleAt) < maxAgeMs
+                    && isFinite(orsAt)      && (now - orsAt)      < maxAgeMs) {
+                out.results.set(pair.dest, {scheduleAt, orsAt, halted: false})
+                out.skippedFresh += 1
+                continue
+            }
+            stalePairs.push(pair)
+        }
+        if (!stalePairs.length) {
+            out.doneCount = out.skippedFresh
+            return out
+        }
+
+        // ---- Lazy-build scrapers + orchestrator -------------------------
+        if (!this.priceScraper) {
+            this.priceScraper = new RouteAssistantSchedulePageScraper(this.server, {
+                maxAgeDays: priceCfg.priceMaxAgeDays
+            })
+        }
+        if (!this.orsScraper) {
+            this.orsScraper = new RouteAssistantOrsScraper(this.server, {
+                maxAgeDays:               orsCfg.rankMaxAgeDays,
+                circuitBreakerCooldownMs: orsCfg.circuitBreakerCooldownMs
+            })
+        }
+        const orchestrator = new RouteAssistantRouteSync(this.server, {
+            priceScraper: this.priceScraper,
+            orsScraper:   this.orsScraper
+        })
+
+        const progressHandle = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress(headline, {id: progressId, type: "info"})
+            : null
+
+        let halted = false, haltReason = null, doneCount = 0
+        try {
+            const res = await orchestrator.bulkSync(stalePairs, {
+                concurrency: orsCfg.concurrency || 2,
+                staggerMs:   orsCfg.staggerMs   || 1500,
+                orsParams: {
+                    classesToScrape: orsCfg.classesToScrape,
+                    departureH:      orsCfg.defaultDepartureH,
+                    arrivalH:        orsCfg.defaultArrivalH,
+                    useGround:       orsCfg.defaultUseGround,
+                    carrierOverride: orsCfg.airlineCarrierPrefixOverride
+                },
+                contextBuilder: ({hub, dest, scheduleRec}) =>
+                    this._buildOrsContext(hub, dest, scheduleRec),
+                onProgress: (p) => {
+                    doneCount = p.done
+                    let stageNote = ""
+                    if (p.phase === "stage" && p.route) {
+                        const tag = (p.route.hub || "") + "→" + (p.route.dest || "")
+                        stageNote = (p.stage === "schedule" ? " · scheduling " : " · ORS ") + tag
+                    }
+                    if (progressHandle) {
+                        progressHandle.update({
+                            message: p.halted
+                                ? ("⚠ " + headline + " halted (" + p.done + "/" + p.total + ")")
+                                : (headline + stageNote),
+                            progressPct:   p.total ? (100 * p.done / p.total) : 0,
+                            progressLabel: p.done + " / " + p.total + " routes"
+                                + (p.halted ? " · " + (p.reason || "halted") : "")
+                        })
+                    }
+                }
+            })
+            halted     = !!(res && res.halted)
+            haltReason = res && res.reason
+            // Auto-archive snapshots — pre-apply sync is a high-signal moment
+            // (config the user is about to commit). Snapshot store gates this
+            // on `settings.ors.snapshotOnScrape` and enforces the per-route cap.
+            await this._archiveOrsSnapshotsFromBulk(res, "pre-apply")
+            // Per-result: index aligns with stalePairs. A null entry means
+            // the orchestrator halted before reaching that index.
+            for (let i = 0; i < stalePairs.length; i++) {
+                const pair = stalePairs[i]
+                const rec  = res && res.results && res.results[i]
+                if (!rec) {
+                    out.results.set(pair.dest, {scheduleAt: null, orsAt: null, halted: true})
+                    continue
+                }
+                out.results.set(pair.dest, {
+                    scheduleAt: (rec.schedule && rec.schedule.scrapedAt) || null,
+                    orsAt:      (rec.ors      && rec.ors.scrapedAt)      || null,
+                    halted:     false
+                })
+            }
+        } catch (e) {
+            console.warn("[AES preApplySync] bulk sync threw", e)
+            halted     = true
+            haltReason = "Pre-flight threw: " + ((e && e.message) ? e.message : String(e))
+            for (const pair of stalePairs) {
+                if (!out.results.has(pair.dest)) {
+                    out.results.set(pair.dest, {scheduleAt: null, orsAt: null, halted: true})
+                }
+            }
+        }
+
+        // ---- Post-sync recompute (mirrors _runBulkRouteSync) ------------
+        try {
+            await this._applyCachedPrices()
+            await this._applyCachedOrs()
+        } catch (e) {
+            console.warn("[AES preApplySync] cache reapply threw", e)
+        }
+        try { this._render() } catch (e) { /* render failure non-fatal */ }
+
+        // Sandbox coordination — re-fire the model if the active sandbox
+        // route was in the synced set, so the picking-time projection
+        // reflects the fresh ORS rank without manual re-trigger.
+        if (this._orsSandboxRoute && this._orsSandboxRoute.dest) {
+            const sandboxDest = String(this._orsSandboxRoute.dest).toUpperCase()
+            const wasSynced = stalePairs.some(p => String(p.dest || "").toUpperCase() === sandboxDest)
+            if (wasSynced) {
+                try {
+                    const sbCfg     = (this.settings && this.settings.orsSandbox) || {}
+                    const routeKey  = String(this.hubIata || "").toUpperCase() + "-" + sandboxDest
+                    const scenario  = (sbCfg.lastScenarioByRoute && sbCfg.lastScenarioByRoute[routeKey]) || null
+                    if (scenario) this._recomputeOrsSandbox(scenario)
+                } catch (e) { console.warn("[AES preApplySync] sandbox recompute threw", e) }
+            }
+        }
+
+        if (progressHandle) {
+            if (halted) {
+                progressHandle.complete({
+                    type:    "warn",
+                    message: "Pre-flight halted: " + (haltReason || "rate limit hit")
+                           + " · " + doneCount + "/" + stalePairs.length + " synced"
+                })
+            } else {
+                progressHandle.complete({
+                    type:    "success",
+                    message: "Pre-flight complete · " + stalePairs.length + " synced"
+                           + (out.skippedFresh > 0 ? " · " + out.skippedFresh + " fresh" : "")
+                })
+            }
+        }
+
+        out.halted    = halted
+        out.reason    = haltReason
+        out.doneCount = doneCount + out.skippedFresh
+        return out
     }
 
     /**
@@ -13548,6 +17413,363 @@ class RouteAssistantPanel {
             document.removeEventListener("mousedown", onMouseDown)
             document.removeEventListener("keydown",   onKey)
         }
+    }
+
+    /**
+     * H slice 3b.1 — per-route interlining popover. Lists current
+     * partners, lets the user add / remove entries, and surfaces a
+     * total-share-by-class summary in the footer. Partner picker source:
+     * F slice 3 contractual-partners-scraper cache, walked via
+     * `bulkLoadCache(myEnterpriseIds)`. When the contractual cache is
+     * empty the dropdown disables and points the user to Settings →
+     * Carriers. No `_undoableSave` — popover stays open after each add /
+     * remove, accidental clicks are recoverable inline; Clear All does
+     * its own `window.confirm`.
+     */
+    async _openInterlinePopover(row, anchorEl) {
+        if (!row || !this.hubIata) return
+        if (typeof RouteAssistantInterlineStore === "undefined") return
+        this._closeInterlinePopover()
+        const hubU  = String(this.hubIata).toUpperCase()
+        const destU = String(row.destIata).toUpperCase()
+        let record = await RouteAssistantInterlineStore.load(hubU, destU)
+        const cfg = (this.settings && this.settings.carriers) || {}
+        const ownIds = (cfg.myEnterpriseIds || []).map(v => String(v).trim()).filter(Boolean)
+        const partnersCatalog = new Map()
+        if (ownIds.length && typeof RouteAssistantContractualPartnersScraper !== "undefined") {
+            try {
+                const cache = await RouteAssistantContractualPartnersScraper.bulkLoadCache(ownIds)
+                for (const rec of cache.values()) {
+                    if (!rec || !Array.isArray(rec.partners)) continue
+                    for (const p of rec.partners) {
+                        if (!p || !p.partnerId) continue
+                        const pid = String(p.partnerId)
+                        const existing = partnersCatalog.get(pid) || {
+                            name:      p.partnerName || ("#" + pid),
+                            iata:      p.partnerIata || "",
+                            relations: []
+                        }
+                        if (p.partnerName && existing.name.startsWith("#")) existing.name = p.partnerName
+                        for (const r of (p.relations || [])) {
+                            if (existing.relations.indexOf(r) === -1) existing.relations.push(r)
+                        }
+                        partnersCatalog.set(pid, existing)
+                    }
+                }
+            } catch (e) {
+                console.warn("[AES interline] partners catalog load failed:", e)
+            }
+        }
+        const pop = document.createElement("div")
+        pop.tabIndex = -1
+        Object.assign(pop.style, {
+            position: "fixed", background: "#1f2937", color: "#f3f4f6",
+            border: "1px solid #475569", borderRadius: "5px",
+            boxShadow: "0 8px 25px rgba(0,0,0,0.55)",
+            padding: "12px 14px", zIndex: "10002",
+            minWidth: "440px", maxWidth: "560px",
+            font: "11px/1.5 sans-serif"
+        })
+        const titleEl = document.createElement("strong")
+        titleEl.textContent = "Interlining · " + hubU + " → " + destU
+        titleEl.style.cssText = "color:#cbd5e1;display:block;margin-bottom:4px;font-size:12px;"
+        pop.append(titleEl)
+        const sub = document.createElement("div")
+        sub.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:10px;line-height:1.45;"
+        sub.textContent = "Per-route partner shares. Layered above your contractual partners (Settings → Carriers). "
+            + "Each entry: partner × class × share %."
+        pop.append(sub)
+        const listHost = document.createElement("div")
+        listHost.style.cssText = "max-height:220px;overflow-y:auto;margin-bottom:8px;"
+        pop.append(listHost)
+        const formHost = document.createElement("div")
+        pop.append(formHost)
+        const footHost = document.createElement("div")
+        footHost.style.cssText = "margin-top:10px;display:flex;justify-content:space-between;"
+            + "align-items:center;padding-top:8px;border-top:1px solid #374151;"
+        pop.append(footHost)
+
+        const renderList = () => {
+            listHost.innerHTML = ""
+            if (!record.partners || !record.partners.length) {
+                const empty = document.createElement("div")
+                empty.style.cssText = "color:#6b7280;font-style:italic;padding:8px 4px;"
+                empty.textContent = "No entries yet. Click + Add partner below."
+                listHost.append(empty)
+                return
+            }
+            const tbl = document.createElement("table")
+            tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:11px;"
+            const head = document.createElement("tr")
+            for (const h of ["Partner", "Class", "Share", "Type", ""]) {
+                const th = document.createElement("th")
+                th.textContent = h
+                th.style.cssText = "text-align:left;padding:3px 6px;color:#9ca3af;"
+                    + "font-weight:600;font-size:10px;border-bottom:1px solid #374151;"
+                head.append(th)
+            }
+            tbl.append(head)
+            for (const p of record.partners) {
+                const tr = document.createElement("tr")
+                const meta = partnersCatalog.get(p.partnerEnterpriseId)
+                    || {name: p.partnerName || ("#" + p.partnerEnterpriseId), iata: ""}
+                const displayName = (p.partnerName || meta.name)
+                    + (meta.iata ? "  ·  " + meta.iata : "")
+                const cells = [displayName, p.productClass,
+                    (Number(p.sharePercent) || 0).toFixed(1) + "%", p.relationType]
+                for (const c of cells) {
+                    const td = document.createElement("td")
+                    td.textContent = c
+                    td.style.cssText = "padding:4px 6px;border-bottom:1px solid #1f2937;color:#e5e7eb;"
+                    tr.append(td)
+                }
+                const xTd = document.createElement("td")
+                xTd.style.cssText = "padding:4px 6px;border-bottom:1px solid #1f2937;text-align:right;"
+                const rmBtn = document.createElement("button")
+                rmBtn.type = "button"
+                rmBtn.textContent = "✕"
+                rmBtn.title = "Remove this entry"
+                rmBtn.style.cssText = "background:transparent;color:#ef4444;border:0;cursor:pointer;"
+                    + "font-size:13px;padding:0 4px;line-height:1;"
+                rmBtn.addEventListener("click", async () => {
+                    const next = await RouteAssistantInterlineStore.removePartner(
+                        hubU, destU, p.partnerEnterpriseId, p.productClass)
+                    record = next || {pair: hubU + "-" + destU, partners: [], updatedAt: null}
+                    renderList(); renderFooter()
+                })
+                xTd.append(rmBtn)
+                tr.append(xTd)
+                tbl.append(tr)
+            }
+            listHost.append(tbl)
+        }
+
+        let formOpen = false
+        const renderForm = () => {
+            formHost.innerHTML = ""
+            if (!formOpen) {
+                const addBtn = document.createElement("button")
+                addBtn.type = "button"
+                addBtn.textContent = "+ Add partner"
+                addBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px dashed #475569;"
+                    + "border-radius:3px;padding:5px 12px;font-size:11px;cursor:pointer;"
+                addBtn.addEventListener("click", () => { formOpen = true; renderForm() })
+                formHost.append(addBtn)
+                return
+            }
+            const wrap = document.createElement("div")
+            wrap.style.cssText = "background:#0f1623;border:1px solid #374151;border-radius:3px;"
+                + "padding:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px;"
+            const fldStyle = "background:#0f1623;color:#f3f4f6;border:1px solid #374151;"
+                + "padding:3px;font-size:11px;width:100%;box-sizing:border-box;"
+            const labStyle = "display:flex;flex-direction:column;gap:2px;color:#9ca3af;font-size:10px;"
+            const labStyleWide = labStyle + "grid-column:span 2;"
+
+            const partnerSel = document.createElement("select")
+            partnerSel.style.cssText = fldStyle
+            const partnerEntries = Array.from(partnersCatalog.entries())
+                .sort((a, b) => (a[1].name || "").localeCompare(b[1].name || ""))
+            if (!partnerEntries.length) {
+                const opt = document.createElement("option")
+                opt.value = ""
+                opt.textContent = "(no contractual partners cached — sync in Settings → Carriers first)"
+                partnerSel.append(opt)
+                partnerSel.disabled = true
+            } else {
+                const ph = document.createElement("option")
+                ph.value = ""; ph.textContent = "— pick a partner —"
+                partnerSel.append(ph)
+                for (const [pid, meta] of partnerEntries) {
+                    const opt = document.createElement("option")
+                    opt.value = pid
+                    opt.textContent = meta.name + " (#" + pid + ")"
+                        + (meta.relations.length ? "  ·  " + meta.relations.join(",") : "")
+                    partnerSel.append(opt)
+                }
+            }
+            const partnerLbl = document.createElement("label")
+            partnerLbl.style.cssText = labStyleWide
+            partnerLbl.append(document.createTextNode("Partner"), partnerSel)
+            wrap.append(partnerLbl)
+
+            const classSel = document.createElement("select")
+            classSel.style.cssText = fldStyle
+            for (const c of RouteAssistantInterlineStore.VALID_PRODUCT_CLASSES) {
+                const opt = document.createElement("option")
+                opt.value = c; opt.textContent = c
+                classSel.append(opt)
+            }
+            const classLbl = document.createElement("label")
+            classLbl.style.cssText = labStyle
+            classLbl.append(document.createTextNode("Class"), classSel)
+            wrap.append(classLbl)
+
+            const shareInput = document.createElement("input")
+            shareInput.type = "number"
+            shareInput.min = "0"; shareInput.max = "100"; shareInput.step = "0.5"
+            shareInput.value = "0"
+            shareInput.style.cssText = fldStyle
+            const shareLbl = document.createElement("label")
+            shareLbl.style.cssText = labStyle
+            shareLbl.append(document.createTextNode("Share %"), shareInput)
+            wrap.append(shareLbl)
+
+            const relSel = document.createElement("select")
+            relSel.style.cssText = fldStyle
+            for (const r of RouteAssistantInterlineStore.VALID_RELATION_TYPES) {
+                const opt = document.createElement("option")
+                opt.value = r; opt.textContent = r
+                relSel.append(opt)
+            }
+            const relLbl = document.createElement("label")
+            relLbl.style.cssText = labStyleWide
+            relLbl.append(document.createTextNode("Relation type"), relSel)
+            wrap.append(relLbl)
+
+            const notesInput = document.createElement("input")
+            notesInput.type = "text"
+            notesInput.maxLength = 280
+            notesInput.placeholder = "Optional — context, agreement expiry, etc."
+            notesInput.style.cssText = fldStyle
+            const notesLbl = document.createElement("label")
+            notesLbl.style.cssText = labStyleWide
+            notesLbl.append(document.createTextNode("Notes"), notesInput)
+            wrap.append(notesLbl)
+
+            const btnRow = document.createElement("div")
+            btnRow.style.cssText = "grid-column:span 2;display:flex;gap:6px;"
+                + "justify-content:flex-end;margin-top:6px;"
+            const cancelBtn = document.createElement("button")
+            cancelBtn.type = "button"
+            cancelBtn.textContent = "Cancel"
+            Object.assign(cancelBtn.style, smallBtnStyle())
+            cancelBtn.style.background = "#475569"
+            cancelBtn.style.fontSize = "10px"
+            cancelBtn.style.padding = "2px 8px"
+            cancelBtn.addEventListener("click", () => { formOpen = false; renderForm() })
+            const saveBtn = document.createElement("button")
+            saveBtn.type = "button"
+            saveBtn.textContent = "Add"
+            Object.assign(saveBtn.style, smallBtnStyle())
+            saveBtn.style.fontSize = "10px"
+            saveBtn.style.padding = "2px 12px"
+            saveBtn.addEventListener("click", async () => {
+                const pid = String(partnerSel.value || "").trim()
+                if (!pid) {
+                    if (typeof RouteAssistantToast !== "undefined") {
+                        RouteAssistantToast.warn("Pick a partner first.")
+                    }
+                    return
+                }
+                const meta = partnersCatalog.get(pid)
+                const partner = {
+                    partnerEnterpriseId: pid,
+                    partnerName:         (meta && meta.name) || "",
+                    productClass:        classSel.value,
+                    sharePercent:        Number(shareInput.value) || 0,
+                    relationType:        relSel.value,
+                    notes:               notesInput.value
+                }
+                const next = await RouteAssistantInterlineStore.addPartner(hubU, destU, partner)
+                if (!next) {
+                    if (typeof RouteAssistantToast !== "undefined") {
+                        RouteAssistantToast.error("Save failed — see console.")
+                    }
+                    return
+                }
+                record = next
+                formOpen = false
+                renderList(); renderFooter(); renderForm()
+            })
+            btnRow.append(cancelBtn, saveBtn)
+            wrap.append(btnRow)
+            formHost.append(wrap)
+        }
+
+        const renderFooter = () => {
+            footHost.innerHTML = ""
+            const left = document.createElement("div")
+            left.style.cssText = "color:#9ca3af;font-size:10px;"
+            const partnerCount = (record.partners || []).length
+            if (partnerCount > 0) {
+                const totals = []
+                for (const cls of RouteAssistantInterlineStore.VALID_PRODUCT_CLASSES) {
+                    const t = RouteAssistantInterlineStore.totalShare(record, cls)
+                    if (t > 0) totals.push(cls + " " + t.toFixed(1) + "%")
+                }
+                left.textContent = partnerCount + " entr" + (partnerCount === 1 ? "y" : "ies")
+                    + (totals.length ? "  ·  " + totals.join(" · ") : "")
+            } else {
+                left.textContent = "(no entries)"
+            }
+            footHost.append(left)
+            const right = document.createElement("div")
+            right.style.cssText = "display:flex;gap:6px;"
+            if (partnerCount > 0) {
+                const clearBtn = document.createElement("button")
+                clearBtn.type = "button"
+                clearBtn.textContent = "Clear all"
+                Object.assign(clearBtn.style, smallBtnStyle())
+                clearBtn.style.background = "#7f1d1d"
+                clearBtn.style.fontSize = "10px"
+                clearBtn.style.padding = "2px 8px"
+                clearBtn.addEventListener("click", async () => {
+                    if (!window.confirm("Remove all interline entries on " + hubU + "→" + destU + "?")) return
+                    await RouteAssistantInterlineStore.clear(hubU, destU)
+                    record = {pair: hubU + "-" + destU, partners: [], updatedAt: null}
+                    renderList(); renderFooter()
+                })
+                right.append(clearBtn)
+            }
+            const closeBtn = document.createElement("button")
+            closeBtn.type = "button"
+            closeBtn.textContent = "Close"
+            Object.assign(closeBtn.style, smallBtnStyle())
+            closeBtn.style.fontSize = "10px"
+            closeBtn.style.padding = "2px 12px"
+            closeBtn.addEventListener("click", () => this._closeInterlinePopover())
+            right.append(closeBtn)
+            footHost.append(right)
+        }
+
+        renderList(); renderForm(); renderFooter()
+        document.body.append(pop)
+        this._interlinePopover = pop
+        const r = anchorEl.getBoundingClientRect()
+        const popRect = pop.getBoundingClientRect()
+        const vh = window.innerHeight, vw = window.innerWidth
+        let top = r.bottom + 6
+        if (top + popRect.height > vh - 8) top = Math.max(8, r.top - popRect.height - 6)
+        let left = r.left
+        if (left + popRect.width > vw - 8) left = vw - popRect.width - 8
+        if (left < 8) left = 8
+        pop.style.top  = top  + "px"
+        pop.style.left = left + "px"
+        const onMouseDown = (e) => {
+            if (pop.contains(e.target)) return
+            if (e.target === anchorEl) return
+            this._closeInterlinePopover()
+        }
+        const onKey = (e) => { if (e.key === "Escape") this._closeInterlinePopover() }
+        setTimeout(() => {
+            document.addEventListener("mousedown", onMouseDown)
+            document.addEventListener("keydown",   onKey)
+        }, 0)
+        this._interlinePopoverCleanup = () => {
+            document.removeEventListener("mousedown", onMouseDown)
+            document.removeEventListener("keydown",   onKey)
+        }
+    }
+
+    _closeInterlinePopover() {
+        if (this._interlinePopoverCleanup) {
+            try { this._interlinePopoverCleanup() } catch (e) { /* noop */ }
+            this._interlinePopoverCleanup = null
+        }
+        if (this._interlinePopover && this._interlinePopover.parentNode) {
+            this._interlinePopover.parentNode.removeChild(this._interlinePopover)
+        }
+        this._interlinePopover = null
     }
 
     _closeRouteNotePopover() {
@@ -15339,9 +19561,9 @@ class RouteAssistantPanel {
         const sandboxProjected  = args.sandboxProjected  || null
         const sandboxModelParams = args.sandboxModelParams || null
 
-        const cachedOwn = this._lookupCachedOwnPricing(hub, dest)
-        const cur = (cachedOwn && cachedOwn.prices) || {}
-        const sliderRanges = (cachedOwn && cachedOwn.sliderRanges) || {}
+        let cachedOwn = this._lookupCachedOwnPricing(hub, dest)
+        const cur = Object.assign({}, (cachedOwn && cachedOwn.prices) || {})
+        const sliderRanges = Object.assign({}, (cachedOwn && cachedOwn.sliderRanges) || {})
         const prefilled = args.prefilledPrices || {}
 
         const seedPrice = (cls) => {
@@ -15384,24 +19606,34 @@ class RouteAssistantPanel {
         head.append(title, stageBadge)
         dialog.append(head)
 
-        if (cachedOwn && cachedOwn.scrapedAt) {
-            const ageDays = (Date.now() - cachedOwn.scrapedAt) / 86400000
-            const cacheNote = document.createElement("div")
-            cacheNote.style.cssText = "color:#6b7280;font-size:10px;margin-bottom:4px;"
-            cacheNote.textContent = "Cached pricing snapshot from " + new Date(cachedOwn.scrapedAt).toLocaleString()
-                + " (" + (ageDays < 1 ? "today" : Math.round(ageDays) + "d ago") + ") — Apply will fetch fresh first."
-            dialog.append(cacheNote)
-        } else {
-            const noCache = document.createElement("div")
-            noCache.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:4px;"
-            noCache.textContent = "No cached pricing — Apply will fetch live form context from /app/com/markets/" + hub + dest
-            dialog.append(noCache)
+        const cacheNoteEl = document.createElement("div")
+        cacheNoteEl.style.cssText = "color:#6b7280;font-size:10px;margin-bottom:4px;"
+        const refreshCacheNote = () => {
+            if (cachedOwn && cachedOwn.scrapedAt) {
+                const ageMs   = Date.now() - cachedOwn.scrapedAt
+                const ageMin  = ageMs / 60000
+                const ageDays = ageMs / 86400000
+                const ageStr = ageMin < 1 ? "just now"
+                    : ageMin < 60 ? Math.round(ageMin) + "m ago"
+                    : ageDays < 1 ? Math.round(ageMin / 60) + "h ago"
+                    : Math.round(ageDays) + "d ago"
+                cacheNoteEl.textContent = "Cached pricing snapshot from " + new Date(cachedOwn.scrapedAt).toLocaleString()
+                    + " (" + ageStr + ")"
+                cacheNoteEl.style.color = ageMin < 5 ? "#34d399" : "#6b7280"
+            } else {
+                cacheNoteEl.textContent = "No cached pricing — Apply will fetch live form context from /app/com/markets/" + hub + dest
+                cacheNoteEl.style.color = "#9ca3af"
+            }
         }
+        refreshCacheNote()
+        dialog.append(cacheNoteEl)
 
         const pricesGrid = document.createElement("div")
         pricesGrid.style.cssText = "display:grid;grid-template-columns:auto 1fr auto auto;gap:6px 12px;"
             + "align-items:center;margin:8px 0;"
         const inputs = {}
+        const curEls = {}
+        const updateDeltas = {}
         for (const h of ["Class", "New", "Current", "Δ%"]) {
             const th = document.createElement("div")
             th.textContent = h
@@ -15422,6 +19654,7 @@ class RouteAssistantPanel {
             const curEl = document.createElement("span")
             curEl.textContent = cur[cls] != null ? String(cur[cls]) : "—"
             curEl.style.cssText = "color:#9ca3af;font-variant-numeric:tabular-nums;text-align:right;"
+            curEls[cls] = curEl
             const deltaEl = document.createElement("span")
             deltaEl.style.cssText = "color:#cbd5e1;font-variant-numeric:tabular-nums;font-size:11px;text-align:right;min-width:60px;"
             const updateDelta = () => {
@@ -15435,6 +19668,7 @@ class RouteAssistantPanel {
                     ? (Math.abs(pct) >= (apply.requireConfirmAboveDeltaPct || 15) ? "#f87171" : "#fbbf24")
                     : "#9ca3af"
             }
+            updateDeltas[cls] = updateDelta
             updateDelta()
             input.addEventListener("input", updateDelta)
             const r = sliderRanges[cls]
@@ -15442,6 +19676,32 @@ class RouteAssistantPanel {
             pricesGrid.append(lbl, input, curEl, deltaEl)
         }
         dialog.append(pricesGrid)
+
+        // Re-paint Current column + Δ% display after a fresh orchestrator
+        // pass updates the cached snapshot. Inputs that the user has not
+        // touched (still equal old cur) follow to the new cur — that way
+        // a freshly-opened modal seeds off fresh data instead of stale,
+        // but a user who has already typed a custom price is not stomped.
+        const applyCachedSnapshot = () => {
+            if (!this._pricingApplyModal || this._pricingApplyModal.overlay !== overlay) return
+            const fresh = this._lookupCachedOwnPricing(hub, dest)
+            if (!fresh) return
+            cachedOwn = fresh
+            const freshPrices = fresh.prices || {}
+            const freshRanges = fresh.sliderRanges || {}
+            for (const cls of ["Y", "C", "F", "Cargo"]) {
+                const old  = cur[cls]
+                const next = freshPrices[cls]
+                if (curEls[cls]) curEls[cls].textContent = next != null ? String(next) : "—"
+                const inputVal = parseInt(inputs[cls].value, 10)
+                const inputMatchedOld = old != null && isFinite(inputVal) && inputVal === Math.round(old)
+                cur[cls] = next != null ? next : null
+                if (inputMatchedOld && next != null) inputs[cls].value = String(Math.round(next))
+                if (freshRanges[cls]) sliderRanges[cls] = freshRanges[cls]
+                if (updateDeltas[cls]) updateDeltas[cls]()
+            }
+            refreshCacheNote()
+        }
 
         const scopeWrap = document.createElement("div")
         scopeWrap.style.cssText = "margin:8px 0 6px 0;padding:6px 8px;background:rgba(255,255,255,0.02);"
@@ -15533,6 +19793,13 @@ class RouteAssistantPanel {
             + "border-radius:3px;padding:5px 14px;font-size:11px;cursor:pointer;"
         cancelBtn.addEventListener("click", close)
 
+        const refreshBtn = document.createElement("button")
+        refreshBtn.textContent = "Refresh data"
+        refreshBtn.title = "Run schedule + ORS scrapes for this route now. "
+            + "Updates the Current column, sandbox projections, and the apply cooldown gate."
+        refreshBtn.style.cssText = "background:#1e3a5f;color:#bfdbfe;border:1px solid #1d4ed8;"
+            + "border-radius:3px;padding:5px 14px;font-size:11px;cursor:pointer;"
+
         const dryBtn = document.createElement("button")
         dryBtn.textContent = "Dry-run preview"
         dryBtn.style.cssText = "background:#374151;color:#cbd5e1;border:1px solid #475569;"
@@ -15553,10 +19820,74 @@ class RouteAssistantPanel {
             + "border-radius:3px;padding:5px 14px;font-size:11px;"
             + "cursor:" + (liveAvailable ? "pointer" : "not-allowed") + ";"
 
-        actionRow.append(cancelBtn, dryBtn, applyBtn)
+        actionRow.append(cancelBtn, refreshBtn, dryBtn, applyBtn)
         dialog.append(actionRow)
 
-        const collectArgs = (forcedDryRun, lastApplyAt) => {
+        // Spinner overlay used during the orchestrator pre-apply pass.
+        // Gates user input on the dialog itself (z-index'd above the modal
+        // body) so the user cannot click Apply mid-refresh against partial
+        // data. Created lazily; toggled via `setRefreshing()`.
+        const spinnerOverlay = document.createElement("div")
+        spinnerOverlay.style.cssText = "position:absolute;inset:0;background:rgba(15, 22, 35, 0.65);"
+            + "display:none;align-items:center;justify-content:center;border-radius:6px;z-index:1;"
+        const spinnerBox = document.createElement("div")
+        spinnerBox.style.cssText = "color:#bfdbfe;font-size:12px;background:#0b1220;"
+            + "border:1px solid #1e3a5f;border-radius:4px;padding:10px 16px;"
+        spinnerBox.textContent = "Refreshing schedule + ORS…"
+        spinnerOverlay.append(spinnerBox)
+        // Position the dialog as the spinner anchor.
+        dialog.style.position = "relative"
+        dialog.append(spinnerOverlay)
+
+        const setRefreshing = (on, message) => {
+            if (on) {
+                spinnerBox.textContent = message || "Refreshing schedule + ORS…"
+                spinnerOverlay.style.display = "flex"
+                refreshBtn.disabled = true
+                dryBtn.disabled     = true
+                applyBtn.disabled   = true
+            } else {
+                spinnerOverlay.style.display = "none"
+                refreshBtn.disabled = false
+                dryBtn.disabled     = false
+                applyBtn.disabled   = !liveAvailable
+            }
+        }
+
+        // Run the orchestrator pre-apply pass for this single route, then
+        // re-paint the Current column / Δ% / cache-age note. Detached-DOM
+        // safe — the helper itself guards against writes after the modal
+        // is closed (see `applyCachedSnapshot` above).
+        const runPreApplyRefresh = async (maxAgeMin, headline) => {
+            setRefreshing(true, headline)
+            let result = null
+            try {
+                result = await this._orchestratorPreApplySync([{hub, dest}], {
+                    maxAgeMin:       isFinite(maxAgeMin) ? maxAgeMin : 0,
+                    progressId:      "route-sync-pre-single",
+                    progressMessage: headline || "Pre-apply sync · " + hub + "→" + dest
+                })
+                applyCachedSnapshot()
+            } catch (e) {
+                console.warn("[AES preApplySync · per-route] threw", e)
+            } finally {
+                setRefreshing(false)
+            }
+            return result
+        }
+
+        refreshBtn.addEventListener("click", async () => {
+            const projectionMaxAge = isFinite(apply.refreshMaxAgeMinProjection) ? apply.refreshMaxAgeMinProjection : 5
+            const sync = await runPreApplyRefresh(projectionMaxAge, "Refreshing " + hub + "→" + dest + "…")
+            if (sync && sync.halted && this._pricingApplyModal && this._pricingApplyModal.overlay === overlay) {
+                preflightHost.innerHTML = ""
+                preflightHost.append(this._buildTier3FlashRow(
+                    "warn", "Pre-flight halted: " + (sync.reason || "rate limit") + " — Apply will use cached data."
+                ))
+            }
+        })
+
+        const collectArgs = (forcedDryRun, lastApplyAt, lastApplyAtGlobal) => {
             const prices = {}
             for (const cls of ["Y", "C", "F", "Cargo"]) {
                 const v = parseInt(inputs[cls].value, 10)
@@ -15570,8 +19901,9 @@ class RouteAssistantPanel {
                     scope, source, sandboxScenario, projectedDelta,
                     reason: (reasonInput.value || "").trim() || null,
                     dryRun: !!forcedDryRun,
-                    submitButton: apply.submitButton || "submit-prices",
-                    lastApplyAt: lastApplyAt || null
+                    submitButton:      apply.submitButton || "submit-prices",
+                    lastApplyAt:       lastApplyAt       || null,
+                    lastApplyAtGlobal: lastApplyAtGlobal || null
                 }
             }
         }
@@ -15586,10 +19918,24 @@ class RouteAssistantPanel {
             return null
         }
 
+        const fetchLastApplyAtGlobal = async () => {
+            try {
+                const log = this._getPricingApplyLog()
+                if (log && typeof log.getLastSuccessGlobal === "function") {
+                    return await log.getLastSuccessGlobal()
+                }
+            } catch (e) { console.warn("[AES pricing] getLastSuccessGlobal failed", e) }
+            return null
+        }
+
         const renderResult = (result, applierUsed) => {
-            preflightHost.innerHTML = ""
-            if (result.preflight) preflightHost.append(this._buildTier3PreflightView(result.preflight))
-            if (result.bodyPreview) bodyPre.textContent = result.bodyPreview
+            // Detached-DOM guard — the user may have closed the modal mid-async.
+            const stillMounted = !!(this._pricingApplyModal && this._pricingApplyModal.overlay === overlay)
+            if (stillMounted) {
+                preflightHost.innerHTML = ""
+                if (result.preflight) preflightHost.append(this._buildTier3PreflightView(result.preflight))
+                if (result.bodyPreview) bodyPre.textContent = result.bodyPreview
+            }
             this._refreshAllOpenTier3LogPreviews()
             const msg = (result.status === "dry-run" ? "Dry-run logged · " : (result.status + " · "))
                 + hub + "→" + dest
@@ -15682,8 +20028,10 @@ class RouteAssistantPanel {
                 const result = await applier.apply(a.hub, a.dest, a.prices, a.opts)
                 renderResult(result, applier)
             } catch (e) {
-                preflightHost.innerHTML = ""
-                preflightHost.append(this._buildTier3FlashRow("error", "Dry-run threw: " + (e && e.message || e)))
+                if (this._pricingApplyModal && this._pricingApplyModal.overlay === overlay) {
+                    preflightHost.innerHTML = ""
+                    preflightHost.append(this._buildTier3FlashRow("error", "Dry-run threw: " + (e && e.message || e)))
+                }
             } finally {
                 dryBtn.disabled = false
                 dryBtn.textContent = "Dry-run preview"
@@ -15695,8 +20043,33 @@ class RouteAssistantPanel {
             applyBtn.disabled = true
             applyBtn.textContent = "Applying…"
             try {
-                const lastApplyAt = await fetchLastApplyAt()
-                const a = collectArgs(false, lastApplyAt)
+                // Defensive secondary pre-flight before the POST. The
+                // modal-open refresh anchored projections; this catches
+                // the user who paused several minutes between open and
+                // Apply, when the freshness window for *real money* is
+                // tighter than for picking-time UI.
+                if (apply.refreshBeforeApply !== false) {
+                    const applyMaxAge = isFinite(apply.refreshMaxAgeMinApply) ? apply.refreshMaxAgeMinApply : 1
+                    const sync = await runPreApplyRefresh(applyMaxAge, "Pre-flight · " + hub + "→" + dest)
+                    if (sync && sync.halted && this._pricingApplyModal && this._pricingApplyModal.overlay === overlay) {
+                        renderResult({
+                            status: "aborted",
+                            error:  {code: "preApplySyncHalted", message: sync.reason || "Pre-flight halted"}
+                        }, null)
+                        return
+                    }
+                }
+                const [lastApplyAt, lastApplyAtGlobal] = await Promise.all([
+                    fetchLastApplyAt(), fetchLastApplyAtGlobal()
+                ])
+                const a = collectArgs(false, lastApplyAt, lastApplyAtGlobal)
+                if (cachedOwn && cachedOwn.scrapedAt) {
+                    a.opts.preApplySync = {
+                        scheduleAt: cachedOwn.scrapedAt,
+                        orsAt:      cachedOwn.scrapedAt,
+                        halted:     false
+                    }
+                }
                 const applier = this._getPricingApplier()
                 const result = await applier.apply(a.hub, a.dest, a.prices, a.opts)
                 renderResult(result, applier)
@@ -15704,8 +20077,10 @@ class RouteAssistantPanel {
                     setTimeout(close, 600)
                 }
             } catch (e) {
-                preflightHost.innerHTML = ""
-                preflightHost.append(this._buildTier3FlashRow("error", "Apply threw: " + (e && e.message || e)))
+                if (this._pricingApplyModal && this._pricingApplyModal.overlay === overlay) {
+                    preflightHost.innerHTML = ""
+                    preflightHost.append(this._buildTier3FlashRow("error", "Apply threw: " + (e && e.message || e)))
+                }
             } finally {
                 applyBtn.disabled = !liveAvailable
                 applyBtn.textContent = liveAvailable ? "Apply" : "Apply (gated)"
@@ -15718,6 +20093,18 @@ class RouteAssistantPanel {
         overlay.addEventListener("click", onOverlayClick)
         this._pricingApplyModal = {overlay, onKey}
         if (inputs.Y) setTimeout(() => inputs.Y.focus(), 30)
+
+        // Auto-refresh on modal open — runs the orchestrator pass against
+        // this single route so the Current column + sandbox projections
+        // reflect fresh ORS rank before the user picks Δ%. Gated by
+        // setting + freshness floor so opening twice in quick succession
+        // doesn't burn extra ORS scrapes.
+        if (apply.refreshBeforeApply !== false) {
+            const projectionMaxAge = isFinite(apply.refreshMaxAgeMinProjection) ? apply.refreshMaxAgeMinProjection : 5
+            // Fire-and-forget; spinner manages user-visible state.
+            runPreApplyRefresh(projectionMaxAge, "Refreshing " + hub + "→" + dest + "…")
+                .catch((e) => console.warn("[AES preApplySync · open] threw", e))
+        }
     }
 
     _closePricingApplyModal() {
@@ -15741,7 +20128,8 @@ class RouteAssistantPanel {
             scope:       Object.assign({}, apply.defaultScope || {}),
             running:     false,
             results:     new Map(),  // destIata → {status, msg}
-            cooldownMap: new Map()   // destIata → minutes until cooldown clears
+            cooldownMap: new Map(),  // destIata → minutes until cooldown clears
+            refreshBeforeApply: apply.refreshBeforeApply !== false
         }
 
         const overlay = document.createElement("div")
@@ -15858,6 +20246,73 @@ class RouteAssistantPanel {
         })
         selRow.append(selCount, selectAllBtn, clearBtn)
         dialog.append(selRow)
+
+        // Pre-apply refresh row — wired through _orchestratorPreApplySync.
+        // The "Refresh visible" button runs against any row whose cached
+        // schedule + ORS data is older than `refreshMaxAgeMinProjection`,
+        // updating the table previews so the user picks Δ% off fresh data.
+        // The checkbox controls whether Apply auto-runs the orchestrator
+        // over the selected rows before each POST (defensive, gated by the
+        // tighter `refreshMaxAgeMinApply` floor).
+        const refreshRow = document.createElement("div")
+        refreshRow.style.cssText = "display:flex;gap:10px;align-items:center;margin-top:6px;font-size:11px;"
+            + "padding:6px 10px;background:rgba(124, 58, 237, 0.06);border:1px solid rgba(124, 58, 237, 0.25);"
+            + "border-radius:4px;"
+        const refreshLbl = document.createElement("label")
+        refreshLbl.style.cssText = "display:flex;gap:6px;align-items:center;color:#cbd5e1;cursor:pointer;"
+        const refreshCb = document.createElement("input")
+        refreshCb.type = "checkbox"
+        refreshCb.checked = state.refreshBeforeApply
+        refreshCb.addEventListener("change", () => { state.refreshBeforeApply = !!refreshCb.checked })
+        refreshLbl.append(refreshCb, document.createTextNode("Refresh data before each apply"))
+        refreshLbl.title = "Runs schedule + ORS scrapes for selected routes before each POST so projections "
+            + "and the cooldown gate see fresh data. Halts gracefully on rate-limit; you can choose to apply "
+            + "to the synced subset and skip the rest."
+        refreshRow.append(refreshLbl)
+
+        const refreshBtn = document.createElement("button")
+        refreshBtn.textContent = "Refresh visible"
+        Object.assign(refreshBtn.style, smallBtnStyle())
+        refreshBtn.style.fontSize = "10px"
+        refreshBtn.title = "Manually run schedule + ORS scrapes against any visible row whose cached data "
+            + "is older than the projection freshness window. Updates the current → proposed previews."
+        refreshBtn.addEventListener("click", async () => {
+            if (state.running) return
+            state.running = true
+            refreshBtn.disabled = true
+            refreshBtn.textContent = "Refreshing…"
+            // Disable Apply / Dry-run while pre-flight is in flight; the
+            // user can't apply against partial mid-refresh state.
+            try { refreshFooter() } catch (e) { /* refreshFooter not yet defined on first call — safe */ }
+            try {
+                const projectionMaxAge = isFinite(apply.refreshMaxAgeMinProjection)
+                    ? apply.refreshMaxAgeMinProjection : 5
+                const pairs = rows.map(({r}) => ({hub: this.hubIata, dest: r.destIata}))
+                const sync = await this._orchestratorPreApplySync(pairs, {
+                    maxAgeMin:       projectionMaxAge,
+                    progressId:      "route-sync-pre-bulk-visible",
+                    progressMessage: "Refreshing visible rows…"
+                })
+                // Re-collect cached snapshots from the freshly-loaded rows
+                for (const item of rows) {
+                    const fresh = this._lookupCachedOwnPricing(this.hubIata, item.r.destIata)
+                    if (fresh) item.cached = fresh
+                }
+                renderTable()
+                if (sync.halted && typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.warn("Refresh halted: " + (sync.reason || "rate limit"))
+                }
+            } catch (e) {
+                console.warn("[AES bulk-modal refresh] threw", e)
+            } finally {
+                state.running = false
+                refreshBtn.disabled = false
+                refreshBtn.textContent = "Refresh visible"
+                try { refreshFooter() } catch (e) { /* defensive */ }
+            }
+        })
+        refreshRow.append(refreshBtn)
+        dialog.append(refreshRow)
 
         // Table.
         const tableWrap = document.createElement("div")
@@ -16020,6 +20475,7 @@ class RouteAssistantPanel {
             try {
                 await this._runBulkPricingApply({
                     selected, deltaPct: state.deltaPct, scope: state.scope, dryRun: forcedDryRun,
+                    refreshBeforeApply: state.refreshBeforeApply,
                     onRowResult: (dest, result) => {
                         state.results.set(dest, this._summariseBulkResult(result))
                         renderTable()
@@ -16104,6 +20560,9 @@ class RouteAssistantPanel {
                 out.msg = "breaker · " + (result.error.remainingMin || "?") + "m"
             } else if (code === "cooldownActive") {
                 out.msg = "cooldown"
+                out.status = "skipped"
+            } else if (code === "cooldownActiveGlobal") {
+                out.msg = "global cooldown"
                 out.status = "skipped"
             } else if (code) {
                 out.msg = code
@@ -16213,6 +20672,76 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Halt-confirm modal — surfaced when the orchestrator's circuit breaker
+     * trips during a bulk pre-apply pass. The user picks whether to apply
+     * just to the K routes that did sync (and skip the rest with a stale-
+     * data audit entry), or abort the whole bulk apply. Resolves to
+     * "continue" or "abort". Z-index 10003 so it stacks above the bulk
+     * apply modal (10001) and the apply confirm modal (10002).
+     */
+    _openHaltConfirmModal({doneCount, totalCount, reason}) {
+        return new Promise((resolve) => {
+            const overlay = document.createElement("div")
+            overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:10003;"
+                + "display:flex;align-items:center;justify-content:center;padding:30px;"
+            const dialog = document.createElement("div")
+            dialog.style.cssText = "background:#0f1623;color:#e5e7eb;border:1px solid #b91c1c;border-radius:6px;"
+                + "padding:14px 18px;width:540px;max-width:95vw;font:12px/1.4 sans-serif;"
+            const close = (decision) => {
+                if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
+                document.removeEventListener("keydown", onKey)
+                resolve(decision)
+            }
+            const onKey = (e) => { if (e.key === "Escape") close("abort") }
+
+            const skipped = Math.max(0, totalCount - doneCount)
+            const head = document.createElement("div")
+            head.innerHTML = "<strong style='font-size:13px;color:#f87171;'>Pre-flight halted</strong>"
+                + "<div style='color:#9ca3af;font-size:10px;margin-top:2px;'>"
+                + "Halted at " + doneCount + " of " + totalCount + " routes."
+                + "</div>"
+            dialog.append(head)
+
+            const body = document.createElement("div")
+            body.style.cssText = "margin:10px 0;color:#cbd5e1;font-size:11px;line-height:1.5;"
+            body.innerHTML = "<div style='color:#fbbf24;'>Reason: " + (reason || "rate limit") + "</div>"
+                + "<div style='margin-top:8px;'>"
+                + "<span style='color:#34d399;font-weight:600;'>" + doneCount + "</span>"
+                + " routes synced and ready to apply."
+                + "</div>"
+                + "<div>"
+                + "<span style='color:#f87171;font-weight:600;'>" + skipped + "</span>"
+                + " routes would be applied with stale data — these will be skipped if you continue."
+                + "</div>"
+            dialog.append(body)
+
+            const foot = document.createElement("div")
+            foot.style.cssText = "display:flex;justify-content:flex-end;gap:6px;margin-top:12px;"
+            const abortBtn = document.createElement("button")
+            abortBtn.textContent = "Abort the whole bulk apply"
+            Object.assign(abortBtn.style, smallBtnStyle())
+            abortBtn.addEventListener("click", () => close("abort"))
+            const continueBtn = document.createElement("button")
+            continueBtn.textContent = "Continue with " + doneCount + " synced"
+            Object.assign(continueBtn.style, smallBtnStyle())
+            continueBtn.style.background = "#7c3aed"
+            continueBtn.style.borderColor = "#6d28d9"
+            if (doneCount === 0) {
+                continueBtn.disabled = true
+                continueBtn.title = "No routes synced — nothing to apply."
+            }
+            continueBtn.addEventListener("click", () => close("continue"))
+            foot.append(abortBtn, continueBtn)
+            dialog.append(foot)
+
+            overlay.addEventListener("click", (e) => { if (e.target === overlay) close("abort") })
+            document.addEventListener("keydown", onKey)
+            overlay.append(dialog)
+            document.body.append(overlay)
+        })
+    }
+
+    /**
      * Bulk apply orchestrator. Iterates selected routes serially —
      * concurrency 1 is the right call here because (a) AS Wicket sessions
      * don't parallelise across applies on the same session anyway and (b)
@@ -16220,15 +20749,120 @@ class RouteAssistantPanel {
      * applier instance is reused across every row so the breaker state
      * spans the whole batch (a 429 on row 3 trips for rows 4+).
      */
-    async _runBulkPricingApply({selected, deltaPct, scope, dryRun, onRowResult}) {
+    async _runBulkPricingApply({selected, deltaPct, scope, dryRun, refreshBeforeApply, onRowResult}) {
         const applier = this._getPricingApplier()
         const log = this._getPricingApplyLog()
         const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
         const submitButton = apply.submitButton || "submit-prices"
+        // Tier 3.4 — narrow live-writes scope. When the bulk scope is
+        // locked, force dry-run regardless of `enabled`/`dryRunOnly`.
+        // Lets the user unlock manual writes first and trial silent-auto +
+        // bulk separately. Surface the override in a toast so the user
+        // isn't surprised by their bulk applies all landing as dry-runs.
+        const liveScopes = apply.liveScopes || {}
+        const bulkLiveAllowed = liveScopes.bulk !== false
+        const liveScopeOverride = !dryRun && !bulkLiveAllowed
+        if (liveScopeOverride) {
+            dryRun = true
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.info("Bulk live writes are off (Settings → Auto-Pricing → Live scopes) — running as dry-run")
+            }
+        }
+        // Tier 3.4 — every entry written by this bulk pass carries the same
+        // `batchId` so the audit modal can collapse the group. Generated
+        // up-front so synthetic "skipped" entries (orchestrator halt) also
+        // share it.
+        const batchId   = "batch-" + Date.now().toString(36) + "-"
+                        + Math.floor(Math.random() * 1679616).toString(36).padStart(4, "0")
+        const batchSize = selected.length
         let okCount = 0
         let failCount = 0
+        let skippedCount = 0
+
+        // Pre-flight orchestrator pass — only on real applies. Dry-run is
+        // a pure GET that can't move markets, so refreshing data first is
+        // wasted work. Halts open the confirm sub-modal so the user can
+        // choose to apply to the synced subset or abort wholesale.
+        const preApplyMap = new Map()  // destIata → preApplySync envelope
+        if (!dryRun && refreshBeforeApply) {
+            const applyMaxAge = isFinite(apply.refreshMaxAgeMinApply) ? apply.refreshMaxAgeMinApply : 1
+            const pairs = selected.map(({r}) => ({hub: this.hubIata, dest: r.destIata}))
+            // Tier 3.4 — preapply sync timeout. The orchestrator is normally
+            // bounded by its own per-scrape timeouts, but a hung Wicket
+            // session or a flaky network can leave the await pending
+            // indefinitely. Race against `preApplySyncTimeoutMs` (default
+            // 30s) so the user is never stuck waiting on the sync — on
+            // timeout the apply continues against the cached snapshot.
+            const syncTimeoutMs = isFinite(apply.preApplySyncTimeoutMs)
+                ? Math.max(5000, apply.preApplySyncTimeoutMs) : 30000
+            const sync = await this._raceWithTimeout(
+                this._orchestratorPreApplySync(pairs, {
+                    maxAgeMin:       applyMaxAge,
+                    progressId:      "route-sync-pre-bulk-apply",
+                    progressMessage: "Pre-apply sync · " + pairs.length + " route" + (pairs.length === 1 ? "" : "s")
+                }),
+                syncTimeoutMs,
+                {kind: "preApplySync", pairs: pairs.length}
+            )
+            if (sync && sync.timedOut) {
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.warn("Pre-apply sync timed out after "
+                        + Math.round(syncTimeoutMs / 1000) + "s — applying with cached data")
+                }
+                // Replace timed-out envelope with an empty results shape so
+                // the per-row loop falls through to the cached path.
+                sync.results = sync.results instanceof Map ? sync.results : new Map()
+                sync.halted  = false
+            }
+            // Re-collect cached snapshots since orchestrator may have
+            // refreshed prices that are now stored in scoredRows.
+            for (const item of selected) {
+                const fresh = this._lookupCachedOwnPricing(this.hubIata, item.r.destIata)
+                if (fresh) item.cached = fresh
+            }
+            // Halt → user decides
+            if (sync.halted) {
+                const decision = await this._openHaltConfirmModal({
+                    doneCount:  sync.doneCount,
+                    totalCount: pairs.length,
+                    reason:     sync.reason
+                })
+                if (decision === "abort") {
+                    if (typeof RouteAssistantToast !== "undefined") {
+                        RouteAssistantToast.warn("Bulk apply aborted · pre-flight halted")
+                    }
+                    return
+                }
+            }
+            for (const [dest, env] of sync.results) preApplyMap.set(dest, env)
+        }
+
         for (const {r, cached} of selected) {
             const dest = r.destIata
+            // Synthetic skipped entry for routes the orchestrator halted on
+            // before reaching them. Preserves audit-trail symmetry — every
+            // selected route lands either an apply log entry or a skip log
+            // entry, no silent drops.
+            const preSync = preApplyMap.has(dest) ? preApplyMap.get(dest) : null
+            if (preSync && preSync.halted) {
+                const skippedResult = {
+                    status: "skipped",
+                    error:  {code: "preApplySyncSkipped", message: "Pre-flight halted before this route"}
+                }
+                if (log && typeof log.add === "function") {
+                    try {
+                        await log.add({
+                            hub: this.hubIata, dest, status: "skipped", source: "bulk",
+                            error: skippedResult.error, preApplySync: preSync, dryRun: false,
+                            scope, submitButton, batchId, batchSize
+                        })
+                    } catch (e) { /* non-fatal */ }
+                }
+                if (typeof onRowResult === "function") onRowResult(dest, skippedResult)
+                skippedCount++
+                continue
+            }
+
             const p = cached.prices || {}
             const prices = {}
             for (const cls of ["Y", "C", "F", "Cargo"]) {
@@ -16243,9 +20877,18 @@ class RouteAssistantPanel {
                 }
             } catch (e) { /* ignore */ }
             try {
-                const result = await applier.apply(this.hubIata, dest, prices, {
-                    scope, source: "bulk", submitButton, lastApplyAt, dryRun
-                })
+                // Per-route cooldown still applies to each route in the
+                // bulk pass; the global cooldown is intentionally NOT
+                // threaded — the bulk action is itself the rapid-fire
+                // chain the global gate exists to prevent, and the user
+                // already cleared a confirm modal before reaching here.
+                const opts = {
+                    scope, source: "bulk", submitButton,
+                    lastApplyAt, lastApplyAtGlobal: null, dryRun,
+                    batchId, batchSize
+                }
+                if (preSync) opts.preApplySync = preSync
+                const result = await applier.apply(this.hubIata, dest, prices, opts)
                 if (typeof onRowResult === "function") onRowResult(dest, result)
                 if (result.status === "verified" || result.status === "posted" || result.status === "dry-run") okCount++
                 else failCount++
@@ -16257,11 +20900,1374 @@ class RouteAssistantPanel {
         }
         if (typeof RouteAssistantToast !== "undefined") {
             const verb = dryRun ? "Bulk dry-run" : "Bulk apply"
-            const msg = verb + " complete · " + okCount + " ok · " + failCount + " failed"
-            if (failCount === 0) RouteAssistantToast.success(msg)
+            const tail = skippedCount > 0 ? " · " + skippedCount + " skipped" : ""
+            const msg = verb + " complete · " + okCount + " ok · " + failCount + " failed" + tail
+            if (failCount === 0 && skippedCount === 0) RouteAssistantToast.success(msg)
             else if (okCount === 0) RouteAssistantToast.error(msg)
             else RouteAssistantToast.warn(msg)
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Silent auto-pricing loop.
+    //
+    // Two cadence sources cooperate:
+    //   1. chrome.alarms (background.js) — primary driver. Fires globally
+    //      on `silentAutoTickMin` cadence even when the tab is throttled
+    //      or freshly reopened mid-cycle. Background broadcasts an
+    //      `aes:silent-auto:tick` runtime message to every open AS
+    //      scheduling tab; each panel's `_onSilentAutoMessage` handler
+    //      runs `_silentAutoTickIfDue` which re-reads the persisted
+    //      `silentAutoLastTickAt` and dedup-skips if another tab beat
+    //      it within ~0.9× tickMin.
+    //   2. setInterval (this method) — in-tab safety net. Keeps the
+    //      cadence alive if the alarm fails to register (manifest
+    //      permission missing, MV3 quirk) or is suppressed by browser
+    //      policy. Same dedup gate, so redundant ticks no-op.
+    //
+    // Each tick proposes a Δ% per eligible route (proposer keyed by
+    // `silentAutoStrategy`) and dispatches survivors through the shared
+    // `RouteAssistantPricingApplier` so the circuit breaker spans manual +
+    // bulk + auto applies.
+    // ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Start the loop iff `silentAutoEnabled === true`. Idempotent —
+     * called from mount() and from the toggle's change handler. The
+     * first tick is delayed by `_silentAutoStartGraceMs` (30s) so a
+     * page reload doesn't immediately fire an apply against partially-
+     * loaded scoredRows.
+     */
+    _startSilentAutoLoopIfEnabled() {
+        const cfg = this._silentAutoCfg()
+        if (!cfg.silentAutoEnabled) return
+        this._attachSilentAutoMessageListener()
+        if (this._silentAutoTimer || this._silentAutoStartGraceTimer) return
+        const tickMs = Math.max(5, Math.min(240, cfg.silentAutoTickMin || 30)) * 60000
+        const graceMs = 30000
+        this._silentAutoStartGraceTimer = setTimeout(() => {
+            this._silentAutoStartGraceTimer = null
+            if (this._disposed) return
+            // Fire one tick immediately after grace, then on the cadence.
+            this._silentAutoTickIfDue().catch(e => console.warn("[AES silent-auto] tick threw", e))
+            this._silentAutoTimer = setInterval(() => {
+                if (this._disposed) { this._stopSilentAutoLoop(); return }
+                this._silentAutoTickIfDue().catch(e => console.warn("[AES silent-auto] tick threw", e))
+            }, tickMs)
+        }, graceMs)
+    }
+
+    /** Tear down the loop. Safe to call when nothing is running. */
+    _stopSilentAutoLoop() {
+        if (this._silentAutoStartGraceTimer) {
+            clearTimeout(this._silentAutoStartGraceTimer)
+            this._silentAutoStartGraceTimer = null
+        }
+        if (this._silentAutoTimer) {
+            clearInterval(this._silentAutoTimer)
+            this._silentAutoTimer = null
+        }
+        this._detachSilentAutoMessageListener()
+    }
+
+    /**
+     * Attach the `chrome.runtime.onMessage` handler that catches alarm-
+     * driven `aes:silent-auto:tick` broadcasts from background.js.
+     * Idempotent. Called by `_startSilentAutoLoopIfEnabled` so a tab
+     * with silent-auto disabled never registers a listener.
+     */
+    _attachSilentAutoMessageListener() {
+        if (this._silentAutoMessageListener) return
+        if (!chrome.runtime || !chrome.runtime.onMessage) return
+        this._silentAutoMessageListener = (msg) => {
+            if (!msg || msg.type !== "aes:silent-auto:tick") return
+            if (this._disposed) return
+            this._silentAutoTickIfDue().catch(e =>
+                console.warn("[AES silent-auto] alarm-driven tick threw", e))
+        }
+        chrome.runtime.onMessage.addListener(this._silentAutoMessageListener)
+    }
+
+    /** Symmetric to `_attachSilentAutoMessageListener`. Safe to double-call. */
+    _detachSilentAutoMessageListener() {
+        if (!this._silentAutoMessageListener) return
+        if (chrome.runtime && chrome.runtime.onMessage) {
+            chrome.runtime.onMessage.removeListener(this._silentAutoMessageListener)
+        }
+        this._silentAutoMessageListener = null
+    }
+
+    /**
+     * Subscribe to `CentralHubBus`'s "strategy:decision-applied" event so
+     * applies driven by the Strategy modal flow into our apply-badge cache
+     * without waiting on a manual refresh or the next silent-auto tick.
+     * `apply-pipeline.js` writes to the same per-route pricing / service
+     * loggers we already read — the bus event is just a "refresh now"
+     * signal. Idempotent; no-op when CentralHubBus isn't on this page.
+     */
+    _attachStrategyApplyBusListener() {
+        if (this._strategyApplyBusUnsubscribe) return
+        if (typeof window === "undefined") return
+        if (typeof window.CentralHubBus === "undefined") return
+        if (!window.CentralHubBus || typeof window.CentralHubBus.on !== "function") return
+        try {
+            this._strategyApplyBusUnsubscribe = window.CentralHubBus.on("strategy:decision-applied", () => {
+                if (this._disposed) return
+                this._refreshApplyBadgeMap().catch(() => { /* fail-silent */ })
+            })
+        } catch (_) { this._strategyApplyBusUnsubscribe = null }
+    }
+
+    /** Symmetric to `_attachStrategyApplyBusListener`. Safe to double-call. */
+    _detachStrategyApplyBusListener() {
+        if (typeof this._strategyApplyBusUnsubscribe === "function") {
+            try { this._strategyApplyBusUnsubscribe() } catch (_) { /* non-fatal */ }
+        }
+        this._strategyApplyBusUnsubscribe = null
+    }
+
+    /**
+     * Track B — listen for "waves:preset-updated" from any other surface
+     * editing the active wave preset (e.g. AFP's wave-strip on the same
+     * page, or a future modal). Same-page only — cross-tab propagation
+     * runs through chrome.storage.onChanged on the SchedulePresets write.
+     *
+     * Filter source === "wave-editor" because every panel-driven edit
+     * already routes through `_afterWavePresetEdit`, which busts caches
+     * and re-renders. Without the filter we'd double-render on every
+     * spinner click. A 250ms debounce coalesces drag bursts.
+     */
+    _attachWavePresetBusListener() {
+        if (this._wavePresetBusUnsubscribe) return
+        if (typeof window === "undefined") return
+        if (typeof window.CentralHubBus === "undefined") return
+        if (!window.CentralHubBus || typeof window.CentralHubBus.on !== "function") return
+        try {
+            this._wavePresetBusUnsubscribe = window.CentralHubBus.on("waves:preset-updated", (payload) => {
+                if (this._disposed) return
+                if (!payload || payload.source === "wave-editor") return
+                clearTimeout(this._wavePresetBusTimer)
+                this._wavePresetBusTimer = setTimeout(() => {
+                    if (this._disposed) return
+                    this._wavePresets = null
+                    this._waveBuild = null
+                    this._renderRows()
+                }, 250)
+            })
+        } catch (_) { this._wavePresetBusUnsubscribe = null }
+    }
+
+    /** Symmetric to `_attachWavePresetBusListener`. Safe to double-call. */
+    _detachWavePresetBusListener() {
+        if (typeof this._wavePresetBusUnsubscribe === "function") {
+            try { this._wavePresetBusUnsubscribe() } catch (_) { /* non-fatal */ }
+        }
+        this._wavePresetBusUnsubscribe = null
+        if (this._wavePresetBusTimer) {
+            clearTimeout(this._wavePresetBusTimer)
+            this._wavePresetBusTimer = null
+        }
+    }
+
+    /**
+     * Cross-tab-aware tick gate. Re-reads the persisted
+     * `silentAutoLastTickAt` (NOT `this.settings`, which can be stale
+     * on a tab that hasn't received the latest `chrome.storage.onChanged`
+     * yet) and skips when another tab ticked within ~0.9× tickMin.
+     *
+     * The 0.9× factor allows a slightly-late alarm or a slightly-early
+     * setInterval to still fire on time without double-ticking — the
+     * gate's only job is "another tab obviously ticked recently."
+     * Tight races where two tabs both pass the gate are acceptable: the
+     * applier's per-route cooldown + the per-tick caps absorb the
+     * duplicate work, and the next persisted `lastTickAt` write
+     * deterministically picks one as the authoritative timestamp.
+     */
+    async _silentAutoTickIfDue() {
+        const cfg = this._silentAutoCfg()
+        if (!cfg.silentAutoEnabled) return
+        if (this._silentAutoRunning) return
+        let freshLastTickAt = 0
+        try {
+            const got = await chrome.storage.local.get("settings")
+            const pricing = (got && got.settings && got.settings.routeAssistant
+                && got.settings.routeAssistant.pricing) || {}
+            if (isFinite(pricing.silentAutoLastTickAt)) freshLastTickAt = pricing.silentAutoLastTickAt
+        } catch (_) { /* fall through to running the tick */ }
+        if (freshLastTickAt > 0) {
+            const requiredGapMs = Math.max(60000, (cfg.silentAutoTickMin || 30) * 60000 * 0.9)
+            if ((Date.now() - freshLastTickAt) < requiredGapMs) return
+        }
+        await this._silentAutoTick()
+    }
+
+    /** Restart the loop in response to a settings change (tickMin / enabled). */
+    _restartSilentAutoLoop() {
+        this._stopSilentAutoLoop()
+        this._startSilentAutoLoopIfEnabled()
+    }
+
+    /** Snapshot of the silent-auto sub-block of pricing settings. */
+    _silentAutoCfg() {
+        const p = (this.settings && this.settings.pricing) || {}
+        const apply = p.apply || {}
+        return {
+            silentAutoEnabled:      !!p.silentAutoEnabled,
+            silentAutoTickMin:       isFinite(p.silentAutoTickMin)      ? p.silentAutoTickMin      : 30,
+            silentAutoMaxPerDay:     isFinite(p.silentAutoMaxPerDay)    ? p.silentAutoMaxPerDay    : 20,
+            silentAutoMaxPerHour:    isFinite(p.silentAutoMaxPerHour)   ? p.silentAutoMaxPerHour   : 5,
+            silentAutoMinDeltaPct:   isFinite(p.silentAutoMinDeltaPct)  ? p.silentAutoMinDeltaPct  : 3,
+            silentAutoMaxStepPct:    isFinite(p.silentAutoMaxStepPct)   ? p.silentAutoMaxStepPct   : 10,
+            silentAutoStrategy:      p.silentAutoStrategy || "competitor-median",
+            silentAutoFollowMode:    p.silentAutoFollowMode || "watchlist",
+            silentAutoConfirmedAt:   isFinite(p.silentAutoConfirmedAt)  ? p.silentAutoConfirmedAt  : null,
+            silentAutoLastTickAt:    isFinite(p.silentAutoLastTickAt)   ? p.silentAutoLastTickAt   : null,
+            silentAutoLastTickResult: p.silentAutoLastTickResult || null,
+            silentAutoMutedUntil:    isFinite(p.silentAutoMutedUntil)   ? p.silentAutoMutedUntil   : null,
+            // Tier 3.4 — proposer-tunable knobs surfaced from apply.* so
+            // the proposer module reads them via the same `cfg` envelope.
+            silentAutoCompetitorMinCount:        isFinite(apply.silentAutoCompetitorMinCount)
+                ? apply.silentAutoCompetitorMinCount : 2,
+            silentAutoOrsMaxAgeMin:              isFinite(apply.silentAutoOrsMaxAgeMin)
+                ? apply.silentAutoOrsMaxAgeMin : 60,
+            silentAutoStaleCompetitorWarnDays:   isFinite(apply.silentAutoStaleCompetitorWarnDays)
+                ? apply.silentAutoStaleCompetitorWarnDays : 7,
+            silentAutoBlockOnStaleCompetitors:   !!apply.silentAutoBlockOnStaleCompetitors,
+            silentAutoStrategySnapshotMaxAgeMin: isFinite(apply.silentAutoStrategySnapshotMaxAgeMin)
+                ? apply.silentAutoStrategySnapshotMaxAgeMin : 10
+        }
+    }
+
+    /**
+     * One silent-auto tick. Pure audit-log emitting — every terminal
+     * branch persists `silentAutoLastTickResult` so the panel sub-block
+     * can render the most recent run. Re-entry guarded by
+     * `_silentAutoRunning` so a slow tick (bulk apply against many
+     * routes) can't double-fire on the next interval.
+     */
+    async _silentAutoTick() {
+        if (this._silentAutoRunning) return
+        this._silentAutoRunning = true
+        const ranAt = Date.now()
+        const result = {
+            ranAt,
+            eligible: 0, proposed: 0, applied: 0,
+            capped: 0, blocked: 0, skipped: 0,
+            dryRun: false, error: null,
+            // Per-route trace — one entry per eligible route describing
+            // its outcome this tick: skipped (proposer rejected),
+            // capped (over budget), applied (with applyStatus + Δ),
+            // failed (applier threw / aborted). Capped at 50 entries
+            // so a 100-route hub can't blow up the persisted envelope.
+            perRoute: []
+        }
+        const pushTrace = (entry) => {
+            if (result.perRoute.length < 50) result.perRoute.push(entry)
+        }
+        try {
+            const cfg = this._silentAutoCfg()
+            if (!cfg.silentAutoEnabled) {
+                result.error = {code: "disabled", message: "silent-auto is off"}
+                return
+            }
+            if (cfg.silentAutoMutedUntil && cfg.silentAutoMutedUntil > ranAt) {
+                const remainingMin = Math.ceil((cfg.silentAutoMutedUntil - ranAt) / 60000)
+                result.error = {code: "muted", message: "muted (" + remainingMin + " min remaining)", remainingMin}
+                return
+            }
+            const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
+            // Tier 3.4 — silent-auto live-writes scope. Even if both
+            // top-level gates are open (apply.enabled=true and
+            // dryRunOnly=false), keep silent-auto dry-run unless its
+            // scope flag is explicitly true. The operator should sign off
+            // separately on autonomous writes vs manual.
+            const liveScopes = apply.liveScopes || {}
+            const silentLiveAllowed = liveScopes.silentAuto === true
+            const dryRun = apply.dryRunOnly !== false || !apply.enabled || !silentLiveAllowed
+            result.dryRun = dryRun
+            result.silentLiveAllowed = silentLiveAllowed
+            // Breaker — if Tier 3 breaker is tripped, we still tick (so
+            // we can surface "waiting on breaker" in the activity feed)
+            // but skip the dispatch step.
+            if (!dryRun && apply.circuitBreakerTrippedAt
+                && (ranAt - apply.circuitBreakerTrippedAt) < (apply.circuitBreakerCooldownMs || 600000)) {
+                const remaining = Math.ceil((apply.circuitBreakerCooldownMs - (ranAt - apply.circuitBreakerTrippedAt)) / 60000)
+                result.error = {code: "breakerTripped", message: "breaker cooling (" + remaining + " min)", remainingMin: remaining}
+                return
+            }
+
+            // 1. Eligible routes by follow mode.
+            const eligibleRows = await this._silentAutoCollectEligibleRows(cfg.silentAutoFollowMode)
+            result.eligible = eligibleRows.length
+            if (!eligibleRows.length) {
+                result.error = {code: "noEligibleRoutes", message: "no eligible routes (check follow mode + cached competitor data)"}
+                return
+            }
+
+            // Tier 3.4 — stale-competitor-data guard. The bulk markets
+            // scrape populates `pricing.lastBulkScrapeAt`; if it's older
+            // than `silentAutoStaleCompetitorWarnDays`, surface a warning
+            // in the tick trace. When `silentAutoBlockOnStaleCompetitors`
+            // is true the tick aborts before any apply, since stale
+            // competitor medians can drive the proposer into bad moves.
+            const lastBulk = isFinite(this.settings.pricing && this.settings.pricing.lastBulkScrapeAt)
+                ? this.settings.pricing.lastBulkScrapeAt : null
+            const warnDays = isFinite(cfg.silentAutoStaleCompetitorWarnDays)
+                ? cfg.silentAutoStaleCompetitorWarnDays : 7
+            if (lastBulk && warnDays > 0) {
+                const ageDays = (ranAt - lastBulk) / 86400000
+                if (ageDays > warnDays) {
+                    const ageStr = ageDays.toFixed(1) + " days old"
+                    pushTrace({
+                        dest:   "*",
+                        stage:  "warning",
+                        reason: "competitor data " + ageStr + " (>" + warnDays + " day warn threshold)"
+                    })
+                    if (cfg.silentAutoBlockOnStaleCompetitors) {
+                        result.error = {
+                            code:    "staleCompetitorData",
+                            message: "blocked: competitor data " + ageStr
+                                   + " (run a Markets bulk scrape, or unset Block-on-stale)"
+                        }
+                        return
+                    }
+                }
+            } else if (!lastBulk && warnDays > 0) {
+                pushTrace({
+                    dest:   "*",
+                    stage:  "warning",
+                    reason: "no competitor bulk-scrape timestamp recorded yet"
+                })
+            }
+
+            // 2. Per-route proposals.
+            //    Build the proposer context once per tick — strategies that
+            //    need expensive shared state (snapshot, ORS bulk fetch)
+            //    populate it here so the per-route loop is a cheap lookup.
+            const proposerCtx = await this._silentAutoBuildProposerContext(cfg)
+            const proposals = []
+            for (const {r, prices} of eligibleRows) {
+                const prop = this._silentAutoProposeForRoute(r, prices, cfg, proposerCtx)
+                if (!prop || !prop.ok) {
+                    result.skipped += 1
+                    pushTrace({
+                        dest:   (prop && prop.dest) || String(r.destIata || "").toUpperCase(),
+                        stage:  "skipped",
+                        reason: (prop && prop.skipReason) || "proposer returned null"
+                    })
+                    continue
+                }
+                proposals.push(prop)
+            }
+            result.proposed = proposals.length
+            if (!proposals.length) {
+                result.error = {code: "noProposals", message: "no route met the min Δ% threshold"}
+                return
+            }
+
+            // 3. Hard caps — daily + hourly silent-auto write count.
+            const log = this._getPricingApplyLog()
+            const remaining = await this._silentAutoCheckCaps(log, cfg, dryRun)
+            if (remaining.dailyRemaining <= 0 || remaining.hourlyRemaining <= 0) {
+                result.error = {
+                    code: "capExhausted",
+                    message: "cap reached (day " + remaining.dailyUsed + "/" + cfg.silentAutoMaxPerDay
+                        + " · hour " + remaining.hourlyUsed + "/" + cfg.silentAutoMaxPerHour + ")"
+                }
+                result.blocked = proposals.length
+                for (const prop of proposals) {
+                    pushTrace({
+                        dest:    prop.dest,
+                        stage:   "blocked",
+                        reason:  "tick cap exhausted before dispatch",
+                        prevY:   prop.prevY, newY: prop.newY, deltaPct: prop.deltaPct
+                    })
+                }
+                return
+            }
+            const budget = Math.min(remaining.dailyRemaining, remaining.hourlyRemaining, proposals.length)
+            const cappedOff = proposals.length - budget
+            result.capped = Math.max(0, cappedOff)
+            const toApply = proposals.slice(0, budget)
+            for (const prop of proposals.slice(budget)) {
+                pushTrace({
+                    dest:    prop.dest,
+                    stage:   "capped",
+                    reason:  "over per-tick budget (" + budget + " applied this tick)",
+                    prevY:   prop.prevY, newY: prop.newY, deltaPct: prop.deltaPct
+                })
+            }
+
+            // 4. Dispatch through the shared applier. Serial — the
+            // applier breaker counter has to stay monotonic, same
+            // reason _runBulkPricingApply uses concurrency 1.
+            const applier = this._getPricingApplier()
+            const submitButton = apply.submitButton || "submit-prices"
+            const scope = Object.assign({}, apply.defaultScope || {})
+
+            // Hoist the cooldown-timestamp lookups out of the per-route
+            // loop. `getLastSuccessGlobal` is route-independent and
+            // `getLastSuccessMap` bulk-fetches the per-route timestamps
+            // in one storage round-trip, replacing what would otherwise
+            // be 2N gets across N proposals.
+            let lastApplyAtGlobal = null
+            const perRouteLast = new Map()
+            if (!dryRun && log) {
+                try {
+                    if (typeof log.getLastSuccessGlobal === "function") {
+                        lastApplyAtGlobal = await log.getLastSuccessGlobal()
+                    }
+                    if (typeof log.getLastSuccessMap === "function") {
+                        const pairs = toApply.map(p => ({hub: this.hubIata, dest: p.dest}))
+                        const m = await log.getLastSuccessMap(pairs)
+                        for (const [k, v] of m) perRouteLast.set(k, v)
+                    }
+                } catch (e) { /* non-fatal */ }
+            }
+
+            for (const prop of toApply) {
+                const pairKey = String(this.hubIata || "").toUpperCase() + "-" + prop.dest
+                const lastApplyAt = perRouteLast.has(pairKey) ? perRouteLast.get(pairKey) : null
+                let applyResult = null
+                try {
+                    applyResult = await applier.apply(this.hubIata, prop.dest, prop.prices, {
+                        scope,
+                        source: "silent-auto",
+                        submitButton,
+                        lastApplyAt,
+                        lastApplyAtGlobal,
+                        dryRun,
+                        reason:           prop.reason,
+                        proposerStrategy: cfg.silentAutoStrategy || "competitor-median",
+                        rationale:        prop.rationale  || null,
+                        objective:        prop.objective  || null,
+                        projectedDelta:   prop.projectedDelta || null
+                    })
+                } catch (e) {
+                    applyResult = {status: "failed", error: {code: "applierThrew", message: String(e && e.message || e)}}
+                }
+                const applyStatus = applyResult && applyResult.status || "failed"
+                const ok = applyStatus === "verified" || applyStatus === "posted" || applyStatus === "dry-run"
+                pushTrace({
+                    dest:        prop.dest,
+                    stage:       ok ? "applied" : "failed",
+                    applyStatus,
+                    reason:      ok
+                        ? prop.reason
+                        : ((applyResult && applyResult.error && applyResult.error.message) || "applier returned non-success"),
+                    prevY:       prop.prevY,
+                    newY:        prop.newY,
+                    deltaPct:    prop.deltaPct,
+                    errorCode:   (applyResult && applyResult.error && applyResult.error.code) || null
+                })
+                if (ok) {
+                    result.applied += 1
+                    this._silentAutoConsecutiveErrors = 0
+                } else {
+                    this._silentAutoConsecutiveErrors += 1
+                    if (this._silentAutoConsecutiveErrors >= 5) {
+                        // Mute window scales with the tick interval (so a
+                        // long-cadence loop pauses long enough for an
+                        // operator-led recovery) but caps at 6h so a
+                        // 240-min tick can't suppress for a workday.
+                        const muteMs = Math.min(
+                            6 * 60 * 60 * 1000,
+                            Math.max(2 * 60 * 60 * 1000, (cfg.silentAutoTickMin || 30) * 60000 * 4)
+                        )
+                        await this._persistSilentAutoMute(ranAt + muteMs)
+                        result.error = {
+                            code: "autoMuted",
+                            message: "auto-muted after " + this._silentAutoConsecutiveErrors
+                                + " consecutive failures · " + Math.round(muteMs / 60000) + " min"
+                        }
+                        break
+                    }
+                }
+            }
+        } catch (e) {
+            result.error = {code: "tickThrew", message: String(e && e.message || e)}
+            console.warn("[AES silent-auto] tick threw", e)
+        } finally {
+            this._silentAutoRunning = false
+            try { await this._persistSilentAutoTickResult(result) }
+            catch (e) { /* non-fatal */ }
+            // Refresh the open settings sub-block so the activity feed
+            // updates without waiting for a full panel re-render.
+            try { this._refreshSilentAutoActivity() }
+            catch (e) { /* sub-block may not be mounted */ }
+        }
+    }
+
+    /** Allow the user to fire one tick by hand (the "Run a tick now" CTA). */
+    async _silentAutoTickNow() {
+        // Bypasses the in-flight guard's normal usage by deferring to
+        // the same tick path; if a tick is already running, we no-op
+        // gracefully (the running tick will surface its result).
+        if (this._silentAutoRunning) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.warn("Silent-auto tick already in flight — wait for it to finish.")
+            }
+            return
+        }
+        await this._silentAutoTick()
+    }
+
+    /**
+     * Filter scoredRows by follow mode + presence of cached competitor
+     * data. Returns `[{r, cached}]` shape mirroring `_collectBulkApplyRows`
+     * so the proposer can reuse the same field layout.
+     *
+     * `"watchlist"` — ★-starred routes only (set on `r._starred` by the
+     *                 main render path; we double-check via the store
+     *                 to defend against intra-mount staleness).
+     * `"all"`       — every route with cached `ownPricing.prices`.
+     */
+    async _silentAutoCollectEligibleRows(followMode) {
+        const rows = (this.scoredRows || this.rows || []).filter(r => r && r.destIata)
+        const out = []
+        let starredKeys = null
+        if (followMode === "watchlist" && typeof RouteAssistantWatchlistStore !== "undefined") {
+            try { starredKeys = await RouteAssistantWatchlistStore.loadKeys() }
+            catch (e) { starredKeys = null }
+        }
+        const hub = String(this.hubIata || "").toUpperCase()
+        for (const r of rows) {
+            const dest = String(r.destIata || "").toUpperCase()
+            if (followMode === "watchlist") {
+                const key = hub + "-" + dest
+                const inSet = starredKeys ? starredKeys.has(key) : !!r._starred
+                if (!inSet) continue
+            }
+            const cached = this._lookupCachedOwnPricing(this.hubIata, dest)
+            // `_lookupCachedOwnPricing` returns the per-route ownPricing
+            // record. Two shapes survive in the codebase: the descriptor
+            // form `{prices: {...}, defaults: {...}}` (used by sandbox
+            // and the apply modal) and the bare prices map
+            // `{Y, C, F, Cargo}` (set by `r.ownPricing = bucket.ownPricing.prices`
+            // in the refresh hydration). `_silentAutoPrices` normalises
+            // both so the proposer never has to think about which
+            // shape it received.
+            const prices = this._silentAutoPrices(cached)
+            if (!prices || !Object.keys(prices).length) continue
+            out.push({r, cached, prices})
+        }
+        return out
+    }
+
+    /**
+     * Defensive accessor for the prices map. Accepts the bare-map shape
+     * `{Y, C, F, Cargo}` OR the wrapped descriptor `{prices: {...}}` —
+     * both circulate in the codebase. Returns `null` when neither shape
+     * yields a usable prices map.
+     */
+    _silentAutoPrices(cached) {
+        if (!cached) return null
+        if (cached.prices && typeof cached.prices === "object"
+            && Object.keys(cached.prices).length) return cached.prices
+        // Bare-map heuristic: presence of any Y/C/F/Cargo numeric.
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
+            if (isFinite(cached[cls])) return cached
+        }
+        return null
+    }
+
+    /**
+     * Pure proposer dispatch. Delegates to the
+     * `RouteAssistantSilentAutoProposers` registry — strategies are
+     * defined in modules/route-assistant/silent-auto-proposers.js.
+     *
+     * `ctx` is the shared per-tick context built once by
+     * `_silentAutoBuildProposerContext` at the top of the tick; pass
+     * `null` when calling outside a tick (the registry handles it).
+     *
+     * Always returns an envelope so the caller can populate the
+     * per-route trace with skip reasons:
+     *   {ok: true,  dest, prices, deltaPct, prevY, newY, reason}
+     *   {ok: false, dest, skipReason}
+     */
+    _silentAutoProposeForRoute(r, prices, cfg, ctx) {
+        const strategy = cfg.silentAutoStrategy || "competitor-median"
+        if (typeof window !== "undefined" && window.RouteAssistantSilentAutoProposers
+            && typeof window.RouteAssistantSilentAutoProposers.dispatch === "function") {
+            return window.RouteAssistantSilentAutoProposers.dispatch(strategy, r, prices, cfg, ctx)
+        }
+        // Defensive fallback — registry script missing from manifest. Keep
+        // competitor-median working so silent-auto doesn't go dark on a
+        // load-order regression.
+        if (strategy === "competitor-median") {
+            return this._silentAutoProposeCompetitorMedian(r, prices, cfg)
+        }
+        return {ok: false, dest: String(r.destIata || "").toUpperCase(),
+                skipReason: "proposer registry not loaded"}
+    }
+
+    /**
+     * Build the per-tick proposer context. Pre-computes expensive shared
+     * state once so each per-route proposer call is a cheap lookup:
+     *   strategy-objective → builds AesStrategy snapshot + indexes
+     *                         PriceMoves by HUB-DEST (Y class only).
+     *   ors-elasticity     → indexes scoredRows by dest so the proposer
+     *                         can call OrsModel.scanPriceCurve without a
+     *                         lookup loop, plus assembles modelParams +
+     *                         economics from settings.
+     * Safe to call for `competitor-median` — returns a minimal envelope
+     * since that proposer reads everything it needs directly off the
+     * route record.
+     */
+    async _silentAutoBuildProposerContext(cfg) {
+        const strategy = (cfg && cfg.silentAutoStrategy) || "competitor-median"
+        const ctx = {
+            now:      Date.now(),
+            strategy,
+            settings: this.settings || null,
+            hub:      String(this.hubIata || "").toUpperCase()
+        }
+
+        if (strategy === "strategy-objective") {
+            // AesStrategyContext.snapshot() walks the whole network and
+            // hits chrome.storage. Building it once per tick (30-min
+            // cadence default) is cheap — ~50–500ms — but cache it on the
+            // panel for downstream sandbox previews if a cached snapshot
+            // is fresh enough.
+            const maxAgeMs = isFinite(cfg.silentAutoStrategySnapshotMaxAgeMin)
+                ? Math.max(0, cfg.silentAutoStrategySnapshotMaxAgeMin) * 60000
+                : 10 * 60000
+            const cached = this._cachedStrategySnapshot
+            const fresh  = cached && cached.snapshot && isFinite(cached.builtAt)
+                && (Date.now() - cached.builtAt) < maxAgeMs
+            let snapshot = fresh ? cached.snapshot : null
+            if (!snapshot && typeof window !== "undefined"
+                && window.AesStrategy && typeof window.AesStrategy.snapshot === "function") {
+                try {
+                    snapshot = await window.AesStrategy.snapshot({
+                        server:      this.server || null,
+                        airlineCode: (typeof AES !== "undefined" && AES.getAirlineIdentity)
+                                        ? AES.getAirlineIdentity() : null
+                    })
+                    this._cachedStrategySnapshot = {snapshot, builtAt: Date.now()}
+                } catch (e) {
+                    console.warn("[AES silent-auto] strategy snapshot build failed", e)
+                }
+            }
+            ctx.strategySnapshot = snapshot || null
+
+            // Pre-resolve PriceMoves to a Map keyed by HUB-DEST → move.
+            // Filtered to classKey: "Y" — silent-auto v1 is Y-only.
+            // The proposer then looks up its route in O(1) without
+            // re-running the full proposer per route.
+            if (snapshot && window.AesStrategy
+                && typeof window.AesStrategy.proposePriceMoves === "function") {
+                try {
+                    const moves = window.AesStrategy.proposePriceMoves(snapshot, {
+                        deadband:         cfg.silentAutoMinDeltaPct  || 3,
+                        maxMovePerWindow: cfg.silentAutoMaxStepPct   || 10,
+                        includeCargo:     false
+                    })
+                    const byPair = new Map()
+                    for (const m of (moves || [])) {
+                        if (!m || m.classKey !== "Y") continue
+                        const key = String(m.hub || "").toUpperCase()
+                                  + "-" + String(m.dest || "").toUpperCase()
+                        byPair.set(key, m)
+                    }
+                    ctx.strategyMovesByPair = byPair
+                } catch (e) {
+                    console.warn("[AES silent-auto] proposePriceMoves threw", e)
+                }
+            }
+        } else if (strategy === "ors-elasticity") {
+            // Index scoredRows by uppercase dest so the proposer can grab
+            // the live route record (with orsByClass, ownPricing,
+            // currentFrequency, paxDemandPool, etc.) in O(1).
+            const map = new Map()
+            for (const r of (this.scoredRows || [])) {
+                if (!r || !r.destIata) continue
+                map.set(String(r.destIata).toUpperCase(), r)
+            }
+            ctx.routesByDest = map
+            // ModelParams + economics + LF source from settings, mirroring
+            // the sandbox call site at panel.js:_runOrsSandboxScan.
+            const sandbox = (this.settings && this.settings.orsSandbox) || {}
+            const mp = sandbox.modelParams || {}
+            ctx.modelParams = {
+                ratingPriceElasticity:        mp.ratingPriceElasticity,
+                ratingComfortLift:            mp.ratingComfortLift,
+                ratingPriceElasticityByClass: mp.ratingPriceElasticityByClass,
+                alphaSourceByClass:           mp.alphaSourceByClass,
+                perRouteT:                    mp.T
+            }
+            ctx.economics = (this.settings && this.settings.economics) || {}
+            ctx.useRealDemandForLF = !!(this.settings && this.settings.demandDepth
+                && this.settings.demandDepth.useRealDemandForLF)
+        }
+        return ctx
+    }
+
+    /**
+     * Strategy: track the median competitor Y price.
+     *
+     * Consumes the median + count already computed during refresh
+     * (`r.competitorMedianPriceY`, `r.competitorYsCount`) so this stays
+     * a pure transform with no storage round-trip. Requires ≥2
+     * competitors so a lone outlier can't trigger an apply.
+     *
+     * Y-only by design — C/F have their own dynamics, and copying Y's
+     * Δ% to all classes is a stronger assumption than the silent loop
+     * should carry without a richer signal.
+     */
+    _silentAutoProposeCompetitorMedian(r, prices, cfg) {
+        const dest = String(r.destIata || "").toUpperCase()
+        const ourY = prices && prices.Y
+        if (!isFinite(ourY) || ourY <= 0) {
+            return {ok: false, dest, skipReason: "no own Y price cached"}
+        }
+
+        const median = r.competitorMedianPriceY
+        const count  = isFinite(r.competitorYsCount) ? r.competitorYsCount : 0
+        if (!isFinite(median) || median <= 0) {
+            return {ok: false, dest, skipReason: "no competitor Y median scraped"}
+        }
+        if (count < 2) {
+            return {ok: false, dest, skipReason: "single competitor only (need ≥2 for median)"}
+        }
+
+        const rawDeltaPct = ((median - ourY) / ourY) * 100
+        if (!isFinite(rawDeltaPct)) {
+            return {ok: false, dest, skipReason: "Δ% computation produced non-finite"}
+        }
+        const minDelta = cfg.silentAutoMinDeltaPct || 3
+        if (Math.abs(rawDeltaPct) < minDelta) {
+            return {ok: false, dest,
+                    skipReason: "|Δ%| " + rawDeltaPct.toFixed(1) + " < min " + minDelta + "% (proposer noise floor)"}
+        }
+
+        // Clamp to maxStep — the proposer never moves more than a single
+        // hop per tick; convergence over multiple ticks is intentional.
+        const cap = Math.max(0, cfg.silentAutoMaxStepPct || 10)
+        const clamped = Math.max(-cap, Math.min(cap, rawDeltaPct))
+        const newY = Math.max(1, Math.round(ourY * (1 + clamped / 100)))
+        if (newY === Math.round(ourY)) {
+            return {ok: false, dest,
+                    skipReason: "after clamp + round, newY equals current ourY"}
+        }
+
+        return {
+            ok:        true,
+            dest,
+            prices:    {Y: newY},
+            deltaPct:  clamped,
+            prevY:     Math.round(ourY),
+            newY,
+            reason:    "silent-auto · track competitor median Y · "
+                       + ourY + " → " + newY + " (Δ " + clamped.toFixed(1) + "%, median " + median + " across " + count + " competitors)"
+        }
+    }
+
+    /**
+     * Cap reconciliation. Reads the apply-log twice (24h + 1h windows)
+     * to compute remaining budget on each axis. In dry-run we still
+     * count dry-run entries against the cap so a rehearsal session
+     * surfaces the pacing the user would see live.
+     */
+    async _silentAutoCheckCaps(log, cfg, dryRun) {
+        const now = Date.now()
+        let dailyUsed  = 0
+        let hourlyUsed = 0
+        if (log && typeof log.countSilentAutoIn === "function" && !dryRun) {
+            try {
+                const c = await log.countSilentAutoIn({
+                    daily:  now - 24 * 3600 * 1000,
+                    hourly: now - 1  * 3600 * 1000
+                })
+                dailyUsed  = c.daily  || 0
+                hourlyUsed = c.hourly || 0
+            } catch (e) { /* fail-open is fine — per-route + global cooldowns still gate */ }
+        }
+        // 0 = disabled axis. Treat as Infinity remaining.
+        const dayCap   = (cfg.silentAutoMaxPerDay  > 0) ? cfg.silentAutoMaxPerDay  : Infinity
+        const hourCap  = (cfg.silentAutoMaxPerHour > 0) ? cfg.silentAutoMaxPerHour : Infinity
+        return {
+            dailyUsed,
+            hourlyUsed,
+            dailyRemaining:  Math.max(0, dayCap  - dailyUsed),
+            hourlyRemaining: Math.max(0, hourCap - hourlyUsed)
+        }
+    }
+
+    /**
+     * Persist the latest tick result so the activity feed survives the
+     * next panel mount. Skips the storage write when the new envelope
+     * is structurally identical to the prior one (same eligible /
+     * proposed / applied / capped / blocked / skipped / error.code) —
+     * an idle 30-min cadence would otherwise generate ~48 effectively-
+     * identical writes/day.
+     */
+    async _persistSilentAutoTickResult(result) {
+        if (!this.settings || !this.settings.pricing) return
+        const prior = this.settings.pricing.silentAutoLastTickResult || null
+        if (prior && this._silentAutoResultsEquivalent(prior, result)) {
+            // Update only the timestamp in memory so UI reflects "ran X
+            // min ago" but skip the storage round-trip. Refresh perRoute
+            // in-memory so the activity feed shows the latest trace
+            // even when counters didn't shift.
+            this.settings.pricing.silentAutoLastTickAt = result.ranAt
+            prior.ranAt = result.ranAt
+            prior.perRoute = result.perRoute || prior.perRoute || []
+            return
+        }
+        this.settings.pricing.silentAutoLastTickAt     = result.ranAt
+        this.settings.pricing.silentAutoLastTickResult = result
+        try {
+            if (typeof RouteAssistantSettings !== "undefined") {
+                await RouteAssistantSettings.save({pricing: this.settings.pricing})
+            }
+        } catch (e) { console.warn("[AES silent-auto] persist tick-result failed", e) }
+        // Tier 3.4 — refresh the route-row badge cache so silent-auto
+        // applies are reflected without waiting for the next manual
+        // refresh of the apply-log preview.
+        if (result.applied > 0) {
+            this._refreshApplyBadgeMap().catch(() => {})
+        }
+    }
+
+    _silentAutoResultsEquivalent(a, b) {
+        if (!a || !b) return false
+        const fields = ["eligible", "proposed", "applied", "capped", "blocked", "skipped", "dryRun"]
+        for (const f of fields) if ((a[f] || 0) !== (b[f] || 0)) return false
+        const ac = a.error && a.error.code || null
+        const bc = b.error && b.error.code || null
+        return ac === bc
+    }
+
+    /** Persist the auto-mute window so closing the tab doesn't reset it. */
+    async _persistSilentAutoMute(untilTs) {
+        if (!this.settings || !this.settings.pricing) return
+        this.settings.pricing.silentAutoMutedUntil = untilTs
+        try {
+            if (typeof RouteAssistantSettings !== "undefined") {
+                await RouteAssistantSettings.save({pricing: this.settings.pricing})
+            }
+        } catch (e) { console.warn("[AES silent-auto] persist mute failed", e) }
+    }
+
+    /** Clear an active mute, used by the activity-feed "Resume now" button. */
+    async _clearSilentAutoMute() {
+        if (!this.settings || !this.settings.pricing) return
+        this.settings.pricing.silentAutoMutedUntil = null
+        this._silentAutoConsecutiveErrors = 0
+        try {
+            if (typeof RouteAssistantSettings !== "undefined") {
+                await RouteAssistantSettings.save({pricing: this.settings.pricing})
+            }
+        } catch (e) { console.warn("[AES silent-auto] clear mute failed", e) }
+    }
+
+    /**
+     * Renders the silent-auto sub-block under the Auto-Pricing expander.
+     * Surfaces (top to bottom):
+     *   - header + stage badge
+     *   - kill-switch toggle (opens confirm modal on first flip)
+     *   - strategy + follow-mode selectors
+     *   - tick interval + caps row (4 numeric inputs)
+     *   - "Run a tick now" CTA + next-tick countdown
+     *   - "Recent silent-auto activity" — last 8 silent-auto entries
+     *     from the global apply-log, plus the most recent tick-result
+     *     summary
+     *
+     * The host carries `data-aes-silent-auto-host="1"` so the tick path
+     * can refresh just this sub-block via `_refreshSilentAutoActivity`
+     * without rebuilding the whole settings drawer.
+     */
+    _renderSilentAutoBlock(cfg) {
+        const block = document.createElement("div")
+        block.setAttribute("data-aes-silent-auto-host", "1")
+        block.style.cssText = "margin-top:8px;padding:6px 8px;background:rgba(244, 114, 182, 0.05);"
+            + "border:1px solid rgba(244, 114, 182, 0.30);border-radius:4px;"
+        const sa = this._silentAutoCfg()
+        const apply = (cfg && cfg.apply) || {}
+        const dryRun = apply.dryRunOnly !== false || !apply.enabled
+
+        const head = document.createElement("div")
+        head.style.cssText = "color:#f9a8d4;font-size:11px;margin-bottom:4px;display:flex;"
+            + "align-items:center;justify-content:space-between;gap:6px;"
+        const title = document.createElement("strong")
+        title.textContent = "Tier 3.3 · Silent auto-pricing"
+        const stage = document.createElement("span")
+        const STAGE_BADGES = {
+            off:   {lbl: "Off",           color: "#9ca3af"},
+            muted: {lbl: "Muted",         color: "#fbbf24"},
+            dry:   {lbl: "Dry-run loop",  color: "#fbbf24"},
+            live:  {lbl: "LIVE loop",     color: "#34d399"}
+        }
+        const stageKey = !sa.silentAutoEnabled ? "off"
+            : (sa.silentAutoMutedUntil && sa.silentAutoMutedUntil > Date.now()) ? "muted"
+            : dryRun ? "dry" : "live"
+        const badge = STAGE_BADGES[stageKey]
+        stage.textContent = badge.lbl
+        stage.style.cssText = "font-size:10px;font-weight:normal;color:" + badge.color
+        head.append(title, stage)
+        block.append(head)
+
+        const rationale = document.createElement("div")
+        rationale.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;line-height:1.4;"
+        rationale.innerHTML = "Polls every <code>" + (sa.silentAutoTickMin || 30) + " min</code> while this panel is mounted, "
+            + "auto-derives a Δ% per route via <code>" + sa.silentAutoStrategy + "</code>, and applies through the same "
+            + "pipeline the manual modals use. Hard caps on per-day / per-hour writes; respects per-route + global cooldowns; "
+            + "circuit-breaker is shared with manual applies."
+        block.append(rationale)
+
+        // Toggle row.
+        const toggleRow = document.createElement("div")
+        toggleRow.style.cssText = "display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:11px;margin-bottom:6px;"
+        const toggleLbl = document.createElement("label")
+        toggleLbl.style.cssText = "display:flex;gap:6px;align-items:center;color:#fbcfe8;cursor:pointer;"
+        const toggleCb = document.createElement("input")
+        toggleCb.type = "checkbox"
+        toggleCb.checked = !!sa.silentAutoEnabled
+        toggleCb.addEventListener("change", async () => {
+            const want = toggleCb.checked
+            if (want && !sa.silentAutoConfirmedAt) {
+                // First flip — gate behind the confirmation modal. Roll
+                // the checkbox back if the user cancels.
+                toggleCb.disabled = true
+                const ok = await this._openSilentAutoConfirmModal()
+                toggleCb.disabled = false
+                if (!ok) {
+                    toggleCb.checked = false
+                    return
+                }
+                this.settings.pricing.silentAutoConfirmedAt = Date.now()
+            }
+            this.settings.pricing.silentAutoEnabled = want
+            await RouteAssistantSettings.save({pricing: this.settings.pricing})
+            this._restartSilentAutoLoop()
+            this._renderSettings()
+        })
+        toggleLbl.append(toggleCb, document.createTextNode("Silent-auto enabled"))
+        toggleLbl.title = "Top-level kill switch for the silent-auto loop. First activation prompts a confirmation modal; "
+            + "subsequent toggles flip silently. Loop runs on the cadence below while this panel is mounted."
+        toggleRow.append(toggleLbl)
+        if (sa.silentAutoEnabled) {
+            const tickBtn = document.createElement("button")
+            tickBtn.textContent = "Run a tick now"
+            Object.assign(tickBtn.style, smallBtnStyle())
+            tickBtn.style.fontSize = "10px"
+            tickBtn.title = "Fire one tick immediately — useful for verifying the proposer + caps pipeline. Bypasses the "
+                + "scheduled cadence; the next regular tick still fires on its interval."
+            tickBtn.addEventListener("click", async () => {
+                tickBtn.disabled = true
+                tickBtn.textContent = "Ticking…"
+                try { await this._silentAutoTickNow() }
+                finally {
+                    tickBtn.disabled = false
+                    tickBtn.textContent = "Run a tick now"
+                }
+            })
+            toggleRow.append(tickBtn)
+        }
+        block.append(toggleRow)
+
+        // Strategy + follow-mode selectors.
+        const selectorsRow = document.createElement("div")
+        selectorsRow.style.cssText = "display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:11px;margin-bottom:6px;"
+        const stratLbl = document.createElement("label")
+        stratLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#cbd5e1;"
+        stratLbl.append(document.createTextNode("Strategy"))
+        const stratSel = document.createElement("select")
+        stratSel.style.cssText = "background:#1e293b;color:#fff;border:1px solid #475569;border-radius:3px;padding:2px 4px;font-size:11px;"
+        // Tier 3.4 — pull options from the proposer registry so adding a
+        // new strategy is one entry in silent-auto-proposers.js. Falls
+        // back to the legacy single-option list if the registry isn't
+        // loaded (script-order regression in manifest).
+        const stratOptions = (typeof window !== "undefined"
+                              && window.RouteAssistantSilentAutoProposers
+                              && typeof window.RouteAssistantSilentAutoProposers.list === "function")
+            ? window.RouteAssistantSilentAutoProposers.list()
+            : [{key: "competitor-median", label: "Competitor median (Y only)", description: ""}]
+        for (const so of stratOptions) {
+            const opt = document.createElement("option")
+            opt.value = so.key
+            opt.textContent = so.label
+            if (so.description) opt.title = so.description
+            if (so.key === sa.silentAutoStrategy) opt.selected = true
+            stratSel.append(opt)
+        }
+        const stratHint = document.createElement("span")
+        stratHint.style.cssText = "color:#94a3b8;font-size:10px;margin-left:4px;"
+        const setStratHint = (key) => {
+            const found = stratOptions.find(s => s.key === key)
+            stratHint.textContent = found && found.description ? "— " + found.description : ""
+        }
+        setStratHint(sa.silentAutoStrategy)
+        stratSel.addEventListener("change", async () => {
+            this.settings.pricing.silentAutoStrategy = stratSel.value
+            setStratHint(stratSel.value)
+            await RouteAssistantSettings.save({pricing: this.settings.pricing})
+        })
+        stratLbl.append(stratSel)
+        selectorsRow.append(stratLbl)
+        selectorsRow.append(stratHint)
+
+        const followLbl = document.createElement("label")
+        followLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#cbd5e1;"
+        followLbl.append(document.createTextNode("Follow"))
+        const followSel = document.createElement("select")
+        followSel.style.cssText = stratSel.style.cssText
+        for (const [val, label] of [["watchlist", "Watchlist (★) only"], ["all", "All eligible routes"]]) {
+            const opt = document.createElement("option")
+            opt.value = val; opt.textContent = label
+            if (val === sa.silentAutoFollowMode) opt.selected = true
+            followSel.append(opt)
+        }
+        followSel.addEventListener("change", async () => {
+            this.settings.pricing.silentAutoFollowMode = followSel.value
+            await RouteAssistantSettings.save({pricing: this.settings.pricing})
+        })
+        followLbl.append(followSel)
+        selectorsRow.append(followLbl)
+        block.append(selectorsRow)
+
+        // Tick interval + caps row.
+        const capsRow = document.createElement("div")
+        capsRow.style.cssText = "display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:11px;margin-bottom:6px;"
+        const numField = (label, key, min, max, step, title) => {
+            const lbl = document.createElement("label")
+            lbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#cbd5e1;"
+            lbl.title = title
+            lbl.append(document.createTextNode(label))
+            const inp = mkNumberInput(sa[key], {min, max, step, width: "54px"})
+            inp.addEventListener("change", async () => {
+                const v = parseFloat(inp.value)
+                if (!isFinite(v)) return
+                const clamped = Math.max(min, Math.min(max, v))
+                this.settings.pricing[key] = clamped
+                inp.value = String(clamped)
+                await RouteAssistantSettings.save({pricing: this.settings.pricing})
+                if (key === "silentAutoTickMin") this._restartSilentAutoLoop()
+            })
+            lbl.append(inp)
+            return lbl
+        }
+        capsRow.append(numField("Tick (min)", "silentAutoTickMin", 5, 240, 1,
+            "Minutes between ticks. Loop only runs while this panel is mounted."))
+        capsRow.append(numField("Max/day", "silentAutoMaxPerDay", 0, 200, 1,
+            "Hard cap on successful silent-auto applies in any 24h window. 0 = disabled."))
+        capsRow.append(numField("Max/hour", "silentAutoMaxPerHour", 0, 50, 1,
+            "Hard cap in any 1h window. 0 = disabled. Acts as the floor-level rate limit."))
+        capsRow.append(numField("Min Δ%", "silentAutoMinDeltaPct", 0, 50, 0.5,
+            "Proposer noise floor. Routes whose computed |Δ%| is below this are skipped."))
+        capsRow.append(numField("Max step %", "silentAutoMaxStepPct", 0.5, 50, 0.5,
+            "Per-tick clamp on |Δ%|. The proposer never moves a route more than this in a single tick — convergence over multiple ticks is intentional."))
+        block.append(capsRow)
+
+        // Activity feed host — refreshed in-place by `_refreshSilentAutoActivity`.
+        const activityHost = document.createElement("div")
+        activityHost.setAttribute("data-aes-silent-auto-activity", "1")
+        activityHost.style.cssText = "margin-top:6px;"
+        block.append(activityHost)
+        this._renderSilentAutoActivity(activityHost, sa)
+
+        return block
+    }
+
+    /**
+     * Renders the activity sub-block — last tick summary + recent
+     * silent-auto applies + (when active) auto-mute + Resume CTA. Pure
+     * DOM build that the tick path can swap out without touching the
+     * surrounding controls.
+     */
+    _renderSilentAutoActivity(host, sa) {
+        host.innerHTML = ""
+        const now = Date.now()
+
+        // Mute banner — surfaces auto-mute state with one-click resume.
+        if (sa.silentAutoMutedUntil && sa.silentAutoMutedUntil > now) {
+            const remainingMin = Math.ceil((sa.silentAutoMutedUntil - now) / 60000)
+            const banner = document.createElement("div")
+            banner.style.cssText = "padding:6px 10px;margin-bottom:6px;background:rgba(248,113,113,0.10);"
+                + "border:1px solid rgba(248,113,113,0.40);border-radius:3px;color:#fca5a5;font-size:11px;"
+                + "display:flex;align-items:center;justify-content:space-between;gap:8px;"
+            const txt = document.createElement("span")
+            txt.textContent = "Silent-auto auto-muted · " + remainingMin + " min remaining"
+            const resumeBtn = document.createElement("button")
+            resumeBtn.textContent = "Resume now"
+            Object.assign(resumeBtn.style, smallBtnStyle())
+            resumeBtn.style.fontSize = "10px"
+            resumeBtn.addEventListener("click", async () => {
+                await this._clearSilentAutoMute()
+                this._renderSettings()
+            })
+            banner.append(txt, resumeBtn)
+            host.append(banner)
+        }
+
+        // Last tick summary — single-line label + counts.
+        const lastTick = sa.silentAutoLastTickResult
+        const tickLine = document.createElement("div")
+        tickLine.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:4px;"
+        if (!lastTick || !isFinite(lastTick.ranAt)) {
+            const next = sa.silentAutoEnabled
+                ? (this._silentAutoStartGraceTimer
+                    ? "first tick in <30s"
+                    : (this._silentAutoTimer
+                        ? ("next tick on cadence (" + (sa.silentAutoTickMin || 30) + " min)")
+                        : "loop not running"))
+                : "loop is off"
+            tickLine.textContent = "No tick yet · " + next
+        } else {
+            const agoMin = Math.max(0, Math.round((now - lastTick.ranAt) / 60000))
+            const counts = "eligible " + (lastTick.eligible || 0)
+                + " · proposed " + (lastTick.proposed || 0)
+                + " · applied " + (lastTick.applied || 0)
+                + (lastTick.capped ? (" · capped " + lastTick.capped) : "")
+                + (lastTick.skipped ? (" · skipped " + lastTick.skipped) : "")
+                + (lastTick.dryRun ? " · dry-run" : "")
+            tickLine.textContent = "Last tick " + agoMin + " min ago · " + counts
+                + (lastTick.error ? (" · " + lastTick.error.message) : "")
+        }
+        host.append(tickLine)
+
+        // Per-route trace — show what happened to each eligible route on
+        // the most recent tick. Lets the user see WHY the tick produced
+        // the counts above without having to mentally reconstruct.
+        if (lastTick && Array.isArray(lastTick.perRoute) && lastTick.perRoute.length) {
+            host.append(this._buildSilentAutoTraceTable(lastTick.perRoute))
+        }
+
+        // Recent silent-auto applies — async fill from the global log.
+        const feed = document.createElement("div")
+        feed.style.cssText = "display:flex;flex-direction:column;gap:2px;font-size:10px;color:#cbd5e1;"
+        feed.textContent = "Loading recent silent-auto applies…"
+        host.append(feed)
+        this._fillSilentAutoFeed(feed).catch(e => console.warn("[AES silent-auto] feed fill failed", e))
+    }
+
+    /**
+     * Render the per-route trace from the last tick as a compact
+     * collapsible block. Each row shows: stage badge, route, Δ%
+     * (when proposed/applied), reason / error message.
+     */
+    _buildSilentAutoTraceTable(perRoute) {
+        const STAGE_PALETTE = {
+            applied: "#34d399",
+            skipped: "#9ca3af",
+            capped:  "#fbbf24",
+            blocked: "#fbbf24",
+            failed:  "#f87171"
+        }
+        const wrap = document.createElement("details")
+        wrap.style.cssText = "margin:6px 0;border:1px solid #1f2937;"
+            + "background:rgba(15, 23, 42, 0.55);border-radius:3px;font-size:10px;"
+        wrap.open = perRoute.some(e => e.stage === "failed" || e.stage === "applied")
+
+        const summary = document.createElement("summary")
+        summary.style.cssText = "padding:4px 8px;color:#cbd5e1;cursor:pointer;font-size:10px;"
+        const stageCounts = {}
+        for (const e of perRoute) stageCounts[e.stage] = (stageCounts[e.stage] || 0) + 1
+        const counts = Object.keys(stageCounts).map(k => stageCounts[k] + " " + k).join(" · ")
+        summary.textContent = "Per-route trace · " + counts
+        wrap.append(summary)
+
+        const list = document.createElement("div")
+        list.style.cssText = "display:flex;flex-direction:column;padding:0 8px 6px 8px;gap:1px;"
+        for (const entry of perRoute) {
+            const row = document.createElement("div")
+            row.style.cssText = "display:flex;gap:6px;align-items:flex-start;line-height:1.45;"
+            const dot = document.createElement("span")
+            dot.style.cssText = "width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:5px;"
+                + "background:" + (STAGE_PALETTE[entry.stage] || "#6b7280")
+            const stage = document.createElement("span")
+            stage.textContent = entry.stage
+            stage.style.cssText = "color:" + (STAGE_PALETTE[entry.stage] || "#6b7280")
+                + ";width:54px;flex-shrink:0;text-transform:lowercase;"
+            const dest = document.createElement("span")
+            dest.textContent = (this.hubIata || "?") + "→" + entry.dest
+            dest.style.cssText = "color:#e2e8f0;font-variant-numeric:tabular-nums;width:80px;flex-shrink:0;"
+            const detail = document.createElement("span")
+            detail.style.cssText = "color:#94a3b8;flex:1;"
+            const moveBits = []
+            if (isFinite(entry.prevY) && isFinite(entry.newY) && entry.prevY !== entry.newY) {
+                moveBits.push("Y " + entry.prevY + "→" + entry.newY)
+            }
+            if (isFinite(entry.deltaPct)) {
+                moveBits.push("Δ " + (entry.deltaPct >= 0 ? "+" : "") + entry.deltaPct.toFixed(1) + "%")
+            }
+            if (entry.applyStatus && entry.applyStatus !== entry.stage) {
+                moveBits.push(entry.applyStatus)
+            }
+            const move = moveBits.length ? moveBits.join(" · ") + " · " : ""
+            detail.textContent = move + (entry.reason || "")
+            row.append(dot, stage, dest, detail)
+            list.append(row)
+        }
+        wrap.append(list)
+        return wrap
+    }
+
+    /**
+     * Re-render the activity sub-block in place + the pricing-diagnostics
+     * "Last tick" footer line. Called from the tick path's finally block
+     * so the user gets fresh trace + counts without a full panel redraw.
+     */
+    _refreshSilentAutoActivity() {
+        if (!this.settingsHost) return
+        const block = this.settingsHost.querySelector("[data-aes-silent-auto-host='1']")
+        if (block) {
+            const activity = block.querySelector("[data-aes-silent-auto-activity='1']")
+            if (activity) this._renderSilentAutoActivity(activity, this._silentAutoCfg())
+        }
+        // Diagnostics block has its own "Last tick · ▶ Run now" footer
+        // row that goes stale after a tick. Swap the whole block in place.
+        const diag = this.settingsHost.querySelector("[data-aes-pricing-diagnostics='1']")
+        if (diag && diag.parentNode) {
+            const fresh = this._renderPricingDiagnostics(this.settings.pricing || {})
+            diag.parentNode.replaceChild(fresh, diag)
+        }
+    }
+
+    /**
+     * Fill the "Recent silent-auto applies" feed inside the activity
+     * sub-block. Pulls the last 8 `source === "silent-auto"` entries
+     * from the global log, formats them compactly. Empty state is the
+     * benign "no silent-auto applies yet" line.
+     */
+    async _fillSilentAutoFeed(feed) {
+        const log = this._getPricingApplyLog()
+        let recent = []
+        if (log && typeof log.getRecent === "function") {
+            try {
+                const r = await log.getRecent()
+                recent = (r.entries || []).filter(e => e && e.source === "silent-auto").slice(0, 8)
+            } catch (e) { recent = [] }
+        }
+        feed.innerHTML = ""
+        if (!recent.length) {
+            feed.textContent = "No silent-auto applies yet."
+            feed.style.color = "#6b7280"
+            return
+        }
+        feed.style.color = "#cbd5e1"
+        const palette = {
+            verified:  "#34d399",
+            posted:    "#fbbf24",
+            "dry-run": "#a78bfa",
+            failed:    "#f87171",
+            aborted:   "#9ca3af",
+            skipped:   "#9ca3af"
+        }
+        for (const e of recent) {
+            const row = document.createElement("div")
+            row.style.cssText = "display:flex;gap:6px;align-items:center;"
+            const dot = document.createElement("span")
+            dot.style.cssText = "width:6px;height:6px;border-radius:50%;background:" + (palette[e.status] || "#9ca3af")
+            const ago = Math.max(0, Math.round((Date.now() - (e.ts || 0)) / 60000))
+            const pair = (e.hub || "?") + "→" + (e.dest || "?")
+            const ny = e.newPrices && e.newPrices.Y
+            const py = e.prevPrices && e.prevPrices.Y
+            const move = (isFinite(ny) && isFinite(py)) ? (" · Y " + py + "→" + ny) : ""
+            const label = pair + " · " + (e.status || "?") + move + " · " + ago + "m"
+            const txt = document.createElement("span")
+            txt.textContent = label
+            row.append(dot, txt)
+            feed.append(row)
+        }
+    }
+
+    /**
+     * First-activation confirmation modal. Returns a Promise<boolean>
+     * — true when the user acknowledges + clicks Confirm; false on
+     * Cancel / Esc / outside-click.
+     *
+     * The modal lists every active gate (caps + breaker + dry-run
+     * state + applier kill switch) so the user can sanity-check what
+     * "enable" actually means today. Required ack checkbox arms the
+     * Confirm button.
+     */
+    _openSilentAutoConfirmModal() {
+        return new Promise((resolve) => {
+            const cfg = this._silentAutoCfg()
+            const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
+            const dryRun = apply.dryRunOnly !== false || !apply.enabled
+
+            const overlay = document.createElement("div")
+            overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10003;"
+                + "display:flex;align-items:center;justify-content:center;"
+            const dialog = document.createElement("div")
+            dialog.style.cssText = "background:#0f1623;color:#e5e7eb;border:1px solid #f472b6;border-radius:6px;"
+                + "padding:18px 22px;width:560px;max-width:95vw;font:12px/1.4 sans-serif;"
+
+            const head = document.createElement("div")
+            head.style.cssText = "color:#f9a8d4;font-size:13px;font-weight:600;margin-bottom:8px;"
+            head.textContent = "Enable silent auto-pricing?"
+            dialog.append(head)
+
+            const body = document.createElement("div")
+            body.style.cssText = "color:#cbd5e1;font-size:11px;line-height:1.55;margin-bottom:10px;"
+            body.innerHTML = "Once enabled, the loop will fire automatically every "
+                + "<strong>" + (cfg.silentAutoTickMin || 30) + " minutes</strong> while this panel is mounted. "
+                + "Each tick scans your <strong>" + (cfg.silentAutoFollowMode === "all" ? "every cached" : "★-watchlisted") + "</strong> routes, "
+                + "computes a Δ% via <strong>" + cfg.silentAutoStrategy + "</strong>, and "
+                + (dryRun ? "<em>writes a dry-run audit-log entry per route (no AS POST yet)</em>" : "<strong style='color:#fca5a5;'>POSTs price updates directly to AS</strong>")
+                + "."
+
+            const caps = document.createElement("div")
+            caps.style.cssText = "background:#0b1220;border:1px solid #1f2937;border-radius:3px;"
+                + "padding:8px 10px;font-size:11px;color:#cbd5e1;margin:8px 0;"
+            caps.innerHTML = "<strong style='color:#f9a8d4;'>Active caps + safety</strong><br>"
+                + "• Max <strong>" + (cfg.silentAutoMaxPerDay || "∞") + "</strong> applies/day · "
+                + "<strong>" + (cfg.silentAutoMaxPerHour || "∞") + "</strong>/hour<br>"
+                + "• Per-route cooldown: <strong>" + (apply.cooldownMinPerRoute || 0) + " min</strong><br>"
+                + "• Global cooldown: <strong>" + (apply.cooldownMinGlobal || 0) + " min</strong><br>"
+                + "• Min Δ%: <strong>" + (cfg.silentAutoMinDeltaPct || 0) + "%</strong> (below = skip)<br>"
+                + "• Max step %: <strong>±" + (cfg.silentAutoMaxStepPct || 0) + "%</strong> per tick<br>"
+                + "• Auto-mute on <strong>5 consecutive failures</strong><br>"
+                + "• Shares the manual-apply circuit breaker"
+            body.append(caps)
+
+            const ackLbl = document.createElement("label")
+            ackLbl.style.cssText = "display:flex;gap:6px;align-items:flex-start;color:#fbcfe8;font-size:11px;cursor:pointer;margin-top:10px;"
+            const ackCb = document.createElement("input")
+            ackCb.type = "checkbox"
+            ackLbl.append(ackCb, document.createTextNode(
+                dryRun
+                    ? "I understand this is a dry-run — no AS writes will happen until I clear the dry-run gate AND flip Apply enabled."
+                    : "I understand this will POST price updates to AirlineSim without my click on each tick."
+            ))
+            body.append(ackLbl)
+            dialog.append(body)
+
+            const foot = document.createElement("div")
+            foot.style.cssText = "display:flex;justify-content:flex-end;gap:8px;"
+            const cancelBtn = document.createElement("button")
+            cancelBtn.textContent = "Cancel"
+            cancelBtn.style.cssText = "background:#1f2937;color:#cbd5e1;border:1px solid #374151;"
+                + "border-radius:3px;padding:5px 14px;font-size:11px;cursor:pointer;"
+            const confirmBtn = document.createElement("button")
+            confirmBtn.textContent = "Enable silent-auto"
+            confirmBtn.disabled = true
+            confirmBtn.style.cssText = "background:#9d174d;color:#fff;border:1px solid #be185d;"
+                + "border-radius:3px;padding:5px 14px;font-size:11px;cursor:pointer;opacity:0.5;"
+            ackCb.addEventListener("change", () => {
+                confirmBtn.disabled = !ackCb.checked
+                confirmBtn.style.opacity = ackCb.checked ? "1" : "0.5"
+            })
+
+            const cleanup = (verdict) => {
+                document.removeEventListener("keydown", onKey)
+                if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
+                resolve(verdict)
+            }
+            const onKey = (e) => { if (e.key === "Escape") cleanup(false) }
+            cancelBtn.addEventListener("click", () => cleanup(false))
+            confirmBtn.addEventListener("click", () => cleanup(!!ackCb.checked))
+            overlay.addEventListener("click", (e) => { if (e.target === overlay) cleanup(false) })
+            document.addEventListener("keydown", onKey)
+
+            foot.append(cancelBtn, confirmBtn)
+            dialog.append(foot)
+            overlay.append(dialog)
+            document.body.append(overlay)
+        })
     }
 
     _buildTier3PreflightView(pf) {
@@ -16375,11 +22381,11 @@ RouteAssistantPanel.COLUMN_GROUPS = {
 }
 
 RouteAssistantPanel.STATUS_DEF = {
-    NEW:   {color: "#60a5fa", description: "You don't fly this route at all. Candidate to start."},
-    OK:    {color: "#22c55e", description: "Your frequency is in line with real-world demand. No action needed."},
-    UNDER: {color: "#fbbf24", description: "High pax demand (≥ 8/10) and you fly < 1/10 of real-world traffic. Room to scale up."},
-    OVER:  {color: "#f97316", description: "You fly more than 1/5 of real-world traffic. Possibly over-deployed; consider trimming frequency."},
-    OOR:   {color: "#ef4444", description: "Out of range — the selected aircraft can't reach this destination (over 95% of max range)."}
+    NEW:   {color: "#60a5fa", description: "Operating axis — you don't fly this route at all."},
+    OK:    {color: "#22c55e", description: "Health — frequency is in line with real-world demand. No action needed."},
+    UNDER: {color: "#fbbf24", description: "Health — high pax demand (≥ 8/10) and your weekly freq is < 1/10 of real-world traffic. For an unflown route this reads as 'candidate to start'."},
+    OVER:  {color: "#f97316", description: "Health — you fly more than 1/5 of real-world traffic. Possibly over-deployed; consider trimming."},
+    OOR:   {color: "#ef4444", description: "Health — the selected aircraft can't reach this destination (over 95% of max range)."}
 }
 
 // `modes` gates which view tabs include the field in the score blend.
@@ -16509,6 +22515,12 @@ RouteAssistantPanel.COLUMNS = [
         icons.push(`<span data-routenote-trigger="1"`
             + ` title="${escapeHtml(noteTitle)}"`
             + ` style="cursor:pointer;opacity:${noteOpacity};">📝</span>`)
+        // Tier 3.4 — apply-status badge placeholder. Empty span keyed by
+        // pair; `_repaintApplyBadges` swaps it for a coloured dot after
+        // the table draws (or removes it on routes with no apply history).
+        if (hub) {
+            icons.push(`<span data-applybadge-pair="${escapeHtml(String(hub).toUpperCase() + "-" + String(dest).toUpperCase())}"></span>`)
+        }
         const iconRow = icons.length ? `<span class="aes-iata-icons">${icons.join("")}</span>` : ""
         td.innerHTML = iataHtml + pin + iconRow
             + (row.destName ? `<br><span style="color:#9ca3af;font-size:10px;">${escapeHtml(row.destName)}</span>` : "")
@@ -16522,15 +22534,42 @@ RouteAssistantPanel.COLUMNS = [
         td.prepend(_buildWatchlistStar(row, hub))
     }},
     {field: "status", label: "St", group: "computed",
-     title: "Status flag — hover a cell for the rule + transition history; click to sort. A VAR+/VAR− pill is appended when the latest snapshot's Δ% exceeds the variance warn threshold.",
+     title: "Two-axis status — left pill is whether you fly (NEW or weekly frequency), right pill is health (OK / UNDER / OVER / OOR). Hover a cell for the rule + transition history; click to sort. A V+/V− pill is appended when the latest snapshot's Δ% exceeds the variance warn threshold.",
      render(td, row) {
-        const def = RouteAssistantPanel.STATUS_DEF[row.status] || {color: "#9ca3af", description: ""}
         td.textContent = ""
-        const main = document.createElement("span")
-        main.textContent = row.status
-        main.style.color = def.color
-        main.style.fontWeight = "bold"
-        td.append(main)
+        td.style.whiteSpace = "nowrap"
+
+        // Operating pill — either "NEW" (you don't fly) or the weekly
+        // frequency you currently fly (e.g. "5×"). Always rendered so the
+        // user can see at a glance which routes are operating.
+        const opEl = document.createElement("span")
+        opEl.style.fontWeight = "bold"
+        if (!row.operating) {
+            const newDef = RouteAssistantPanel.STATUS_DEF.NEW
+            opEl.textContent = "NEW"
+            opEl.style.color = newDef.color
+            opEl.title = newDef.description
+        } else {
+            const freq = row.ownTotalFreq || 0
+            opEl.textContent = freq + "×"
+            opEl.style.color = "#cbd5e1"
+            opEl.title = "You operate this route " + freq + "× per week."
+        }
+        td.append(opEl)
+
+        // Health pill — OK / UNDER / OVER / OOR, computed for every row.
+        const healthKey = row.health || "OK"
+        const healthDef = RouteAssistantPanel.STATUS_DEF[healthKey] || {color: "#9ca3af", description: ""}
+        const healthEl = document.createElement("span")
+        healthEl.textContent = healthKey
+        healthEl.style.cssText = "display:inline-block;margin-left:4px;padding:0 4px;"
+            + "border-radius:3px;font-size:9px;font-weight:600;"
+            + "color:" + healthDef.color + ";"
+            + "border:1px solid " + healthDef.color + "55;"
+            + "background:" + healthDef.color + "15;"
+        healthEl.title = healthDef.description
+        td.append(healthEl)
+
         const v = row.actualVariancePct
         const warn = RouteAssistantPanel._varianceWarnPct || 25
         if (typeof v === "number" && Math.abs(v) >= warn) {
@@ -16549,7 +22588,11 @@ RouteAssistantPanel.COLUMNS = [
         }
         // Tooltip: status rule + Q8 transition history line.
         const tipParts = []
-        if (def.description) tipParts.push(row.status + ": " + def.description)
+        const opLine = row.operating
+            ? (row.ownTotalFreq || 0) + "× per week"
+            : "NEW: " + RouteAssistantPanel.STATUS_DEF.NEW.description
+        tipParts.push(opLine)
+        if (healthDef.description) tipParts.push(healthKey + ": " + healthDef.description)
         const hist = row._statusHistory
         if (hist && Array.isArray(hist.transitions) && hist.transitions.length) {
             const latest = hist.transitions[hist.transitions.length - 1]

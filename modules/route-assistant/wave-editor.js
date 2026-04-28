@@ -37,11 +37,13 @@ class RouteAssistantWaveEditor {
         const hub = String(hubIata || "").toUpperCase()
         const w = SchedulePresets.newWave("Wave 1")
         w.composition = {shortHaul: 4, mediumHaul: 2, longHaul: 1}
-        return await SchedulePresets.create({
+        const created = await SchedulePresets.create({
             name:  "Wave plan for " + hub,
             hub:   hub,
             waves: [w]
         })
+        RouteAssistantWaveEditor._emitPresetUpdated(created)
+        return created
     }
 
     /** Append a new wave to a preset, staggered ~4h after the last wave. */
@@ -63,6 +65,7 @@ class RouteAssistantWaveEditor {
         }
         preset.waves.push(newWave)
         await SchedulePresets.update(presetId, {waves: preset.waves})
+        RouteAssistantWaveEditor._emitPresetUpdated(preset)
         return preset
     }
 
@@ -73,6 +76,7 @@ class RouteAssistantWaveEditor {
         if (!preset || preset.waves.length <= 1) return null
         preset.waves = preset.waves.filter(w => w.id !== waveId)
         await SchedulePresets.update(presetId, {waves: preset.waves})
+        RouteAssistantWaveEditor._emitPresetUpdated(preset)
         return preset
     }
 
@@ -98,6 +102,7 @@ class RouteAssistantWaveEditor {
             wave.composition[k] = isFinite(v) ? Math.max(0, Math.min(99, Math.floor(v))) : 0
         }
         await SchedulePresets.update(presetId, {waves: preset.waves})
+        RouteAssistantWaveEditor._emitPresetUpdated(preset)
         return preset
     }
 
@@ -120,7 +125,27 @@ class RouteAssistantWaveEditor {
         if (field === "departureStart") wave.departureWindow.start = time
         if (field === "departureEnd")   wave.departureWindow.end   = time
         await SchedulePresets.update(presetId, {waves: preset.waves})
+        RouteAssistantWaveEditor._emitPresetUpdated(preset)
         return preset
+    }
+
+    /**
+     * Track B — broadcast a same-page notification so wave-strip /
+     * wave-overlay can refresh without polling. Cross-page propagation
+     * still runs through chrome.storage.onChanged on the SchedulePresets
+     * write (each subscriber listens for "settings" key changes).
+     */
+    static _emitPresetUpdated(preset) {
+        if (!preset) return
+        if (typeof window === "undefined") return
+        if (typeof window.CentralHubBus === "undefined") return
+        try {
+            window.CentralHubBus.emit("waves:preset-updated", {
+                presetId: preset.id || null,
+                hub:      preset.hub || null,
+                source:   "wave-editor"
+            })
+        } catch (_) { /* non-fatal */ }
     }
 
     /**
