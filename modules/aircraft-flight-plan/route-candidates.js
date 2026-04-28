@@ -413,7 +413,11 @@
 
             this._renderWaveStrip(host)
             this._renderChipBar(host)
-            this._renderTable(host, list)
+            // Track B — wave-fit context is async (SchedulePresets.load).
+            // First render returns null and kicks off a build; on completion
+            // the cache fills and `_reRender` re-paints with the column.
+            const waveFitCtx = this._waveFitContextOrSchedule(list)
+            this._renderTable(host, list, waveFitCtx)
             this._renderFooter(host, list)
             // Track C — pick up a fleet-schedule-grid drop handoff if one is
             // pending for this aircraft. Deferred until after the table is
@@ -640,7 +644,7 @@
             host.append(wrap)
         },
 
-        _renderTable(host, candidates) {
+        _renderTable(host, candidates, waveFitCtx) {
             const capped = this._visibleSet(candidates)
 
             if (!capped.length) {
@@ -650,6 +654,8 @@
                 host.append(empty)
                 return
             }
+
+            const showFit = !!(waveFitCtx && waveFitCtx.ready && waveFitCtx.fitByDest)
 
             const table = document.createElement("table")
             table.style.cssText = "width:100%;border-collapse:collapse;font-size:11px;"
@@ -668,6 +674,16 @@
                 th.title = "Click to sort by " + col.label
                 th.addEventListener("click", () => this._handleSort(col.key))
                 trh.append(th)
+            }
+            if (showFit) {
+                const fitTh = document.createElement("th")
+                fitTh.style.cssText = "text-align:right;padding:3px 4px;font-weight:600;"
+                    + "user-select:none;width:60px;"
+                fitTh.textContent = "Fit"
+                fitTh.title = "Wave-plan fit for the active preset"
+                    + (waveFitCtx.presetName ? " (" + waveFitCtx.presetName + ")" : "")
+                    + " — Excellent / Good / Fair / Weak / Poor."
+                trh.append(fitTh)
             }
             // Trailing non-sortable column: airport restriction icons
             // (curfew + noise). Empty when both are unknown / not flagged.
@@ -691,12 +707,12 @@
             table.append(thead)
 
             const tbody = document.createElement("tbody")
-            capped.forEach((c, idx) => tbody.append(this._renderRow(c, idx)))
+            capped.forEach((c, idx) => tbody.append(this._renderRow(c, idx, waveFitCtx)))
             table.append(tbody)
             host.append(table)
         },
 
-        _renderRow(c, idx) {
+        _renderRow(c, idx, waveFitCtx) {
             const tr = document.createElement("tr")
             tr.style.cssText = "cursor:pointer;border-bottom:1px solid #1f2937;"
                 + (idx % 2 ? "background:#0f1623;" : "")
@@ -899,9 +915,42 @@
             })
             depCell.append(depInput)
 
-            tr.append(destCell, distCell, timeCell, paxCell, cargoCell, wklyCell, airCell,
-                sizeCell, fuelCell, alphaCell, scoreCell, restrCell, depCell)
+            const showFit = !!(waveFitCtx && waveFitCtx.ready && waveFitCtx.fitByDest)
+            const fitCell = showFit
+                ? this._mkFitCell(waveFitCtx.fitByDest.get(String(c.destIata || "").toUpperCase()))
+                : null
+
+            const tail = [destCell, distCell, timeCell, paxCell, cargoCell, wklyCell, airCell,
+                sizeCell, fuelCell, alphaCell, scoreCell]
+            if (fitCell) tail.push(fitCell)
+            tail.push(restrCell, depCell)
+            tr.append(...tail)
             return tr
+        },
+
+        _mkFitCell(fit) {
+            const td = document.createElement("td")
+            td.style.cssText = "padding:3px 4px;text-align:right;width:60px;"
+            if (!fit || typeof fit.fitScore !== "number") {
+                td.textContent = "—"
+                td.style.color = "#4b5563"
+                td.title = "No wave-fit score (route not in scoring set)."
+                return td
+            }
+            const chip = document.createElement("span")
+            const color = (typeof RouteAssistantWaveRouteFitter !== "undefined")
+                ? RouteAssistantWaveRouteFitter.colorForFit(fit.fitScore) : "#cbd5e1"
+            const label = (typeof RouteAssistantWaveRouteFitter !== "undefined")
+                ? RouteAssistantWaveRouteFitter.labelForFit(fit.fitScore) : ""
+            chip.textContent = String(fit.fitScore)
+            chip.style.cssText = "display:inline-block;padding:1px 5px;border-radius:8px;"
+                + "background:rgba(0,0,0,0.35);border:1px solid " + color + ";"
+                + "color:" + color + ";font-weight:700;font-size:10px;line-height:1.2;"
+            const reasons = Array.isArray(fit.reasons) && fit.reasons.length
+                ? "\n• " + fit.reasons.join("\n• ") : ""
+            td.title = label + " · " + fit.category + " · " + fit.fitScore + "/100" + reasons
+            td.append(chip)
+            return td
         },
 
         _mkNumCell(text) {
@@ -972,6 +1021,99 @@
         _reRender() {
             if (!this._lastHost) return
             this.render(this._lastHost, this.last || [], this._lastCtx)
+        },
+
+        /**
+         * Track B — sync hand-off for the optional Fit column. Returns the
+         * cached payload when ready, otherwise kicks off a one-shot async
+         * build that calls `_reRender()` on completion. Returns null when
+         * the wave-strip chip is off, the wave domain isn't loaded, or the
+         * active hub has no preset — the table renders as before.
+         */
+        _waveFitContextOrSchedule(candidates) {
+            if (!this._chipState || !this._chipState.showWaves) return null
+            if (typeof RouteAssistantWaveOverlay === "undefined") return null
+            if (typeof RouteAssistantWaveRouteFitter === "undefined") return null
+            if (typeof SchedulePresets === "undefined") return null
+            const hub = String((this._lastCtx && this._lastCtx.originIata) || "").toUpperCase()
+            if (!/^[A-Z]{3}$/.test(hub)) return null
+
+            const cacheKey = this._waveFitCacheKey(hub, candidates)
+            const cache = this._waveFitCache
+            if (cache && cache.key === cacheKey) return cache.payload || null
+            if (this._waveFitInflight === cacheKey) return null
+            this._waveFitInflight = cacheKey
+            this._buildWaveFitContext(hub, candidates).then(payload => {
+                if (this._waveFitInflight !== cacheKey) return
+                this._waveFitInflight = null
+                this._waveFitCache = {key: cacheKey, payload: payload || null}
+                this._reRender()
+            }).catch(err => {
+                this._waveFitInflight = null
+                console.warn("[AES afp] wave-fit build failed", err)
+            })
+            return null
+        },
+
+        _waveFitCacheKey(hub, candidates) {
+            const n = candidates ? candidates.length : 0
+            const head = n ? String(candidates[0].destIata || "") : ""
+            const tail = n ? String(candidates[n - 1].destIata || "") : ""
+            return hub + ":" + n + ":" + head + ":" + tail
+        },
+
+        async _buildWaveFitContext(hub, candidates) {
+            const block = await SchedulePresets.load()
+            const presets = (block && Array.isArray(block.presets)) ? block.presets : []
+            if (!presets.length) return null
+            let preset = block.defaultPresetId
+                ? presets.find(p => p.id === block.defaultPresetId) : null
+            if (!preset) preset = presets.find(
+                p => String(p.hub || "").toUpperCase() === hub) || null
+            if (!preset) preset = presets[0] || null
+            if (!preset) return null
+
+            // Adapt the AFP candidate shape to the scoredRow shape the wave
+            // domain expects. The fitter only reads a subset of fields.
+            const scoredRows = (candidates || []).map(c => ({
+                destIata:      c.destIata,
+                distanceKm:    c.distanceKm,
+                paxScore:      c.paxScore,
+                cargoScore:    c.cargoScore,
+                weeklyFlights: c.weeklyFlights,
+                profitPerWeek: null,
+                aircraftFit:   c.fits === "oor"     ? "oor"
+                            :  c.fits === "fit"     ? "optimal"
+                            :  c.fits === "tight"   ? "falloff"
+                            :  null
+            }))
+            const spec = (this._lastCtx && this._lastCtx.spec) || null
+            const topN = scoredRows.length || 50
+            const plan = RouteAssistantWaveOverlay.buildSchedule(preset, scoredRows, {
+                hubIata:      hub,
+                selectedSpec: spec,
+                topN:         topN
+            })
+            if (!plan || !plan.preset) return null
+            const ranked = RouteAssistantWaveRouteFitter.rankRoutesByPlanFit(
+                scoredRows, plan, {selectedSpec: spec, hubIata: hub, topN: topN})
+            const fitByDest = new Map()
+            const accumulate = (entries) => {
+                for (const e of entries) {
+                    const d = String(e.row.destIata || "").toUpperCase()
+                    if (d) fitByDest.set(d, e.fit)
+                }
+            }
+            accumulate(ranked.inPlan)
+            accumulate(ranked.candidates)
+            accumulate(ranked.noFit)
+            accumulate(ranked.oor)
+            return {ready: true, fitByDest, presetId: preset.id, presetName: preset.name}
+        },
+
+        _invalidateWaveFitCache() {
+            this._waveFitCache    = null
+            this._waveFitInflight = null
         },
 
         /**
@@ -1224,6 +1366,22 @@
                         _scheduleRun()
                     }
                 }
+                // Track B — SchedulePresets lives in the consolidated
+                // `settings` blob; cross-tab edits invalidate the wave-fit
+                // cache so the column refreshes on the next render.
+                if (Object.prototype.hasOwnProperty.call(changes, "settings")) {
+                    AesAfpRouteCandidates._invalidateWaveFitCache()
+                    AesAfpRouteCandidates._reRender()
+                }
+            })
+        }
+        // Track B — same-page bus signal from wave-editor / wave-strip.
+        // Cross-tab is handled above via chrome.storage.onChanged.
+        if (typeof window !== "undefined" && window.CentralHubBus
+                && typeof window.CentralHubBus.on === "function") {
+            window.CentralHubBus.on("waves:preset-updated", () => {
+                AesAfpRouteCandidates._invalidateWaveFitCache()
+                AesAfpRouteCandidates._reRender()
             })
         }
     }
