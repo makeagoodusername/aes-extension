@@ -34,6 +34,15 @@ class RouteAssistantProfitEstimator {
      * @param {object} input.economics        {loadFactor, loadFactorMin, loadFactorMax,
      *                                         yieldPerKm, fuelCostPerHour, falloffYieldMultiplier}
      * @param {number} [input.falloffPct=10]  amber-zone width (% of max range)
+     * @param {object} [input.interlineShares] H 3b.2 — `{paxPercent, cargoPercent}` to
+     *                                         reduce effective LF by the share of
+     *                                         capacity sold via interline / codeshare
+     *                                         partners. Both values are clamped to
+     *                                         [0, 100]; missing fields default to 0
+     *                                         (no reduction). The reduction is
+     *                                         applied AFTER LF is sourced from
+     *                                         override / real-demand / score so the
+     *                                         provenance attribution stays clean.
      * @returns {object} with `breakdown` exposing every term that fed into profit
      *   so the UI can show the full math in a tooltip.
      */
@@ -146,6 +155,23 @@ class RouteAssistantProfitEstimator {
             cargoLfSource   = "fallback"
         }
 
+        // ---------- Interline-share reduction (H slice 3b.2) ----------
+        // Capacity sold via codeshare / interline partners doesn't accrue
+        // to our airline's revenue line, so we trim effective LF by the
+        // recorded share. Computed AFTER the source-attributed LF above
+        // so paxLfSource / cargoLfSource still reflect "where the LF
+        // came from" and the reduction is observable as a separate term
+        // in the breakdown.
+        const interlineShares = (input && input.interlineShares) || null
+        const paxInterlinePct = clamp(
+            numOrNull(interlineShares && interlineShares.paxPercent), 0, 100, 0)
+        const cargoInterlinePct = clamp(
+            numOrNull(interlineShares && interlineShares.cargoPercent), 0, 100, 0)
+        const paxLoadFactorPreInterline   = paxLoadFactor
+        const cargoLoadFactorPreInterline = cargoLoadFactor
+        if (paxInterlinePct > 0)   paxLoadFactor   *= (1 - paxInterlinePct   / 100)
+        if (cargoInterlinePct > 0) cargoLoadFactor *= (1 - cargoInterlinePct / 100)
+
         // ---------- Yields (with optional demand modulation) ----------
         // Demand sensitivity 0-1: at sensitivity=0 yield is flat (backward
         // compatible). At sensitivity=1, yield ranges ±20% by demand
@@ -251,10 +277,14 @@ class RouteAssistantProfitEstimator {
             distanceRoundTripKm:      distanceRoundTripKm,
             paxScore:                 paxScore,
             cargoScore:               cargoScore,
-            paxLoadFactor:            round3(paxLoadFactor),
-            paxLoadFactorSource:      paxLfSource,
-            cargoLoadFactor:          round3(cargoLoadFactor),
-            cargoLoadFactorSource:    cargoLfSource,
+            paxLoadFactor:                round3(paxLoadFactor),
+            paxLoadFactorSource:          paxLfSource,
+            paxLoadFactorPreInterline:    round3(paxLoadFactorPreInterline),
+            paxInterlineSharePercent:     paxInterlinePct,
+            cargoLoadFactor:              round3(cargoLoadFactor),
+            cargoLoadFactorSource:        cargoLfSource,
+            cargoLoadFactorPreInterline:  round3(cargoLoadFactorPreInterline),
+            cargoInterlineSharePercent:   cargoInterlinePct,
             yieldPerKm:               yieldPerKm,
             yieldSource:              yieldSource,
             cargoYieldSource:         cargoYieldSource,

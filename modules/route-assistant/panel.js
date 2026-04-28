@@ -45,6 +45,11 @@ class RouteAssistantPanel {
         this.yieldHistoryMap = new Map()    // routeAssistant:yieldHistory:<HUB>-<DEST>
         this.serviceConfigMap = new Map()   // routeAssistant:serviceConfig:<HUB>-<DEST>
         this.routeNoteMap = new Map()       // routeAssistant:routeNote:<HUB>-<DEST>
+        // H slice 3b.2 — Map<"HUB-DEST", interlineRecord> from
+        // RouteAssistantInterlineStore.bulkLoad. Lazily populated on
+        // refresh() so the aggregator can attach per-row pax/cargo
+        // share to feed the estimator + wave-overlay pill.
+        this.interlineByPair = new Map()
         this.serviceProfilesCache = new Map()  // Map<id, profileDetail> from RouteAssistantServiceProfileScraper
         this._serviceProfilesList = null    // {profiles, scrapedAt}
         this._serviceProfileSyncRunning = false
@@ -1990,6 +1995,15 @@ class RouteAssistantPanel {
         this.routeNoteMap = (typeof RouteAssistantRouteNoteStore !== "undefined")
             ? await RouteAssistantRouteNoteStore.getMany(dests.map(d => [iata, d]))
             : new Map()
+        // H slice 3b.2 — bulkLoad the per-route partner records for every
+        // visible destination. The aggregator + wave-overlay both consume
+        // this. The store returns `{pair: rec}` keyed by "HUB-DEST"; we
+        // promote to a Map for symmetry with the other per-route caches.
+        this.interlineByPair = new Map()
+        if (typeof RouteAssistantInterlineStore !== "undefined" && dests.length) {
+            const blob = await RouteAssistantInterlineStore.bulkLoad(dests.map(d => [iata, d]))
+            for (const pair in blob) this.interlineByPair.set(pair, blob[pair])
+        }
         // Q8 status-history — bulk-load every visible route's transition log
         // so the St cell tooltip can render "OVER since 12d · was OK
         // before" without per-render storage round-trips. Detection
@@ -2018,6 +2032,7 @@ class RouteAssistantPanel {
             yieldHistoryMap:  this.yieldHistoryMap,
             serviceConfigMap: this.serviceConfigMap,
             routeNoteMap:     this.routeNoteMap,
+            interlineByPair:  this.interlineByPair,
             serviceProfiles:  (this.settings && this.settings.serviceProfiles) || null,
             fleet:            this.fleet,
             ownSchedule:      this.ownSchedule
@@ -5174,6 +5189,10 @@ class RouteAssistantPanel {
                 selectedSpec:      this.selectedSpec,
                 topN:              topN,
                 carrierClassifier: this._carrierClassifierForFlight(),
+                // H slice 3b.2 — interline-share callback so the renderer
+                // can pin a "Y 30%" pill on the curve midpoint of every
+                // connection that has a recorded codeshare partner.
+                interlineShareLookup: this._interlineShareLookup(pickedHub),
                 overrides:         overridesMap,
                 optimize:          useConnection,
                 mode:              useProfit ? "profit" : null,
@@ -6785,6 +6804,31 @@ class RouteAssistantPanel {
             // the SVG stays readable. The user typically can't sell
             // tickets on these connections anyway.
             return null
+        }
+    }
+
+    /**
+     * H slice 3b.2 — connection-pill lookup for the wave overlay.
+     * Returns a `(destIata) => {paxPercent, cargoPercent} | null` closure
+     * that the overlay calls per outbound leg of an interline-classified
+     * connection. The shares come from the panel's `interlineByPair`
+     * cache (loaded once per refresh()), so the closure is O(1).
+     *
+     * Pass the hub IATA the wave is being rendered FOR — typically
+     * `pickedHub` (cross-hub picker) rather than `this.hubIata`. Returns
+     * null when the cache is empty so the overlay can short-circuit the
+     * per-connection walk and skip pill rendering entirely.
+     */
+    _interlineShareLookup(hubIata) {
+        const cache = this.interlineByPair
+        if (!cache || cache.size === 0) return null
+        const hub = String(hubIata || this.hubIata || "").toUpperCase()
+        if (!hub) return null
+        return (destIata) => {
+            if (!destIata) return null
+            const rec = cache.get(hub + "-" + String(destIata).toUpperCase())
+            if (!rec) return null
+            return RouteAssistantAggregator._interlineSharesFromRecord(rec)
         }
     }
 

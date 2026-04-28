@@ -162,6 +162,27 @@ class RouteAssistantWaveOverlay {
         out.connections = builder.computeConnections(out.flights, {
             carrierClassifier: c.carrierClassifier
         })
+
+        // H slice 3b.2 — annotate each interline-classified connection
+        // with the recorded per-route partner share so the renderer can
+        // surface a "Y 30%" pill on the curve. Panel passes the lookup
+        // callback; missing records leave `interlineShare` undefined and
+        // the renderer skips the pill.
+        const interlineShareLookup = typeof c.interlineShareLookup === "function"
+            ? c.interlineShareLookup
+            : null
+        if (interlineShareLookup) {
+            for (const conn of out.connections) {
+                if (!conn || conn.classification !== "interline") continue
+                if (!conn.outboundDest) continue
+                try {
+                    const share = interlineShareLookup(conn.outboundDest)
+                    if (share && (share.paxPercent > 0 || share.cargoPercent > 0)) {
+                        conn.interlineShare = share
+                    }
+                } catch (_) { /* lookup outage — skip silently */ }
+            }
+        }
         return out
     }
 
@@ -660,11 +681,71 @@ class RouteAssistantWaveOverlay {
             path.dataset.outSeq = String(c.outboundSeq)
             svg.append(path)
             drawn++
+
+            // H slice 3b.2 — interline share pill at curve midpoint.
+            // Bezier with control points (x1+dx, y1) and (x2-dx, y2) has
+            // midpoint = ((x1+x2)/2, (y1+y2)/2) — the dx terms cancel at
+            // t=0.5 so the linear midpoint formula is exact for our shape.
+            if (c.interlineShare) {
+                const label = RouteAssistantWaveOverlay._formatInterlineShareLabel(c.interlineShare)
+                if (label) {
+                    const midX = (x1 + x2) / 2
+                    const midY = (y1 + y2) / 2
+                    const pad = 3
+                    const fontSize = 9
+                    const charW = fontSize * 0.55
+                    const w = label.length * charW + pad * 2
+                    const h = fontSize + pad * 2
+                    const rect = document.createElementNS(SVGNS, "rect")
+                    rect.setAttribute("x", String(midX - w / 2))
+                    rect.setAttribute("y", String(midY - h / 2))
+                    rect.setAttribute("width", String(w))
+                    rect.setAttribute("height", String(h))
+                    rect.setAttribute("rx", "2")
+                    rect.setAttribute("fill", "rgba(15,23,42,0.85)")
+                    rect.setAttribute("stroke", style.stroke)
+                    rect.setAttribute("stroke-width", "1")
+                    rect.dataset.inSeq  = String(c.inboundSeq)
+                    rect.dataset.outSeq = String(c.outboundSeq)
+                    rect.dataset.aesInterlinePill = "1"
+                    svg.append(rect)
+                    const text = document.createElementNS(SVGNS, "text")
+                    text.setAttribute("x", String(midX))
+                    text.setAttribute("y", String(midY))
+                    text.setAttribute("text-anchor", "middle")
+                    text.setAttribute("dominant-baseline", "central")
+                    text.setAttribute("font-size", String(fontSize))
+                    text.setAttribute("font-family", "monospace")
+                    text.setAttribute("fill", "#fbbf24")
+                    text.setAttribute("opacity", "0.95")
+                    text.dataset.inSeq  = String(c.inboundSeq)
+                    text.dataset.outSeq = String(c.outboundSeq)
+                    text.dataset.aesInterlinePill = "1"
+                    text.textContent = label
+                    svg.append(text)
+                }
+            }
         }
 
         if (!drawn) return
         host.append(svg)
         RouteAssistantWaveOverlay._wireConnectionHover(host, svg)
+    }
+
+    /**
+     * H slice 3b.2 — compact label like "Y 30%" or "Y/C 45%" for the
+     * interline pill. Picks the dominant class (PAX > CARGO when both
+     * non-zero; abbreviates Y/C/F as the umbrella when paxPercent is the
+     * sum of subclasses). Returns null when neither side carries share.
+     */
+    static _formatInterlineShareLabel(share) {
+        if (!share) return null
+        const pax = Math.round(Number(share.paxPercent) || 0)
+        const cargo = Math.round(Number(share.cargoPercent) || 0)
+        if (!pax && !cargo) return null
+        if (pax && cargo) return "P " + pax + "% · C " + cargo + "%"
+        if (pax) return "Y " + pax + "%"
+        return "C " + cargo + "%"
     }
 
     /**

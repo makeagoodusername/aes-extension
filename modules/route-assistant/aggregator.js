@@ -3,7 +3,7 @@
  * Assistant table. Pure: takes the data sources as inputs, returns an array
  * of rows. The panel decides how to render and score them.
  *
- *   buildRouteRows({hubIata, ffData, demandMap, ownSchedule, fleetContext})
+ *   buildRouteRows({hubIata, ffData, demandMap, ownSchedule, fleetContext, interlineByPair})
  *
  * Inputs:
  *   hubIata       — origin IATA the user is scheduling from.
@@ -11,6 +11,12 @@
  *                   {iata, scrapedAt, routes: [{destIata, destName,
  *                    weeklyFlights, seatsPerWeek, distanceKm, airlines, aircraft}]}
  *   demandMap     — Map<IATA, demandRecord> from RouteAssistantDemandStore.getMany.
+ *   interlineByPair — optional Map<"HUB-DEST", interlineRecord> (or plain
+ *                   object keyed the same way — the bulkLoad return shape)
+ *                   from RouteAssistantInterlineStore. When supplied, each
+ *                   row gets an `interlineShares: {paxPercent, cargoPercent}`
+ *                   field that the estimator uses to trim effective LF
+ *                   for capacity sold via codeshare partners.
  *   ownSchedule   — record from chrome.storage.local["<server><airlineCode>schedule"].
  *                   Shape: {date: {<dateYYYYMMDD>: {date, schedule:
  *                     [{origin, destination, flightNumber: {<n>: {paxFreq,
@@ -61,6 +67,7 @@ class RouteAssistantAggregator {
         const fleet               = (input && input.fleet) || null
         const ownByDest           = RouteAssistantAggregator._collectOwnFreq(input && input.ownSchedule, hubIata)
         const fleetCtx            = (input && input.fleetContext) || null
+        const interlineByPair     = (input && input.interlineByPair) || null
 
         return ffRoutes.map(r => {
             const destIata = String(r.destIata || "").toUpperCase()
@@ -72,6 +79,10 @@ class RouteAssistantAggregator {
             const distanceKm = typeof r.distanceKm === "number" ? r.distanceKm : null
             const override = overrideMap ? (overrideMap.get(hubIata + "-" + destIata) || null) : null
             const routeNote = routeNoteMap ? (routeNoteMap.get(hubIata + "-" + destIata) || null) : null
+            const interlineRec = interlineByPair
+                ? RouteAssistantAggregator._lookupInterlineRecord(interlineByPair, hubIata, destIata)
+                : null
+            const interlineShares = RouteAssistantAggregator._interlineSharesFromRecord(interlineRec)
 
             const row = {
                 destIata:      destIata,
@@ -90,6 +101,7 @@ class RouteAssistantAggregator {
                 override:         override,
                 routeNote:        routeNote,
                 routeNoteText:    (routeNote && typeof routeNote.text === "string") ? routeNote.text : null,
+                interlineShares:  interlineShares,
                 aircraftFit:      null,
                 blockHours:       null,
                 profitPerFlight:  null,
@@ -287,7 +299,13 @@ class RouteAssistantAggregator {
                                    : (row.override || null),
             useDistanceFuel:   !!fleetCtx.useDistanceFuel,
             fuelPriceASc:      fleetCtx.fuelPriceASc,
-            fuelBurnOverrides: fleetCtx.fuelBurnOverrides
+            fuelBurnOverrides: fleetCtx.fuelBurnOverrides,
+            // H slice 3b.2 — per-route codeshare/interline share trims
+            // effective LF after source attribution. The row carries the
+            // pre-computed {paxPercent, cargoPercent} from buildRouteRows
+            // so the estimator stays Map-free and the re-applier (which
+            // doesn't have hubIata at hand) inherits the same shares.
+            interlineShares:   row.interlineShares || null
         })
 
         row.aircraftFit     = est.specOk ? est.fit : null
@@ -529,6 +547,44 @@ class RouteAssistantAggregator {
         const total = y + c + f
         if (total <= 0) return null
         return {Y: y / total, C: c / total, F: f / total}
+    }
+
+    /**
+     * H slice 3b.2 — fold the interline-store partner list into the
+     * `{paxPercent, cargoPercent}` shape the profit estimator expects.
+     * PAX / Y / C / F partners all reduce passenger LF (PAX is the umbrella
+     * code; Y/C/F are explicit subclasses) so they sum into paxPercent.
+     * CARGO partners reduce cargo LF.
+     *
+     * Returns null when the record is empty/missing so callers can skip
+     * cheaply with truthy checks.
+     */
+    static _interlineSharesFromRecord(record) {
+        if (!record || !Array.isArray(record.partners) || !record.partners.length) return null
+        let pax = 0
+        let cargo = 0
+        for (const p of record.partners) {
+            const v = Number(p && p.sharePercent) || 0
+            if (v <= 0) continue
+            if (p.productClass === "CARGO") cargo += v
+            else pax += v
+        }
+        if (pax <= 0 && cargo <= 0) return null
+        return {
+            paxPercent:   Math.min(100, pax),
+            cargoPercent: Math.min(100, cargo)
+        }
+    }
+
+    /**
+     * Look up an interline record from a Map<"HUB-DEST", record> or a
+     * plain object keyed the same way (the bulkLoad return shape).
+     */
+    static _lookupInterlineRecord(interlineByPair, hubIata, destIata) {
+        if (!interlineByPair) return null
+        const key = String(hubIata || "").toUpperCase() + "-" + String(destIata || "").toUpperCase()
+        if (typeof interlineByPair.get === "function") return interlineByPair.get(key) || null
+        return interlineByPair[key] || null
     }
 
     static _largestRemainder(raws, total) {
