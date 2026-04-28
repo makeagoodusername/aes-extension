@@ -122,6 +122,12 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
             return wrap
         }
 
+        // CB3 — branch to polyhedral cards when cubist mode is active.
+        if (CentralHubRouteAssistantTile._isCubist()) {
+            wrap.appendChild(this._renderRoutePolyhedronGrid(rows, hubInfo, T))
+            return wrap
+        }
+
         const list = document.createElement("ol")
         list.style.cssText = "margin:0;padding:0 0 0 " + T.sp[4] + ";font-family:" + T.font.mono
             + ";font-size:" + T.fs.body + ";letter-spacing:" + T.track.mono + ";"
@@ -136,6 +142,298 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
         }
         wrap.appendChild(list)
         return wrap
+    }
+
+    // ── CB3 — Polyhedral route cards ─────────────────────────────────────
+    //
+    // Replaces the orthogonal <ol> with a grid of hexagonal polyhedra. Each
+    // route becomes a 6-facet card: demand (wedge-tl), profit (trapezoid-t),
+    // ORS (wedge-tr), competitor (wedge-bl), pax-mix (trapezoid-b), schedule
+    // (wedge-br). Hover dims adjacent facets via cubist.css; click any facet
+    // emits focus-route + open-tile (inventory) on the bus, identical to the
+    // orthogonal-mode click target.
+    //
+    // Reuses only fields already present on `topRoutes:<HUB>` rows. No extra
+    // storage reads — perf safe at the 3-hubs × 5-routes density the tile
+    // exposes (15 polyhedra × 6 facets = 90 clip-pathed nodes per render).
+
+    static _isCubist() {
+        try {
+            return typeof document !== "undefined"
+                && document.body && document.body.classList
+                && document.body.classList.contains("aes-cubist")
+                && !!window.AESCubistPrimitives
+        } catch (_) { return false }
+    }
+
+    _renderRoutePolyhedronGrid(rows, hubInfo, T) {
+        const grid = document.createElement("div")
+        grid.style.cssText = [
+            "display:grid",
+            "grid-template-columns:repeat(auto-fill, minmax(200px, 1fr))",
+            "gap:" + T.sp[2],
+            "margin-top:" + T.sp[1]
+        ].join(";")
+        for (const r of rows) {
+            grid.appendChild(this._renderRoutePolyhedron(r, hubInfo, T))
+        }
+        return grid
+    }
+
+    _renderRoutePolyhedron(row, hubInfo, T) {
+        const P = window.AESCubistPrimitives
+        const dest = row.destIata || row.dest || "?"
+        const onClick = () => {
+            if (!window.CentralHubBus) return
+            const payload = {hub: hubInfo.hub, dest, source: "route-assistant"}
+            window.CentralHubBus.emit("focus-route", payload)
+            window.CentralHubBus.emit("open-tile", {
+                tileId: "inventory",
+                expand: true, scrollIntoView: true,
+                filter: {type: "single-route", hub: hubInfo.hub, dest},
+                source: "route-assistant"
+            })
+        }
+
+        const facets = [
+            this._buildDemandFacet(row, T),
+            this._buildProfitFacet(row, dest, T),
+            this._buildOrsFacet(row, T),
+            this._buildCompetitorFacet(row, T),
+            this._buildPaxMixFacet(row, T),
+            this._buildScheduleFacet(row, T)
+        ]
+        for (const f of facets) {
+            f.style.cursor = "pointer"
+            f.addEventListener("click", (e) => { e.preventDefault(); onClick() })
+        }
+
+        const poly = P.Polyhedron({
+            entity: "route:" + hubInfo.hub + "-" + dest,
+            facets: facets,
+            pivot: true,
+            density: "compact",
+            layout: "repeat(2, minmax(48px, auto)) / repeat(3, 1fr)"
+        })
+        poly.style.cssText += [
+            ";gap:" + T.geom.bw1,
+            "background:" + T.color.oxide,
+            "border:" + T.geom.bw2 + " solid " + T.color.oxide,
+            "min-height:120px"
+        ].join(";")
+        return poly
+    }
+
+    _buildDemandFacet(row, T) {
+        const P = window.AESCubistPrimitives
+        const inner = document.createElement("div")
+        inner.style.cssText = this._facetInnerCss(T, "flex-start")
+        inner.appendChild(P.Stencil({text: "Demand"}))
+        const score = Number(row.paxScore ?? row.score)
+        const filled = Number.isFinite(score) ? Math.max(0, Math.min(10, Math.round(score))) : 0
+        const bar = document.createElement("div")
+        bar.style.cssText = "display:flex;gap:1px;width:100%;margin-top:" + T.sp[1]
+        for (let i = 0; i < 10; i++) {
+            const cell = document.createElement("span")
+            cell.style.cssText = "flex:1 1 0;height:6px;background:"
+                + (i < filled ? T.color.cobalt : T.color.bone3)
+            bar.appendChild(cell)
+        }
+        inner.appendChild(bar)
+        return this._frameFacet(P.Facet({
+            shape: "wedge-tl", perspective: "demand", content: inner
+        }), T)
+    }
+
+    _buildProfitFacet(row, dest, T) {
+        const P = window.AESCubistPrimitives
+        const inner = document.createElement("div")
+        inner.style.cssText = this._facetInnerCss(T, "center")
+        const destLabel = document.createElement("div")
+        destLabel.textContent = dest
+        destLabel.style.cssText = [
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.lead,
+            "font-weight:" + T.fw.display,
+            "letter-spacing:" + T.track.mono,
+            "color:" + T.color.oxide,
+            "line-height:" + T.lh.tight
+        ].join(";")
+        const profit = Number(row.profitPerWeek)
+        const profitEl = document.createElement("div")
+        if (Number.isFinite(profit)) {
+            const sign = profit >= 0 ? "" : "-"
+            const abs = Math.abs(profit)
+            const compact = abs >= 1e9 ? (abs / 1e9).toFixed(2) + "B"
+                : abs >= 1e6 ? (abs / 1e6).toFixed(2) + "M"
+                : abs >= 1e3 ? (abs / 1e3).toFixed(1) + "k"
+                : Math.round(abs)
+            profitEl.textContent = sign + "$" + compact + "/wk"
+            profitEl.style.color = profit >= 0 ? T.color.moss : T.color.crimson
+        } else {
+            profitEl.textContent = "— /wk"
+            profitEl.style.color = T.color.slate
+        }
+        profitEl.style.cssText += [
+            ";font-family:" + T.font.mono,
+            "font-size:" + T.fs.small,
+            "font-weight:" + T.fw.display,
+            "letter-spacing:" + T.track.mono
+        ].join(";")
+        inner.append(destLabel, profitEl)
+        return this._frameFacet(P.Facet({
+            shape: "trapezoid-t", perspective: "profit", content: inner
+        }), T, /*emphasis*/ true)
+    }
+
+    _buildOrsFacet(row, T) {
+        const P = window.AESCubistPrimitives
+        const inner = document.createElement("div")
+        inner.style.cssText = this._facetInnerCss(T, "flex-end")
+        inner.appendChild(P.Stencil({text: "ORS"}))
+        const rank = row.orsRank ?? row.rankAny
+        const value = document.createElement("div")
+        value.textContent = (rank == null) ? "—" : "#" + Math.round(Number(rank))
+        const rankColor = !Number.isFinite(Number(rank)) ? T.color.slate
+            : Number(rank) <= 2 ? T.color.moss
+            : Number(rank) <= 4 ? T.color.amber
+            : T.color.crimson
+        value.style.cssText = [
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.lead,
+            "font-weight:" + T.fw.display,
+            "letter-spacing:" + T.track.mono,
+            "color:" + rankColor,
+            "margin-top:" + T.sp[1]
+        ].join(";")
+        inner.appendChild(value)
+        return this._frameFacet(P.Facet({
+            shape: "wedge-tr", perspective: "ors", content: inner
+        }), T)
+    }
+
+    _buildCompetitorFacet(row, T) {
+        const P = window.AESCubistPrimitives
+        const inner = document.createElement("div")
+        inner.style.cssText = this._facetInnerCss(T, "flex-start")
+        inner.appendChild(P.Stencil({text: "Cmpt"}))
+        const count = Number(row.competitors ?? row.competitorCount ?? row.cmpCount)
+        const value = document.createElement("div")
+        value.textContent = Number.isFinite(count) ? String(count) : "—"
+        value.style.cssText = [
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.lead,
+            "font-weight:" + T.fw.display,
+            "letter-spacing:" + T.track.mono,
+            "color:" + T.color.oxide
+        ].join(";")
+        const dots = document.createElement("div")
+        dots.style.cssText = "display:flex;gap:2px;margin-top:" + T.sp[1] + ";flex-wrap:wrap"
+        const drawDots = Number.isFinite(count) ? Math.min(count, 8) : 0
+        for (let i = 0; i < drawDots; i++) {
+            const dot = document.createElement("span")
+            dot.style.cssText = "width:5px;height:5px;background:" + T.color.rust
+                + ";display:inline-block"
+            dots.appendChild(dot)
+        }
+        inner.append(value, dots)
+        return this._frameFacet(P.Facet({
+            shape: "wedge-bl", perspective: "competitors", content: inner
+        }), T)
+    }
+
+    _buildPaxMixFacet(row, T) {
+        const P = window.AESCubistPrimitives
+        const inner = document.createElement("div")
+        inner.style.cssText = this._facetInnerCss(T, "center")
+        inner.appendChild(P.Stencil({text: "Pax mix"}))
+        // Y/C/F slivers as diagonal stripes — width-weighted by mix percent.
+        const y = Number(row.yShare ?? row.paxShareY)
+        const c = Number(row.cShare ?? row.paxShareC)
+        const f = Number(row.fShare ?? row.paxShareF)
+        const known = [y, c, f].some(v => Number.isFinite(v))
+        const stripes = document.createElement("div")
+        stripes.style.cssText = "display:flex;width:100%;height:10px;margin-top:" + T.sp[1]
+        if (known) {
+            const total = (Number.isFinite(y) ? y : 0)
+                + (Number.isFinite(c) ? c : 0)
+                + (Number.isFinite(f) ? f : 0)
+            const mk = (frac, color) => {
+                const s = document.createElement("span")
+                const pct = total > 0 ? Math.max(0, frac / total * 100) : 0
+                s.style.cssText = "flex:" + Math.max(0.001, pct).toFixed(2)
+                    + " 0 0;background:" + color
+                    + ";clip-path:polygon(8% 0, 100% 0, 92% 100%, 0 100%)"
+                stripes.appendChild(s)
+            }
+            mk(Number.isFinite(y) ? y : 0, T.color.cobalt)
+            mk(Number.isFinite(c) ? c : 0, T.color.amber)
+            mk(Number.isFinite(f) ? f : 0, T.color.rust)
+        } else {
+            const note = document.createElement("span")
+            note.textContent = "—"
+            note.style.cssText = "color:" + T.color.slate + ";font-family:" + T.font.mono
+                + ";font-size:" + T.fs.micro
+            stripes.appendChild(note)
+        }
+        inner.appendChild(stripes)
+        return this._frameFacet(P.Facet({
+            shape: "trapezoid-b", perspective: "pax-mix", content: inner
+        }), T)
+    }
+
+    _buildScheduleFacet(row, T) {
+        const P = window.AESCubistPrimitives
+        const inner = document.createElement("div")
+        inner.style.cssText = this._facetInnerCss(T, "flex-end")
+        inner.appendChild(P.Stencil({text: "Sched"}))
+        const flights = Number(row.flights ?? row.weeklyFlights)
+        const value = document.createElement("div")
+        value.textContent = Number.isFinite(flights) ? flights + "×" : "—"
+        value.style.cssText = [
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.lead,
+            "font-weight:" + T.fw.display,
+            "letter-spacing:" + T.track.mono,
+            "color:" + T.color.oxide
+        ].join(";")
+        // Mini radial sweep — quarter arc with N tick marks for flights/wk.
+        const arc = document.createElement("div")
+        arc.style.cssText = "position:relative;width:100%;height:14px;margin-top:" + T.sp[1]
+            + ";border-bottom:" + T.geom.bw1 + " solid " + T.color.paperRule
+        const ticks = Number.isFinite(flights) ? Math.min(flights, 14) : 0
+        for (let i = 0; i < ticks; i++) {
+            const t = document.createElement("span")
+            t.style.cssText = "position:absolute;left:" + ((i + 0.5) / 14 * 100) + "%"
+                + ";bottom:0;width:1px;height:" + (4 + (i % 3) * 2) + "px"
+                + ";background:" + T.color.viridian
+            arc.appendChild(t)
+        }
+        inner.append(value, arc)
+        return this._frameFacet(P.Facet({
+            shape: "wedge-br", perspective: "schedule", content: inner
+        }), T)
+    }
+
+    _facetInnerCss(T, justify) {
+        return [
+            "display:flex",
+            "flex-direction:column",
+            "justify-content:" + (justify || "flex-start"),
+            "gap:2px",
+            "padding:" + T.sp[2],
+            "min-height:48px",
+            "box-sizing:border-box",
+            "width:100%"
+        ].join(";")
+    }
+
+    _frameFacet(facet, T, emphasis) {
+        facet.style.cssText += [
+            ";background:" + (emphasis ? T.color.bone : T.color.bone2),
+            "color:" + T.color.oxide
+        ].join(";")
+        return facet
     }
 }
 
