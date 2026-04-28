@@ -10421,6 +10421,11 @@ class RouteAssistantPanel {
         // column with a colored intensity badge + per-carrier tooltip.
         this._renderCarriersSection()
 
+        // ----- Interlining records (H slice 3b.1.1 — bulk view)
+        // Audit-all-routes-at-once entry point for per-route interline /
+        // codeshare partners. Layered above the global Carriers cache.
+        this._renderInterlineRecordsSection()
+
         // ----- Market Analysis (Tier 2a — per-route markets-page scraper)
         // Bulk-sync /app/com/markets/<HUB><DEST> for competitor flights,
         // own pricing, market shares, and historic capacity/price charts.
@@ -14402,6 +14407,250 @@ class RouteAssistantPanel {
                 r.historicCapacities = bucket.historic.capacities
                 r.historicPrices     = bucket.historic.prices
             }
+        }
+    }
+
+    /**
+     * H slice 3b.1.1 — settings-drawer expander listing every per-route
+     * interline / codeshare record across every hub, grouped by hub.
+     * Click a current-hub row → opens the per-route popover (which is
+     * hub-pinned by design); cross-hub rows render as informational
+     * with a "switch to /app/com/scheduling/<HUB> to edit" tooltip.
+     * "Clear all" is gated by window.confirm.
+     *
+     * Lazy: full list only renders when the user expands; status line
+     * (count + last update) populates eagerly so a glance reveals the
+     * size of the dataset.
+     */
+    async _renderInterlineRecordsSection() {
+        if (typeof RouteAssistantInterlineStore === "undefined") return
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:10px;padding:6px 8px;"
+            + "background:rgba(168, 85, 247, 0.06);border:1px solid rgba(168, 85, 247, 0.25);"
+            + "border-radius:4px;"
+
+        const header = document.createElement("div")
+        header.style.cssText = "color:#d8b4fe;font-size:11px;margin-bottom:4px;"
+        header.innerHTML = "<strong>Interlining records</strong> "
+            + "<span style='color:#9ca3af;font-weight:normal;'>— Per-route interline / codeshare partners "
+            + "you've recorded across every hub. Layered above the global Carriers contractual cache.</span>"
+        wrap.append(header)
+
+        const status = document.createElement("div")
+        status.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;"
+        status.textContent = "Loading…"
+        wrap.append(status)
+
+        const listHost = document.createElement("div")
+        listHost.style.cssText = "max-height:240px;overflow-y:auto;"
+            + "border:1px solid rgba(168, 85, 247, 0.18);"
+            + "background:rgba(0,0,0,0.18);border-radius:3px;padding:4px 6px;"
+            + "display:none;margin-bottom:6px;"
+        wrap.append(listHost)
+
+        const ctrlRow = document.createElement("div")
+        ctrlRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:11px;"
+
+        let _records = null
+        let _expanded = false
+
+        const refresh = async () => {
+            _records = await RouteAssistantInterlineStore.loadAll()
+            const totalPartners = _records.reduce(
+                (sum, r) => sum + (Array.isArray(r.partners) ? r.partners.length : 0), 0)
+            const newest = _records.reduce(
+                (mx, r) => Math.max(mx, Number(r.updatedAt) || 0), 0)
+            const newestStr = newest ? new Date(newest).toLocaleString() : "never"
+            status.textContent = _records.length + " route"
+                + (_records.length === 1 ? "" : "s")
+                + " · " + totalPartners + " partner"
+                + (totalPartners === 1 ? "" : "s")
+                + " · last update: " + newestStr
+            clearBtn.disabled = !_records.length
+            if (_expanded) this._renderInterlineBulkList(_records, listHost)
+        }
+
+        const viewBtn = document.createElement("button")
+        Object.assign(viewBtn.style, smallBtnStyle())
+        viewBtn.style.background = "#7c3aed"
+        viewBtn.textContent = "View all records ▾"
+        viewBtn.addEventListener("click", async () => {
+            _expanded = !_expanded
+            listHost.style.display = _expanded ? "block" : "none"
+            viewBtn.textContent = _expanded ? "Hide records ▴" : "View all records ▾"
+            if (_expanded) {
+                if (_records === null) await refresh()
+                else this._renderInterlineBulkList(_records, listHost)
+            }
+        })
+        ctrlRow.append(viewBtn)
+
+        const clearBtn = document.createElement("button")
+        Object.assign(clearBtn.style, smallBtnStyle())
+        clearBtn.style.background = "#7f1d1d"
+        clearBtn.textContent = "Clear all"
+        clearBtn.disabled = true
+        clearBtn.addEventListener("click", async () => {
+            const recs = _records || await RouteAssistantInterlineStore.loadAll()
+            if (!recs.length) {
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.info("No interline records to clear.")
+                }
+                return
+            }
+            const ok = window.confirm(
+                "Delete every per-route interline record? "
+                + recs.length + " route"
+                + (recs.length === 1 ? "" : "s")
+                + " across every hub.\n\nThis cannot be undone."
+            )
+            if (!ok) return
+            let cleared = 0
+            for (const rec of recs) {
+                const pair = String(rec.pair || "")
+                const dash = pair.indexOf("-")
+                if (dash <= 0) continue
+                const hub  = pair.substring(0, dash)
+                const dest = pair.substring(dash + 1)
+                if (!hub || !dest) continue
+                try {
+                    await RouteAssistantInterlineStore.clear(hub, dest)
+                    cleared++
+                } catch (e) {
+                    console.warn("[AES interline bulk-clear] clear failed for " + pair + ":", e)
+                }
+            }
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.success(
+                    "Cleared " + cleared + " interline record"
+                    + (cleared === 1 ? "" : "s") + ".")
+            }
+            await refresh()
+        })
+        ctrlRow.append(clearBtn)
+        wrap.append(ctrlRow)
+
+        try {
+            await refresh()
+        } catch (e) {
+            status.textContent = "Failed to load interline records: "
+                + (e && e.message ? e.message : String(e))
+        }
+
+        this.settingsHost.append(wrap)
+    }
+
+    /**
+     * Render the bulk list into `host`. Groups records by hub and sorts
+     * the current-hub group first; current-hub rows are clickable and
+     * open the per-route popover, cross-hub rows are read-only.
+     */
+    _renderInterlineBulkList(records, host) {
+        host.textContent = ""
+        if (!records || !records.length) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "color:#9ca3af;font-size:10px;padding:6px;"
+            empty.textContent = "No interline records yet. Right-click any route in the table → Interlining…"
+            host.append(empty)
+            return
+        }
+
+        const byHub = new Map()
+        for (const rec of records) {
+            const pair = String(rec.pair || "")
+            const dash = pair.indexOf("-")
+            if (dash <= 0) continue
+            const hub = pair.substring(0, dash)
+            if (!byHub.has(hub)) byHub.set(hub, [])
+            byHub.get(hub).push(rec)
+        }
+
+        const currentHub = String(this.hubIata || "").toUpperCase()
+        const sortedHubs = Array.from(byHub.keys()).sort((a, b) => {
+            if (a === currentHub) return -1
+            if (b === currentHub) return 1
+            return a.localeCompare(b)
+        })
+
+        for (const hub of sortedHubs) {
+            const isCurrent = hub === currentHub
+            const group = document.createElement("div")
+            group.style.cssText = "margin-bottom:6px;"
+
+            const hubHeader = document.createElement("div")
+            hubHeader.style.cssText = "color:" + (isCurrent ? "#d8b4fe" : "#9ca3af")
+                + ";font-size:10px;font-weight:bold;letter-spacing:0.5px;"
+                + "margin:4px 0 2px 0;text-transform:uppercase;"
+            hubHeader.textContent = hub + (isCurrent ? "  ·  current panel hub" : "")
+            group.append(hubHeader)
+
+            const list = byHub.get(hub).slice()
+                .sort((a, b) => String(a.pair).localeCompare(String(b.pair)))
+            for (const rec of list) {
+                const pair = String(rec.pair)
+                const dash = pair.indexOf("-")
+                const dest = pair.substring(dash + 1)
+                const rowEl = document.createElement("div")
+                rowEl.style.cssText = "display:flex;gap:8px;align-items:center;"
+                    + "padding:3px 4px;color:#e2e8f0;font-size:11px;"
+                    + "cursor:" + (isCurrent ? "pointer" : "default") + ";"
+                    + "border-radius:2px;"
+                if (isCurrent) {
+                    rowEl.addEventListener("mouseenter", () => {
+                        rowEl.style.background = "rgba(168, 85, 247, 0.12)"
+                    })
+                    rowEl.addEventListener("mouseleave", () => {
+                        rowEl.style.background = "transparent"
+                    })
+                    rowEl.addEventListener("click", () => {
+                        this._openInterlinePopover({destIata: dest}, rowEl)
+                    })
+                    rowEl.title = "Click to open the interlining editor for this route"
+                } else {
+                    rowEl.title = "Switch to /app/com/scheduling/" + hub + " to edit this record"
+                }
+
+                const pairLabel = document.createElement("span")
+                pairLabel.style.cssText = "font-family:monospace;color:#cbd5e1;min-width:84px;"
+                pairLabel.textContent = pair
+                rowEl.append(pairLabel)
+
+                const partnerCount = (rec.partners || []).length
+                const countLabel = document.createElement("span")
+                countLabel.style.cssText = "color:#a1a1aa;min-width:70px;"
+                countLabel.textContent = partnerCount + " partner"
+                    + (partnerCount === 1 ? "" : "s")
+                rowEl.append(countLabel)
+
+                const sharesByClass = new Map()
+                for (const p of (rec.partners || [])) {
+                    const cls = p.productClass || "PAX"
+                    sharesByClass.set(cls,
+                        (sharesByClass.get(cls) || 0) + (Number(p.sharePercent) || 0))
+                }
+                const sharesLabel = document.createElement("span")
+                sharesLabel.style.cssText = "color:#a1a1aa;flex:1;font-size:10px;"
+                const sharesText = []
+                for (const cls of ["Y", "C", "F", "PAX", "CARGO"]) {
+                    if (sharesByClass.has(cls)) {
+                        sharesText.push(cls + ":" + Math.round(sharesByClass.get(cls)) + "%")
+                    }
+                }
+                sharesLabel.textContent = sharesText.length ? sharesText.join(" · ") : "—"
+                rowEl.append(sharesLabel)
+
+                const updatedLabel = document.createElement("span")
+                updatedLabel.style.cssText = "color:#71717a;font-size:10px;min-width:64px;text-align:right;"
+                updatedLabel.textContent = rec.updatedAt
+                    ? new Date(rec.updatedAt).toLocaleDateString()
+                    : "—"
+                rowEl.append(updatedLabel)
+
+                group.append(rowEl)
+            }
+
+            host.append(group)
         }
     }
 
