@@ -62,9 +62,17 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         }
     }
 
-    async renderBody(ctx, host) {
+    async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
         host.textContent = ""
+
+        // CH-5d-1: a "single-route" focus from the RA tile sticks until
+        // cleared. We persist on the instance so a subsequent storage-
+        // listener refresh keeps the filter active.
+        if (focusFilter && focusFilter.type === "single-route") {
+            this._routeFilter = {hub: focusFilter.hub, dest: focusFilter.dest}
+        }
+
         const {rows} = await window.CentralInventorySummaryStore.loadAll({})
 
         if (!rows.length) {
@@ -75,8 +83,64 @@ class CentralHubInventoryTile extends window.CentralHubTile {
             return
         }
 
-        const sorted = this._sortRows(rows)
+        let visible = rows
+        if (this._routeFilter) {
+            const {hub, dest} = this._routeFilter
+            host.appendChild(this._renderFilterBanner(hub, dest, T))
+            visible = rows.filter(r => r.hub === hub && r.dest === dest)
+            if (!visible.length) {
+                const empty = document.createElement("p")
+                empty.style.cssText = "color:" + T.color.slate + ";margin:" + T.sp[2] + " 0 0 0;"
+                empty.textContent = "No inventory cached for " + hub + "→" + dest
+                    + ". Visit /app/com/inventory/" + hub + dest + " to seed it."
+                host.appendChild(empty)
+                return
+            }
+        }
+
+        const sorted = this._sortRows(visible)
         host.appendChild(this._renderTable(sorted, ctx, T))
+    }
+
+    _renderFilterBanner(hub, dest, T) {
+        const banner = document.createElement("div")
+        banner.style.cssText = [
+            "display:flex",
+            "align-items:center",
+            "justify-content:space-between",
+            "gap:" + T.sp[2],
+            "padding:" + T.sp[1] + " " + T.sp[2],
+            "margin-bottom:" + T.sp[2],
+            "background:" + T.color.rustSoft,
+            "color:" + T.color.rust,
+            "border:" + T.geom.bw1 + " solid " + T.color.rust,
+            "border-radius:" + T.geom.radius,
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body
+        ].join(";")
+        const label = document.createElement("span")
+        label.textContent = "Focused on " + hub + "→" + dest
+        const clearBtn = document.createElement("button")
+        clearBtn.type = "button"
+        clearBtn.textContent = "× clear filter"
+        clearBtn.style.cssText = [
+            "background:transparent",
+            "color:" + T.color.rust,
+            "border:" + T.geom.bw1 + " solid " + T.color.rust,
+            "border-radius:" + T.geom.radius,
+            "padding:" + T.sp[0] + " " + T.sp[2],
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.micro,
+            "letter-spacing:" + T.track.caps,
+            "text-transform:uppercase",
+            "cursor:pointer"
+        ].join(";")
+        clearBtn.addEventListener("click", () => {
+            this._routeFilter = null
+            this._renderBodySafe()
+        })
+        banner.append(label, clearBtn)
+        return banner
     }
 
     _sortRows(rows) {

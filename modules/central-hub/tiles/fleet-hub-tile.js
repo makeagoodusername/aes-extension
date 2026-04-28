@@ -20,6 +20,7 @@ class CentralHubFleetHubTile extends window.CentralHubTile {
         this.section = "fleet"
         this.priority = 10
         this.requiresAirline = false
+        this._focusedAircraftId = null   // CH-5d-3
     }
 
     watchedStorageKeys(ctx) {
@@ -27,6 +28,17 @@ class CentralHubFleetHubTile extends window.CentralHubTile {
     }
 
     openHref() { return "/app/fleets" }
+
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        this.subscribeBus("focus-aircraft", ({aircraftId}) => {
+            if (!aircraftId) return
+            this._focusedAircraftId = String(aircraftId)
+            if (!this.expanded) this.toggle()
+            if (this.root) this.root.scrollIntoView({behavior: "smooth", block: "start"})
+            this._renderBodySafe()
+        })
+    }
 
     async _findFleetRecord() {
         const server = (this.ctx && this.ctx.server) || ""
@@ -77,6 +89,15 @@ class CentralHubFleetHubTile extends window.CentralHubTile {
             empty.textContent = "Visit /app/fleets to populate the fleet roster."
             host.appendChild(empty)
             return
+        }
+
+        if (this._focusedAircraftId) {
+            const aircraft = found.record.fleet.find(a => String(a && a.aircraftId) === this._focusedAircraftId)
+            host.appendChild(this._renderFocusBanner(aircraft, T))
+            if (aircraft) {
+                host.appendChild(this._renderFocusedAircraft(aircraft, T))
+                return
+            }
         }
 
         const fleet = found.record.fleet
@@ -135,6 +156,84 @@ class CentralHubFleetHubTile extends window.CentralHubTile {
             more.textContent = "+ " + (byType.size - rows.length) + " more types — open /app/fleets for the full list."
             host.appendChild(more)
         }
+    }
+
+    _renderFocusBanner(aircraft, T) {
+        const banner = document.createElement("div")
+        banner.style.cssText = [
+            "display:flex",
+            "align-items:center",
+            "justify-content:space-between",
+            "gap:" + T.sp[2],
+            "padding:" + T.sp[1] + " " + T.sp[2],
+            "margin-bottom:" + T.sp[2],
+            "background:" + T.color.cobaltSoft,
+            "color:" + T.color.cobalt,
+            "border:" + T.geom.bw1 + " solid " + T.color.cobalt,
+            "border-radius:" + T.geom.radius,
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body
+        ].join(";")
+        const label = document.createElement("span")
+        label.textContent = aircraft
+            ? "Focused on " + (aircraft.registration || ("#" + aircraft.aircraftId))
+            : "Aircraft #" + this._focusedAircraftId + " not in current fleet record"
+        const clear = document.createElement("button")
+        clear.type = "button"
+        clear.textContent = "× clear"
+        clear.style.cssText = "background:transparent;color:" + T.color.cobalt
+            + ";border:" + T.geom.bw1 + " solid " + T.color.cobalt + ";border-radius:" + T.geom.radius
+            + ";padding:" + T.sp[0] + " " + T.sp[2] + ";font-family:" + T.font.display
+            + ";font-size:" + T.fs.micro + ";letter-spacing:" + T.track.caps
+            + ";text-transform:uppercase;cursor:pointer;"
+        clear.addEventListener("click", () => {
+            this._focusedAircraftId = null
+            this._renderBodySafe()
+        })
+        banner.append(label, clear)
+        return banner
+    }
+
+    _renderFocusedAircraft(aircraft, T) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "padding:" + T.sp[3] + ";background:" + T.color.bone2
+            + ";border:" + T.geom.bw1 + " solid " + T.color.paperRule + ";"
+
+        const heading = document.createElement("h4")
+        heading.textContent = (aircraft.registration || ("#" + aircraft.aircraftId))
+            + " · " + (aircraft.equipment || "(unknown)")
+        heading.style.cssText = "margin:0 0 " + T.sp[1] + " 0;font-family:" + T.font.display
+            + ";font-size:" + T.fs.lead + ";font-weight:" + T.fw.display
+            + ";text-transform:uppercase;letter-spacing:" + T.track.caps + ";color:" + T.color.oxide + ";"
+        wrap.appendChild(heading)
+
+        const lines = [
+            ["aircraftId", aircraft.aircraftId],
+            ["sub-fleet", aircraft.fleet || "—"],
+            ["age",       aircraft.age != null ? aircraft.age + " mo" : "—"],
+            ["maintanance", aircraft.maintanance != null ? aircraft.maintanance : "—"],
+            ["typeId",    aircraft.typeId || "—"]
+        ]
+        const table = document.createElement("table")
+        table.style.cssText = "width:100%;border-collapse:collapse;font-family:" + T.font.mono
+            + ";font-size:" + T.fs.body + ";letter-spacing:" + T.track.mono + ";color:" + T.color.oxide2 + ";"
+        for (const [label, value] of lines) {
+            const tr = document.createElement("tr")
+            tr.innerHTML =
+                "<td style='padding:" + T.sp[0] + " " + T.sp[2] + ";color:" + T.color.slate + ";'>"
+                    + escapeHtml(label) + "</td>" +
+                "<td style='padding:" + T.sp[0] + " " + T.sp[2] + ";'>" + escapeHtml(String(value)) + "</td>"
+            table.appendChild(tr)
+        }
+        wrap.appendChild(table)
+
+        const link = document.createElement("a")
+        link.href = "/app/fleets/aircraft/" + encodeURIComponent(aircraft.aircraftId) + "/0"
+        link.textContent = "Open in /app/fleets →"
+        link.style.cssText = "display:inline-block;margin-top:" + T.sp[2] + ";color:" + T.color.rust
+            + ";text-decoration:none;font-family:" + T.font.display + ";font-size:" + T.fs.body + ";"
+        wrap.appendChild(link)
+        return wrap
     }
 }
 

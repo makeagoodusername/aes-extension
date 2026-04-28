@@ -42,6 +42,47 @@ class CentralHubSettingsTile extends window.CentralHubTile {
         host.textContent = ""
         const skin = window.AESSiteSkin
 
+        // Studio CTA — primary entry to the granular customization flow.
+        const studio = document.createElement("div")
+        studio.style.cssText = [
+            "display:flex",
+            "align-items:center",
+            "justify-content:space-between",
+            "gap:" + T.sp[3],
+            "padding:" + T.sp[3],
+            "margin-bottom:" + T.sp[4],
+            "background:" + T.color.bone2,
+            "border:" + T.geom.bw2 + " solid " + T.color.oxide,
+            "box-shadow:4px 4px 0 " + T.color.oxide
+        ].join(";")
+        const studioLabel = document.createElement("div")
+        const studioTitle = document.createElement("div")
+        studioTitle.textContent = "CUSTOMIZATION STUDIO"
+        studioTitle.style.cssText = [
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.lead,
+            "font-weight:" + T.fw.display,
+            "letter-spacing:" + T.track.caps,
+            "color:" + T.color.oxide
+        ].join(";")
+        const studioSub = document.createElement("div")
+        studioSub.textContent = "Theme, colours, keybindings · hotkey g c"
+        studioSub.style.cssText = [
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.small,
+            "color:" + T.color.oxide2,
+            "margin-top:2px"
+        ].join(";")
+        studioLabel.append(studioTitle, studioSub)
+        const studioBtn = this._actionBtn(T, "Open Studio →", () => {
+            const sh = window.AESCustomizationHost
+            if (sh && typeof sh.open === "function") sh.open()
+        })
+        studioBtn.style.cssText += ";background:" + T.color.oxide + ";color:" + T.color.bone + ";border-color:" + T.color.oxide
+        studioBtn.disabled = !window.AESCustomizationHost
+        studio.append(studioLabel, studioBtn)
+        host.appendChild(studio)
+
         const grid = document.createElement("div")
         grid.style.cssText = [
             "display:grid",

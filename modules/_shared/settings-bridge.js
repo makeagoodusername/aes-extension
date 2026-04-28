@@ -32,6 +32,16 @@
  * Module-prefix isolation (HANDOVER §10): the bridge only ever touches
  * `chrome.storage.local["settings"]`. It never reads or writes any other
  * storage key.
+ *
+ * Migrated callers (use `getArea` / `saveArea` directly):
+ *   - SchedulePresets (modules/schedule-management/presets-store.js)
+ *
+ * Pending L2 account-scoped variant (`getAreaScoped(area, accountId?)`):
+ *   - RouteAssistantSettings (modules/route-assistant/settings-store.js)
+ *   - AesAfpSettings (modules/aircraft-flight-plan/settings-extension.js)
+ *   These read both `settings.<area>` and `settings.acct.<id>.<area>`; the
+ *   bridge only knows the legacy slot. Add the scoped variant before
+ *   migrating those.
  */
 class AesSettings {
     static SETTINGS_KEY = "settings"

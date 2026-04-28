@@ -23,17 +23,13 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
     openHref() { return "/app/com/scheduling" }
 
     async _loadHubs() {
-        const all = await chrome.storage.local.get(null)
-        const prefix = "routeAssistant:topRoutes:"
+        const entries = await this._loadByPrefix("routeAssistant:topRoutes")
         const out = []
-        for (const k in all) {
-            if (k.indexOf(prefix) !== 0) continue
-            if (k.indexOf(":perClass:") >= 0) continue   // companion snapshot
-            const hub = k.substring(prefix.length)
-            if (!hub || hub.indexOf(":") >= 0) continue
-            const rec = all[k]
-            if (!rec) continue
-            out.push({hub, record: rec})
+        for (const e of entries) {
+            // Skip ":perClass:" companion snapshots and any deeper-keyed siblings.
+            if (e.suffix.indexOf(":") >= 0) continue
+            if (!e.suffix || !e.value) continue
+            out.push({hub: e.suffix, record: e.value})
         }
         out.sort((a, b) => (b.record.snapshotAt || 0) - (a.record.snapshotAt || 0))
         return out
@@ -61,15 +57,49 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
         }
     }
 
-    async renderBody(ctx, host) {
+    async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
         host.textContent = ""
+
+        // CH-5d-2: pin the filter on the instance so a storage refresh keeps it.
+        if (focusFilter && focusFilter.type === "fired-alerts") {
+            this._filter = "fired-alerts"
+        }
+
         const hubs = await this._loadHubs()
         if (!hubs.length) {
-            const empty = document.createElement("p")
-            empty.style.cssText = "color:" + T.color.slate + ";margin:0;"
-            empty.textContent = "Visit a /app/com/scheduling/<HUB> page (e.g. ATL) to publish a topRoutes snapshot."
-            host.appendChild(empty)
+            this._renderEmptyState(host, "Visit a /app/com/scheduling/<HUB> page (e.g. ATL) to publish a topRoutes snapshot.")
+            return
+        }
+
+        if (this._filter === "fired-alerts") {
+            const firedKeys = await this._loadFiredAlertRoutes()
+            host.appendChild(this._renderFilterBanner(firedKeys.size, T))
+            if (!firedKeys.size) {
+                this._renderEmptyState(host, "No alert rules fired in the last 24 h.", {marginTop: T.sp[2]})
+                return
+            }
+            const filteredHubs = hubs
+                .map(h => ({
+                    hub: h.hub,
+                    record: Object.assign({}, h.record, {
+                        rows: (h.record.rows || []).filter(r =>
+                            firedKeys.has(h.hub + "-" + (r.destIata || r.dest)))
+                    })
+                }))
+                .filter(h => h.record.rows && h.record.rows.length)
+
+            if (!filteredHubs.length) {
+                this._renderEmptyState(host,
+                    firedKeys.size + " fired route"
+                        + (firedKeys.size === 1 ? "" : "s") + " — none in cached topRoutes snapshots.",
+                    {marginTop: T.sp[2]})
+                return
+            }
+            const wrap = document.createElement("div")
+            wrap.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[3] + ";"
+            for (const h of filteredHubs) wrap.appendChild(this._renderHub(h, T))
+            host.appendChild(wrap)
             return
         }
 
@@ -87,6 +117,66 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
             more.textContent = "+ " + (hubs.length - 3) + " more hubs cached."
             host.appendChild(more)
         }
+    }
+
+    /**
+     * Walks every persisted alert-rule record (legacy + acct-namespaced) and
+     * collects the route-keys (`<HUB>-<DEST>`) whose lastFiredByRoute
+     * timestamp lands in the trailing 24 h.
+     */
+    async _loadFiredAlertRoutes() {
+        const entries = await this._loadByPrefix("routeAssistant:alertRules", {includeExactKey: true})
+        const cutoff = Date.now() - 24 * 3600 * 1000
+        const fired = new Set()
+        for (const e of entries) {
+            const rec = e.value
+            if (!rec || !Array.isArray(rec.rules)) continue
+            for (const rule of rec.rules) {
+                if (!rule || rule.enabled === false) continue
+                const map = rule.lastFiredByRoute
+                if (!map || typeof map !== "object") continue
+                for (const route in map) {
+                    const t = Number(map[route])
+                    if (Number.isFinite(t) && t >= cutoff) fired.add(route)
+                }
+            }
+        }
+        return fired
+    }
+
+    _renderFilterBanner(count, T) {
+        const banner = document.createElement("div")
+        banner.style.cssText = [
+            "display:flex",
+            "align-items:center",
+            "justify-content:space-between",
+            "gap:" + T.sp[2],
+            "padding:" + T.sp[1] + " " + T.sp[2],
+            "margin-bottom:" + T.sp[2],
+            "background:" + T.color.amberSoft,
+            "color:" + T.color.amber,
+            "border:" + T.geom.bw1 + " solid " + T.color.amber,
+            "border-radius:" + T.geom.radius,
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body
+        ].join(";")
+        const label = document.createElement("span")
+        label.textContent = count + " alert" + (count === 1 ? "" : "s")
+            + " fired in the last 24 h"
+        const clear = document.createElement("button")
+        clear.type = "button"
+        clear.textContent = "× show all routes"
+        clear.style.cssText = "background:transparent;color:" + T.color.amber
+            + ";border:" + T.geom.bw1 + " solid " + T.color.amber + ";border-radius:" + T.geom.radius
+            + ";padding:" + T.sp[0] + " " + T.sp[2] + ";font-family:" + T.font.display
+            + ";font-size:" + T.fs.micro + ";letter-spacing:" + T.track.caps
+            + ";text-transform:uppercase;cursor:pointer;"
+        clear.addEventListener("click", () => {
+            this._filter = null
+            this._renderBodySafe()
+        })
+        banner.append(label, clear)
+        return banner
     }
 
     _renderHub(hubInfo, T) {
@@ -138,6 +228,20 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
             const flights = r.flights || r.weeklyFlights || ""
             li.textContent = dest + " · score " + score + (flights ? " · " + flights + "/wk" : "")
             li.style.color = T.color.oxide2
+            li.style.cursor = "pointer"
+            li.addEventListener("mouseenter", () => { li.style.color = T.color.rust })
+            li.addEventListener("mouseleave", () => { li.style.color = T.color.oxide2 })
+            li.addEventListener("click", () => {
+                if (!window.CentralHubBus) return
+                const payload = {hub: hubInfo.hub, dest, source: "route-assistant"}
+                window.CentralHubBus.emit("focus-route", payload)
+                window.CentralHubBus.emit("open-tile", {
+                    tileId: "inventory",
+                    expand: true, scrollIntoView: true,
+                    filter: {type: "single-route", hub: hubInfo.hub, dest},
+                    source: "route-assistant"
+                })
+            })
             list.appendChild(li)
         }
         wrap.appendChild(list)

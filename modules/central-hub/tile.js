@@ -48,6 +48,19 @@ class CentralHubTile {
         this._storageListener = null
         this._refreshing = false
         this._onToggleChange = null
+        this._busDisposers = []
+    }
+
+    /**
+     * Opt-in subscription to CentralHubBus. The disposer is tracked here
+     * and fired automatically on dispose() so tiles never leak handlers
+     * across shell unmount. No-ops cleanly when bus.js hasn't loaded
+     * (e.g. early CH-5b state) so existing tiles keep working.
+     */
+    subscribeBus(event, handler) {
+        if (!window.CentralHubBus || typeof window.CentralHubBus.on !== "function") return
+        const dispose = window.CentralHubBus.on(event, handler)
+        if (typeof dispose === "function") this._busDisposers.push(dispose)
     }
 
     watchedStorageKeys(ctx) { return [] }
@@ -56,7 +69,13 @@ class CentralHubTile {
         return {badge: "—", badgeKind: "muted", summary: ""}
     }
 
-    async renderBody(ctx, hostEl) {
+    /**
+     * Subclasses fill the expanded body. The optional `focusFilter` arg
+     * (CH-5c) carries cross-tile drill-in payloads — tiles that don't
+     * recognise the filter shape ignore it. Filters are simple plain
+     * objects, e.g. {type: "fired-alerts"}.
+     */
+    async renderBody(ctx, hostEl, focusFilter) {
         hostEl.textContent = ""
     }
 
@@ -297,10 +316,10 @@ class CentralHubTile {
         }
     }
 
-    async _renderBodySafe() {
+    async _renderBodySafe(focusFilter) {
         if (!this.bodyEl) return
         try {
-            await this.renderBody(this.ctx, this.bodyEl)
+            await this.renderBody(this.ctx, this.bodyEl, focusFilter)
         } catch (err) {
             console.warn("[AES Hub] tile body render failed", this.id, err)
             this.bodyEl.textContent = "(failed to load — see console)"
@@ -322,11 +341,58 @@ class CentralHubTile {
         chrome.storage.onChanged.addListener(this._storageListener)
     }
 
+    /**
+     * Walk chrome.storage.local and return entries whose keys live under
+     * `prefix` — i.e. start with `prefix + ":"`. Pass `prefix` WITHOUT a
+     * trailing colon; the helper appends it. Returns
+     * `Array<{key, value, suffix}>` where suffix is the part after the colon.
+     *
+     * Set `opts.includeExactKey` when the bare prefix is itself a valid
+     * storage key (legacy + namespaced shape, e.g. RA's alertRules).
+     */
+    async _loadByPrefix(prefix, opts) {
+        const all = await chrome.storage.local.get(null)
+        const includeExact = !!(opts && opts.includeExactKey)
+        const colonPrefix = prefix + ":"
+        const out = []
+        for (const k in all) {
+            if (k === prefix) {
+                if (includeExact) out.push({key: k, value: all[k], suffix: ""})
+                continue
+            }
+            if (k.indexOf(colonPrefix) !== 0) continue
+            out.push({key: k, value: all[k], suffix: k.substring(colonPrefix.length)})
+        }
+        return out
+    }
+
+    /**
+     * Append a muted `<p>` "no data yet" message into `hostEl`. If
+     * `opts.marginTop` is set (e.g. when rendering after a banner), the
+     * paragraph gets a top margin instead of zero.
+     */
+    _renderEmptyState(hostEl, message, opts) {
+        const T = window.AESTokens
+        const p = document.createElement("p")
+        const marginTop = opts && opts.marginTop
+        p.style.cssText = "color:" + T.color.slate
+            + ";margin:" + (marginTop ? marginTop + " 0 0 0" : "0") + ";"
+        p.textContent = message
+        hostEl.appendChild(p)
+        return p
+    }
+
     dispose() {
         if (this._storageListener) {
             try { chrome.storage.onChanged.removeListener(this._storageListener) }
             catch (_) { /* noop */ }
             this._storageListener = null
+        }
+        if (this._busDisposers && this._busDisposers.length) {
+            for (const dispose of this._busDisposers) {
+                try { dispose() } catch (_) { /* noop */ }
+            }
+            this._busDisposers = []
         }
         if (this.root && this.root.parentNode) {
             this.root.parentNode.removeChild(this.root)

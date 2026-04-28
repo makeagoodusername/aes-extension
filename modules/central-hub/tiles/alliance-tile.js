@@ -21,6 +21,7 @@ class CentralHubAllianceTile extends window.CentralHubTile {
 
         this._sortKey = "enterpriseName"
         this._sortDir = "asc"
+        this._highlightedEnterpriseId = null    // CH-5d-5
     }
 
     watchedStorageKeys() {
@@ -28,6 +29,41 @@ class CentralHubAllianceTile extends window.CentralHubTile {
     }
 
     openHref() { return "/app/alliance" }
+
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        this.subscribeBus("focus-enterprise", async ({enterpriseId}) => {
+            if (!enterpriseId) return
+            const id = String(enterpriseId)
+            const rec = await AllianceOverviewScraper.loadRecord()
+            const members = (rec && Array.isArray(rec.members)) ? rec.members : []
+            const isMember = members.some(m => this._memberMatchesId(m, id))
+            if (!isMember) return
+            this._highlightedEnterpriseId = id
+            if (!this.expanded) this.toggle()
+            if (this.root) this.root.scrollIntoView({behavior: "smooth", block: "start"})
+            this._renderBodySafe()
+        })
+    }
+
+    _memberMatchesId(member, enterpriseId) {
+        if (!member) return false
+        const candidates = [
+            member.enterpriseId, member.id, member.code,
+            this._enterpriseIdFromUrl(member.enterpriseUrl)
+        ]
+        for (const c of candidates) {
+            if (c == null) continue
+            if (String(c) === enterpriseId) return true
+        }
+        return false
+    }
+
+    _enterpriseIdFromUrl(url) {
+        if (typeof url !== "string") return null
+        const m = url.match(/(?:enterprise|info\/enterprise)[/=](\d+)/i)
+        return m ? m[1] : null
+    }
 
     async loadStatus() {
         const rec = await AllianceOverviewScraper.loadRecord()
@@ -92,7 +128,23 @@ class CentralHubAllianceTile extends window.CentralHubTile {
             "white-space:nowrap"
         ].join(";")
 
-        headerStrip.append(meta, openBtn)
+        if (this._highlightedEnterpriseId) {
+            const clearHl = document.createElement("button")
+            clearHl.type = "button"
+            clearHl.textContent = "× clear highlight"
+            clearHl.style.cssText = "background:transparent;color:" + T.color.cobalt
+                + ";border:" + T.geom.bw1 + " solid " + T.color.cobalt + ";border-radius:" + T.geom.radius
+                + ";padding:" + T.sp[0] + " " + T.sp[2] + ";font-family:" + T.font.display
+                + ";font-size:" + T.fs.micro + ";letter-spacing:" + T.track.caps
+                + ";text-transform:uppercase;cursor:pointer;margin-right:" + T.sp[2] + ";"
+            clearHl.addEventListener("click", () => {
+                this._highlightedEnterpriseId = null
+                this._renderBodySafe()
+            })
+            headerStrip.append(meta, clearHl, openBtn)
+        } else {
+            headerStrip.append(meta, openBtn)
+        }
         host.appendChild(headerStrip)
 
         const members = (rec && Array.isArray(rec.members)) ? rec.members.slice() : []
@@ -164,7 +216,12 @@ class CentralHubAllianceTile extends window.CentralHubTile {
         const tbody = document.createElement("tbody")
         for (const m of members) {
             const tr = document.createElement("tr")
+            const highlighted = this._highlightedEnterpriseId
+                && this._memberMatchesId(m, this._highlightedEnterpriseId)
             tr.style.cssText = "border-bottom:" + T.geom.bw1 + " solid " + T.color.paperRule + ";"
+                + (highlighted
+                    ? "background:" + T.color.cobaltSoft + ";box-shadow:inset 3px 0 0 " + T.color.cobalt + ";"
+                    : "")
 
             const tdLogo = document.createElement("td")
             tdLogo.style.cssText = "padding:" + T.sp[1] + " " + T.sp[2] + ";width:24px;"

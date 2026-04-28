@@ -10,7 +10,7 @@
  *
  * Idempotent: if a hub element is already in the DOM, this no-ops.
  */
-(function () {
+;(function () {
     if (typeof window === "undefined") return
     if (window.__aesCentralHubMounted) return
     window.__aesCentralHubMounted = true

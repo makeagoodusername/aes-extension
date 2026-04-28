@@ -21,6 +21,32 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
 
     openHref() { return "/action/enterprise/staffPilots" }
 
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        // CH-5d-4: clicking the badge (e.g. "3 SHORT") drills into the tile
+        // with the short-categories filter pre-applied.
+        if (this.badgeEl) {
+            this.badgeEl.style.cursor = "pointer"
+            this.badgeEl.title = "Show short categories"
+            this.badgeEl.addEventListener("click", (e) => {
+                e.stopPropagation()
+                if (!window.CentralHubBus) return
+                const status = this._lastStatus
+                if (!status || !status.badge || status.badge.indexOf("SHORT") < 0) {
+                    if (!this.expanded) this.toggle()
+                    return
+                }
+                window.CentralHubBus.emit("open-tile", {
+                    tileId: "crew-management",
+                    expand: true,
+                    scrollIntoView: true,
+                    filter: {type: "short"},
+                    source: "crew-badge"
+                })
+            })
+        }
+    }
+
     async _loadRecord() {
         const blob = await chrome.storage.local.get(["crewMgmt:pilots"])
         return blob["crewMgmt:pilots"] || null
@@ -54,9 +80,15 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
         }
     }
 
-    async renderBody(ctx, host) {
+    async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
         host.textContent = ""
+
+        // CH-5d-4: pin the short-only filter on the instance.
+        if (focusFilter && focusFilter.type === "short") {
+            this._shortOnly = true
+        }
+
         const rec = await this._loadRecord()
         if (!rec || !Array.isArray(rec.categories) || !rec.categories.length) {
             const empty = document.createElement("p")
@@ -66,6 +98,19 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
             return
         }
         const server = (ctx && ctx.server) || ""
+
+        const visible = this._shortOnly
+            ? rec.categories.filter(c => (c.missing || 0) > 0)
+            : rec.categories
+        if (this._shortOnly) host.appendChild(this._renderShortBanner(visible.length, T))
+
+        if (this._shortOnly && !visible.length) {
+            const ok = document.createElement("p")
+            ok.style.cssText = "color:" + T.color.moss + ";margin:" + T.sp[2] + " 0 0 0;"
+            ok.textContent = "All categories rated. No shortages."
+            host.appendChild(ok)
+            return
+        }
 
         const table = document.createElement("table")
         table.style.cssText = [
@@ -96,7 +141,7 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
         table.appendChild(thead)
 
         const tbody = document.createElement("tbody")
-        for (const c of rec.categories) {
+        for (const c of visible) {
             tbody.appendChild(this._buildRow(T, c, server))
         }
         table.appendChild(tbody)
@@ -106,6 +151,42 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
         meta.style.cssText = "margin-top:" + T.sp[3] + ";color:" + T.color.slate + ";font-family:" + T.font.mono + ";font-size:" + T.fs.body + ";"
         meta.textContent = "Last scraped " + new Date(rec.scrapedAt || 0).toLocaleString()
         host.appendChild(meta)
+    }
+
+    _renderShortBanner(count, T) {
+        const banner = document.createElement("div")
+        banner.style.cssText = [
+            "display:flex",
+            "align-items:center",
+            "justify-content:space-between",
+            "gap:" + T.sp[2],
+            "padding:" + T.sp[1] + " " + T.sp[2],
+            "margin-bottom:" + T.sp[2],
+            "background:" + T.color.rustSoft,
+            "color:" + T.color.rust,
+            "border:" + T.geom.bw1 + " solid " + T.color.rust,
+            "border-radius:" + T.geom.radius,
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body
+        ].join(";")
+        const label = document.createElement("span")
+        label.textContent = count > 0
+            ? "Showing " + count + " short categor" + (count === 1 ? "y" : "ies") + " — applier ready below."
+            : "All categories rated."
+        const clear = document.createElement("button")
+        clear.type = "button"
+        clear.textContent = "× show all"
+        clear.style.cssText = "background:transparent;color:" + T.color.rust
+            + ";border:" + T.geom.bw1 + " solid " + T.color.rust + ";border-radius:" + T.geom.radius
+            + ";padding:" + T.sp[0] + " " + T.sp[2] + ";font-family:" + T.font.display
+            + ";font-size:" + T.fs.micro + ";letter-spacing:" + T.track.caps
+            + ";text-transform:uppercase;cursor:pointer;"
+        clear.addEventListener("click", () => {
+            this._shortOnly = false
+            this._renderBodySafe()
+        })
+        banner.append(label, clear)
+        return banner
     }
 
     _buildRow(T, cat, server) {

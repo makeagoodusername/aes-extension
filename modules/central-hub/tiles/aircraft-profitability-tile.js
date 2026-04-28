@@ -141,7 +141,22 @@ class CentralHubAircraftProfitabilityTile extends window.CentralHubTile {
 
         for (const r of rows) {
             const tr = document.createElement("tr")
-            tr.style.cssText = "border-bottom:" + T.geom.bw1 + " solid " + T.color.paperRule + ";"
+            tr.style.cssText = "border-bottom:" + T.geom.bw1 + " solid " + T.color.paperRule
+                + ";cursor:pointer;"
+            tr.addEventListener("mouseenter", () => { tr.style.background = T.color.bone2 })
+            tr.addEventListener("mouseleave", () => { tr.style.background = "" })
+            tr.addEventListener("click", (e) => {
+                if (e.target && e.target.closest("a")) return  // let link clicks navigate
+                if (!window.CentralHubBus) return
+                const payload = {aircraftId: String(r.aircraftId), source: "aircraft-profitability"}
+                window.CentralHubBus.emit("focus-aircraft", payload)
+                window.CentralHubBus.emit("open-tile", {
+                    tileId: "aircraft-flight-plan",
+                    expand: true, scrollIntoView: true,
+                    filter: {type: "tail", aircraftId: String(r.aircraftId)},
+                    source: "aircraft-profitability"
+                })
+            })
             const profitFmt = (r.profit >= 0 ? "+" : "−") + Intl.NumberFormat().format(Math.abs(Math.round(r.profit)))
             tr.innerHTML =
                 "<td style='padding:" + T.sp[1] + " " + T.sp[2] + ";'>"
