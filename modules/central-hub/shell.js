@@ -22,15 +22,23 @@ class CentralHubShell {
         this.settings = null
         this._filterText = ""
         this._filterEl   = null
+        this.heroStrip   = null
+        this._busDispose = null
     }
 
     async mount(anchorEl) {
         this.settings = await window.CentralHubSettings.load()
         this._migrateLegacyDashboardSetting()
+        this._applyCubistMode()
 
         const root = this._buildShellSkeleton()
         anchorEl.before(root)
         this.root = root
+
+        // Subscribe before tiles mount so a click on the hero strip during
+        // the async tile-mount window doesn't drop. tilesById is captured by
+        // reference and populated below.
+        this._subscribeBusEvents()
 
         await this._mountTiles()
 
@@ -66,6 +74,17 @@ class CentralHubShell {
         window.CentralHubSettings.save(this.settings).catch(() => { /* noop */ })
     }
 
+    /**
+     * CB0 — apply the cubistMode setting to document.body so primitives
+     * defined in css/cubist.css (scoped under body.aes-cubist) activate.
+     * No visible effect in CB0; CB1 onward bind surfaces to the class.
+     */
+    _applyCubistMode() {
+        if (typeof document === "undefined" || !document.body) return
+        const on = !!(this.settings && this.settings.cubistMode)
+        document.body.classList.toggle("aes-cubist", on)
+    }
+
     _buildShellSkeleton() {
         const T = window.AESTokens
 
@@ -86,6 +105,21 @@ class CentralHubShell {
         ].join(";")
 
         root.appendChild(this._buildTopBar())
+
+        const cubistOn = !!(this.settings && this.settings.cubistMode)
+        if (cubistOn && typeof window.CentralHubHeroPolyhedron === "function") {
+            this.heroStrip = new window.CentralHubHeroPolyhedron({
+                server:  this.server,
+                airline: this.airline
+            })
+            root.appendChild(this.heroStrip.mount())
+        } else if (typeof window.CentralHubHeroStrip === "function") {
+            this.heroStrip = new window.CentralHubHeroStrip({
+                server:  this.server,
+                airline: this.airline
+            })
+            root.appendChild(this.heroStrip.mount())
+        }
 
         const split = document.createElement("div")
         split.className = "aes-central-hub__split"
@@ -179,6 +213,33 @@ class CentralHubShell {
         })
         this._filterEl = filter
 
+        const scrapeBtn = document.createElement("button")
+        scrapeBtn.type = "button"
+        scrapeBtn.className = "aes-btn aes-central-hub__scrape-btn"
+        scrapeBtn.textContent = "Scrape everything"
+        scrapeBtn.title = "Walk every AS page in hidden tabs to warm every cache. ~5–8 minutes."
+        scrapeBtn.style.cssText = [
+            "background:" + T.color.oxide,
+            "color:" + T.color.bone,
+            "border:" + T.geom.bw1 + " solid " + T.color.oxide,
+            "border-radius:" + T.geom.radius,
+            "padding:" + T.sp[1] + " " + T.sp[3],
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body,
+            "font-weight:" + T.fw.display,
+            "text-transform:uppercase",
+            "letter-spacing:" + T.track.caps,
+            "cursor:pointer",
+            "flex:0 0 auto"
+        ].join(";")
+        scrapeBtn.addEventListener("click", () => {
+            if (window.AESScrapeHost && typeof window.AESScrapeHost.open === "function") {
+                window.AESScrapeHost.open()
+            } else {
+                console.warn("[AES Hub] AESScrapeHost not loaded — check manifest order")
+            }
+        })
+
         const ctxStamp = document.createElement("span")
         ctxStamp.style.cssText = [
             "color:" + T.color.oxide2,
@@ -204,7 +265,7 @@ class CentralHubShell {
             "flex:0 0 auto"
         ].join(";")
 
-        bar.append(title, subtitle, filter, ctxStamp, stamp)
+        bar.append(title, subtitle, filter, scrapeBtn, ctxStamp, stamp)
         return bar
     }
 
@@ -310,6 +371,40 @@ class CentralHubShell {
             "#aes-central-hub-section-" + (this.settings.activeSection || "fleet")
         )
         if (target) target.scrollIntoView({behavior: "smooth", block: "start"})
+    }
+
+    /**
+     * CH-5c — wire up the cross-tile event bus. Today only "open-tile" has
+     * concrete emitters (the hero KPI strip); the focus-* events stay
+     * reserved until CH-5d. The shell handles "open-tile" centrally so
+     * tiles never have to repeat the scroll/expand/section-activate dance.
+     */
+    _subscribeBusEvents() {
+        if (!window.CentralHubBus || typeof window.CentralHubBus.on !== "function") return
+        if (this._busDispose) return
+        this._busDispose = window.CentralHubBus.on("open-tile", (payload) => {
+            if (!payload || !payload.tileId) return
+            const tile = this.tilesById.get(payload.tileId)
+            if (!tile) return
+
+            const section = tile.section
+            if (section && this.nav) this.nav.setActive(section)
+            if (section && this.settings && this.settings.activeSection !== section) {
+                this.settings.activeSection = section
+                window.CentralHubSettings.save(this.settings).catch(() => { /* noop */ })
+            }
+
+            const wantExpand = payload.expand !== false
+            if (wantExpand && !tile.expanded) tile.toggle()
+
+            if (payload.scrollIntoView !== false && tile.root) {
+                tile.root.scrollIntoView({behavior: "smooth", block: "start"})
+            }
+
+            if (payload.filter && tile.expanded && typeof tile._renderBodySafe === "function") {
+                tile._renderBodySafe(payload.filter).catch(() => { /* noop */ })
+            }
+        })
     }
 
     _applyFilter() {
