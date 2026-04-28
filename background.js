@@ -3,6 +3,11 @@
 // found in the LICENSE file.
 
 'use strict';
+
+// Scrape orchestrator service-worker module (registers globalThis.ScrapeTabPool).
+try { importScripts('modules/scrape-orchestrator/background-tab-pool.js'); }
+catch (e) { console.warn('[bg] failed to import scrape-orchestrator tab pool', e); }
+
 //Functions
 function setDefaultSettings(){
   //Add default settings
@@ -907,3 +912,219 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   });
   return true;
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// Customization store — single-writer queue for the dedicated
+// chrome.storage.local["customization"] blob. Mirrors the
+// aesAccounts pattern so concurrent tabs (color-picker drags from
+// the Studio in one tab, theme switch in another) cannot lose writes.
+//
+// Patches are shallow-merged. Special sentinels:
+//   - `null` at any leaf  → delete that key
+//   - `"__CLEAR__"` for an object branch  → replace with {}
+// ─────────────────────────────────────────────────────────────────────
+
+let _aesCustomizationQueue = Promise.resolve();
+
+function _aesCustomizationPatchCore(req) {
+  return _aesCustomizationQueue = _aesCustomizationQueue
+    .catch(() => null)
+    .then(() => _aesCustomizationPatchApply(req));
+}
+
+function _aesCustomizationMerge(base, patch) {
+  if (patch === "__CLEAR__") return {};
+  if (patch === null) return null;
+  if (typeof patch !== "object") return patch;
+  const out = (base && typeof base === "object") ? Object.assign({}, base) : {};
+  for (const k of Object.keys(patch)) {
+    const next = _aesCustomizationMerge(out[k], patch[k]);
+    if (next === null) {
+      delete out[k];
+    } else {
+      out[k] = next;
+    }
+  }
+  return out;
+}
+
+async function _aesCustomizationPatchApply(req) {
+  const patch = req && req.patch;
+  if (!patch || typeof patch !== "object") {
+    return {ok: false, error: 'missing patch'};
+  }
+  const data = await chrome.storage.local.get(['customization']);
+  const blob = data.customization && typeof data.customization === "object"
+    ? data.customization
+    : {schemaVersion: 1, active: {presetId: 'default'}, presets: {}, scopes: {global: {}}, shortcuts: {}};
+  const next = _aesCustomizationMerge(blob, patch) || {};
+  if (!next.schemaVersion) next.schemaVersion = 1;
+  await chrome.storage.local.set({customization: next});
+  return {ok: true};
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'aes:customization:patch') return false;
+  _aesCustomizationPatchCore(msg).then(resp => {
+    try { sendResponse(resp); } catch (_) { /* noop */ }
+  }).catch(err => {
+    try { sendResponse({ok: false, error: (err && err.message) || String(err)}); }
+    catch (_) { /* noop */ }
+  });
+  return true;
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Scrape-everything orchestrator — message routing
+// ─────────────────────────────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'aes:scrape-all:start') return false;
+  if (typeof globalThis.ScrapeTabPool !== 'object') {
+    sendResponse({ok: false, reason: 'tab-pool-not-loaded'});
+    return false;
+  }
+  const senderTabId = sender && sender.tab && sender.tab.id;
+  const opts = {
+    senderTabId: senderTabId,
+    concurrency: msg.concurrency,
+    staggerMs:   msg.staggerMs
+  };
+  ScrapeTabPool.startRun(msg.plan || [], opts)
+    .then(resp => { try { sendResponse(resp); } catch (_) {} })
+    .catch(err => { try { sendResponse({ok: false, error: (err && err.message) || String(err)}); } catch (_) {} });
+  return true;
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'aes:scrape-all:abort') return false;
+  if (typeof globalThis.ScrapeTabPool !== 'object') {
+    sendResponse({ok: false, reason: 'tab-pool-not-loaded'});
+    return false;
+  }
+  try { sendResponse(ScrapeTabPool.abortRun()); } catch (_) {}
+  return false;
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'aes:scrape-all:status') return false;
+  if (typeof globalThis.ScrapeTabPool !== 'object') {
+    sendResponse({ok: false, reason: 'tab-pool-not-loaded'});
+    return false;
+  }
+  try { sendResponse({ok: true, status: ScrapeTabPool.getStatus()}); } catch (_) {}
+  return false;
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'aes:scrape-all:reset-breaker') return false;
+  if (typeof globalThis.ScrapeTabPool !== 'object') {
+    sendResponse({ok: false, reason: 'tab-pool-not-loaded'});
+    return false;
+  }
+  try { sendResponse(ScrapeTabPool.resetBreaker()); } catch (_) {}
+  return false;
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Auto-Pricing Tier 3.3b — silent-auto chrome.alarms heartbeat
+//
+// The panel runs `setInterval` in-page for in-tab cadence; the alarm
+// here is the persistent + cross-tab driver. Benefits over setInterval
+// alone:
+//   - Survives MV3 service-worker restarts (alarms persist)
+//   - Anchors cadence to wall-clock instead of panel mount time, so
+//     reopening a scheduling tab mid-cycle doesn't reset the clock
+//   - Cross-tab dedup: multiple scheduling tabs each receive the
+//     broadcast, but the panel's `_silentAutoTickIfDue` re-reads
+//     the persisted `silentAutoLastTickAt` and skips if another tab
+//     already ticked within ~0.9× tickMin
+//
+// The alarm is created when `settings.routeAssistant.pricing
+// .silentAutoEnabled === true` and cleared when it flips off. Period
+// follows `silentAutoTickMin` (clamped 5–240 min, matching the panel).
+// ─────────────────────────────────────────────────────────────────────
+
+const _AES_SILENT_AUTO_ALARM = 'aes:silent-auto:tick';
+
+async function _aesReadSilentAutoConfig() {
+  try {
+    const got = await chrome.storage.local.get('settings');
+    const ra  = (got && got.settings && got.settings.routeAssistant) || {};
+    const pr  = ra.pricing || {};
+    const tickMin = (typeof pr.silentAutoTickMin === 'number' && isFinite(pr.silentAutoTickMin))
+      ? Math.max(5, Math.min(240, pr.silentAutoTickMin))
+      : 30;
+    return {enabled: !!pr.silentAutoEnabled, tickMin: tickMin};
+  } catch (_) {
+    return {enabled: false, tickMin: 30};
+  }
+}
+
+async function _aesSyncSilentAutoAlarm() {
+  if (!chrome.alarms) return;
+  try {
+    const cfg = await _aesReadSilentAutoConfig();
+    const existing = await chrome.alarms.get(_AES_SILENT_AUTO_ALARM);
+    if (cfg.enabled) {
+      if (!existing || existing.periodInMinutes !== cfg.tickMin) {
+        await chrome.alarms.clear(_AES_SILENT_AUTO_ALARM);
+        chrome.alarms.create(_AES_SILENT_AUTO_ALARM, {
+          periodInMinutes: cfg.tickMin,
+          delayInMinutes:  cfg.tickMin
+        });
+      }
+    } else if (existing) {
+      await chrome.alarms.clear(_AES_SILENT_AUTO_ALARM);
+    }
+  } catch (e) {
+    console.warn('[AES silent-auto] alarm sync threw', e);
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => { _aesSyncSilentAutoAlarm(); });
+if (chrome.runtime.onStartup) {
+  chrome.runtime.onStartup.addListener(() => { _aesSyncSilentAutoAlarm(); });
+}
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  if (!changes.settings) return;
+  const oldS = changes.settings.oldValue, newS = changes.settings.newValue;
+  const oldP = (oldS && oldS.routeAssistant && oldS.routeAssistant.pricing) || {};
+  const newP = (newS && newS.routeAssistant && newS.routeAssistant.pricing) || {};
+  if (oldP.silentAutoEnabled === newP.silentAutoEnabled
+      && oldP.silentAutoTickMin === newP.silentAutoTickMin) return;
+  _aesSyncSilentAutoAlarm();
+});
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (!alarm || alarm.name !== _AES_SILENT_AUTO_ALARM) return;
+    // Broadcast to ONE scheduling tab only — sending to every tab
+    // races on the per-tick dedup read (each panel reads
+    // `silentAutoLastTickAt` before the others' write has landed).
+    // Picking the most-recently-active tab matches the user's
+    // attention; falls back to the first match. The chosen panel's
+    // own setInterval covers the rare case where the picked tab is
+    // unresponsive.
+    chrome.tabs.query(
+      {url: 'https://*.airlinesim.aero/app/com/scheduling/*'},
+      (tabs) => {
+        const lastErr = chrome.runtime.lastError;
+        if (lastErr) { void lastErr; return; }
+        if (!tabs || !tabs.length) return;
+        const sorted = tabs.slice().sort(
+          (a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0)
+        );
+        const target = sorted[0];
+        if (!target || !target.id) return;
+        chrome.tabs.sendMessage(
+          target.id,
+          {type: 'aes:silent-auto:tick', firedAt: Date.now()},
+          () => void chrome.runtime.lastError
+        );
+      }
+    );
+  });
+}

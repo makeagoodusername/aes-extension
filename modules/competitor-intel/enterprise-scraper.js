@@ -58,23 +58,33 @@ class AesCompetitorEnterpriseScraper {
 
     async _scrapeDeep(id) {
         const baseUrl = `https://${this.server}.airlinesim.aero/app/info/enterprises/${encodeURIComponent(id)}`
-        const [tab0Html, tab3Html] = await Promise.all([
+        // Tab numbering on AS varies by world — Information is always tab 0,
+        // Schedule is reliably tab 3, but Fleet has been seen at tab 2 and
+        // tab 4. Try both in parallel with the rest of the deep fetch and
+        // pick whichever returns a parseable aircraft table.
+        const [tab0Html, tab2Html, tab3Html, tab4Html] = await Promise.all([
             AesCompetitorEnterpriseScraper._fetchHtml(baseUrl),
-            AesCompetitorEnterpriseScraper._fetchHtml(baseUrl + "?tab=3")
+            AesCompetitorEnterpriseScraper._fetchHtml(baseUrl + "?tab=2"),
+            AesCompetitorEnterpriseScraper._fetchHtml(baseUrl + "?tab=3"),
+            AesCompetitorEnterpriseScraper._fetchHtml(baseUrl + "?tab=4")
         ])
         const tab0 = parseEnterpriseTab0(tab0Html)
         const tab3 = parseEnterpriseScheduleTab(tab3Html)
+        const fleetTab = parseEnterpriseFleetTab(tab2Html, tab4Html)
 
         const notes = []
-        if (tab0.parserNotes) notes.push("tab0: " + tab0.parserNotes)
-        if (tab3.parserNotes) notes.push("tab3: " + tab3.parserNotes)
+        if (tab0.parserNotes)     notes.push("tab0: "  + tab0.parserNotes)
+        if (tab3.parserNotes)     notes.push("tab3: "  + tab3.parserNotes)
+        if (fleetTab.parserNotes) notes.push("fleet: " + fleetTab.parserNotes)
 
         return {
-            alliance:       tab0.alliance,
-            baseCountry:    tab0.baseCountry,
-            fleet:          tab0.fleet,
-            hubs:           tab3.hubs,
-            routeFootprint: tab3.routeFootprint,
+            alliance:        tab0.alliance,
+            baseCountry:     tab0.baseCountry,
+            fleet:           tab0.fleet,
+            fleetByType:     fleetTab.fleetByType,
+            fleetTabSource:  fleetTab.tabUsed,
+            hubs:            tab3.hubs,
+            routeFootprint:  tab3.routeFootprint,
             parserNotesDeep: notes.length ? notes.join("; ") : null
         }
     }
@@ -96,16 +106,18 @@ class AesCompetitorEnterpriseScraper {
         if (meta && meta.parserNotesMeta) notes.push("meta: " + meta.parserNotesMeta)
         if (deep && deep.parserNotesDeep) notes.push(deep.parserNotesDeep)
         const merged = {
-            name:        meta && meta.name || null,
-            iata:        meta && meta.iata || null,
-            bannerUrl:   meta && meta.bannerUrl || null,
-            avatarUrl:   meta && meta.avatarUrl || null,
-            alliance:    deep && deep.alliance || null,
-            baseCountry: deep && deep.baseCountry || null,
-            fleet:       deep && deep.fleet || null,
-            hubs:        (deep && deep.hubs) || [],
+            name:           meta && meta.name || null,
+            iata:           meta && meta.iata || null,
+            bannerUrl:      meta && meta.bannerUrl || null,
+            avatarUrl:      meta && meta.avatarUrl || null,
+            alliance:       deep && deep.alliance || null,
+            baseCountry:    deep && deep.baseCountry || null,
+            fleet:          deep && deep.fleet || null,
+            fleetByType:    (deep && deep.fleetByType) || [],
+            fleetTabSource: (deep && deep.fleetTabSource) || null,
+            hubs:           (deep && deep.hubs) || [],
             routeFootprint: (deep && deep.routeFootprint) || [],
-            parserNotes: notes.length ? notes.join("; ") : null
+            parserNotes:    notes.length ? notes.join("; ") : null
         }
         return merged
     }
@@ -376,6 +388,151 @@ function parseEnterpriseScheduleTab(html) {
     if (!hubs.length) notes.push("no hubs derived (schedule may be empty)")
 
     return {hubs, routeFootprint: pairs, parserNotes: notes.length ? notes.join("; ") : null}
+}
+
+/**
+ * Parse the Fleet tab. Tries both `?tab=2` and `?tab=4` (different AS worlds
+ * use different tab numbering for the fleet listing) and returns whichever
+ * yields a parseable aircraft table. Aggregates per-tail rows into:
+ *
+ *   { fleetByType: [{typeCode, typeId, count, avgAgeMonths,
+ *                    oldestMonths, newestMonths, withAge}],
+ *     tabUsed: "tab2"|"tab4"|null,
+ *     parserNotes: string|null }
+ *
+ * Aggregation strategy: each `<tr>` containing a link to
+ * `/aircraftsType?id=<n>` (or to `/info/aircraftTypes/<n>`) is treated as
+ * one tail. The link's text is the typeCode; the row's age column is any
+ * cell whose value matches /(\d+)\s*(?:m|mo|month|j|jahr|y|year)/i. When no
+ * age column matches, count is captured but avgAge is reported as null.
+ *
+ * Withdrawing a usable result requires at least one type-link row — pages
+ * that don't list aircraft (no fleet) yield an empty array with parserNotes
+ * indicating the absence rather than a parse failure.
+ */
+function parseEnterpriseFleetTab(tab2Html, tab4Html) {
+    const candidates = [
+        {html: tab2Html, name: "tab2"},
+        {html: tab4Html, name: "tab4"}
+    ]
+    let best = null
+    let lastNotes = null
+    for (const cand of candidates) {
+        if (!cand.html) continue
+        let doc
+        try { doc = new DOMParser().parseFromString(cand.html, "text/html") }
+        catch (e) { lastNotes = cand.name + " DOMParser failed"; continue }
+        if (!doc || !doc.body) { lastNotes = cand.name + " empty document"; continue }
+        const parsed = _parseFleetDoc(doc)
+        if (parsed.fleetByType.length) {
+            best = {fleetByType: parsed.fleetByType, tabUsed: cand.name, parserNotes: parsed.parserNotes}
+            break
+        }
+        lastNotes = cand.name + ": " + (parsed.parserNotes || "no aircraft rows")
+    }
+    if (best) return best
+    return {fleetByType: [], tabUsed: null, parserNotes: lastNotes || "no fleet tab data"}
+}
+
+function _parseFleetDoc(doc) {
+    const typeLinkSel = "a[href*='aircraftsType?id='], a[href*='aircraftTypes/']"
+    const links = doc.querySelectorAll(typeLinkSel)
+    if (!links.length) {
+        return {fleetByType: [], parserNotes: "no aircraft type links"}
+    }
+
+    const groups = new Map()
+    let rowsConsidered = 0
+    for (const link of links) {
+        const href = link.getAttribute("href") || ""
+        let typeId = null
+        let m = /aircraftsType\?id=(\d+)/.exec(href)
+        if (m) typeId = m[1]
+        if (!typeId) {
+            m = /aircraftTypes\/(\d+)/.exec(href)
+            if (m) typeId = m[1]
+        }
+        if (!typeId) continue
+        const typeCode = (link.textContent || "").trim() || "UNKNOWN"
+
+        // Find the <tr> ancestor — fall back to the link itself if the link
+        // appears outside a row (header cell etc.).
+        let tr = link.closest("tr")
+        if (!tr) continue
+        rowsConsidered++
+
+        // Skip any row that's clearly a header (only th cells) or a totals row.
+        const rowClass = (tr.className || "").toLowerCase()
+        if (/totals?|head|sum/.test(rowClass)) continue
+        const ths = tr.querySelectorAll("th")
+        const tds = tr.querySelectorAll("td")
+        if (!tds.length && ths.length) continue
+
+        const ageMonths = _extractAgeMonths(tr)
+        const key = typeId
+        const g = groups.get(key) || {
+            typeId:       typeId,
+            typeCode:     typeCode,
+            count:        0,
+            ageSumMonths: 0,
+            withAge:      0,
+            oldestMonths: null,
+            newestMonths: null
+        }
+        if (!g.typeCode || g.typeCode === "UNKNOWN") g.typeCode = typeCode
+        g.count += 1
+        if (ageMonths !== null && isFinite(ageMonths)) {
+            g.ageSumMonths += ageMonths
+            g.withAge += 1
+            if (g.oldestMonths === null || ageMonths > g.oldestMonths) g.oldestMonths = ageMonths
+            if (g.newestMonths === null || ageMonths < g.newestMonths) g.newestMonths = ageMonths
+        }
+        groups.set(key, g)
+    }
+
+    const out = []
+    for (const g of groups.values()) {
+        out.push({
+            typeId:       g.typeId,
+            typeCode:     g.typeCode,
+            count:        g.count,
+            avgAgeMonths: g.withAge > 0 ? Math.round(g.ageSumMonths / g.withAge) : null,
+            oldestMonths: g.oldestMonths,
+            newestMonths: g.newestMonths,
+            withAge:      g.withAge
+        })
+    }
+    out.sort((a, b) => (b.count || 0) - (a.count || 0))
+
+    const notes = []
+    if (rowsConsidered === 0) notes.push("no rows considered (links outside <tr>)")
+    if (out.length && out.every(g => g.avgAgeMonths === null)) {
+        notes.push("ages not parsed (column layout differs)")
+    }
+    return {fleetByType: out, parserNotes: notes.length ? notes.join("; ") : null}
+}
+
+/**
+ * Pull an aircraft age (in months) from a row. AS commonly renders age as
+ * "12m", "1 year 3 months", "1y 3mo", or sometimes a date-of-construction
+ * column. We accept any of those, normalising to total months.
+ */
+function _extractAgeMonths(tr) {
+    const tds = tr.querySelectorAll("td")
+    for (const td of tds) {
+        const text = (td.textContent || "").trim()
+        if (!text) continue
+        // "1 year 3 months" / "1y 3m"
+        let yrM = /(\d+)\s*(?:y|yr|year|yrs|jahr|jahre|ans?)\b/i.exec(text)
+        let moM = /(\d+)\s*(?:mo|mon|month|months|m|monat|mois)\b/i.exec(text)
+        // Avoid matching unrelated single-letter "m" inside other words.
+        if (yrM || moM) {
+            const yr = yrM ? parseInt(yrM[1], 10) : 0
+            const mo = moM ? parseInt(moM[1], 10) : 0
+            if (isFinite(yr + mo) && (yr + mo) >= 0) return yr * 12 + mo
+        }
+    }
+    return null
 }
 
 AesCompetitorEnterpriseScraper._airportFromRow = function(tr) {
