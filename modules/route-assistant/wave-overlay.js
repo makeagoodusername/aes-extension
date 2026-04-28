@@ -306,7 +306,10 @@ class RouteAssistantWaveOverlay {
         // pointer-events:none so flight-bar tooltips/clicks still work.
         if (o.showConnections !== false
             && build.connections && build.connections.length) {
-            RouteAssistantWaveOverlay._renderConnectionsOverlay(host, build.connections)
+            RouteAssistantWaveOverlay._renderConnectionsOverlay(host, build.connections, {
+                onInterlinePillClick: typeof o.onInterlinePillClick === "function"
+                    ? o.onInterlinePillClick : null
+            })
         }
 
         // ----- Warnings panel -----
@@ -624,7 +627,10 @@ class RouteAssistantWaveOverlay {
      *
      * Caller has already verified build.connections.length > 0.
      */
-    static _renderConnectionsOverlay(host, connections) {
+    static _renderConnectionsOverlay(host, connections, opts) {
+        const onPillClick = (opts && typeof opts.onInterlinePillClick === "function")
+            ? opts.onInterlinePillClick
+            : null
         host.style.position = "relative"
         const hostRect = host.getBoundingClientRect()
         const SVGNS = "http://www.w3.org/2000/svg"
@@ -708,6 +714,15 @@ class RouteAssistantWaveOverlay {
                     rect.dataset.inSeq  = String(c.inboundSeq)
                     rect.dataset.outSeq = String(c.outboundSeq)
                     rect.dataset.aesInterlinePill = "1"
+                    rect.dataset.aesDest = String(c.outboundDest || "")
+                    // Tooltip via SVG <title> — surfaces per-class detail
+                    // and partner names on hover without a custom popover.
+                    const tip = RouteAssistantWaveOverlay._formatInterlineShareTooltip(c.interlineShare)
+                    if (tip) {
+                        const titleNode = document.createElementNS(SVGNS, "title")
+                        titleNode.textContent = tip
+                        rect.append(titleNode)
+                    }
                     svg.append(rect)
                     const text = document.createElementNS(SVGNS, "text")
                     text.setAttribute("x", String(midX))
@@ -721,8 +736,31 @@ class RouteAssistantWaveOverlay {
                     text.dataset.inSeq  = String(c.inboundSeq)
                     text.dataset.outSeq = String(c.outboundSeq)
                     text.dataset.aesInterlinePill = "1"
+                    text.dataset.aesDest = String(c.outboundDest || "")
                     text.textContent = label
+                    if (tip) {
+                        const titleNode2 = document.createElementNS(SVGNS, "title")
+                        titleNode2.textContent = tip
+                        text.append(titleNode2)
+                    }
                     svg.append(text)
+                    // Click-through to the panel's per-route popover. The
+                    // SVG sits behind a pointer-events:none wrapper, so we
+                    // re-enable pointer events on the pill nodes only.
+                    if (onPillClick && c.outboundDest) {
+                        rect.style.pointerEvents = "auto"
+                        rect.style.cursor = "pointer"
+                        text.style.pointerEvents = "auto"
+                        text.style.cursor = "pointer"
+                        const handler = (ev) => {
+                            ev.preventDefault()
+                            ev.stopPropagation()
+                            try { onPillClick(String(c.outboundDest), rect) }
+                            catch (_) { /* swallow — pill click never blocks */ }
+                        }
+                        rect.addEventListener("click", handler)
+                        text.addEventListener("click", handler)
+                    }
                 }
             }
         }
@@ -746,6 +784,32 @@ class RouteAssistantWaveOverlay {
         if (pax && cargo) return "P " + pax + "% · C " + cargo + "%"
         if (pax) return "Y " + pax + "%"
         return "C " + cargo + "%"
+    }
+
+    /**
+     * H slice 3b.2 follow-up — multi-line tooltip for the pill. SVG <title>
+     * elements support newlines, so we surface the per-class breakdown
+     * (Y / C / F) when an asymmetric record exists. Falls back to the
+     * aggregate paxPercent when only umbrella PAX entries are present.
+     */
+    static _formatInterlineShareTooltip(share) {
+        if (!share) return null
+        const lines = []
+        const byClass = share.byClass || null
+        if (byClass) {
+            for (const cls of ["Y", "C", "F"]) {
+                const v = Math.round(Number(byClass[cls]) || 0)
+                if (v > 0) lines.push("• " + cls + ": " + v + "% interlined")
+            }
+        }
+        if (!lines.length && share.paxPercent > 0) {
+            lines.push("• Pax: " + Math.round(share.paxPercent) + "% interlined")
+        }
+        if (share.cargoPercent > 0) {
+            lines.push("• Cargo: " + Math.round(share.cargoPercent) + "% interlined")
+        }
+        if (!lines.length) return null
+        return "Interline share on this route\n" + lines.join("\n") + "\nClick to edit partners."
     }
 
     /**

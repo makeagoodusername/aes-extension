@@ -426,10 +426,24 @@ class RouteAssistantAggregator {
         // estimator's effective LF/yield/falloff so it stays internally
         // consistent with the displayed $/flt, then redistributes across
         // classes via classYieldMult and per-class costs.
+        //
+        // H slice 3b.2 follow-up — when an interline record is present,
+        // applying the estimator's flat post-interline LF to every class
+        // under-models C + F revenue when the codeshare is class-asymmetric
+        // (e.g. "30% Y interlined, no C interlined" loses 30% of C revenue
+        // it shouldn't). We resolve per-class accuracy by reading the
+        // pre-interline LF off the breakdown and re-applying the per-class
+        // share from `row.interlineShares.byClass`. The aggregate $/flt
+        // (which doesn't know the class split) still uses the flat
+        // reduction — that's the right call there because the breakdown
+        // for the aggregate is unobservable downstream.
         const baseYield = Number(breakdown.yieldPerKm) || 0
         const yDemand   = Number(breakdown.yieldDemandMultiplier) || 1
         const yMult     = Number(breakdown.yieldMultiplier) || 1
-        const lf        = Number(breakdown.paxLoadFactor) || 0
+        const lfPostInterline = Number(breakdown.paxLoadFactor) || 0
+        const lfPreInterline  = Number(breakdown.paxLoadFactorPreInterline)
+        const lfPre = isFinite(lfPreInterline) ? lfPreInterline : lfPostInterline
+        const interlineByClass = (row.interlineShares && row.interlineShares.byClass) || null
         const distRT    = Number(breakdown.distanceRoundTripKm) || 0
         const svcLevelMult = eff.serviceLevelYieldMult
         const svcLevelPerPaxCost = eff.serviceLevelCostPerPax
@@ -448,7 +462,18 @@ class RouteAssistantAggregator {
         for (const cls of ["Y", "C", "F"]) {
             const f = eff.classFares[cls]
             const seatsCls = seatsByClass[cls]
-            const filled = seatsCls * lf
+            const clsInterlinePct = interlineByClass
+                ? Math.max(0, Math.min(100, Number(interlineByClass[cls]) || 0))
+                : 0
+            // Per-class LF: pre-interline LF reduced by the class-specific
+            // share. Falls back to lfPostInterline (the estimator's flat
+            // figure) when no interline record is present, which preserves
+            // the previous behavior bit-for-bit on routes with no
+            // codeshare data.
+            const lfCls = (interlineByClass && lfPre)
+                ? lfPre * (1 - clsInterlinePct / 100)
+                : lfPostInterline
+            const filled = seatsCls * lfCls
             const scrapedFare = scrapedFares && scrapedFares[cls]
             const scrapedYield = (typeof scrapedFare === "number" && scrapedFare > 0 && distanceOneWay > 0)
                 ? (scrapedFare / distanceOneWay)
@@ -471,6 +496,8 @@ class RouteAssistantAggregator {
             classes[cls] = {
                 seats:           seatsCls,
                 seatsFilled:     Math.round(filled * 10) / 10,
+                loadFactor:      Math.round(lfCls * 1000) / 1000,
+                interlinePercent: clsInterlinePct,
                 yieldPerKm:      Math.round(yieldUsed * 10000) / 10000,
                 yieldOverride:   f.yieldPerKmOverride !== null,
                 yieldSource:     yieldSource,
@@ -551,10 +578,20 @@ class RouteAssistantAggregator {
 
     /**
      * H slice 3b.2 — fold the interline-store partner list into the
-     * `{paxPercent, cargoPercent}` shape the profit estimator expects.
-     * PAX / Y / C / F partners all reduce passenger LF (PAX is the umbrella
-     * code; Y/C/F are explicit subclasses) so they sum into paxPercent.
-     * CARGO partners reduce cargo LF.
+     * shape the profit estimator + service-projection expect.
+     *
+     * Two views are surfaced together because they serve different math:
+     *   - `paxPercent` / `cargoPercent` — aggregate sums for the estimator,
+     *     which computes a single $/flt against an aggregate LF. PAX/Y/C/F
+     *     all reduce paxPercent; CARGO reduces cargoPercent.
+     *   - `byClass` — per-class shares for the service-projection, which
+     *     needs an accurate Y vs C vs F revenue split. A "PAX" partner is
+     *     the umbrella code that applies to all three pax classes equally;
+     *     specific Y/C/F partners only affect their class. This matters
+     *     when interline is class-asymmetric (e.g. 30% Y interlined, no C
+     *     interlined): the aggregate paxPercent under-models C + F revenue
+     *     because the LF reduction is uniform across all classes; byClass
+     *     restores precision in the service-projection layer.
      *
      * Returns null when the record is empty/missing so callers can skip
      * cheaply with truthy checks.
@@ -563,16 +600,31 @@ class RouteAssistantAggregator {
         if (!record || !Array.isArray(record.partners) || !record.partners.length) return null
         let pax = 0
         let cargo = 0
+        let umbrellaPax = 0  // PAX = applies to Y, C, F equally
+        const cls = {Y: 0, C: 0, F: 0}
         for (const p of record.partners) {
             const v = Number(p && p.sharePercent) || 0
             if (v <= 0) continue
-            if (p.productClass === "CARGO") cargo += v
-            else pax += v
+            const k = p.productClass
+            if (k === "CARGO") {
+                cargo += v
+                continue
+            }
+            pax += v
+            if (k === "PAX") umbrellaPax += v
+            else if (k === "Y" || k === "C" || k === "F") cls[k] += v
         }
         if (pax <= 0 && cargo <= 0) return null
+        // Distribute the umbrella across each pax class — caps at 100 so an
+        // over-allocation in the popover doesn't escape into negative seats.
         return {
             paxPercent:   Math.min(100, pax),
-            cargoPercent: Math.min(100, cargo)
+            cargoPercent: Math.min(100, cargo),
+            byClass: {
+                Y: Math.min(100, cls.Y + umbrellaPax),
+                C: Math.min(100, cls.C + umbrellaPax),
+                F: Math.min(100, cls.F + umbrellaPax)
+            }
         }
     }
 

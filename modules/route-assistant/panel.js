@@ -5318,6 +5318,20 @@ class RouteAssistantPanel {
                         + encodeURIComponent(pickedHub) + encodeURIComponent(partner)
                     window.open(url, "_blank", "noopener")
                 }
+            },
+            // H slice 3b.2 follow-up — pill click-through opens the per-route
+            // popover. Hub-pinned popover only works when the pill's hub
+            // matches the panel's hub; cross-hub views fall back to opening
+            // the destination's scheduling page in a new tab.
+            onInterlinePillClick: (destIata, anchorEl) => {
+                if (this.hubIata && pickedHub
+                        && String(this.hubIata).toUpperCase() === String(pickedHub).toUpperCase()) {
+                    this._openInterlinePopover({destIata: String(destIata).toUpperCase()}, anchorEl)
+                } else if (pickedHub && destIata) {
+                    const url = "/app/com/scheduling/"
+                        + encodeURIComponent(pickedHub) + encodeURIComponent(destIata)
+                    window.open(url, "_blank", "noopener")
+                }
             }
         }, editorOpts, dndOpts))
 
@@ -6830,6 +6844,44 @@ class RouteAssistantPanel {
             if (!rec) return null
             return RouteAssistantAggregator._interlineSharesFromRecord(rec)
         }
+    }
+
+    /**
+     * H slice 3b.2 follow-up — invalidate the panel's interline cache and
+     * re-render after the popover saves. Without this, the wave-overlay
+     * pill + estimator LF reduction stayed stale until the next refresh()
+     * (or hub re-mount), and users had no signal that their popover edits
+     * had affected the math.
+     *
+     * `record` is the post-save record returned by the store (null when
+     * the route has been cleared to zero partners). The aggregator's
+     * `_recomputeRowInterlineShares` (paired below) walks the rows once
+     * and updates only the matching destination so the re-apply pass is
+     * targeted rather than a full rebuild.
+     */
+    _onInterlineRecordSaved(hubIata, destIata, record) {
+        if (!hubIata || !destIata) return
+        const key = String(hubIata).toUpperCase() + "-" + String(destIata).toUpperCase()
+        if (record && Array.isArray(record.partners) && record.partners.length) {
+            this.interlineByPair.set(key, record)
+        } else {
+            this.interlineByPair.delete(key)
+        }
+        // Update the matching row's interlineShares + re-derive the
+        // estimator's profit fields so the table values stay in sync
+        // (per-class breakdown picks up the new shares on next render).
+        if (Array.isArray(this.rows)) {
+            for (const row of this.rows) {
+                if (!row || row.destIata !== String(destIata).toUpperCase()) continue
+                row.interlineShares = RouteAssistantAggregator._interlineSharesFromRecord(record)
+                break
+            }
+            RouteAssistantAggregator.applyFleetContext(this.rows, this._fleetContext(), this._serviceContext())
+        }
+        // Bust the wave build so the next render pulls fresh interline
+        // annotations through buildSchedule's lookup callback.
+        this._waveBuild = null
+        if (typeof this._render === "function") this._render()
     }
 
     /**
@@ -14570,6 +14622,19 @@ class RouteAssistantPanel {
                     "Cleared " + cleared + " interline record"
                     + (cleared === 1 ? "" : "s") + ".")
             }
+            // Invalidate the panel's per-route caches in one pass so the
+            // wave overlay drops every pill + the estimator stops trimming
+            // LF without waiting for the next refresh().
+            if (cleared > 0) {
+                this.interlineByPair.clear()
+                if (Array.isArray(this.rows)) {
+                    for (const r of this.rows) { if (r) r.interlineShares = null }
+                    RouteAssistantAggregator.applyFleetContext(
+                        this.rows, this._fleetContext(), this._serviceContext())
+                }
+                this._waveBuild = null
+                if (typeof this._render === "function") this._render()
+            }
             await refresh()
         })
         ctrlRow.append(clearBtn)
@@ -18141,6 +18206,7 @@ class RouteAssistantPanel {
                     const next = await RouteAssistantInterlineStore.removePartner(
                         hubU, destU, p.partnerEnterpriseId, p.productClass)
                     record = next || {pair: hubU + "-" + destU, partners: [], updatedAt: null}
+                    this._onInterlineRecordSaved(hubU, destU, next)
                     renderList(); renderFooter()
                 })
                 xTd.append(rmBtn)
@@ -18285,6 +18351,7 @@ class RouteAssistantPanel {
                 }
                 record = next
                 formOpen = false
+                this._onInterlineRecordSaved(hubU, destU, next)
                 renderList(); renderFooter(); renderForm()
             })
             btnRow.append(cancelBtn, saveBtn)
@@ -18323,6 +18390,7 @@ class RouteAssistantPanel {
                     if (!window.confirm("Remove all interline entries on " + hubU + "→" + destU + "?")) return
                     await RouteAssistantInterlineStore.clear(hubU, destU)
                     record = {pair: hubU + "-" + destU, partners: [], updatedAt: null}
+                    this._onInterlineRecordSaved(hubU, destU, null)
                     renderList(); renderFooter()
                 })
                 right.append(clearBtn)
