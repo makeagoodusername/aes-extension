@@ -379,6 +379,7 @@
                 "modules/aircraft-flight-plan/flight-studio/leg-spec.js",
                 "modules/aircraft-flight-plan/flight-studio/draft-store.js",
                 "modules/aircraft-flight-plan/flight-studio/templates-store.js",
+                "modules/aircraft-flight-plan/flight-studio/station-drawer.js",
                 "modules/aircraft-flight-plan/flight-studio/panel.js",
                 "content_aircraftFlightPlan.js"
             ],

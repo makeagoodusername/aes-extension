@@ -803,11 +803,13 @@
 
         wrap.append(labelSpan, hubInput)
 
-        // Open Stations — primary opens the modal seeded with the visible
-        // candidate-list rows, secondary "▾" exposes the legacy bulk-open
-        // (top routes / watchlist / FlightsFrom / demand). Both require
-        // OpenStationsModal + a resolved hub + server/airlineCode in ctx.
-        const baseEnabled = !!hub && typeof OpenStationsModal !== "undefined"
+        // F3b — primary "Open station" opens the per-airport drawer rooted
+        // on the active hub (demand, top routes, schedule conflicts). Caret
+        // ▾ keeps the legacy bulk-open modal (top routes / watchlist /
+        // FlightsFrom / demand) for users who still want the multi-station
+        // sweep view.
+        const drawerEnabled = !!hub && typeof window.AesAfpStationDrawer !== "undefined"
+        const legacyEnabled = !!hub && typeof OpenStationsModal !== "undefined"
             && !!ctx.server && !!ctx.airlineCode
         const openModal = (extraOpts) => {
             if (typeof OpenStationsModal === "undefined") {
@@ -825,52 +827,24 @@
                 console.warn("[AES AFP] OpenStationsModal threw", e)
             }
         }
-        const visibleIatas = () =>
-            (typeof AesAfpRouteCandidates !== "undefined"
-                && typeof AesAfpRouteCandidates.visibleIatas === "function")
-                ? AesAfpRouteCandidates.visibleIatas() : []
 
         const group = document.createElement("span")
         group.style.cssText = "display:inline-flex;gap:0;"
 
-        const stationsBtn = mkToolButton("Open stations…",
-            "", // tooltip set dynamically below
-            baseEnabled,
+        const stationsBtn = mkToolButton("Open station",
+            drawerEnabled
+                ? "Open the station drawer for " + hub + " (demand, top routes, conflicts)."
+                : (hub ? "Station drawer module not loaded — check manifest order."
+                       : "Hub not yet resolved — refresh once Slice A finds the aircraft's last airport."),
+            drawerEnabled,
             () => {
-                const seed = visibleIatas()
-                if (!seed.length) return
-                openModal({seedIatas: seed, seedSource: "candidates"})
+                if (!drawerEnabled) return
+                AesAfpStationDrawer.open(hub, {hub})
             })
         // Override the corner radius so it sits flush with the caret.
         stationsBtn.style.borderTopRightRadius    = "0"
         stationsBtn.style.borderBottomRightRadius = "0"
         stationsBtn.style.borderRight             = "1px solid #1f2937"
-        const refreshStationsBtn = () => {
-            const seed = visibleIatas()
-            const hasSeed = baseEnabled && seed.length > 0
-            stationsBtn.disabled = !hasSeed
-            stationsBtn.style.cursor = hasSeed ? "pointer" : "not-allowed"
-            stationsBtn.style.background = hasSeed ? "#0f1623" : "#1f2937"
-            stationsBtn.style.color      = hasSeed ? "#cbd5e1" : "#6b7280"
-            if (!baseEnabled) {
-                stationsBtn.title = "Hub not yet resolved — refresh once Slice A finds the aircraft's last airport."
-            } else if (!seed.length) {
-                stationsBtn.title = "Open Stations — no candidates visible yet. The button activates once the candidate list above renders."
-            } else {
-                stationsBtn.title = `Open the ${seed.length} destination${seed.length === 1 ? "" : "s"} currently visible in the candidate list above (respects Range-fit / Hide scheduled / Top filters).`
-            }
-        }
-        refreshStationsBtn()
-        // Re-evaluate enabled state when the candidate list re-renders.
-        // Wicket re-mounts this strip on every form submit, so detach the
-        // previous handler first to avoid leaking stale closures + DOM refs.
-        if (window.AesAfp && AesAfp.bus) {
-            try {
-                if (_candidatesUpdatedHandler) AesAfp.bus.off("candidates:updated", _candidatesUpdatedHandler)
-                AesAfp.bus.on("candidates:updated", refreshStationsBtn)
-                _candidatesUpdatedHandler = refreshStationsBtn
-            } catch (_) {}
-        }
 
         // Caret = legacy bulk-open path (top routes / watchlist / FlightsFrom
         // / demand). Single secondary action so we skip the dropdown menu —
@@ -881,15 +855,15 @@
         caretBtn.title = hub
             ? `Bulk-open from watchlist / top routes / FlightsFrom / demand (scoped to ${hub} for the watchlist source).`
             : "Bulk-open from watchlist / top routes / FlightsFrom / demand."
-        caretBtn.style.cssText = "background:" + (baseEnabled ? "#0f1623" : "#1f2937") + ";"
-            + "color:" + (baseEnabled ? "#cbd5e1" : "#6b7280") + ";"
+        caretBtn.style.cssText = "background:" + (legacyEnabled ? "#0f1623" : "#1f2937") + ";"
+            + "color:" + (legacyEnabled ? "#cbd5e1" : "#6b7280") + ";"
             + "border:1px solid #374151;border-left:none;"
             + "border-top-left-radius:0;border-bottom-left-radius:0;"
             + "border-top-right-radius:4px;border-bottom-right-radius:4px;"
             + "padding:4px 6px;font-size:11px;font-weight:600;"
-            + "cursor:" + (baseEnabled ? "pointer" : "not-allowed") + ";"
-        caretBtn.disabled = !baseEnabled
-        if (baseEnabled) caretBtn.addEventListener("click", () => openModal({}))
+            + "cursor:" + (legacyEnabled ? "pointer" : "not-allowed") + ";"
+        caretBtn.disabled = !legacyEnabled
+        if (legacyEnabled) caretBtn.addEventListener("click", () => openModal({}))
 
         group.append(stationsBtn, caretBtn)
         wrap.appendChild(group)
@@ -1008,7 +982,6 @@
 
     let _observer = null
     let _remountTimer = null
-    let _candidatesUpdatedHandler = null
     let _refreshUpdatedHandler = null
 
     /**
