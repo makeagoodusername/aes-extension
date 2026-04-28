@@ -124,6 +124,7 @@ aesStrategy:learn:outcomes        → ring buffer of (plan, before, after) tuple
 aesStrategy:plan:proposed         → most recent proposed FleetPlan (preview cache)
 aesStrategy:plan:applied          → most recent applied FleetPlan
 aesStrategy:audit                 → ring buffer of every applied decision (cap 500)
+aesStrategy:journal               → narrative ring of override/note/watchlist/apply/weight events (cap 750; per-account scoped at acct:<id>)
 aesStrategy:backtest:results      → cached backtest results
 aesStrategy:_budget               → byte accounting metadata
 ```
@@ -306,9 +307,13 @@ For each typeId in fleet plan:
 
 ---
 
-### Slice 4 ⬜ Strategy Preview UI + Apply
+### Slice 4 ✅ Strategy Preview UI + Apply
 
-**Goal:** dashboard tile + per-aircraft inline panel that shows the proposed plan, lets the user inspect rationale per decision, and applies via the existing actuators with explicit confirm.
+**Status:** shipped. Files: `modules/strategy/default-settings.js`, `modules/strategy/diff-plan.js`, `modules/strategy/apply-pipeline.js`, `modules/strategy/panel.js`, `modules/central-hub/tiles/strategy-tile.js`. Manifest-wired on dashboard + `/app/fleets*`. Tile defaults `tier: "preview-only"` + every `*Enabled` flag false — no POST happens until the user flips both the tier AND the relevant domain flag. See HANDOVER §1 "Strategy Slice 4" for the full verification matrix.
+
+**v1 deferrals (carried into Slices 5/6/7):** service moves with empty `changes` (Slice 7 fills the per-category change set), route creation (Slice 6 ships the auto-add actuator), closed-loop learning (Slice 5), per-aircraft schedule slicing currently all-or-nothing inside the orchestrator (each aircraft is a separate decision-id; selecting only some tails works at the strategy layer but the orchestrator aborts the whole batch if AFP tier-gate is dormant — flagged in `report.aborted`).
+
+**Goal (original spec):** dashboard tile + per-aircraft inline panel that shows the proposed plan, lets the user inspect rationale per decision, and applies via the existing actuators with explicit confirm.
 
 **UI surfaces:**
 
@@ -406,9 +411,13 @@ strategy: {
 
 ---
 
-### Slice 5 ⬜ Closed-Loop Learning
+### Slice 5 ✅ Closed-Loop Learning
 
-**Goal:** the engine measures itself and self-tunes its weights.
+**Status:** shipped. Files: `modules/strategy/outcomes.js`, `modules/strategy/learn.js` + wiring into `apply-pipeline.js`, `panel.js`, `central-hub/tiles/strategy-tile.js`. Manifest-wired on dashboard + `/app/fleets*`. See HANDOVER §1 "Strategy Slice 5" for the full feature/verification matrix.
+
+**v1 deferrals (carried into Slice 15 / 17):** the gradient estimator uses `weeklyResult` delta as the sole reward signal — per-route P&L attribution + ORS delta + load-factor delta layers ship in Slice 15's backtesting harness; Slice 17 risk profiles will set step-size + cohort filters per profile.
+
+**Goal (original spec):** the engine measures itself and self-tunes its weights.
 
 **Mechanism:**
 
@@ -449,9 +458,13 @@ async function learn(opts) {
 
 ---
 
-### Slice 6 ⬜ Auto Route Creation
+### Slice 6 ✅ Auto Route Creation
 
-**Goal:** the engine proposes — and on opt-in, applies — brand-new routes the airline isn't yet flying. Critical because the user explicitly said: *"It should also automate the creation of the new routes."*
+**Status:** shipped. Files: `modules/strategy/route-creation-applier.js` + wiring into `apply-pipeline.js` + `diff-plan.js`. Manifest-wired on dashboard + `/app/fleets*`. Aircraft selection prefers in-hub tails by wear headroom; legs spread evenly across 06:00–22:00 with a 60-min ground turn. See HANDOVER §1 "Strategy Slice 6" for the full feature/verification matrix.
+
+**v1 deferrals (carried into Slice 6.1 / Slice 12 / Slice 16):** network-effect scoring (Slice 12 codeshare/IL bonus); slot availability check (Slice L11); wave-aware leg spread consulting user preset (Slice 6.1); auto-apply tier driving creations without a user click (Slice 16 executive briefing).
+
+**Goal (original spec):** the engine proposes — and on opt-in, applies — brand-new routes the airline isn't yet flying. Critical because the user explicitly said: *"It should also automate the creation of the new routes."*
 
 **Already partially scoped in Slice 3 (`route-creation.js`).** Slice 6 elevates it to a first-class workflow with:
 
@@ -755,6 +768,249 @@ UI surfaces three preset radio buttons and an "Advanced…" expander showing eve
 
 ---
 
+### Slices 21–32 — Expansion ideas
+
+A second wave of slices, captured from a brainstorm round. These extend the engine beyond "rank + apply" into *exploration*, *risk*, *autonomy*, *memory*, and *new interaction surfaces*. Numbering continues from Slice 20; each entry follows the same Goal / Mechanism / Files shape so it can be picked up independently.
+
+A few brainstorm items map onto existing slices rather than new ones — recorded here so they're not lost:
+
+| Brainstorm idea | Folds into |
+|---|---|
+| Counterfactual replay ("what if I'd opened this 3 weeks ago") | Slice 15 (Backtesting Harness) |
+| Hub-of-hubs optimizer | Slice 14 (Hub Network Designer) |
+| Route swap suggestions | Slice 3 (Fleet Co-Allocator) |
+| Alliance & codeshare dashboard | Slice 12 (Alliance & IL Optimization) |
+| Boardroom / annual-report PDF export | Slice 16 (Executive Briefing UI) |
+| Cross-game-world strategy memory | Slice 18 (Multi-Game-World Federation) |
+| Auto-pilot "shadow CEO" weekly batch + rollback checkpoints | Slice 4 (Apply pipeline, new tier) |
+
+---
+
+### Slice 21 ⬜ Scenario Forks (what-if branches)
+
+**Goal:** let the user fork the current `Snapshot` into named hypothetical worlds ("buy 5× A350", "exit South America", "open BOM hub"), run the scoring + allocator forward N weeks against each fork, and present a side-by-side P&L tree. Decision board on top of the existing engine.
+
+**Mechanism:**
+
+1. `AesStrategy.forkSnapshot(snapshot, mutations[])` — applies a list of declarative diffs (add tail, remove route, change weight) into a copy without mutating the original.
+2. `AesStrategy.simulateForward(fork, weeks)` — re-uses Slice 5's predicted-vs-observed model in *predict* mode, no observation loop.
+3. New `ScenarioStore` (capped at ~12 named forks, 50 KB each) persists user-saved scenarios so they survive reloads.
+4. UI: a "Scenarios" tab in the executive briefing that shows the fork tree with terminal-node P&L and a click-to-diff against baseline.
+
+**Files:**
+
+- new `modules/strategy/scenarios.js`
+- new `modules/strategy/scenario-store.js`
+- new `modules/strategy/scenarios-tab.js`
+
+---
+
+### Slice 22 ⬜ Probabilistic Demand & Risk Fans
+
+**Goal:** replace point estimates of paxLF / yield / cargoLF with sampled distributions drawn from the per-route observation history, so every $/wk number ships with a P10/P50/P90 fan. Enables honest risk talk: "Loss-makers" chip can become "P10 negative", "Override" can become "tighten σ on this row".
+
+**Mechanism:**
+
+1. `RouteAssistantYieldFeedbackStore` already accumulates per-route observation residuals — fit a per-route empirical distribution (or normal with shrinkage when n < 10).
+2. New `AesStrategy.sample(snapshot, {iters: 1000})` — Monte Carlo over the snapshot, returns per-route quantiles.
+3. Score blends gain a **risk-aversion** term `λ × σ($/wk)` so the engine can be pushed conservative or aggressive via a single slider.
+4. RA table: hover a $/wk cell → mini-violin sparkline.
+
+**Files:**
+
+- new `modules/strategy/probabilistic.js`
+- extends `modules/route-assistant/yield-feedback-store.js`
+- extends `modules/route-assistant/panel.js` (cell hover)
+
+---
+
+### Slice 23 ⬜ Goal-Seeker
+
+**Goal:** user states a goal in plain terms ("reach $500M cash by week 80 without touching SE Asia", "double my widebody fleet utilisation"), and the engine searches the decision space for plan bundles that satisfy it.
+
+**Mechanism:**
+
+1. Goal grammar: `{metric, op, target, deadline, constraints[]}`. Surface as a guided form, not free text.
+2. Search: beam-search over Slice 4 plan bundles, evaluating each terminal state with Slice 21's forward simulator.
+3. Returns the top-K bundles ranked by feasibility × expected slack.
+4. Output renders into the existing Slice 4 preview UI — the goal-seeker is a *generator* of plans, not a new applier.
+
+**Files:**
+
+- new `modules/strategy/goal-seeker.js`
+- new `modules/strategy/goal-form.js`
+
+---
+
+### Slice 24 ⬜ Standing Orders Rule Engine
+
+**Goal:** a first-class home for declarative ongoing rules — "if any 2-class widebody drops below 60% LF for 2 weeks, downgauge or kill"; "auto-reprice any route with >25% yield variance for 7 days"; "forbid opening any route within 800 km of an incumbent ≥3 carriers". The Q+ alerts foundation already exists; this elevates rules from notify-only to *actionable* with engine integration.
+
+**Mechanism:**
+
+1. Rule schema: `{when, where, threshold, hold-for, action, requireConfirm}`.
+2. Evaluator runs after every snapshot refresh; matched rules emit decisions into the same Slice 4 plan stream as the engine's own proposals (sourced "rule:<id>" so the audit trail distinguishes them).
+3. New "Standing Orders" drawer in the executive briefing — list, enable/disable, edit, last-fired log.
+4. Composes with risk profiles (Slice 17): a profile can ship a default rule pack.
+
+**Files:**
+
+- new `modules/strategy/standing-orders.js`
+- new `modules/strategy/standing-orders-store.js`
+- new `modules/strategy/standing-orders-panel.js`
+
+---
+
+### Slice 25 ⬜ Network Graph & Time-Scrubber View
+
+**Goal:** a force-directed full-network visualisation — nodes = airports sized by $/wk, edges = routes thickened by frequency, coloured by LF — with a time-scrubber along the top that re-renders every panel against any prior snapshot. Strategic comprehension at a glance.
+
+**Mechanism:**
+
+1. Network graph: D3-force in a Shadow DOM panel; data sourced from `Snapshot`. Node click → drill into RA panel filtered to that hub.
+2. Time-scrubber: `AccountingSnapshotStore` already stores periodic snapshots; expose a hub-level scrubber that broadcasts a "view-time" through the bus, and have RA / wave overlay / dashboard tiles subscribe and re-render against the scrubbed snapshot.
+3. Diff badges become always-on: every cell shows ▲▼ vs the scrubbed reference time.
+
+**Files:**
+
+- new `modules/strategy/network-graph.js`
+- new `modules/strategy/time-scrubber.js`
+- extends `modules/strategy/message-bus.js` (new `view-time` channel)
+
+---
+
+### Slice 26 — Strategy Journal & Lessons Mining (Phase 1 ✅; Phases 2/3 ⬜)
+
+**Goal:** auto-log every override, opening, pricing change, and rule fire, with the user's typed reason if any. After a few months of play, mine the journal for patterns: "of your 14 CDG openings, the 5 that died early all had >3 incumbents AND distance <800 km — flagging this candidate."
+
+**Phase 1 ✅ (this session):** `journal-store.js` + `journal-panel.js` shipped — single per-account ring `aesStrategy:journal:acct:<id>` (cap 750), hybrid passive/active subscriber, panel section at the bottom of the strategy modal with click-to-edit reason cells. Five action types: `override-save`, `note-save`, `watchlist-toggle`, `apply-decision`, `weight-change`. Phase 2 + 3 reserve `outcomeRef`, `tags`, `voiceMemoId` slots so they don't migrate.
+
+**Phase 2 ⬜ — Lesson miner.** `modules/strategy/lesson-miner.js` reads `journal × outcomes` joined via `outcomeRef`, clusters by route attributes (incumbent count, distance band, hub, equipment family), correlates with "alive at +8 weeks" outcome bit, surfaces top patterns as `strategy:lesson-mined` events for the executive briefing.
+
+**Phase 3 ⬜ — Voice memos.** Browser MediaRecorder + Web Speech API; entry's reserved `voiceMemoId` slot points to a separate `aesStrategy:journal:voice:<id>` keyed blob (kept out of the entry to avoid bloating the ring).
+
+**Files:**
+
+- ✅ `modules/strategy/journal-store.js`
+- ✅ `modules/strategy/journal-panel.js`
+- ⬜ `modules/strategy/lesson-miner.js`
+
+---
+
+### Slice 27 ⬜ Markets Gossip Feed
+
+**Goal:** a chronological "anomaly events" feed across the whole airline — incumbent drops 30% price on FRA-GRU, new entrant on JFK-LHR, hub gets a slot expansion announcement, sister airline opens a route into your territory. Feeds into Slice 24 rules and Slice 16 briefing.
+
+**Mechanism:**
+
+1. Anomaly detectors run on each scrape:
+   - markets pricing diff > Nσ
+   - new carrier appears in flightsfrom data for a route you fly
+   - own LF drop > Nσ over 2 weeks
+   - sister airline mutation (covered already, surface here)
+2. Events flow into a `GossipStore` (capped, TTL'd).
+3. Notification center wiring (already exists) gets a "gossip" channel; the executive briefing shows the last 20.
+
+**Files:**
+
+- new `modules/strategy/gossip-detectors.js`
+- new `modules/strategy/gossip-store.js`
+- extends `modules/route-assistant/notification-center.js`
+
+---
+
+### Slice 28 ⬜ Local LLM Co-Pilot (no API keys)
+
+**Goal:** a chat affordance that can read the snapshot + journal + recent gossip and answer in natural language ("explain why JFK-EZE dropped to UNDER", "draft a message to Alliance partner X about codesharing on AMS-DXB"). Runs in-browser via WebLLM/WebGPU or via a local Ollama endpoint — no cloud, no keys, no costs.
+
+**Mechanism:**
+
+1. Pluggable backend: `WebLLMBackend` (in-tab WebGPU) and `OllamaBackend` (POST to `http://localhost:11434`); user picks in settings.
+2. Tool-use is *snapshot-bounded* — the LLM can only call read functions that already exist on the strategy namespace; never POSTs to AS.
+3. The chat surface is anchored next to the executive briefing and prefilled with context (current hub, current selection).
+4. Privacy invariant: nothing leaves the machine.
+
+**Files:**
+
+- new `modules/strategy/copilot/index.js`
+- new `modules/strategy/copilot/webllm-backend.js`
+- new `modules/strategy/copilot/ollama-backend.js`
+- new `modules/strategy/copilot/chat-panel.js`
+
+---
+
+### Slice 29 ⬜ Command Palette & Spatial Pinboard
+
+**Goal:** a unified Cmd-K command palette over every action across the extension (open hub, jump to route, toggle filter, fire rule), and a freeform spatial pinboard where the user can rip rows out of the RA table, group them, draw arrows, attach notes. Treats strategic thinking as a canvas, not a table.
+
+**Mechanism:**
+
+1. Palette: a registry pattern — each module registers `{id, title, group, run()}` at load time. Cmd-K opens a fuzzy-match list. The 50+ existing features become discoverable in one keystroke.
+2. Pinboard: an HTML canvas-style surface (DOM + transforms, no canvas) where pinned items are live React-style cards bound to their source row — cell values stay live as scrapes update.
+
+**Files:**
+
+- new `modules/ux/command-palette.js`
+- new `modules/ux/command-registry.js`
+- new `modules/ux/pinboard.js`
+- new `modules/ux/pinboard-store.js`
+
+---
+
+### Slice 30 ⬜ Public Read-Only API
+
+**Goal:** expose the snapshot + journal over a localhost HTTP endpoint so the user (or their Discord bot, their dashboards, their own scripts) can pull cached state without touching AS.
+
+**Mechanism:**
+
+1. A native messaging host (or a tiny localhost server packaged as an optional companion binary) reads from `chrome.storage.local` via the extension and serves JSON.
+2. Endpoints: `GET /snapshot`, `GET /journal?since=…`, `GET /scenarios`. Read-only; no apply.
+3. Auth: a per-install token in settings; required header. No CORS to keep it scriptable.
+
+**Files:**
+
+- new `modules/strategy/api-bridge.js`
+- new `companion/server.go` (or `.py` — small enough to ship both)
+- docs page
+
+---
+
+### Slice 31 ⬜ Real-World Reality Check Overlay
+
+**Goal:** pull real-world O&D estimates / route-launch news (anonymized, batched, low-frequency) and overlay them on the RA panel so the user can sanity-check AS demand against reality. "AS says JFK-EZE is OVER but the real-world market grew 18% YoY — maybe hold."
+
+**Mechanism:**
+
+1. Source: a small open dataset bundled in the extension (refreshed via update channel), keyed by IATA pair. No live fetches in v1 to keep it dependency-free.
+2. New "Reality" column group in RA: `realDemandBand`, `realYoY`, `recentLaunches`.
+3. Score blend gains an optional "reality alignment" term (off by default).
+
+**Files:**
+
+- new `modules/route-assistant/reality-store.js`
+- bundled `data/real-world-od.json`
+- extends `modules/route-assistant/panel.js` (column group)
+
+---
+
+### Slice 32 ⬜ Scenario Puzzle Mode
+
+**Goal:** the engine generates synthetic frozen worlds with a stated goal ("reach $50M cash in 12 simulated weeks given this fleet, hub, and competitor field"), and the user solves them as practice — score, leaderboard (local), shareable seeds. Turns the strategy engine into a learnable craft.
+
+**Mechanism:**
+
+1. Scenario generator parameterises hub, fleet, competitor density, demand profile, starting cash; serialises to a single shareable seed string.
+2. Plays inside a fully sandboxed `Snapshot` — no AS POSTs reachable from inside puzzle mode; Slice 21's simulator drives weekly tick.
+3. Scoring: time-to-goal, cash slack, decisions-used. Local leaderboard; export-to-clipboard for sharing.
+
+**Files:**
+
+- new `modules/strategy/puzzle/generator.js`
+- new `modules/strategy/puzzle/runner.js`
+- new `modules/strategy/puzzle/panel.js`
+
+---
+
 ## Part IV — Cross-cutting concerns
 
 ### Settings model
@@ -791,7 +1047,7 @@ If exceeded, the engine surfaces a slow-warning badge and falls back to backgrou
 
 ### Storage budget
 
-Strategy namespace soft-cap 1 MB, hard-cap 2 MB. Eviction order on hit: oldest `learn:outcomes` → oldest `audit` → oldest `learn:weights:history` → oldest `backtest:results`. Never evicts `settings`, `weights:current`, or `plan:applied`.
+Strategy namespace soft-cap 1 MB, hard-cap 2 MB. Eviction order on hit: oldest `learn:outcomes` → oldest `audit` → oldest `journal` → oldest `learn:weights:history` → oldest `backtest:results`. Never evicts `settings`, `weights:current`, or `plan:applied`.
 
 ### Multi-tab race conditions
 
@@ -964,9 +1220,17 @@ Realistically across calendar with QA, game-world game-weeks needed for empirica
 6. `modules/strategy/service-moves.js` (Slice 3 + 7) — `AesStrategy.proposeServiceMoves(snapshot, opts?)`.
 7. `modules/strategy/crew-moves.js` (Slice 3 + 8) — `AesStrategy.proposeCrewMoves(snapshot, fleetPlan, opts?)`.
 8. `modules/strategy/allocate-fleet.js` (Slice 3) — `AesStrategy.allocateFleet(snapshot, scoredRoutes, opts?)` returns a complete `FleetPlan` with per-aircraft greedy round-trip filler, route creations, price moves, service moves, crew moves, and a summary.
-9. `manifest.json` — every strategy module wired into dashboard + `/app/fleets*` content-script blocks.
+9. `modules/strategy/default-settings.js` (Slice 4) — `AesStrategySettings` store at `settings.strategy` (canopy-aware) with tier + per-domain enable flags + `canApply(s, domain)` single-source-of-truth gate.
+10. `modules/strategy/diff-plan.js` (Slice 4) — `AesStrategy.diffPlan(plan, snapshot)` flattens a `FleetPlan` into a stable, deterministic decision list with applicable / advisory marks.
+11. `modules/strategy/apply-pipeline.js` (Slice 4 — first writing module) — `AesStrategy.apply(plan, opts)` marshals decisions through existing actuators (`AesAfpFleetApplyOrchestrator`, `RouteAssistantServiceProfileApplier`, `RouteAssistantPricingApplier`, `CrewMgmtStaffPilotsApplier`) with tier gate + per-domain flags + audit ring at `aesStrategy:audit` (cap 500) + applied envelope at `aesStrategy:plan:applied`.
+12. `modules/strategy/panel.js` (Slice 4 + 5) — `AesStrategyPanel.open()` full-screen modal with summary chips + live tier/flag controls + decision list (checkboxed, grouped by domain) + per-aircraft schedule accordion + Apply CTA wired into the pipeline; Slice 5 adds the Learning section (counters · pause toggle · step-size slider · run-cycle / capture-pending / reset-weights buttons · current-weights table · history list).
+13. `modules/central-hub/tiles/strategy-tile.js` (Slice 4 + 5) — dashboard tile in Tools section with Open-modal CTA, settings strip, last-apply card from `aesStrategy:plan:applied`, inline "Quick plan preview" that hands the composed plan to the modal; Slice 5 adds the Learning summary card sourced from `aesStrategy:learn:outcomes` + `aesStrategy:learn:weights:current`.
+14. `modules/strategy/outcomes.js` (Slice 5) — `AesStrategyOutcomes` ring at `aesStrategy:learn:outcomes` (cap 100) with `record()` / `tryCaptureAfter()` / `loadAll()` / `countReady()` / `measure()` / `clear()`. Pure `measure(snapshot, plan?)` extracts `{ts, cashBalance, weeklyResult, fleetCount, legCount, orsAvgY, perRouteCount, paxLfMean, predictedWeeklyProfit?, predictedOrsAvg?}` so storage cost stays bounded.
+15. `modules/strategy/learn.js` (Slice 5) — `AesStrategyLearn` finite-difference learner over attributed outcomes; `aesStrategy:learn:weights:current` (override or null=defaults) + `aesStrategy:learn:weights:history` (cap 52). API: `getCurrentWeights()` / `setCurrentWeights(w, reason)` / `resetWeights()` / `getHistory()` / `learn({stepSize?, minSamples?, force?})`. Gates on `settings.learningEnabled` (force-override via `opts.force` for the modal's manual run-cycle button).
+16. `modules/strategy/route-creation-applier.js` (Slice 6) — `AesStrategyRouteCreationApplier.apply(creation, snapshot, opts)` picks an aircraft (in-hub priority, wear-headroom sorted, fallback any-of-type), builds N round-trip leg pairs spread across 06:00–22:00 with 60-min ground turn, dispatches through `AesAfpFleetApplyOrchestrator`. Pure helpers (`pickAircraft`, `buildLegs`, `_spreadDepHours`, `_formatHHMM`) exposed for ?aes-debug smoke + future tests.
+17. `manifest.json` — every strategy module wired into dashboard + `/app/fleets*` content-script blocks; strategy-tile registered on dashboard only.
 
-All of these are **read-only**. No POSTs happen. No data is written to storage by the strategy layer in PRs 1+2. The engine is purely advisory until Slice 4 (PR-3) lands the apply pipeline.
+Items 1-8 are **read-only**. Items 9-13 (Slice 4) introduce the first writing path; items 14-15 (Slice 5) add closed-loop learning storage (3 new keys, all under the `aesStrategy:learn:*` budget); item 16 (Slice 6) wires auto route creation through the existing fleet-apply orchestrator. The tier gate defaults to `preview-only` so installs are still 100% advisory until the user flips it; the learning gate (`learningEnabled`) defaults to `false` so outcomes only start recording when the user opts in; `routeCreationEnabled` defaults to `false` so the new-route applier never fires unless explicitly turned on.
 
 ---
 
