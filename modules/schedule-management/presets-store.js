@@ -66,28 +66,25 @@ class SchedulePresets {
 
     /** Reads `settings.scheduleManagement`, lazily initialising it if missing. */
     static async load() {
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
-        const defaults = SchedulePresets._defaults()
-        const block = Object.assign({}, defaults, settings.scheduleManagement || {})
-        if (!settings.scheduleManagement) {
-            settings.scheduleManagement = block
-            await chrome.storage.local.set({settings: settings})
+        const stored = await window.AesSettings.getArea("scheduleManagement")
+        const merged = Object.assign({}, SchedulePresets._defaults(), stored)
+        // Lazy-init: if the area was never written, persist defaults so the
+        // shape exists for subsequent reads.
+        if (!stored || Object.keys(stored).length === 0) {
+            await window.AesSettings.saveArea("scheduleManagement", merged)
         }
-        return block
+        return merged
     }
 
     /** Persists a partial update to settings.scheduleManagement. */
     static async save(partial) {
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
+        const stored = await window.AesSettings.getArea("scheduleManagement")
         const current = Object.assign(
             {}, SchedulePresets._defaults(),
-            settings.scheduleManagement || {},
+            stored,
             partial
         )
-        settings.scheduleManagement = current
-        await chrome.storage.local.set({settings: settings})
+        await window.AesSettings.saveArea("scheduleManagement", current)
         return current
     }
 

@@ -47,6 +47,16 @@
  * host.js:192 was originally validated against).
  */
 ;(function () {
+    // Idempotent — fleet-schedule-grid loads this file on the broader
+    // /app/fleets* match too, which overlaps the per-aircraft AFP match,
+    // so the IIFE may run twice in the same isolated world. Skip the
+    // second pass when our public surface already advertises readFromRoot.
+    if (typeof window !== "undefined"
+            && window.AesAfpVfpReader
+            && typeof window.AesAfpVfpReader.readFromRoot === "function") {
+        return
+    }
+
     /** Order matters: detect more-specific kinds first so a `.block.flight`
      *  isn't mis-classified as a generic block. The classList always has
      *  exactly one of these strings. */
@@ -300,11 +310,16 @@
         return { dayIdx, dayName, blocks, flights, isEmpty: blocks.length === 0 }
     }
 
-    /** Walk all `.day` elements in the page; returns DaySchedule[] (length 7
-     *  on a populated AFP page; 0 if no VFP at all). */
-    function readDays() {
+    /** Walk all `.day` elements under a root (Document or Element); returns
+     *  DaySchedule[] (length 7 on a populated AFP page; 0 if no VFP at all).
+     *  Default root = `document` — preserves the original signature. The
+     *  optional root arg is what fleet-schedule-grid uses to parse a fetched
+     *  HTML doc into the same Schedule shape without navigating the user. */
+    function readDays(root) {
+        const r = root || (typeof document !== "undefined" ? document : null)
+        if (!r) return []
         const out = []
-        const days = document.querySelectorAll(".as-panel.visual-flight-plan .vfp.vfp-main .day")
+        const days = r.querySelectorAll(".as-panel.visual-flight-plan .vfp.vfp-main .day")
         days.forEach((day, dayIdx) => {
             try { out.push(readDay(day, dayIdx)) }
             catch (e) { console.warn("[AES AFP] vfp-reader.readDay threw at dayIdx=" + dayIdx, e) }
@@ -385,16 +400,29 @@
      * Slice 7b will fold the planning matrix in via planning-matrix-reader.
      */
     function read(opts) {
+        return readFromRoot(typeof document !== "undefined" ? document : null, opts)
+    }
+
+    /**
+     * Same as `read(opts)` but takes an explicit root (Document or Element),
+     * so callers like fleet-schedule-grid can parse a fetched HTML document
+     * (DOMParser) without temporarily attaching it to the live DOM.
+     * Planning matrix is skipped here — its reader is DOM-coupled to live
+     * Wicket forms and the form fields aren't trustworthy on a static fetch.
+     */
+    function readFromRoot(root, opts) {
         opts = opts || {}
-        const days    = readDays()
+        const days    = readDays(root)
         const legs    = buildLegs(days)
         const summary = summariseDays(days)
-        const matrix  = (typeof window !== "undefined"
+        const matrix  = (root === document
+                         && typeof window !== "undefined"
                          && typeof window.AesAfpPlanningMatrixReader !== "undefined"
                          && typeof window.AesAfpPlanningMatrixReader.read === "function")
             ? window.AesAfpPlanningMatrixReader.read()
-            : (window.AesAfpScheduleModel ? window.AesAfpScheduleModel.emptyMatrix()
-                                          : { isPresent: false, segments: [], daysActive: [false,false,false,false,false,false,false] })
+            : (typeof window !== "undefined" && window.AesAfpScheduleModel
+                ? window.AesAfpScheduleModel.emptyMatrix()
+                : { isPresent: false, segments: [], daysActive: [false,false,false,false,false,false,false] })
 
         return {
             schemaVersion:  1,
@@ -418,8 +446,9 @@
     if (typeof window !== "undefined") {
         window.AesAfpVfpReader = {
             read,
+            readFromRoot,
             // Internals exposed for diagnostics and future slices' tests.
-            _internals: { readDay, readBlock, classifiersFrom, detectKind, percentToMinutes, minToHHMM, hhmmToMin, findAdjacentIata, findAdjacentTurnaroundMin }
+            _internals: { readDay, readDays, readBlock, classifiersFrom, detectKind, percentToMinutes, minToHHMM, hhmmToMin, findAdjacentIata, findAdjacentTurnaroundMin }
         }
     }
 })()

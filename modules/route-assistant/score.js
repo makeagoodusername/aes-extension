@@ -17,9 +17,11 @@
  *   every variable that may participate. The function ignores variables
  *   whose `enabled` flag is false or whose weight resolves to 0.
  *
- * Returns a new array of rows with `score` (0-100) added. Rows missing a
- * value for an enabled field don't get penalised — that field simply
- * doesn't contribute to their numerator or denominator.
+ * Returns a new array of rows with `score` (0-100) added. Missing values
+ * contribute 0 to the numerator but their full weight still counts in the
+ * denominator, so sparse-data rows score proportionally lower than rows
+ * that score equally well on every input. (Without this, a row with only
+ * one favourable input would tie with a row that wins on every input.)
  */
 class RouteAssistantScore {
     static computeScores(rows, scoringConfig, fieldDefs) {
@@ -30,6 +32,11 @@ class RouteAssistantScore {
         if (!fields.length) return (rows || []).map(r => Object.assign({score: null}, r))
 
         const ranges = {}
+        const fullWeight = fields.reduce((sum, f) => {
+            const cfg = scoringConfig[f.field]
+            const w = RouteAssistantScore._weight(cfg && cfg.weight)
+            return sum + (w > 0 ? w : 0)
+        }, 0)
         for (const f of fields) {
             let lo = Infinity, hi = -Infinity
             for (const r of rows) {
@@ -44,7 +51,7 @@ class RouteAssistantScore {
         }
 
         return rows.map(r => {
-            let weightedSum = 0, weightTotal = 0
+            let weightedSum = 0, contributed = 0
             for (const f of fields) {
                 const cfg = scoringConfig[f.field]
                 const w = RouteAssistantScore._weight(cfg && cfg.weight)
@@ -61,9 +68,11 @@ class RouteAssistantScore {
                 const dir = (cfg && cfg.direction) || f.direction
                 const directional = dir === "lower" ? (1 - norm) : norm
                 weightedSum += directional * w
-                weightTotal += w
+                contributed += w
             }
-            const score = weightTotal > 0 ? Math.round((weightedSum / weightTotal) * 100) : null
+            const score = (fullWeight > 0 && contributed > 0)
+                ? Math.round((weightedSum / fullWeight) * 100)
+                : null
             return Object.assign({score: score}, r)
         })
     }

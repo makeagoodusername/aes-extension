@@ -82,7 +82,8 @@ class ScheduleBuilder {
      */
     assignRoutes(routes, opts) {
         const o = opts || {}
-        if (o.optimize) return this.optimizeAssignment(routes, o)
+        if (o.mode === "profit") return this._assignRoutesProfit(routes, o)
+        if (o.optimize)          return this.optimizeAssignment(routes, o)
         return this._assignRoutesGreedy(routes, o)
     }
 
@@ -392,6 +393,163 @@ class ScheduleBuilder {
             optimised:      true,
             optimiseIters:  iters,
             optimiseScore:  bestScore
+        }
+    }
+
+    /**
+     * F slice 3 — Per-slot profit assignment (greedy-best-marginal).
+     *
+     * Given a (route × wave-slot) scoring matrix from
+     * `RouteAssistantWaveSlotScorer.scoreSlotFit`, walk all viable cells
+     * in score-descending order, placing each route in its highest-score
+     * still-available slot. Forced overrides are pinned first. Backwards
+     * compatible with the rest of the pipeline — returns the same shape
+     * as `_assignRoutesGreedy` plus `optimised: "profit"`.
+     *
+     * Composition counts are CAPS, not floors: a wave/bucket may end
+     * under-filled when the route pool runs out of profitable candidates.
+     * Unplaced routes (no viable slot, or scored zero) flow through the
+     * normal `unplaced[]` channel so the panel's renderer surfaces them.
+     *
+     * Falls back to `_assignRoutesGreedy` cleanly when the scorer module
+     * isn't loaded — the caller has already validated typeof
+     * RouteAssistantWaveSlotScorer before passing `mode: "profit"`,
+     * but the guard is here too as belt-and-braces.
+     *
+     * @param {Array} routes
+     * @param {object} [opts]
+     *   - overrides:    {destIata: waveId} forced-placement map
+     *   - selectedSpec: aircraft spec (for range / availability)
+     *   - fleetSpecs:   array of fleet specs
+     *   - demandHourMap: optional {hour → 0-1} from Track 4's slot-optimizer
+     *   - minScore:     minimum score to accept a placement (default 25)
+     * @returns {object} {placements, unplaced, shortfall, forcedDests,
+     *   optimised: "profit", profitScore, profitPlaced}
+     */
+    _assignRoutesProfit(routes, opts) {
+        if (typeof RouteAssistantWaveSlotScorer === "undefined") {
+            return this._assignRoutesGreedy(routes, opts)
+        }
+        const o = opts || {}
+        const buckets = (this.preset.factors && this.preset.factors.rangeBuckets)
+            || ScheduleFactors.defaultRangeBuckets()
+        const bucketKeys = Object.keys(buckets)
+        const waves = this.preset.waves || []
+        const minScore = (typeof o.minScore === "number") ? o.minScore : 25
+
+        const placements = []
+        const forcedDests = []
+        const placedDests = new Set()
+
+        const scoringCtx = RouteAssistantWaveSlotScorer.buildScoringContext(
+            this.preset, routes, {
+                selectedSpec:  o.selectedSpec,
+                fleetSpecs:    o.fleetSpecs,
+                demandHourMap: o.demandHourMap
+            }
+        )
+
+        // Forced overrides first — pin and consume the slot. Bucket-aware
+        // so waveSlotsRemaining stays consistent with greedy semantics.
+        const overrideEntries = ScheduleBuilder._coerceOverrides(o.overrides)
+        const forcedRouteByDest = new Map()
+        if (overrideEntries.length) {
+            const validWaveIds = new Set(waves.map(w => w.id))
+            for (const route of routes || []) {
+                const destU = String(route.destination || "").toUpperCase()
+                if (!destU) continue
+                forcedRouteByDest.set(destU, route)
+            }
+            for (const [destU, waveId] of overrideEntries) {
+                if (!validWaveIds.has(waveId)) continue
+                const route = forcedRouteByDest.get(destU)
+                if (!route) continue
+                const bucket = ScheduleFactors.bucketize(route.distanceNm, buckets)
+                if (!bucket) continue
+                placements.push({waveId, route, direction: "outbound", forced: true})
+                placements.push({waveId, route, direction: "inbound",  forced: true})
+                forcedDests.push(destU)
+                placedDests.add(destU)
+                RouteAssistantWaveSlotScorer.consumeSlot(scoringCtx, waveId, bucket)
+            }
+        }
+
+        // Score every (route, wave) pair once; sort by score descending;
+        // walk in order, skipping cells whose route or slot is already
+        // taken. This is the greedy-best-marginal v1.
+        const cells = []
+        for (const route of (routes || [])) {
+            const destU = String(route.destination || "").toUpperCase()
+            if (placedDests.has(destU)) continue   // forced — skip scoring
+            for (const wave of waves) {
+                const fit = RouteAssistantWaveSlotScorer.scoreSlotFit(
+                    route, wave, scoringCtx)
+                if (!fit.viable || fit.score < minScore) continue
+                cells.push({
+                    destU:  destU,
+                    waveId: wave.id,
+                    bucket: fit.bucket,
+                    score:  fit.score,
+                    route:  route,
+                    fit:    fit
+                })
+            }
+        }
+        cells.sort((a, b) => b.score - a.score)
+
+        let placedTotalScore = 0
+        let placedCount = 0
+        for (const cell of cells) {
+            if (placedDests.has(cell.destU)) continue
+            const spare = scoringCtx.waveSlotsRemaining.get(cell.waveId)
+            if (!spare || spare[cell.bucket] <= 0) continue
+            placements.push({waveId: cell.waveId, route: cell.route, direction: "outbound"})
+            placements.push({waveId: cell.waveId, route: cell.route, direction: "inbound"})
+            placedDests.add(cell.destU)
+            RouteAssistantWaveSlotScorer.consumeSlot(scoringCtx, cell.waveId, cell.bucket)
+            placedTotalScore += cell.score
+            placedCount++
+        }
+
+        // Unplaced — every input route that didn't make it onto the
+        // placement list (either no viable wave or all viable waves were
+        // saturated by higher-scoring routes).
+        const unplaced = []
+        for (const route of (routes || [])) {
+            const destU = String(route.destination || "").toUpperCase()
+            if (!placedDests.has(destU)) unplaced.push(route)
+        }
+
+        // Shortfall — gap between desired composition and what we placed.
+        // F slice 3 semantics: profit-mode treats compositions as caps,
+        // and may leave waves under-filled when the route pool can't
+        // produce profitable candidates. We still report shortfall, but
+        // the caller can distinguish from greedy via `optimised: "profit"`.
+        const placementCounts = {}
+        for (const p of placements) {
+            const destU = String(p.route && p.route.destination || "").toUpperCase()
+            const k = p.waveId + ":" + destU
+            if (placementCounts[k]) continue
+            placementCounts[k] = true
+            const bucket = ScheduleFactors.bucketize(p.route.distanceNm, buckets)
+            if (!bucket) continue
+            const wkey = p.waveId + ":" + bucket + ":count"
+            placementCounts[wkey] = (placementCounts[wkey] || 0) + 1
+        }
+        const shortfall = {}
+        for (const wave of waves) {
+            for (const k of bucketKeys) {
+                const wanted = (wave.composition && wave.composition[k]) | 0
+                const got    = placementCounts[wave.id + ":" + k + ":count"] || 0
+                if (got < wanted) shortfall[wave.id + ":" + k] = wanted - got
+            }
+        }
+
+        return {
+            placements, unplaced, shortfall, forcedDests,
+            optimised:    "profit",
+            profitScore:  placedCount > 0 ? Math.round(placedTotalScore / placedCount) : 0,
+            profitPlaced: placedCount
         }
     }
 
