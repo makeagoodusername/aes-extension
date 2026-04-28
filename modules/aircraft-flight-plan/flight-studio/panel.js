@@ -51,6 +51,12 @@
     let _applyTotal       = 0     // legs count for the currently applying batch
     let _busListenersAttached = false
     let _lastBuild        = null  // most recent Build object from the auto-scheduler
+    // Decision sidebar (F1) — dedupe key + in-flight cancel + debounce timer.
+    // Sidebar reacts to FROM/TO changes only; PRICE/SERVICE/FLIGHT# edits
+    // don't refetch since the profit estimator doesn't consume those fields.
+    let _lastSidebarKey       = null
+    let _sidebarCtrl          = null   // AbortController-shaped flag (uses .aborted)
+    let _sidebarRenderTimer   = null
     let _turnMin          = 30    // minutes between this leg's arrival and the
                                   // next leg's departure for Continue → /
                                   // ← Continue back. Default 30 = AS minimum
@@ -188,10 +194,20 @@
         head.append(title, sub, flex, modeBadge)
         root.appendChild(head)
 
+        // Flex wrapper holds the form body and the F1 decision sidebar
+        // side-by-side at ≥900 px panel width and stacks them vertically
+        // below 900 px (the sidebar's 240 px min-width forces the wrap).
+        const flexWrap = document.createElement("div")
+        flexWrap.dataset.aesStudioFlex = "1"
+        flexWrap.style.cssText = "display:flex;flex-wrap:wrap;align-items:flex-start;gap:10px;"
+
         // Body container — _renderBody fills it.
         const body = document.createElement("div")
         body.dataset.aesStudioBody = "1"
-        root.appendChild(body)
+        body.style.cssText = "flex:1 1 600px;min-width:0;"
+        flexWrap.appendChild(body)
+        flexWrap.appendChild(_buildDecisionSidebar())
+        root.appendChild(flexWrap)
 
         return root
     }
@@ -214,6 +230,232 @@
         body.appendChild(_buildScheduleDiagnostics())
         body.appendChild(_buildDryRunPane())
         _updateModeBadge()
+        // Repaint the F1 decision sidebar against the latest spec. Cheap
+        // when the OD pair hasn't changed (deduped via _lastSidebarKey).
+        _renderSidebarFor(_spec).catch(() => { /* sidebar self-isolates */ })
+    }
+
+    // ── F1 — Decision-support sidebar ────────────────────────────────────
+    //
+    // Surfaces, for the current FROM→TO leg: route distance, pax/cargo
+    // demand bars (RouteAssistantDemandStore — no hourly source exists),
+    // top-3 current operators (FlightsFromStore.routes[].airlines), and a
+    // static profit estimate (RouteAssistantProfitEstimator with the
+    // standard economics block — NOT PRICE-reactive). Each section fails
+    // soft so a missing demand record doesn't blank the operators row.
+    //
+    // Reactivity: subscribes to studio:draft-changed (debounced 200 ms)
+    // and dedupes on FROM:TO so PRICE/SERVICE/FLIGHT# edits don't refetch.
+
+    function _buildDecisionSidebar() {
+        const sidebar = document.createElement("div")
+        sidebar.dataset.aesStudioSidebar = "1"
+        sidebar.style.cssText = "flex:0 1 280px;min-width:240px;"
+            + "border:1px solid #1f2937;border-radius:4px;padding:8px 10px;"
+            + "background:#0a0e16;font-size:11px;line-height:1.5;"
+        _renderSidebarPlaceholder(sidebar, "Pick a destination to see decision context.")
+        return sidebar
+    }
+
+    function _sidebarHost() {
+        const host = _slot()
+        return host ? host.querySelector("[data-aes-studio-sidebar]") : null
+    }
+
+    function _renderSidebarPlaceholder(host, message) {
+        if (!host) return
+        host.innerHTML = ""
+        const head = document.createElement("div")
+        head.style.cssText = "color:#e2e8f0;font-weight:600;letter-spacing:0.4px;margin-bottom:4px;"
+        head.textContent = "Decision context"
+        const p = document.createElement("div")
+        p.style.cssText = "color:#9ca3af;font-size:10px;"
+        p.textContent = message
+        host.append(head, p)
+    }
+
+    async function _renderSidebarFor(spec) {
+        const host = _sidebarHost()
+        if (!host) return
+        if (!spec || !Array.isArray(spec.legs) || !spec.legs.length) {
+            _renderSidebarPlaceholder(host, "Pick a destination to see decision context.")
+            _lastSidebarKey = null
+            return
+        }
+        const leg = spec.legs[0]
+        const from = String((leg && leg.origin) || "").toUpperCase()
+        const to   = String((leg && leg.destination) || "").toUpperCase()
+        if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) {
+            _renderSidebarPlaceholder(host, "Fill FROM + TO to see decision context.")
+            _lastSidebarKey = null
+            return
+        }
+        const key = from + ":" + to
+        if (key === _lastSidebarKey) return
+        _lastSidebarKey = key
+        if (_sidebarCtrl) _sidebarCtrl.aborted = true
+        const myCtrl = _sidebarCtrl = {aborted: false}
+
+        const [demand, ffData, settings] = await Promise.all([
+            (typeof RouteAssistantDemandStore !== "undefined")
+                ? RouteAssistantDemandStore.get(to).catch(() => null)
+                : Promise.resolve(null),
+            (typeof FlightsFromStore !== "undefined")
+                ? FlightsFromStore.loadAirport(from).catch(() => null)
+                : Promise.resolve(null),
+            (typeof RouteAssistantSettings !== "undefined")
+                ? RouteAssistantSettings.load().catch(() => null)
+                : Promise.resolve(null)
+        ])
+        if (myCtrl.aborted) return
+
+        const routeRec = (ffData && Array.isArray(ffData.routes))
+            ? ffData.routes.find(r => String(r && r.destIata || "").toUpperCase() === to)
+            : null
+        const acSpec    = (window.AesAfpSpecResolver && window.AesAfpSpecResolver.last) || null
+        const economics = (settings && settings.economics) || null
+
+        let estimate = null
+        if (typeof RouteAssistantProfitEstimator !== "undefined"
+                && routeRec && Number(routeRec.distanceKm) > 0
+                && acSpec && economics) {
+            try {
+                estimate = RouteAssistantProfitEstimator.estimate({
+                    distanceKm: Number(routeRec.distanceKm),
+                    spec:       acSpec,
+                    paxScore:   demand ? demand.paxScore   : null,
+                    cargoScore: demand ? demand.cargoScore : null,
+                    economics:  economics,
+                    falloffPct: settings.falloffPct
+                })
+            } catch (e) {
+                console.warn("[AES studio] profit estimate threw", e)
+            }
+        }
+        if (myCtrl.aborted) return
+        _paintSidebar(host, {from, to, demand, routeRec, estimate, hasSpec: !!acSpec})
+    }
+
+    function _paintSidebar(host, data) {
+        host.innerHTML = ""
+        const {from, to, demand, routeRec, estimate, hasSpec} = data
+
+        const header = document.createElement("div")
+        header.style.cssText = "color:#e2e8f0;font-weight:600;letter-spacing:0.4px;margin-bottom:6px;"
+        const distKm = routeRec && Number(routeRec.distanceKm) > 0
+            ? Math.round(routeRec.distanceKm) : null
+        const blockH = (estimate && estimate.blockHours != null) ? estimate.blockHours : null
+        header.textContent = from + " → " + to
+            + " · " + (distKm != null ? distKm + " km" : "— km")
+            + (blockH != null ? " · " + blockH + " h block" : "")
+        host.appendChild(header)
+
+        host.appendChild(_buildSidebarSection("Demand", _buildDemandRows(demand)))
+        host.appendChild(_buildSidebarSection("Operators", _buildOperatorRows(routeRec)))
+        host.appendChild(_buildSidebarSection("Profit estimate",
+            _buildProfitRows(estimate, hasSpec)))
+    }
+
+    function _buildSidebarSection(label, contentEl) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-bottom:8px;"
+        const lbl = document.createElement("div")
+        lbl.textContent = label
+        lbl.style.cssText = "color:#9ca3af;font-size:10px;text-transform:uppercase;"
+            + "letter-spacing:0.5px;margin-bottom:3px;"
+        wrap.append(lbl, contentEl)
+        return wrap
+    }
+
+    function _buildDemandRows(demand) {
+        if (!demand) return _sidebarNote("No demand data — run the route-assistant demand scan.")
+        const wrap = document.createElement("div")
+        wrap.appendChild(_makeScoreBar("Pax",   demand.paxScore,   "#60a5fa"))
+        wrap.appendChild(_makeScoreBar("Cargo", demand.cargoScore, "#fbbf24"))
+        if (demand.scrapedAt && Date.now() - demand.scrapedAt > 7 * 86400000) {
+            const stale = document.createElement("div")
+            stale.textContent = "⚠ stale (>7 days)"
+            stale.style.cssText = "color:#fde68a;font-size:9px;margin-top:2px;"
+            wrap.appendChild(stale)
+        }
+        return wrap
+    }
+
+    function _buildOperatorRows(routeRec) {
+        if (!routeRec) return _sidebarNote("Hub data missing — run ↻ Update / Scan flightsfrom.com.")
+        if (!Array.isArray(routeRec.airlines) || !routeRec.airlines.length) {
+            return _sidebarNote("Carrier list not yet scanned for this route.")
+        }
+        const wrap = document.createElement("div")
+        const sorted = routeRec.airlines.slice()
+            .sort((a, b) => (Number(b && b.frequency) || 0) - (Number(a && a.frequency) || 0))
+        for (const a of sorted.slice(0, 3)) {
+            const row = document.createElement("div")
+            row.style.cssText = "display:flex;justify-content:space-between;color:#cbd5e1;font-size:11px;"
+            const name = document.createElement("span")
+            name.textContent = a.code || a.name || "—"
+            const freq = document.createElement("span")
+            freq.style.color = "#9ca3af"
+            freq.textContent = (Number(a.frequency) || 0) + "×/wk"
+            row.append(name, freq)
+            wrap.appendChild(row)
+        }
+        return wrap
+    }
+
+    function _buildProfitRows(estimate, hasSpec) {
+        if (!hasSpec) return _sidebarNote("Resolving aircraft spec…")
+        if (!estimate || !estimate.specOk) return _sidebarNote("Profit estimate unavailable.")
+        if (estimate.fit === "oor") return _sidebarNote("Out of range for this aircraft.")
+        if (estimate.profitPerFlight == null) {
+            return _sidebarNote(estimate.isCargoOnly
+                ? "Cargo-only spec — profit math out of scope (block " + (estimate.blockHours || "—") + " h)."
+                : "Profit estimate unavailable.")
+        }
+        const wrap = document.createElement("div")
+        const fmt = new Intl.NumberFormat("en-US",
+            {style: "currency", currency: "USD", maximumFractionDigits: 0})
+        const row = document.createElement("div")
+        row.style.color = "#cbd5e1"
+        row.textContent = fmt.format(estimate.profitPerFlight) + " /flight · "
+            + fmt.format(estimate.profitPerWeek) + " /week"
+        wrap.appendChild(row)
+        const fitBadge = document.createElement("div")
+        fitBadge.style.cssText = "color:" + (estimate.fit === "falloff" ? "#fde68a" : "#9ca3af")
+            + ";font-size:9px;margin-top:2px;"
+        fitBadge.textContent = "fit: " + estimate.fit
+        wrap.appendChild(fitBadge)
+        return wrap
+    }
+
+    function _sidebarNote(text) {
+        const note = document.createElement("div")
+        note.style.cssText = "color:#94a3b8;font-size:10px;"
+        note.textContent = text
+        return note
+    }
+
+    function _makeScoreBar(label, score, color) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:10px;margin-bottom:2px;"
+        const lbl = document.createElement("span")
+        lbl.textContent = label
+        lbl.style.cssText = "color:#9ca3af;width:36px;flex:0 0 36px;"
+        const bar = document.createElement("span")
+        bar.style.cssText = "flex:1 1 auto;display:inline-flex;gap:1px;"
+        const filled = (score == null) ? 0 : Math.max(0, Math.min(10, Math.round(Number(score) || 0)))
+        for (let i = 0; i < 10; i++) {
+            const cell = document.createElement("span")
+            cell.style.cssText = "flex:1 1 0;height:8px;border-radius:1px;"
+                + "background:" + (i < filled ? color : "#1f2937") + ";"
+            bar.appendChild(cell)
+        }
+        const num = document.createElement("span")
+        num.textContent = (score == null) ? "—" : (filled + "/10")
+        num.style.cssText = "color:#cbd5e1;width:30px;flex:0 0 30px;text-align:right;"
+            + "font-family:var(--aes-font-mono,monospace);"
+        wrap.append(lbl, bar, num)
+        return wrap
     }
 
     // ── Schedule Diagnostics — Time-window rebalance ─────────────────────
@@ -751,6 +993,16 @@
             _applyTotal = 0
             _updateModeBadge()
             _renderHint("error", "Apply error: " + ((p && p.error) || "unknown"))
+        })
+        // F1 decision sidebar — react to spec edits. Debounced 200 ms so a
+        // burst of keystrokes coalesces to one fetch; deduped on FROM:TO so
+        // PRICE/SERVICE edits don't refetch (estimator doesn't read them).
+        bus.on("studio:draft-changed", (p) => {
+            if (_sidebarRenderTimer) clearTimeout(_sidebarRenderTimer)
+            _sidebarRenderTimer = setTimeout(() => {
+                _sidebarRenderTimer = null
+                _renderSidebarFor((p && p.spec) || _spec).catch(() => {})
+            }, 200)
         })
     }
 

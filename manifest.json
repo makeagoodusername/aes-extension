@@ -321,6 +321,8 @@
                 "modules/route-assistant/fleet-store.js",
                 "modules/route-assistant/demand-store.js",
                 "modules/route-assistant/score.js",
+                "modules/route-assistant/fuel-burn-estimator.js",
+                "modules/route-assistant/profit-estimator.js",
                 "modules/route-assistant/distance-resolver.js",
                 "modules/route-assistant/type-specs-store.js",
                 "modules/route-assistant/route-overrides-store.js",
