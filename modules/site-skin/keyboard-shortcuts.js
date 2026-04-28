@@ -2,18 +2,11 @@
 
 // QOL: vim-style keyboard navigation across AS.
 //
-// `g <key>` navigates to a page family:
-//   g d → /app/enterprise/dashboard
-//   g f → /app/fleets
-//   g s → /app/com/scheduling/<HUB>     (only when current path has a hub segment)
-//   g a → /app/finance/accounting
-//   g i → /app/com/inventory
-//   g m → /app/com/markets
-//   g o → /app/ops/stations
-//   g e → /app/info/enterprises
-//   g x → /app/enterprise/settings
-// `/` focuses the first visible filter / search input.
-// `?` opens a brutalist help popover listing every shortcut.
+// Bindings live in modules/customization/shortcut-registry.js as
+// id → {keys, desc, go|action}. The user can rebind any of them from
+// the Customization Studio (`g c`); rebinds persist via
+// chrome.storage.local["customization"] and apply on the next storage
+// event. Defaults: g d/f/s/a/l/i/m/o/e/x/c, plus `/` `?` Esc.
 //
 // Listeners are no-ops when the user is typing into a field.
 
@@ -21,40 +14,13 @@
     if (window.AESSiteSkin && !window.AESSiteSkin.isEnabled()) return;
 
     const PREFIX_TIMEOUT_MS = 800;
-    const HUB_RE = /\/app\/com\/scheduling\/([^/?#]+)/;
-    const ENTERPRISE_RE = /\/app\/info\/enterprises\/([^/?#]+)/;
 
-    const shortcuts = [
-        { keys: "g d", desc: "Dashboard",          go: () => "/app/enterprise/dashboard" },
-        { keys: "g f", desc: "Fleets",             go: () => "/app/fleets" },
-        { keys: "g s", desc: "Scheduling (hub)",   go: () => {
-            const m = location.pathname.match(HUB_RE);
-            if (m) return `/app/com/scheduling/${m[1]}`;
-            return null;
-        } },
-        { keys: "g a", desc: "Accounting",         go: () => "/app/finance/accounting" },
-        { keys: "g l", desc: "Leasing",            go: () => "/app/finance/leasing" },
-        { keys: "g i", desc: "Inventory (hub)",    go: () => {
-            const m = location.pathname.match(HUB_RE);
-            if (m) return `/app/com/inventory/${m[1]}`;
-            return "/app/com/inventory";
-        } },
-        { keys: "g m", desc: "Markets (hub)",      go: () => {
-            const m = location.pathname.match(HUB_RE);
-            if (m) return `/app/com/markets/${m[1]}`;
-            return null;
-        } },
-        { keys: "g o", desc: "Stations / ops",     go: () => "/app/ops/stations" },
-        { keys: "g e", desc: "Enterprise info",    go: () => {
-            const m = location.pathname.match(ENTERPRISE_RE);
-            if (m) return `/app/info/enterprises/${m[1]}`;
-            return null;
-        } },
-        { keys: "g x", desc: "Settings",           go: () => "/app/enterprise/settings" },
-        { keys: "/",   desc: "Focus search/filter input", action: focusFilterInput },
-        { keys: "?",   desc: "Show shortcuts",     action: showHelp },
-        { keys: "Esc", desc: "Close popover/help / clear filter", action: null /* handled inline */ }
-    ];
+    function registry() { return window.AESShortcutRegistry; }
+
+    function resolved() {
+        const reg = registry();
+        return reg ? reg.resolved() : [];
+    }
 
     function isTypingTarget(el) {
         if (!el) return false;
@@ -105,7 +71,8 @@
 
         const body = document.createElement("div");
         body.className = "aes-skin-help__body";
-        for (const sc of shortcuts) {
+        for (const sc of resolved()) {
+            if (sc.disabled) continue;
             const row = document.createElement("div");
             row.className = "aes-skin-help__row";
             const keys = document.createElement("span");
@@ -122,6 +89,23 @@
         document.body.append(helpOverlay, helpEl);
     }
 
+    /* Index resolved bindings by `keys` string for fast lookup. Rebuilt
+       whenever the customization store changes. */
+    let byKeys = {};
+    function rebuildIndex() {
+        const out = Object.create(null);
+        for (const sc of resolved()) {
+            if (sc.disabled) continue;
+            if (!sc.keys) continue;
+            out[sc.keys] = sc;
+        }
+        byKeys = out;
+    }
+    rebuildIndex();
+    if (window.AESCustomizationStore && typeof window.AESCustomizationStore.subscribe === "function") {
+        window.AESCustomizationStore.subscribe(rebuildIndex);
+    }
+
     let prefix = null;
     let prefixTimer = null;
 
@@ -135,51 +119,74 @@
         location.pathname = target;
     }
 
+    function dispatch(sc) {
+        if (!sc) return false;
+        if (typeof sc.go === "function") {
+            const target = sc.go();
+            if (target) { navigate(target); return true; }
+            return false;
+        }
+        if (typeof sc.action === "function") {
+            sc.action();
+            return true;
+        }
+        if (sc.action === "focusFilter") return focusFilterInput();
+        if (sc.action === "showHelp")    { showHelp(); return true; }
+        return false;
+    }
+
+    /* The chord scanner — collects up to two characters separated by a
+       space, then looks them up in the resolved index. Single keys like
+       `/` and `?` are looked up immediately. */
     function handleKey(e) {
-        // Always respect Esc for closing help, even from inputs.
         if (e.key === "Escape") {
             if (helpEl) { hideHelp(); e.preventDefault(); return; }
         }
 
-        if (isTypingTarget(e.target)) {
-            // Inside a field: only Esc handled (above).
-            return;
-        }
-
-        // Ignore modified key chords (Ctrl/Meta/Alt) so we don't fight browser shortcuts.
+        if (isTypingTarget(e.target)) return;
         if (e.ctrlKey || e.metaKey || e.altKey) return;
 
-        // `?` is shift+/. It's a real character with key "?".
-        if (e.key === "?") { showHelp(); e.preventDefault(); return; }
-        if (e.key === "/") { if (focusFilterInput()) e.preventDefault(); return; }
-
-        if (e.key === "g") {
-            prefix = "g";
-            if (prefixTimer) clearTimeout(prefixTimer);
-            prefixTimer = setTimeout(clearPrefix, PREFIX_TIMEOUT_MS);
+        if (e.key === "?") {
+            const sc = byKeys["?"];
+            if (sc) { dispatch(sc); e.preventDefault(); }
+            return;
+        }
+        if (e.key === "/") {
+            const sc = byKeys["/"];
+            if (sc) { if (dispatch(sc)) e.preventDefault(); }
             return;
         }
 
-        if (prefix === "g" && /^[a-z]$/.test(e.key)) {
-            const combo = `g ${e.key}`;
-            const sc = shortcuts.find(s => s.keys === combo);
-            clearPrefix();
-            if (sc) {
-                if (typeof sc.go === "function") {
-                    const target = sc.go();
-                    if (target) { navigate(target); e.preventDefault(); }
-                } else if (typeof sc.action === "function") {
-                    sc.action();
-                    e.preventDefault();
-                }
+        /* Look for a chord-prefix match: any binding whose keys are
+           exactly "<key> ..." starts a chord. The legacy default uses
+           `g` as the only prefix; the registry-driven matcher accepts
+           any single-char prefix that appears in a binding. */
+        if (!prefix && /^[a-z]$/i.test(e.key)) {
+            const ch = e.key.toLowerCase();
+            const startsChord = Object.keys(byKeys).some(function (k) {
+                return k.length > 1 && k[0] === ch && k[1] === " ";
+            });
+            if (startsChord) {
+                prefix = ch;
+                if (prefixTimer) clearTimeout(prefixTimer);
+                prefixTimer = setTimeout(clearPrefix, PREFIX_TIMEOUT_MS);
+                return;
             }
             return;
+        }
+
+        if (prefix && /^[a-z]$/i.test(e.key)) {
+            const combo = prefix + " " + e.key.toLowerCase();
+            const sc = byKeys[combo];
+            clearPrefix();
+            if (sc) {
+                if (dispatch(sc)) e.preventDefault();
+            }
         }
     }
 
     document.addEventListener("keydown", handleKey, true);
 
-    // Expose the help popover so the AES menu can trigger it.
     window.AESSiteSkin = window.AESSiteSkin || {};
     window.AESSiteSkin.showShortcuts = showHelp;
     window.AESSiteSkin.hideShortcuts = hideHelp;
