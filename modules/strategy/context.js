@@ -374,6 +374,147 @@
         return out
     }
 
+    // ── ORS cache + ownPricing attach (Velvet Cascade · PR 1A) ──────────
+
+    async function _attachOrsCache(hubs) {
+        if (!_has("RouteAssistantOrsScraper")) return
+        const pairs = []
+        for (const h of hubs) for (const r of (h && h.byRoute) || []) {
+            if (r && r.dest) pairs.push([h.iata, r.dest])
+        }
+        if (!pairs.length) return
+        let cache
+        try { cache = await window.RouteAssistantOrsScraper.bulkLoadCache(pairs, {}) }
+        catch (_) { return }
+        if (!cache || typeof cache.get !== "function") return
+        for (const h of hubs) for (const r of (h && h.byRoute) || []) {
+            const rec = cache.get(_routeKey(h.iata, r.dest))
+            if (!rec) continue
+            r.orsByClass    = rec.byClass || null
+            r.orsScrapedAt  = rec.scrapedAt || null
+            r.classesScraped = rec.classesScraped || null
+        }
+    }
+
+    async function _attachOwnPricing(hubs) {
+        if (!_has("RouteAssistantMarketsPageScraper")) return
+        const pairs = []
+        for (const h of hubs) for (const r of (h && h.byRoute) || []) {
+            if (r && r.dest) pairs.push([h.iata, r.dest])
+        }
+        if (!pairs.length) return
+        let blob
+        try { blob = await window.RouteAssistantMarketsPageScraper.bulkLoadCache(pairs, {}) }
+        catch (_) { return }
+        if (!blob || typeof blob.get !== "function") return
+        for (const h of hubs) for (const r of (h && h.byRoute) || []) {
+            const fam = blob.get(_routeKey(h.iata, r.dest))
+            if (!fam || !fam.ownPricing || !fam.ownPricing.prices) continue
+            r.ownPricing = {prices: Object.assign({}, fam.ownPricing.prices),
+                            scrapedAt: fam.ownPricing.scrapedAt || null}
+        }
+    }
+
+    /**
+     * Attach calibration corpus per route — the saved sandbox scenarios
+     * (user what-if runs at given price/LF/yield combinations) and the
+     * recent ORS snapshots (calibration freeze-frames captured by the
+     * route-sync orchestrator). Used by downstream proposers as evidence
+     * the rationale strings can cite, e.g. "ORS rank trended 3.2 → 2.8 in
+     * last 5 snapshots — current price likely below optimum".
+     *
+     * Defensive: typeof guards every store; per-route failures are
+     * swallowed and just leave the field absent so the snapshot composer
+     * never sinks on a calibration-store outage.
+     */
+    async function _attachCalibrationCorpus(hubs) {
+        const pairs = []
+        for (const h of hubs || []) {
+            for (const r of (h && h.byRoute) || []) {
+                if (r && r.dest) pairs.push([h.iata, r.dest])
+            }
+        }
+        if (!pairs.length) return
+
+        // ORS snapshot history — bulkList is the cheap path; one storage
+        // read for the whole pair set, lightweight summaries returned.
+        let orsByPair = null
+        if (_has("RouteAssistantOrsSnapshotStore")
+                && typeof window.RouteAssistantOrsSnapshotStore.bulkList === "function") {
+            try {
+                orsByPair = await window.RouteAssistantOrsSnapshotStore.bulkList(
+                    pairs.map(p => ({hub: p[0], dest: p[1]}))
+                )
+            } catch (_) { orsByPair = null }
+        }
+
+        // Sandbox scenarios — no bulk API on the store, so fan out per-route.
+        // Snapshot composition is not a render hot path (called minutes
+        // cadence at most), so the per-route storage reads are acceptable.
+        const sandboxByPair = new Map()
+        if (_has("RouteAssistantSandboxScenariosStore")
+                && typeof window.RouteAssistantSandboxScenariosStore.list === "function") {
+            await Promise.all(pairs.map(async (p) => {
+                try {
+                    const scenarios = await window.RouteAssistantSandboxScenariosStore.list(p[0], p[1])
+                    if (scenarios && scenarios.length) {
+                        sandboxByPair.set(_routeKey(p[0], p[1]), scenarios)
+                    }
+                } catch (_) { /* per-route failure stays silent */ }
+            }))
+        }
+
+        for (const h of hubs || []) {
+            for (const r of (h && h.byRoute) || []) {
+                if (!r || !r.dest) continue
+                const k = _routeKey(h.iata, r.dest)
+                if (orsByPair && typeof orsByPair.get === "function") {
+                    const list = orsByPair.get(k)
+                    if (Array.isArray(list) && list.length) {
+                        r.orsHistory = list.slice(0, 5)
+                    }
+                }
+                if (sandboxByPair.has(k)) {
+                    r.sandboxScenarios = sandboxByPair.get(k)
+                }
+            }
+        }
+    }
+
+    /**
+     * Attach a representative aircraft spec per route — the smallest tail in
+     * fleet whose range covers the round-trip + ~5% margin. Used by the
+     * joint rank-target tuner so per-route projections have an estimator-
+     * compatible spec without forcing each route to know its assigned tail.
+     * Routes without a viable spec stay null; tuner skips them gracefully.
+     */
+    function _attachRouteSpec(hubs, fleet) {
+        if (!Array.isArray(hubs) || !Array.isArray(fleet) || !fleet.length) return
+        const candidates = fleet.filter(a => a
+            && a.rangeKm != null && a.rangeKm > 0
+            && a.seats   != null && a.seats   > 0
+            && a.cruiseSpeedKmh != null && a.cruiseSpeedKmh > 0)
+        if (!candidates.length) return
+        for (const h of hubs) for (const r of (h && h.byRoute) || []) {
+            const dist = Number(r && r.distanceKm) || 0
+            if (!dist) continue
+            let best = null
+            for (const c of candidates) {
+                if (c.rangeKm < dist * 1.05) continue
+                if (!best || c.seats < best.seats) best = c
+            }
+            if (best) {
+                r.spec = {
+                    seats:           best.seats,
+                    cargoCapacity:   best.cargoCapacity,
+                    range:           best.rangeKm,
+                    speed:           best.cruiseSpeedKmh,
+                    paxSatisfaction: best.paxSatisfaction
+                }
+            }
+        }
+    }
+
     // ── Service profiles, crew, cash, sisters, settings ─────────────────
 
     async function _loadServiceProfiles() {
@@ -388,10 +529,12 @@
                 try { detail = await window.RouteAssistantServiceProfileScraper.loadDetail(p.id) }
                 catch (_) {}
                 out.push({
-                    id:         p.id,
-                    name:       p.name || (detail && detail.name) || null,
-                    classScore: detail && detail.classScore ? detail.classScore : {Y: null, C: null, F: null},
-                    scrapedAt:  detail && detail.scrapedAt   ? detail.scrapedAt   : null
+                    id:               p.id,
+                    name:             p.name || (detail && detail.name) || null,
+                    classScore:       detail && detail.classScore ? detail.classScore : {Y: null, C: null, F: null},
+                    categories:       detail && detail.categories ? detail.categories : null,
+                    categoryByPrefix: detail && detail.categoryByPrefix ? detail.categoryByPrefix : null,
+                    scrapedAt:        detail && detail.scrapedAt   ? detail.scrapedAt   : null
                 })
             }
             return out
@@ -471,6 +614,41 @@
         catch (_) { return null }
     }
 
+    async function _loadStrategySettings() {
+        if (!_has("AesStrategySettings")) return null
+        try { return await window.AesStrategySettings.load() }
+        catch (_) { return null }
+    }
+
+    async function _loadRouteObjectives(hubs, accountId) {
+        if (!_has("AesStrategyRouteObjectiveStore")) return new Map()
+        const pairs = []
+        for (const h of hubs || []) {
+            for (const r of (h && h.byRoute) || []) {
+                if (r && r.dest) pairs.push([h.iata, r.dest])
+            }
+        }
+        if (!pairs.length) return new Map()
+        try { return await window.AesStrategyRouteObjectiveStore.getMany(pairs, accountId) }
+        catch (_) { return new Map() }
+    }
+
+    /**
+     * Resolve the per-account scoping ID for this snapshot. Strategy
+     * stores (route objectives, applied envelope, audit, outcomes,
+     * learn) are all keyed under <prefix>:acct:<accountId>:* so two
+     * sisters in the same world don't stomp each other's records.
+     * Caller can pass `accountId` explicitly; otherwise we ask the
+     * AesAccountRegistry. Null/throw → unscoped storage (legacy).
+     */
+    async function _resolveAccountId(server, airlineCode, explicit) {
+        if (explicit) return explicit
+        if (!server || !airlineCode) return null
+        if (!_has("AesAccountRegistry")) return null
+        try { return await window.AesAccountRegistry.computeId(server, airlineCode) }
+        catch (_) { return null }
+    }
+
     // ── Public entry ────────────────────────────────────────────────────
 
     async function snapshot(opts) {
@@ -503,17 +681,21 @@
         if (!_has("RouteAssistantServiceProfileScraper")) missing.push("RouteAssistantServiceProfileScraper")
         if (!_has("CrewMgmtStaffPilotsScraper"))    missing.push("CrewMgmtStaffPilotsScraper")
         if (!_has("RouteAssistantSettings"))        missing.push("RouteAssistantSettings")
+        if (!_has("RouteAssistantOrsSnapshotStore"))     missing.push("RouteAssistantOrsSnapshotStore")
+        if (!_has("RouteAssistantSandboxScenariosStore")) missing.push("RouteAssistantSandboxScenariosStore")
 
         const [
             ledger,
             serviceProfiles,
             crew,
-            settings
+            settings,
+            strategySettings
         ] = await Promise.all([
             _loadLedger(server, airlineCode),
-            _safe(_loadServiceProfiles(), null),
-            _safe(_loadCrew(),            null),
-            _safe(_loadSettings(),        null)
+            _safe(_loadServiceProfiles(),  null),
+            _safe(_loadCrew(),             null),
+            _safe(_loadSettings(),         null),
+            _safe(_loadStrategySettings(), null)
         ])
 
         const fleet = await _enrichFleet(server, fleetRaw, typesByTypeId, ledger)
@@ -524,25 +706,37 @@
             _attachDemand(hubs, o.includeStaleDemand ? {includeStale: true} : undefined),
             _attachOverrides(hubs),
             _attachWatchlist(hubs),
-            _attachCompetitorIntel(hubs)
+            _attachCompetitorIntel(hubs),
+            _attachOrsCache(hubs),
+            _attachOwnPricing(hubs),
+            _attachCalibrationCorpus(hubs)
         ])
+        _attachRouteSpec(hubs, fleet)
 
         const cash    = _summarizeCash(ledger)
         const sisters = ledger ? (ledger.sisters || null) : null
 
+        const accountId       = await _resolveAccountId(server, airlineCode, o.accountId)
+        const routeObjectives = await _loadRouteObjectives(hubs, accountId)
+        if (!_has("AesStrategySettings"))           missing.push("AesStrategySettings")
+        if (!_has("AesStrategyRouteObjectiveStore")) missing.push("AesStrategyRouteObjectiveStore")
+
         return {
-            ts:              Date.now(),
-            server:          server,
-            airlineCode:     airlineCode,
-            fleet:           fleet,
-            hubs:            hubs,
-            serviceProfiles: serviceProfiles,
-            crew:            crew,
-            cash:            cash,
-            sisters:         sisters,
-            rivals:          [],   // populated in Slice 5 (cross-airline / enterprise scraper)
-            settings:        _trimSettings(settings),
-            missing:         missing
+            ts:               Date.now(),
+            server:           server,
+            airlineCode:      airlineCode,
+            accountId:        accountId,
+            fleet:            fleet,
+            hubs:             hubs,
+            serviceProfiles:  serviceProfiles,
+            crew:             crew,
+            cash:             cash,
+            sisters:          sisters,
+            rivals:           [],   // populated in Slice 5 (cross-airline / enterprise scraper)
+            settings:         _trimSettings(settings),
+            strategySettings: strategySettings,
+            routeObjectives:  routeObjectives,
+            missing:          missing
         }
     }
 
