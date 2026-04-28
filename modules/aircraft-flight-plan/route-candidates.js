@@ -52,14 +52,22 @@
     const SORTABLE_COLUMNS = [
         {key: "destIata",      label: "DEST",  natural: "asc"},
         {key: "distanceKm",    label: "Dist",  natural: "asc"},
+        {key: "blockMin",      label: "Time",  natural: "asc"},
         {key: "paxScore",      label: "Pax",   natural: "desc"},
         {key: "cargoScore",    label: "Cargo", natural: "desc"},
         {key: "weeklyFlights", label: "Wkly",  natural: "desc"},
         {key: "airlineCount",  label: "Air",   natural: "asc"},
+        {key: "sizeOrder",     label: "Size",  natural: "desc"},
         {key: "fuelKgRT",      label: "Fuel",  natural: "asc"},
         {key: "alphaY",        label: "αY",    natural: "desc"},
         {key: "scoreBlend",    label: "Score", natural: "desc"}
     ]
+    const SIZE_ORDER = {S: 1, M: 2, L: 3, XL: 4}
+    const SIZE_COLOR = {S: "#fca5a5", M: "#fcd34d", L: "#86efac", XL: "#7dd3fc"}
+    // Lazy-fetch dedupe — set of airportIds we've already kicked off
+    // a metadata scrape for in this page session. Keeps reruns idempotent
+    // even when the user toggles chips or sorts.
+    const _metaInflight = new Set()
     // 1 L Jet A ≈ 0.8 kg — same constant the AS Performance Check tool uses
     // when it converts liters to mass for payload planning.
     const KG_PER_LITRE_JETA = 0.8
@@ -68,6 +76,14 @@
     const FALLBACK_DEP_TIME = "09:00"
 
     let _ffCtrl = null
+
+    /** "3:42" — minutes-into-day duration → h:mm. */
+    function _fmtBlockMin(min) {
+        if (min == null || !isFinite(min)) return "—"
+        const h = Math.floor(min / 60)
+        const m = min % 60
+        return h + ":" + String(m).padStart(2, "0")
+    }
 
     const AesAfpRouteCandidates = {
         last:          null,
@@ -150,6 +166,33 @@
                 } catch (e) { /* non-fatal */ }
             }
 
+            // Cache-only airport metadata (size / runway / noise / curfew /
+            // station turnaround) keyed by airportId. Resolved via the demand
+            // store which already carries airportId per IATA. Missing entries
+            // are queued for a background fetch below — first paint never
+            // blocks on a network round-trip.
+            let airportMetaMap = null     // Map<airportId, metaRecord>
+            let iataToAirportId = null    // Map<IATA, airportId> for hub + dest
+            if (typeof RouteAssistantAirportMetaScraper !== "undefined") {
+                try {
+                    iataToAirportId = new Map()
+                    if (demandMap) {
+                        for (const [iata, rec] of demandMap.entries()) {
+                            if (rec && rec.airportId) {
+                                iataToAirportId.set(iata, String(rec.airportId))
+                            }
+                        }
+                    }
+                    const knownIds = Array.from(new Set(Array.from(iataToAirportId.values())))
+                    if (knownIds.length) {
+                        airportMetaMap = await RouteAssistantAirportMetaScraper.bulkLoadCache(
+                            knownIds, {maxAgeDays: 30})
+                    }
+                } catch (e) { /* non-fatal — table renders without meta */ }
+            }
+            this._iataToAirportId = iataToAirportId
+            this._lastAirportMeta = airportMetaMap
+
             // Watchlist set (defensive — chip stays inert when store missing).
             this._watchlistKeys = null
             if (typeof RouteAssistantWatchlistStore !== "undefined") {
@@ -161,8 +204,9 @@
             // ScheduleFactors expects nm, so convert at the boundary.
             const rangeKm = (spec && Number(spec.range)) || null
             const rangeNm = rangeKm ? ScheduleFactors.kmToNm(rangeKm) : null
+            const cruiseKmh = (spec && Number(spec.cruiseSpeedKmh)) || null
             const rows = routes.map(r => this._buildRow(r, originIata, demandMap, distMap,
-                rangeNm, scheduled, alphaMap, burn))
+                rangeNm, scheduled, alphaMap, burn, airportMetaMap, iataToAirportId, cruiseKmh))
 
             const scoringCfg = (settings && settings.scoring) || {}
             const scored = RouteAssistantScore.computeScores(rows, scoringCfg, FIELD_DEFS)
@@ -177,10 +221,79 @@
             if (window.AesAfp && AesAfp.bus) {
                 AesAfp.bus.emit("candidates:updated", {candidates: scored})
             }
+
+            this._kickAirportMetaFetch(originIata, iataToAirportId, airportMetaMap)
             return scored
         },
 
-        _buildRow(r, originIata, demandMap, distMap, rangeNm, scheduled, alphaMap, burn) {
+        /**
+         * Background-fetch metadata for any airport (hub + visible destinations)
+         * we don't already have a cached record for. Re-renders the table as
+         * each batch lands so the user sees Size/R! cells fill in progressively.
+         * Idempotent via the module-level `_metaInflight` set.
+         */
+        _kickAirportMetaFetch(originIata, iataToAirportId, metaMap) {
+            if (typeof RouteAssistantAirportMetaScraper === "undefined") return
+            if (!iataToAirportId || !iataToAirportId.size) return
+            const ctx = (window.AesAfp && AesAfp.ctx) || null
+            const server = ctx && ctx.server
+            if (!server) return
+
+            const have = new Set(metaMap ? metaMap.keys() : [])
+            const missing = []
+            for (const airportId of iataToAirportId.values()) {
+                const id = String(airportId)
+                if (have.has(id)) continue
+                if (_metaInflight.has(id)) continue
+                missing.push(id)
+            }
+            if (!missing.length) return
+
+            for (const id of missing) _metaInflight.add(id)
+            const scraper = new RouteAssistantAirportMetaScraper(server)
+            scraper.bulkScrape(missing, {concurrency: 3, staggerMs: 800})
+                .then(async () => {
+                    try {
+                        const fresh = await RouteAssistantAirportMetaScraper.bulkLoadCache(
+                            Array.from(iataToAirportId.values()), {maxAgeDays: 30})
+                        this._lastAirportMeta = fresh
+                        // Re-stamp current candidates without re-scoring.
+                        if (Array.isArray(this.last) && this.last.length) {
+                            for (const c of this.last) {
+                                const aid = iataToAirportId.get(c.destIata)
+                                const meta = aid ? fresh.get(String(aid)) : null
+                                this._stampMetaOnCandidate(c, meta)
+                            }
+                            if (window.AesAfp && AesAfp.bus) {
+                                AesAfp.bus.emit("candidates:updated", {candidates: this.last})
+                            }
+                            this._reRender()
+                        }
+                    } catch (e) { /* non-fatal */ }
+                    finally {
+                        for (const id of missing) _metaInflight.delete(id)
+                    }
+                })
+                .catch(() => {
+                    for (const id of missing) _metaInflight.delete(id)
+                })
+        },
+
+        _stampMetaOnCandidate(c, meta) {
+            if (!c) return
+            const sizeClass = meta && meta.sizeClass ? meta.sizeClass : null
+            c.sizeClass       = sizeClass
+            c.sizeOrder       = sizeClass != null ? (SIZE_ORDER[sizeClass] || null) : null
+            c.runwayLengthM   = meta ? meta.runwayLengthM : null
+            c.nightCurfew     = meta ? meta.nightCurfew : null
+            c.curfewLabel     = meta ? meta.curfewLabel : null
+            c.noiseRestricted = meta ? meta.noiseRestricted : null
+            c.noiseLabel      = meta ? meta.noiseLabel : null
+            c.stationTurnMin  = meta ? meta.turnaroundMin : null
+        },
+
+        _buildRow(r, originIata, demandMap, distMap, rangeNm, scheduled, alphaMap, burn,
+                  airportMetaMap, iataToAirportId, cruiseKmh) {
             const destIata = String(r.destIata || "").toUpperCase()
             const demand   = demandMap && demandMap.get(destIata)
             let distanceKm = (typeof r.distanceKm === "number" && isFinite(r.distanceKm))
@@ -193,6 +306,34 @@
             }
             const distanceNm = (distanceKm != null) ? ScheduleFactors.kmToNm(distanceKm) : null
             const fits   = this._classifyFit(distanceNm, rangeNm)
+            // Block time (one-way): cruiseSpeedKmh is the AS-displayed cruise
+            // figure; we don't add taxi here so the column is comparable with
+            // distance-only sort. Sidebar surfaces a more accurate estimate
+            // via flightTimeMin() with taxi padding.
+            const blockMin = (distanceKm != null && cruiseKmh != null && cruiseKmh > 0)
+                ? Math.round((distanceKm / cruiseKmh) * 60) : null
+
+            let meta = null
+            if (airportMetaMap && iataToAirportId) {
+                const aid = iataToAirportId.get(destIata)
+                if (aid) meta = airportMetaMap.get(String(aid)) || null
+            }
+
+            // Per-route time-budget headroom: how often (per week, theoretical)
+            // a single aircraft could fly this round-trip given block time and
+            // the destination's turnaround. The cap ignores daily limits and
+            // multi-aircraft sharing — it's the *time-feasibility* ceiling, not
+            // a scheduled frequency. Long-haul routes whose round-trip + turn
+            // exceeds 168h/wk yield 0; treat those as not flyable weekly.
+            // Default 45 min mirrors the strategy allocator's FALLBACK_TURNAROUND_MIN
+            // (different IIFE — kept literal here, not imported).
+            const turnaroundMin = (meta && Number.isFinite(Number(meta.turnaroundMin)))
+                ? Number(meta.turnaroundMin) : 45
+            const rtHoursWithTurnaround = (blockMin != null)
+                ? ((blockMin * 2) + turnaroundMin) / 60 : null
+            const maxFreqByTime = (rtHoursWithTurnaround != null && rtHoursWithTurnaround > 0)
+                ? Math.max(0, Math.floor(168 / rtHoursWithTurnaround)) : null
+            const sizeClass = meta && meta.sizeClass ? meta.sizeClass : null
             const aircraftFit = (fits === "fit") ? "optimal"
                 : (fits === "tight") ? "falloff"
                 : (fits === "oor")   ? "oor" : null
@@ -220,6 +361,9 @@
                 destName:        r.destName || (demand && demand.name) || null,
                 distanceKm:      distanceKm,
                 distanceNm:      distanceNm,
+                blockMin:        blockMin,
+                rtHoursWithTurnaround: rtHoursWithTurnaround,
+                maxFreqByTime:   maxFreqByTime,
                 paxScore:        demand ? demand.paxScore   : null,
                 cargoScore:      demand ? demand.cargoScore : null,
                 weeklyFlights:   typeof r.weeklyFlights === "number" ? r.weeklyFlights : null,
@@ -233,7 +377,15 @@
                 fuelSource:      burn ? burn.source : null,
                 alphaY:          alphaRec && isFinite(Number(alphaRec.Y)) ? Number(alphaRec.Y) : null,
                 alphaC:          alphaRec && isFinite(Number(alphaRec.C)) ? Number(alphaRec.C) : null,
-                alphaF:          alphaRec && isFinite(Number(alphaRec.F)) ? Number(alphaRec.F) : null
+                alphaF:          alphaRec && isFinite(Number(alphaRec.F)) ? Number(alphaRec.F) : null,
+                sizeClass:        sizeClass,
+                sizeOrder:        sizeClass != null ? (SIZE_ORDER[sizeClass] || null) : null,
+                runwayLengthM:    meta ? meta.runwayLengthM : null,
+                nightCurfew:      meta ? meta.nightCurfew : null,
+                curfewLabel:      meta ? meta.curfewLabel : null,
+                noiseRestricted:  meta ? meta.noiseRestricted : null,
+                noiseLabel:       meta ? meta.noiseLabel : null,
+                stationTurnMin:   meta ? meta.turnaroundMin : null
             }
         },
 
@@ -259,9 +411,26 @@
             const list = Array.isArray(candidates) ? candidates : []
             if (!list.length) { this._renderEmpty(host, this._lastCtx.originIata); return }
 
+            this._renderWaveStrip(host)
             this._renderChipBar(host)
             this._renderTable(host, list)
             this._renderFooter(host, list)
+        },
+
+        /** Mount the wave-pattern overlay above the chip bar when the
+         *  "🌊 Waves" chip is active. Renders into a self-contained host
+         *  so the wave-strip module owns its own DOM lifecycle. */
+        _renderWaveStrip(host) {
+            if (!this._chipState || !this._chipState.showWaves) return
+            if (typeof window.AesAfpWaveStrip === "undefined") return
+            const wrap = document.createElement("div")
+            wrap.dataset.aesAfpWaveStripHost = "1"
+            wrap.style.cssText = "margin:0 0 6px 0;"
+            host.append(wrap)
+            const hub = String((this._lastCtx && this._lastCtx.originIata) || "").toUpperCase()
+            window.AesAfpWaveStrip.render(wrap, hub).catch(err => {
+                console.warn("[AES afp] wave-strip render threw", err)
+            })
         },
 
         _defaultChipState(settings) {
@@ -271,6 +440,7 @@
                 rangeFitOnly:        chips.rangeFitOnly        !== false,
                 hideAlreadyScheduled: chips.hideAlreadyScheduled !== false,
                 watchlistOnly:       !!chips.watchlistOnly,
+                showWaves:           !!chips.showWaves,
                 topN:                (typeof afp.defaultTopN === "number" && afp.defaultTopN > 0)
                                          ? afp.defaultTopN : 10
             }
@@ -445,6 +615,14 @@
                 "#92400e",
                 () => { if (wlAvailable) { state.watchlistOnly = !state.watchlistOnly; this._reRender() } }))
 
+            const wavesAvailable = (typeof window.AesAfpWaveStrip !== "undefined")
+            wrap.append(mkChip("🌊 Waves", state.showWaves,
+                wavesAvailable
+                    ? "Toggle the wave-pattern overlay above the table. Drag bands to move; drag edges to resize."
+                    : "Wave-strip module not loaded on this page — chip is inert.",
+                "#0e7490",
+                () => { if (wavesAvailable) { state.showWaves = !state.showWaves; this._reRender() } }))
+
             const topNLabel = (state.topN === "all") ? "Top: all" : "Top " + state.topN
             wrap.append(mkChip(topNLabel + " ▾", false,
                 "Cycle the result cap: 5 → 10 → 25 → 50 → all.",
@@ -487,6 +665,15 @@
                 th.addEventListener("click", () => this._handleSort(col.key))
                 trh.append(th)
             }
+            // Trailing non-sortable column: airport restriction icons
+            // (curfew + noise). Empty when both are unknown / not flagged.
+            const restrTh = document.createElement("th")
+            restrTh.style.cssText = "text-align:center;padding:3px 4px;font-weight:600;"
+                + "user-select:none;width:34px;"
+            restrTh.textContent = "R!"
+            restrTh.title = "Restrictions: 🌙 night curfew, 🔇 noise — hover a cell for details."
+            trh.append(restrTh)
+
             // Trailing non-sortable column: per-row Departure HH:MM picker.
             // Click on the row uses this value as the candidate:selected
             // payload's depTime, which form-driver feeds into AS's form.
@@ -514,6 +701,27 @@
             tr.addEventListener("mouseleave", () => {
                 tr.style.background = (idx % 2) ? "#0f1623" : ""
             })
+
+            // F3a — drag candidate row into Flight Studio's multi-leg tray.
+            // Payload mirrors the subset Flight Studio needs to seed a leg;
+            // text/plain fallback keeps drops on text fields readable.
+            tr.draggable = true
+            tr.addEventListener("dragstart", ev => {
+                const payload = {
+                    destIata:   c.destIata,
+                    destName:   c.destName,
+                    distanceKm: c.distanceKm,
+                    paxScore:   c.paxScore,
+                    cargoScore: c.cargoScore
+                }
+                try {
+                    ev.dataTransfer.setData("application/x-aes-candidate", JSON.stringify(payload))
+                    ev.dataTransfer.setData("text/plain", c.destIata)
+                    ev.dataTransfer.effectAllowed = "copy"
+                } catch (_) { /* dataTransfer unsupported — drop quietly */ }
+                tr.style.opacity = "0.6"
+            })
+            tr.addEventListener("dragend", () => { tr.style.opacity = "" })
 
             const readDepTime = () => {
                 const inp = tr.querySelector(".aes-afp-row-dep")
@@ -576,10 +784,24 @@
             const distCell = this._mkNumCell(
                 (c.distanceKm == null) ? "—" : Math.round(c.distanceKm).toLocaleString())
 
+            const timeCell  = this._mkNumCell(c.blockMin == null ? "—" : _fmtBlockMin(c.blockMin))
+            if (c.blockMin != null) {
+                timeCell.title = "One-way block time at cruise speed (no taxi)"
+            }
+
             const paxCell   = this._mkNumCell((c.paxScore   == null) ? "—" : ("★" + c.paxScore))
             const cargoCell = this._mkNumCell((c.cargoScore == null) ? "—" : ("★" + c.cargoScore))
             const wklyCell  = this._mkNumCell(c.weeklyFlights == null ? "—" : c.weeklyFlights)
             const airCell   = this._mkNumCell(c.airlineCount  == null ? "—" : c.airlineCount)
+
+            const sizeCell  = this._mkNumCell(c.sizeClass == null ? "—" : c.sizeClass)
+            if (c.sizeClass) {
+                sizeCell.style.color      = SIZE_COLOR[c.sizeClass] || "#cbd5e1"
+                sizeCell.style.fontWeight = "600"
+                const tipBits = ["Airport size " + c.sizeClass]
+                if (c.runwayLengthM) tipBits.push("runway " + c.runwayLengthM + " m")
+                sizeCell.title = tipBits.join(" · ")
+            }
 
             const fuelCell  = this._mkNumCell(c.fuelKgRT == null
                 ? "—"
@@ -602,6 +824,27 @@
             scoreCell.style.cssText = "padding:3px 4px;text-align:right;font-weight:700;color:#f8fafc;"
             scoreCell.textContent = (c.scoreBlend == null) ? "—" : c.scoreBlend
 
+            const restrCell = document.createElement("td")
+            restrCell.style.cssText = "padding:3px 4px;text-align:center;width:34px;"
+            const restrParts = []
+            const restrTip   = []
+            if (c.nightCurfew) {
+                restrParts.push('<span style="color:#a78bfa;">🌙</span>')
+                restrTip.push("Night curfew" + (c.curfewLabel ? " — " + c.curfewLabel : ""))
+            }
+            if (c.noiseRestricted) {
+                restrParts.push('<span style="color:#fbbf24;">🔇</span>')
+                restrTip.push("Noise restriction" + (c.noiseLabel ? " — " + c.noiseLabel : ""))
+            }
+            restrCell.innerHTML = restrParts.length ? restrParts.join(" ") : "—"
+            if (!restrParts.length) restrCell.style.color = "#4b5563"
+            if (restrTip.length) restrCell.title = restrTip.join(" · ")
+            else if (c.nightCurfew == null && c.noiseRestricted == null) {
+                restrCell.title = "Airport restrictions not yet loaded"
+            } else {
+                restrCell.title = "No noise / night-curfew restrictions"
+            }
+
             const depCell = document.createElement("td")
             depCell.style.cssText = "padding:2px 4px;text-align:right;width:54px;"
             const depInput = document.createElement("input")
@@ -618,6 +861,10 @@
             // Don't bubble row click when interacting with the input.
             depInput.addEventListener("mousedown", ev => ev.stopPropagation())
             depInput.addEventListener("click",     ev => ev.stopPropagation())
+            // Keep the input editable when the row is HTML5-draggable; without
+            // this, mousedown on the input would initiate a row drag instead
+            // of focusing the field for text entry / selection.
+            depInput.draggable = false
             // Re-fire candidate:selected when the user commits a new value
             // (Enter or blur) so the form picks up the time without needing
             // a fresh row click.
@@ -628,8 +875,8 @@
             })
             depCell.append(depInput)
 
-            tr.append(destCell, distCell, paxCell, cargoCell, wklyCell, airCell,
-                fuelCell, alphaCell, scoreCell, depCell)
+            tr.append(destCell, distCell, timeCell, paxCell, cargoCell, wklyCell, airCell,
+                sizeCell, fuelCell, alphaCell, scoreCell, restrCell, depCell)
             return tr
         },
 

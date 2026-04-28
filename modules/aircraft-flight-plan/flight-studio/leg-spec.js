@@ -371,6 +371,22 @@
         return _normalizeSpec(Object.assign({}, s, {legs}))
     }
 
+    /** Move the leg at `fromIdx` to `toIdx` (insert-before semantics). Both
+     *  indices are clamped into range; out-of-bounds calls return the spec
+     *  unchanged. seq is densified by `_normalizeSpec`. Used by the multi-leg
+     *  tray's reorder drag handle. */
+    function reorderLeg(spec, fromIdx, toIdx) {
+        const s = _normalizeSpec(spec || {})
+        if (!Number.isFinite(fromIdx) || !Number.isFinite(toIdx)) return s
+        if (fromIdx < 0 || fromIdx >= s.legs.length) return s
+        if (fromIdx === toIdx) return s
+        const dest = Math.max(0, Math.min(s.legs.length - 1, Math.round(toIdx)))
+        const legs = s.legs.slice()
+        const [moved] = legs.splice(fromIdx, 1)
+        legs.splice(dest, 0, moved)
+        return _normalizeSpec(Object.assign({}, s, {legs}))
+    }
+
     function setLegField(spec, idx, field, value) {
         const s = _normalizeSpec(spec || {})
         if (!Number.isFinite(idx) || idx < 0 || idx >= s.legs.length) return s
@@ -451,6 +467,45 @@
     }
 
     /**
+     * Overlay a template's parametric fields onto every leg of `spec`.
+     * Pure — no DOM, no async. The OD pair and depTimeLocal of each leg
+     * are preserved by design: a template encodes a pricing/service
+     * pattern that travels across routes, not the route itself. `turnMin`
+     * lives in panel state (not the spec), so the panel applies it
+     * separately after this returns.
+     *
+     * Applied:  pricePct, service (per-leg);  note (spec-level, from
+     *           tmpl.notes when set).
+     * Preserved: legs[].origin, legs[].destination, legs[].depTimeLocal,
+     *            spec.flightNumberText, spec.nickname, spec.specId.
+     *
+     * Tags `source = "template"` so downstream surfaces can distinguish
+     * template-applied specs. `applyTemplate(spec, null) ≡ spec` so the
+     * panel can call this unconditionally.
+     */
+    function applyTemplate(spec, tmpl) {
+        const s = _normalizeSpec(spec || {})
+        if (!tmpl || typeof tmpl !== "object") return s
+        const pct = _asPct(tmpl.pricePct)
+        const svc = typeof tmpl.service === "string" ? tmpl.service : null
+        const noteRaw = typeof tmpl.notes === "string" ? tmpl.notes.trim() : null
+        if (pct == null && svc == null && !noteRaw) return s
+        const legs = s.legs.map(leg => {
+            const next = Object.assign({}, leg)
+            if (pct != null) next.pricePct = pct
+            if (svc != null) next.service  = svc
+            return next
+        })
+        const patch = {
+            legs,
+            source:     "template",
+            templateId: typeof tmpl.id === "string" ? tmpl.id : s.templateId
+        }
+        if (noteRaw) patch.note = noteRaw
+        return _normalizeSpec(Object.assign({}, s, patch))
+    }
+
+    /**
      * Replace `spec.legs` with the flights returned by the auto-scheduler's
      * Build. Preserves spec.specId, flightNumberText, nickname, note. Tags
      * `source = "auto-build"` so the panel can distinguish auto-built specs
@@ -495,9 +550,11 @@
         serializeLine,
         addLeg,
         removeLeg,
+        reorderLeg,
         setLegField,
         setSpecField,
         setLegsFromBuild,
-        nextSpecAfter
+        nextSpecAfter,
+        applyTemplate
     }
 })()
