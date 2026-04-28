@@ -1,0 +1,153 @@
+/* ===========================================================
+   AES "FACET" — css/cubist-a11y.css
+   CB6 — polish: a11y focus rings, color-blind pattern fills,
+   user motion override, and the wave-strip Picasso-still-life
+   reskin. All scoped under body.aes-cubist or
+   body[data-aes-cb-patterns] so default installs see no change.
+   =========================================================== */
+
+/* ---- Keyboard focus indicators -------------------------- */
+.aes-cubist .aes-facet:focus,
+.aes-cubist .aes-facet:focus-visible {
+    outline: var(--aes-bw-3) dashed var(--aes-rust);
+    outline-offset: -3px;
+    z-index: 3;
+}
+.aes-cubist .aes-polyhedron:focus-within {
+    box-shadow: 0 0 0 var(--aes-bw-2) var(--aes-rust);
+}
+.aes-cubist .aes-decomposed-facet:focus,
+.aes-cubist .aes-decomposed-facet:focus-visible {
+    outline: var(--aes-bw-3) solid var(--aes-rust);
+    outline-offset: 2px;
+}
+
+/* ---- Color-blind pattern fills -------------------------- */
+/* Activated by body[data-aes-cb-patterns="on"]. Adds redundant
+   non-color signal so vermilion / viridian / gold remain
+   distinguishable without color perception. */
+
+body[data-aes-cb-patterns="on"].aes-cubist [style*="--aes-vermilion"],
+body[data-aes-cb-patterns="on"].aes-cubist [data-perspective="alerts"],
+body[data-aes-cb-patterns="on"].aes-cubist .aes-cb-vermilion {
+    background-image: repeating-linear-gradient(
+        45deg,
+        transparent 0,
+        transparent 4px,
+        rgba(43, 37, 32, 0.35) 4px,
+        rgba(43, 37, 32, 0.35) 5px
+    ) !important;
+}
+
+body[data-aes-cb-patterns="on"].aes-cubist [style*="--aes-viridian"],
+body[data-aes-cb-patterns="on"].aes-cubist [data-perspective="profit"],
+body[data-aes-cb-patterns="on"].aes-cubist .aes-cb-viridian {
+    background-image: repeating-linear-gradient(
+        0deg,
+        transparent 0,
+        transparent 4px,
+        rgba(43, 37, 32, 0.30) 4px,
+        rgba(43, 37, 32, 0.30) 5px
+    ) !important;
+}
+
+body[data-aes-cb-patterns="on"].aes-cubist [style*="--aes-gold"],
+body[data-aes-cb-patterns="on"].aes-cubist [data-perspective="opportunity"],
+body[data-aes-cb-patterns="on"].aes-cubist .aes-cb-gold {
+    background-image: radial-gradient(
+        var(--aes-oxide) 1px,
+        transparent 1.5px
+    ) !important;
+    background-size: 6px 6px !important;
+}
+
+/* ---- User motion override (cubistMode.motion = "off") --- */
+/* Layered on top of @media (prefers-reduced-motion: reduce) in
+   cubist.css. Either pref disables transforms/animations. */
+body.aes-cubist[data-aes-motion="off"] .aes-polyhedron,
+body.aes-cubist[data-aes-motion="off"] .aes-polyhedron[data-pivot="on"]:hover,
+body.aes-cubist[data-aes-motion="off"] .aes-facet,
+body.aes-cubist[data-aes-motion="off"] .aes-decomposed-facet {
+    transform: none !important;
+    transition: opacity var(--aes-tr-medium) !important;
+    animation: none !important;
+}
+
+/* ---- Wave-strip Picasso-still-life reskin --------------- */
+/* CB6 — reframes wave-strip's translucent rgba blocks as
+   geometric Cubist planes. Targets dataset attributes that
+   wave-strip already emits ([data-aes-wave-kind]). Pure CSS;
+   the wave-strip module itself is unchanged. */
+
+body.aes-cubist [data-aes-wave-kind="arrival"] {
+    background: var(--aes-viridian-soft) !important;
+    border: var(--aes-bw-1) solid var(--aes-viridian) !important;
+    border-radius: 0 !important;
+    clip-path: polygon(8% 0, 100% 0, 92% 100%, 0 100%) !important;
+    color: var(--aes-oxide) !important;
+}
+
+body.aes-cubist [data-aes-wave-kind="arrival"]:hover {
+    background: var(--aes-viridian) !important;
+    color: var(--aes-bone) !important;
+}
+
+body.aes-cubist [data-aes-wave-kind="departure"] {
+    background: var(--aes-cobalt-soft) !important;
+    border: var(--aes-bw-1) solid var(--aes-cobalt) !important;
+    border-radius: 0 !important;
+    clip-path: polygon(0 0, 92% 0, 100% 100%, 8% 100%) !important;
+    color: var(--aes-oxide) !important;
+}
+
+body.aes-cubist [data-aes-wave-kind="departure"]:hover {
+    background: var(--aes-cobalt) !important;
+    color: var(--aes-bone) !important;
+}
+
+/* Picasso-guitar silhouette behind the wave strip — visible
+   only as fragments through the translucent wave bands. */
+body.aes-cubist [data-aes-wave-strip],
+body.aes-cubist .aes-afp-wave-strip {
+    position: relative;
+}
+body.aes-cubist [data-aes-wave-strip]::before,
+body.aes-cubist .aes-afp-wave-strip::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(
+            115deg,
+            transparent 30%,
+            var(--aes-paper-rule) 30%,
+            var(--aes-paper-rule) 31%,
+            transparent 31%
+        ),
+        linear-gradient(
+            -115deg,
+            transparent 60%,
+            var(--aes-paper-rule) 60%,
+            var(--aes-paper-rule) 61%,
+            transparent 61%
+        );
+    opacity: 0.18;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* ---- Forced-colors / Windows high-contrast support ------ */
+@media (forced-colors: active) {
+    .aes-cubist .aes-facet,
+    .aes-cubist .aes-polyhedron,
+    .aes-cubist .aes-decomposed-facet {
+        forced-color-adjust: none;
+        border: 1px solid CanvasText;
+        background: Canvas;
+        color: CanvasText;
+    }
+    .aes-cubist .aes-facet:focus,
+    .aes-cubist .aes-decomposed-facet:focus {
+        outline: 2px solid Highlight;
+    }
+}

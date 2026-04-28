@@ -94,6 +94,20 @@
     /* ---- Transitions (sparse, functional, never decorative) */
     --aes-tr-fast:    80ms linear;
     --aes-tr-medium:  140ms linear;
+
+    /* ---- Cubist accents (FACET overhaul — additive, opt-in) -- */
+    --aes-vermilion:        #C43A1F;     /* alert wedge / negative delta */
+    --aes-vermilion-soft:   rgba(196, 58, 31, 0.14);
+    --aes-viridian:         #2A6E5A;     /* success wedge / positive delta */
+    --aes-viridian-soft:    rgba(42, 110, 90, 0.14);
+    --aes-gold:             #B88A2A;     /* opportunity wedge / engine recommendation */
+    --aes-gold-soft:        rgba(184, 138, 42, 0.14);
+
+    /* ---- Cubist geometry (consumed by css/cubist.css) -------- */
+    --aes-cubist-seam-angle:    12deg;
+    --aes-cubist-pivot:         8deg;
+    --aes-cubist-ghost-offset:  6px;
+    --aes-cubist-ghost-alpha:   0.20;
 }
 
 /* ===========================================================

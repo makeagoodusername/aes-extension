@@ -80,6 +80,74 @@ class CentralHubSettingsTile extends window.CentralHubTile {
         densityBtn.disabled = !skin
         grid.appendChild(densityBtn)
 
+        // CB0 — Cubist Mode toggle (FACET overhaul, opt-in)
+        const cubistSettings = await window.CentralHubSettings.load()
+        grid.appendChild(this._label(T, "Cubist Mode"))
+        const cubistValue = document.createElement("span")
+        cubistValue.style.cssText = "color:" + T.color.oxide2 + ";font-family:" + T.font.mono + ";"
+        cubistValue.textContent = (cubistSettings.cubistMode ? "ON" : "OFF") + " · experimental"
+        grid.appendChild(cubistValue)
+        const cubistBtn = this._actionBtn(T, "Toggle", async () => {
+            const cur = await window.CentralHubSettings.load()
+            const wantOn = !cur.cubistMode
+            if (wantOn && !cur.cubistModeAcked) {
+                const ok = window.confirm(
+                    "Enable FACET (Cubist) visual mode?\n\n" +
+                    "Experimental UI direction. CB0 ships the foundation only — " +
+                    "no visible change yet. Subsequent slices (CB1+) will bind hub " +
+                    "surfaces to this mode.\n\n" +
+                    "You can toggle off at any time."
+                )
+                if (!ok) return
+                cur.cubistModeAcked = true
+            }
+            cur.cubistMode = wantOn
+            await window.CentralHubSettings.save(cur)
+            if (document.body && document.body.classList) {
+                document.body.classList.toggle("aes-cubist", wantOn)
+            }
+            cubistValue.textContent = (wantOn ? "ON" : "OFF") + " · experimental"
+            this.refresh()
+        })
+        grid.appendChild(cubistBtn)
+
+        // CB6 — Motion sub-toggle (cubistMotion: "on" | "off")
+        grid.appendChild(this._label(T, "↳ Motion"))
+        const motionValue = document.createElement("span")
+        motionValue.style.cssText = "color:" + T.color.oxide2 + ";font-family:" + T.font.mono + ";"
+        motionValue.textContent = cubistSettings.cubistMotion === "off" ? "OFF" : "ON"
+        grid.appendChild(motionValue)
+        const motionBtn = this._actionBtn(T, "Toggle", async () => {
+            const cur = await window.CentralHubSettings.load()
+            const next = cur.cubistMotion === "off" ? "on" : "off"
+            cur.cubistMotion = next
+            await window.CentralHubSettings.save(cur)
+            if (document.body) {
+                document.body.setAttribute("data-aes-motion", next)
+            }
+            motionValue.textContent = next === "off" ? "OFF" : "ON"
+        })
+        grid.appendChild(motionBtn)
+
+        // CB6 — Color-blind pattern fills toggle
+        grid.appendChild(this._label(T, "↳ Color-blind"))
+        const cbValue = document.createElement("span")
+        cbValue.style.cssText = "color:" + T.color.oxide2 + ";font-family:" + T.font.mono + ";"
+        cbValue.textContent = cubistSettings.cubistColorBlind ? "ON · patterns" : "OFF"
+        grid.appendChild(cbValue)
+        const cbBtn = this._actionBtn(T, "Toggle", async () => {
+            const cur = await window.CentralHubSettings.load()
+            const next = !cur.cubistColorBlind
+            cur.cubistColorBlind = next
+            await window.CentralHubSettings.save(cur)
+            if (document.body) {
+                if (next) document.body.setAttribute("data-aes-cb-patterns", "on")
+                else      document.body.removeAttribute("data-aes-cb-patterns")
+            }
+            cbValue.textContent = next ? "ON · patterns" : "OFF"
+        })
+        grid.appendChild(cbBtn)
+
         // Shortcuts dialog
         grid.appendChild(this._label(T, "Keyboard shortcuts"))
         const sc = document.createElement("span")

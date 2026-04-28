@@ -23,7 +23,16 @@ class CentralHubSettings {
             activeSection: "fleet",
             expandedTiles: [],
             tileOrder:     {},
-            pinnedTiles:   []
+            pinnedTiles:   [],
+            // CB0 — opt-in Cubist visual mode. Defaults OFF; first
+            // activation prompts a confirm (§4.18 invariant).
+            cubistMode:        false,
+            cubistModeAcked:   false,
+            // CB6 — polish sub-toggles. Read by js/cubist-a11y.js
+            // and reflected to body[data-aes-motion] +
+            // body[data-aes-cb-patterns] on every page.
+            cubistMotion:      "on",   // "on" | "off"
+            cubistColorBlind:  false
         }
     }
 
@@ -43,6 +52,10 @@ class CentralHubSettings {
         if (!Array.isArray(merged.expandedTiles)) merged.expandedTiles = []
         if (!Array.isArray(merged.pinnedTiles))   merged.pinnedTiles   = []
         if (!merged.tileOrder || typeof merged.tileOrder !== "object") merged.tileOrder = {}
+        if (typeof merged.cubistMode !== "boolean")      merged.cubistMode      = false
+        if (typeof merged.cubistModeAcked !== "boolean") merged.cubistModeAcked = false
+        if (merged.cubistMotion !== "off")               merged.cubistMotion    = "on"
+        if (typeof merged.cubistColorBlind !== "boolean") merged.cubistColorBlind = false
         return merged
     }
 
