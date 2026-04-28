@@ -121,6 +121,15 @@
             rationale.push("[fleet] " + types.length + " type(s) in fleet match range")
             if (profileId == null) rationale.push("[ors] no service profiles cached — falling back to AS default")
 
+            // Crude $/wk projection so the UI can show the bet's
+            // expected magnitude. demand bar (0-10) × 50 pax per point ≈
+            // weekly pax cap; multiply by a $20 average yield-per-pax-per-
+            // distance approximation for a coarse "is this worth $5k/wk
+            // or $50k/wk?" signal. Slice 9 replaces with elasticity-fit.
+            const demandBar  = _num(r.paxScore, 0) + 0.5 * _num(r.cargoScore, 0)
+            const weeklyPax  = Math.min(freq, demandBar) * 60   // 60 pax avg seat × LF guess
+            const projWeekly = Math.round(weeklyPax * 20)       // ~$20/pax-flight rough
+
             out.push({
                 hub:                       r.hub,
                 dest:                      r.dest,
@@ -132,7 +141,8 @@
                 proposedServiceProfileId:  profileId,
                 score:                     r.score,
                 breakdown:                 r.breakdown,
-                rationale:                 rationale
+                rationale:                 rationale,
+                impactWeekly:              projWeekly
             })
         }
 

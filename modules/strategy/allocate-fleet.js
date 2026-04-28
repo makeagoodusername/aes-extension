@@ -51,14 +51,33 @@
     function _num(v, f)    { const n = Number(v); return isFinite(n) ? n : f }
     function _clamp(v, l, h) { return v < l ? l : v > h ? h : v }
 
-    const FALLBACK_WEEKLY_HOURS = 80
-    const MIN_TUPLE_SCORE       = 0.05    // skip below this — engine prefers idle
-    const SEAT_FIT_LO           = 0.5
-    const SEAT_FIT_HI           = 1.5
+    const FALLBACK_WEEKLY_HOURS  = 80
+    const FALLBACK_TURNAROUND_MIN = 45
+    const HOURS_PER_WEEK         = 168
+    const MIN_TUPLE_SCORE        = 0.05    // skip below this — engine prefers idle
+    const SEAT_FIT_LO            = 0.5
+    const SEAT_FIT_HI            = 1.5
 
     function _planId() {
         return "plan-" + Date.now().toString(36) + "-"
             + Math.random().toString(36).slice(2, 8)
+    }
+
+    /**
+     * Round-trip turnaround budget per route. Prefers a per-route override
+     * (`route.turnaroundMin` plumbed by upstream candidates), then a snapshot
+     * setting, then the 45-min default. Counted once per round-trip — the
+     * outbound turn at the spoke; the hub turn is absorbed by the depTime
+     * gap between outbound and return legs and not double-counted.
+     */
+    function _turnaroundFor(route, snapshot) {
+        if (route && Number.isFinite(Number(route.turnaroundMin))) {
+            return Number(route.turnaroundMin)
+        }
+        const fb = snapshot && snapshot.settings && snapshot.settings.autoScheduler
+            && snapshot.settings.autoScheduler.fallbackTurnaroundMin
+        if (Number.isFinite(Number(fb))) return Number(fb)
+        return FALLBACK_TURNAROUND_MIN
     }
 
     // ── Per-aircraft candidate generation ───────────────────────────────
@@ -94,7 +113,7 @@
 
     // ── Per-aircraft greedy filler ──────────────────────────────────────
 
-    function _fillAircraft(aircraft, candidates, opts) {
+    function _fillAircraft(aircraft, candidates, opts, snapshot) {
         const scoring = _scoring()
         const speed   = _num(aircraft.cruiseSpeedKmh, 800)
         const wear    = aircraft.wear || {}
@@ -102,82 +121,120 @@
         const used0   = _num(wear.weeklyHoursLast7d, 0)
         let usedHours = used0
         const legs    = []
-        const placed  = new Set()
+        const placedCounts = new Map()    // dest -> placements so far
+        const routeMeta    = new Map()    // dest -> {rtHours, maxFreqByTime, turnaroundMin}
         const rationale = []
 
-        // Sort by descending tuple score (re-score per-tail).
+        // Pre-resolve per-candidate constants once. flightMin / rtHours /
+        // maxFreqByTime / per-leg profit are pure functions of (route, speed,
+        // turnaround) — recomputing them every pass is wasted work for
+        // candidate sets that grow with hub size.
         const tupled = candidates.map(r => {
-            const seatFit = _seatFit(aircraft.seats, r.paxScore)
-            return {route: r, tupleScore: (r.score || 0) * seatFit, seatFit}
-        }).sort((a, b) => b.tupleScore - a.tupleScore)
+            const seatFit       = _seatFit(aircraft.seats, r.paxScore)
+            const flightMin     = scoring.flightTimeMin(r.distanceKm, speed)
+            const turnaroundMin = _turnaroundFor(r, snapshot)
+            const rtHours       = (flightMin != null)
+                ? ((flightMin * 2) + turnaroundMin) / 60 : null
+            const maxFreqByTime = (rtHours != null && rtHours > 0)
+                ? Math.max(0, Math.floor(HOURS_PER_WEEK / rtHours)) : 0
+            const legProfit     = _num(r.profitPerWeek, 0) / Math.max(1, _num(r.weeklyFlights, 1))
+            return {
+                route: r, tupleScore: (r.score || 0) * seatFit, seatFit,
+                flightMin, turnaroundMin, rtHours, maxFreqByTime, legProfit
+            }
+        })
+        .filter(t => t.flightMin != null && t.maxFreqByTime >= 1)
+        .sort((a, b) => b.tupleScore - a.tupleScore)
 
         rationale.push("[budget] cap " + cap.toFixed(1)
                      + "h · used last 7d " + used0.toFixed(1) + "h"
                      + (wear.source ? " · source " + wear.source : ""))
         if (cap <= used0) {
             rationale.push("[skip] no headroom this week")
-            return {legs, rationale, plannedHours: 0, plannedProfit: 0}
+            return {legs, rationale, plannedHours: 0, plannedProfit: 0,
+                    placedCounts, routeMeta}
         }
 
         let plannedProfit = 0
-        for (const t of tupled) {
-            if (t.tupleScore < MIN_TUPLE_SCORE) break
-            if (placed.has(t.route.dest)) continue
-            const flightMin = scoring.flightTimeMin(t.route.distanceKm, speed)
-            if (flightMin == null) continue
-            const rtHours = (flightMin * 2) / 60     // round-trip
-            if (usedHours + rtHours > cap)            continue
+        let exhaustedHeadroom = false
+        // Each pass takes one round-trip per destination in score order so
+        // top destinations don't starve mid-tier ones. The 32-pass cap is
+        // a safety bound — `maxFreqByTime` of any realistic short-haul is
+        // < 30, so we'll always exit via the placedThisPass=false branch
+        // first; the cap protects against pathological infinite loops only.
+        for (let pass = 0; pass < 32 && !exhaustedHeadroom; pass++) {
+            let placedThisPass = false
+            for (const t of tupled) {
+                if (t.tupleScore < MIN_TUPLE_SCORE) break
 
-            // Build outbound + return legs.
-            const seq = legs.length + 1
-            legs.push({
-                origin:        aircraft.currentLocationIata || t.route.hub,
-                destination:   t.route.dest,
-                depTime:       opts.depTime || "09:00",
-                pricePct:      _num(opts.pricePct, 100),
-                service:       opts.service || "",
-                seq:           seq,
-                _strategy:     {
-                    routeScore: t.route.score,
-                    seatFit:    t.seatFit,
-                    tupleScore: t.tupleScore,
-                    blockMin:   flightMin
+                const placed = placedCounts.get(t.route.dest) || 0
+                if (placed >= t.maxFreqByTime) continue           // hit time-cap
+                if (usedHours + t.rtHours > cap)   continue       // hit weekly cap
+
+                routeMeta.set(t.route.dest, {
+                    rtHours: t.rtHours,
+                    maxFreqByTime: t.maxFreqByTime,
+                    turnaroundMin: t.turnaroundMin
+                })
+
+                const seq = legs.length + 1
+                const legStrategy = {
+                    routeScore:    t.route.score,
+                    seatFit:       t.seatFit,
+                    tupleScore:    t.tupleScore,
+                    blockMin:      t.flightMin,
+                    rtHours:       t.rtHours,
+                    turnaroundMin: t.turnaroundMin,
+                    maxFreqByTime: t.maxFreqByTime,
+                    proposedFreqAtPlacement: placed + 1
                 }
-            })
-            legs.push({
-                origin:        t.route.dest,
-                destination:   aircraft.currentLocationIata || t.route.hub,
-                depTime:       opts.returnDepTime || "15:00",
-                pricePct:      _num(opts.pricePct, 100),
-                service:       opts.service || "",
-                seq:           seq + 1,
-                _strategy:     {
-                    routeScore: t.route.score,
-                    seatFit:    t.seatFit,
-                    tupleScore: t.tupleScore,
-                    blockMin:   flightMin,
-                    return:     true
-                }
-            })
-            usedHours += rtHours
-            placed.add(t.route.dest)
-            const legProfit = _num(t.route.profitPerWeek, 0) / Math.max(1, _num(t.route.weeklyFlights, 1))
-            plannedProfit += legProfit * 2   // round trip
-            if (legs.length / 2 <= 3) {
-                rationale.push("[place] " + t.route.dest
-                    + " (score " + t.tupleScore.toFixed(3)
-                    + ", seatFit " + t.seatFit.toFixed(2)
-                    + ", " + rtHours.toFixed(1) + "h)")
+                legs.push({
+                    origin:      aircraft.currentLocationIata || t.route.hub,
+                    destination: t.route.dest,
+                    depTime:     opts.depTime || "09:00",
+                    pricePct:    _num(opts.pricePct, 100),
+                    service:     opts.service || "",
+                    seq:         seq,
+                    _strategy:   legStrategy
+                })
+                legs.push({
+                    origin:      t.route.dest,
+                    destination: aircraft.currentLocationIata || t.route.hub,
+                    depTime:     opts.returnDepTime || "15:00",
+                    pricePct:    _num(opts.pricePct, 100),
+                    service:     opts.service || "",
+                    seq:         seq + 1,
+                    _strategy:   Object.assign({}, legStrategy, {return: true})
+                })
+                usedHours += t.rtHours
+                placedCounts.set(t.route.dest, placed + 1)
+                placedThisPass = true
+                plannedProfit += t.legProfit * 2
             }
+            if (!placedThisPass) exhaustedHeadroom = true
         }
-        if (legs.length > 6) {
-            rationale.push("[place] …+" + (legs.length / 2 - 3) + " more legs")
+
+        // Rationale: top 3 destinations by frequency, then a tail summary.
+        const freqRows = Array.from(placedCounts.entries())
+            .sort((a, b) => b[1] - a[1])
+        for (let i = 0; i < Math.min(3, freqRows.length); i++) {
+            const [dest, freq] = freqRows[i]
+            const meta = routeMeta.get(dest) || {}
+            rationale.push("[place] " + dest + " ×" + freq
+                + " (rt " + (meta.rtHours || 0).toFixed(1) + "h"
+                + ", cap " + (meta.maxFreqByTime != null ? meta.maxFreqByTime : "?") + ")")
         }
-        rationale.push("[final] " + (legs.length / 2) + " round-trips · "
+        if (freqRows.length > 3) {
+            const moreRT = freqRows.slice(3).reduce((a, [, n]) => a + n, 0)
+            rationale.push("[place] …+" + moreRT + " more rt across " + (freqRows.length - 3) + " dests")
+        }
+        const totalRT = freqRows.reduce((a, [, n]) => a + n, 0)
+        rationale.push("[final] " + totalRT + " round-trips · "
             + usedHours.toFixed(1) + "/" + cap.toFixed(1) + "h"
             + (cap > 0 ? " (" + Math.round(usedHours / cap * 100) + "%)" : ""))
 
-        return {legs, rationale, plannedHours: usedHours, plannedProfit}
+        return {legs, rationale, plannedHours: usedHours, plannedProfit,
+                placedCounts, routeMeta}
     }
 
     // ── Public ──────────────────────────────────────────────────────────
@@ -205,9 +262,24 @@
                 returnDepTime: o.returnDepTime,
                 pricePct:      o.defaultPricePct,
                 service:       o.defaultService
-            })
+            }, snapshot)
             totalProfit += fill.plannedProfit
             totalLegs   += fill.legs.length
+
+            const routeFrequency = []
+            if (fill.placedCounts) {
+                for (const [dest, freq] of fill.placedCounts) {
+                    const meta = (fill.routeMeta && fill.routeMeta.get(dest)) || {}
+                    routeFrequency.push({
+                        dest:           dest,
+                        proposedFreq:   freq,
+                        maxFreqByTime:  meta.maxFreqByTime != null ? meta.maxFreqByTime : null,
+                        rtHours:        meta.rtHours != null ? meta.rtHours : null,
+                        turnaroundMin:  meta.turnaroundMin != null ? meta.turnaroundMin : null
+                    })
+                }
+                routeFrequency.sort((a, b) => b.proposedFreq - a.proposedFreq)
+            }
 
             perAircraft.push({
                 aircraftId:    a.aircraftId,
@@ -220,8 +292,11 @@
                 utilization: {
                     weeklyHours:    fill.plannedHours,
                     capWeeklyHours: _num(a.wear && a.wear.maxWeeklyBlockHours, FALLBACK_WEEKLY_HOURS),
+                    maxDailyBlockHours: _num(a.wear && a.wear.maxDailyBlockHours, null),
                     ratioForecast:  a.wear && a.wear.ratioForecast7d
                 },
+                routeFrequency: routeFrequency,
+                plannedProfit: fill.plannedProfit,
                 rationale:     fill.rationale
             })
         }
