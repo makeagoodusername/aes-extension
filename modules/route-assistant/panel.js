@@ -260,7 +260,25 @@ class RouteAssistantPanel {
             const myHub = String(this.hubIata || "").toUpperCase()
             let needFullRefresh = false
             let needScheduleRepaint = false
+            let needAutoPricingPill = false
             for (const key in changes) {
+                if (key === "settings") {
+                    // Cross-tab settings change (apply.enabled flip in another
+                    // panel, background-alarm tick persisting silentAutoLastTickAt,
+                    // breaker trip from a sibling apply call). Refresh the pill
+                    // so its state mirrors persisted settings.
+                    needAutoPricingPill = true
+                    continue
+                }
+                if (key === RouteAssistantPricingApplyLog.GLOBAL_KEY
+                 || key.startsWith(RouteAssistantPricingApplyLog.PER_ROUTE_PREFIX)) {
+                    // Apply-log writes (verified / posted / dry-run rows) don't
+                    // change pill state, but we want the user to see the pill
+                    // freshen alongside any new audit-log entry — keeps the
+                    // "tick X min ago" stamp moving in real time.
+                    needAutoPricingPill = true
+                    continue
+                }
                 if (key.endsWith("aircraftFleet")
                  || key.startsWith(RouteAssistantTypeSpecsStore.PREFIX)) {
                     needFullRefresh = true
@@ -287,6 +305,19 @@ class RouteAssistantPanel {
                 this._storageDebounceTimer = setTimeout(() => this.refresh(), 500)
             } else if (needScheduleRepaint) {
                 this._renderHubSchedulesCard()
+            }
+            if (needAutoPricingPill) {
+                if (changes.settings && changes.settings.newValue) {
+                    // Reflect cross-tab settings into our local copy so the pill
+                    // doesn't read stale gates. Limit to the routeAssistant slice
+                    // to avoid stomping other modules' in-memory state.
+                    const incoming = changes.settings.newValue.routeAssistant
+                    if (incoming && this.settings) {
+                        if (incoming.pricing) this.settings.pricing = incoming.pricing
+                    }
+                }
+                try { this._refreshAutoPricingPill() }
+                catch (e) { /* non-fatal — pill host may not be mounted */ }
             }
         }
         chrome.storage.onChanged.addListener(this._storageListener)
@@ -3562,7 +3593,19 @@ class RouteAssistantPanel {
             const demandBtn = document.createElement("button")
             demandBtn.textContent = `Resolve ${unresolved} demand`
             Object.assign(demandBtn.style, smallBtnStyle())
-            demandBtn.addEventListener("click", () => this._resolveDemand())
+            // IATA→country lookup is cache-backed (country-resolver.js). When
+            // no row in the table has resolved demand, the cache is empty and
+            // Resolve would just dump every IATA into failedIatas. Disable it
+            // and point the user at the seed banner below.
+            const cacheEmpty = (this.rows.length - unresolved) === 0
+            if (cacheEmpty) {
+                demandBtn.disabled = true
+                demandBtn.title = "Seed all countries first — Resolve uses the country cache and can't score routes until it's populated."
+                demandBtn.style.opacity = "0.5"
+                demandBtn.style.cursor = "not-allowed"
+            } else {
+                demandBtn.addEventListener("click", () => this._resolveDemand())
+            }
             actions.append(demandBtn)
         }
 
@@ -3575,6 +3618,16 @@ class RouteAssistantPanel {
         actions.append(seedBtn)
 
         this.statusBar.append(actions)
+
+        // Auto-pricing status pill — always visible, color-coded, click to
+        // jump into Settings → Auto-Pricing. Sits at the far right of the
+        // statusBar so the user always knows whether the pipeline is armed
+        // even when Settings is collapsed.
+        const pillHost = document.createElement("span")
+        pillHost.setAttribute("data-aes-auto-pricing-pill", "1")
+        pillHost.style.cssText = "display:inline-flex;align-items:center;"
+        this.statusBar.append(pillHost)
+        this._renderAutoPricingPill(pillHost)
     }
 
     async _seedAllCountries() {
@@ -4456,6 +4509,7 @@ class RouteAssistantPanel {
         this._syncRenderContext()
         this._renderControls()
         this._renderRows()
+        this._refreshAutoPricingPill()
     }
 
     /**
@@ -10848,7 +10902,32 @@ class RouteAssistantPanel {
             try { await RouteAssistantSettings.save({pricing: this.settings.pricing}) } catch (e) { /* ignore */ }
             this._render()
         })
-        enableRow.append(enableLbl)
+        // Verify pipeline CTA — runs a forced-dry-run apply against the most-
+        // eligible route to prove the pipeline is alive without committing a
+        // write. Always available regardless of gates; the dry-run flag is
+        // forced on at the call site so apply.enabled / liveScopes don't
+        // matter for this affordance. Lands a row in Recent applies so the
+        // user can see the audit trail moving in real time.
+        const verifyBtn = document.createElement("button")
+        verifyBtn.type = "button"
+        verifyBtn.textContent = "Verify pipeline now"
+        Object.assign(verifyBtn.style, smallBtnStyle())
+        verifyBtn.style.fontSize = "10px"
+        verifyBtn.style.marginLeft = "6px"
+        verifyBtn.title = "Pick the most eligible route and run a forced dry-run apply. "
+            + "Exercises GET handshake → parse → preflight → body construction → log write "
+            + "without committing a real write, regardless of gates. Result lands in Recent applies."
+        verifyBtn.addEventListener("click", async () => {
+            verifyBtn.disabled = true
+            const prev = verifyBtn.textContent
+            verifyBtn.textContent = "Verifying…"
+            try { await this._runVerifyPipelineCta() }
+            finally {
+                verifyBtn.disabled = false
+                verifyBtn.textContent = prev
+            }
+        })
+        enableRow.append(enableLbl, verifyBtn)
         block.append(enableRow)
 
         // Tier 3.2 — cooldown tuning. Per-route is the primary throttle;
@@ -12380,6 +12459,240 @@ class RouteAssistantPanel {
             + "color:" + fg + ";font-size:11px;line-height:1.5;font-weight:500;"
         banner.textContent = msg
         return banner
+    }
+
+    /**
+     * Compact one-line auto-pricing pill rendered in the panel statusBar.
+     * Always visible regardless of Settings drawer state — answers "is the
+     * pipeline armed and what scopes are live?" at a glance. Click expands
+     * the Settings drawer and scrolls to Auto-Pricing diagnostics.
+     */
+    _renderAutoPricingPill(host) {
+        if (!host) return
+        host.innerHTML = ""
+        const pricing = (this.settings && this.settings.pricing) || {}
+        const apply = pricing.apply || {}
+        const sa = this._silentAutoCfg()
+        const now = Date.now()
+        const breakerMs = isFinite(apply.circuitBreakerCooldownMs) ? apply.circuitBreakerCooldownMs : 600000
+        const breakerCooling = !!apply.circuitBreakerTrippedAt
+            && (now - apply.circuitBreakerTrippedAt) < breakerMs
+        const breakerRemainingMin = breakerCooling
+            ? Math.ceil((breakerMs - (now - apply.circuitBreakerTrippedAt)) / 60000)
+            : 0
+        const muted = !!sa.silentAutoMutedUntil && sa.silentAutoMutedUntil > now
+        const muteRemainingMin = muted ? Math.ceil((sa.silentAutoMutedUntil - now) / 60000) : 0
+        const dryRunOnly = apply.dryRunOnly !== false
+        const applyEnabled = !!apply.enabled
+        const writesUnlocked = !dryRunOnly && applyEnabled && !breakerCooling
+        const liveScopes = apply.liveScopes || {}
+        const manualLive = writesUnlocked && liveScopes.manual !== false
+        const bulkLive   = writesUnlocked && !!liveScopes.bulk
+        const autoLive   = writesUnlocked && !!liveScopes.silentAuto && !!sa.silentAutoEnabled
+
+        let dot, fg, label, tooltip
+        if (breakerCooling) {
+            dot = "#ef4444"; fg = "#fca5a5"
+            label = "Pricing: breaker (" + breakerRemainingMin + "m)"
+            tooltip = "Circuit breaker tripped after consecutive AS rate-limit responses. "
+                + "Resets in " + breakerRemainingMin + " min, or click to expand and Reset breaker manually."
+        } else if (muted && sa.silentAutoEnabled) {
+            dot = "#ef4444"; fg = "#fca5a5"
+            label = "Pricing: muted (" + muteRemainingMin + "m)"
+            tooltip = "Silent-auto auto-muted after 5 consecutive failures. Click to expand and Resume."
+        } else if (autoLive) {
+            dot = "#22c55e"; fg = "#86efac"
+            const scopes = ["M", bulkLive ? "B" : "", "A"].filter(Boolean).join("+")
+            const ago = sa.silentAutoLastTickAt
+                ? Math.max(0, Math.round((now - sa.silentAutoLastTickAt) / 60000)) + "m"
+                : "—"
+            label = "Pricing: live (" + scopes + ") · tick " + ago
+            tooltip = "Live writes: manual" + (bulkLive ? " + bulk" : "") + " + silent-auto. "
+                + "Last tick " + ago + " ago · cadence " + (sa.silentAutoTickMin || 30) + " min. Click to expand."
+        } else if (manualLive) {
+            dot = "#22c55e"; fg = "#86efac"
+            const scopes = ["M", bulkLive ? "B" : ""].filter(Boolean).join("+")
+            label = "Pricing: live (" + scopes + ")"
+            tooltip = "Manual" + (bulkLive ? " + bulk" : "") + " writes live; silent-auto loop is OFF. Click to expand."
+        } else if (sa.silentAutoEnabled) {
+            dot = "#fbbf24"; fg = "#fcd34d"
+            label = "Pricing: dry-run loop"
+            tooltip = "Silent-auto ticking on " + (sa.silentAutoTickMin || 30) + " min cadence but writes are gated. "
+                + (dryRunOnly ? "Turn OFF Dry-run only" : (!applyEnabled ? "Turn ON Apply enabled"
+                    : "Turn ON liveScopes.silentAuto")) + " in Settings to commit. Click to expand."
+        } else if (dryRunOnly && applyEnabled) {
+            dot = "#fbbf24"; fg = "#fcd34d"
+            label = "Pricing: dry-run only"
+            tooltip = "Apply paths exercise the full pipeline but skip POST. "
+                + "Turn OFF Dry-run only in Settings to commit. Click to expand."
+        } else {
+            dot = "#9ca3af"; fg = "#cbd5e1"
+            label = "Pricing: off"
+            tooltip = "No automation enabled. Manual route applies are gated until you turn ON Apply enabled. Click to expand."
+        }
+
+        const pill = document.createElement("button")
+        pill.type = "button"
+        pill.style.cssText = "display:inline-flex;align-items:center;gap:6px;"
+            + "padding:1px 8px;background:transparent;border:1px solid " + dot + ";"
+            + "border-radius:11px;color:" + fg + ";font-size:11px;cursor:pointer;"
+            + "font-family:var(--aes-font-mono);letter-spacing:0.02em;line-height:1.5;"
+        pill.title = tooltip
+        const dotEl = document.createElement("span")
+        dotEl.style.cssText = "display:inline-block;width:8px;height:8px;border-radius:50%;background:" + dot
+        pill.append(dotEl, document.createTextNode(label))
+        pill.addEventListener("click", () => this._jumpToAutoPricingSection())
+        host.append(pill)
+    }
+
+    /**
+     * Light refresh that updates the pill in place without rebuilding the
+     * entire statusBar. No-op if the pill host hasn't been created yet
+     * (statusBar is lazy — built only after `mount` runs `refresh`).
+     */
+    _refreshAutoPricingPill() {
+        if (!this.statusBar) return
+        const host = this.statusBar.querySelector("[data-aes-auto-pricing-pill]")
+        if (!host) return
+        this._renderAutoPricingPill(host)
+    }
+
+    /**
+     * Verify-pipeline CTA — runs a forced-dry-run apply against the most-
+     * eligible visible route. Exercises every layer of the pipeline (GET
+     * handshake → form parse → preflight → body construction → apply-log
+     * write) without committing a real write, regardless of the user's
+     * current Apply gates. The dry-run row lands in Recent applies so the
+     * user can see the audit trail working end-to-end.
+     */
+    async _runVerifyPipelineCta(opts) {
+        opts = opts || {}
+        if (!this.hubIata) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.warn("Verify needs a hub — pick a hub in the panel header first.")
+            }
+            return
+        }
+        const target = await this._pickVerifyTarget()
+        if (!target) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.warn("Verify: no eligible route — sync route data and competitor prices first.")
+            }
+            return
+        }
+        const applier = this._getPricingApplier()
+        let result = null
+        try {
+            result = await applier.apply(this.hubIata, target.dest, target.prices, {
+                dryRun:  true,
+                source:  "verify-cta",
+                reason:  "Pipeline verify (forced dry-run)",
+                scope:   Object.assign({}, RouteAssistantPricingApplier.DEFAULT_SCOPE),
+                rationale: target.rationale ? target.rationale.slice(0, 4) : null
+            })
+        } catch (e) {
+            result = {status: "failed", error: {code: "ctaThrew", message: String(e && e.message || e)}}
+        }
+        const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
+        const breakerArmed = !apply.circuitBreakerTrippedAt
+        if (typeof RouteAssistantToast !== "undefined") {
+            const route = String(this.hubIata).toUpperCase() + "→" + String(target.dest).toUpperCase()
+            if (result && result.status === "dry-run") {
+                const prev = (result.prevPrices && result.prevPrices.Y) != null
+                    ? result.prevPrices.Y : "?"
+                const next = (result.newPrices && result.newPrices.Y) != null
+                    ? result.newPrices.Y : prev
+                const noop = prev === next || prev === "?" || next === "?"
+                const dPct = !noop && isFinite(prev) && prev > 0
+                    ? (((next - prev) / prev) * 100).toFixed(1) : null
+                const move = noop
+                    ? "no-op"
+                    : "Y " + prev + "→" + next + (dPct != null ? " (" + (dPct >= 0 ? "+" : "") + dPct + "%)" : "")
+                RouteAssistantToast.success(
+                    "Pipeline OK · " + route + " · " + move
+                        + " · breaker " + (breakerArmed ? "armed" : "tripped"),
+                    {duration: 6500}
+                )
+            } else {
+                const code = (result && result.error && result.error.code) || "unknown"
+                const msg  = (result && result.error && result.error.message) || "applier returned non-success"
+                RouteAssistantToast.error(
+                    "Verify failed · " + route + " · " + code + " — " + msg,
+                    {duration: 8000}
+                )
+            }
+        }
+        return result
+    }
+
+    /**
+     * Pick a route for the verify CTA. Preference order:
+     *   1. Watchlist eligible route with smallest |Δ%| from competitor median
+     *   2. Any eligible route with smallest |Δ%|
+     *   3. Any visible route with cached own pricing — prices=current Y (no-op)
+     * Returns `{dest, prices, rationale}` or null when nothing qualifies.
+     */
+    async _pickVerifyTarget() {
+        const sa = this._silentAutoCfg()
+        const proposerCtx = (typeof this._silentAutoBuildProposerContext === "function")
+            ? await this._silentAutoBuildProposerContext(sa).catch(() => ({now: Date.now(), strategy: sa.silentAutoStrategy || "competitor-median"}))
+            : {now: Date.now(), strategy: sa.silentAutoStrategy || "competitor-median"}
+        for (const mode of ["watchlist", "all"]) {
+            const rows = await this._silentAutoCollectEligibleRows(mode).catch(() => [])
+            if (!rows.length) continue
+            const proposals = []
+            for (const {r, prices} of rows) {
+                const prop = this._silentAutoProposeForRoute(r, prices, sa, proposerCtx)
+                if (!prop || !prop.ok) continue
+                if (!isFinite(prop.deltaPct)) continue
+                proposals.push(prop)
+            }
+            if (proposals.length) {
+                proposals.sort((a, b) => Math.abs(a.deltaPct) - Math.abs(b.deltaPct))
+                const best = proposals[0]
+                return {
+                    dest:      best.dest,
+                    prices:    best.prices,
+                    rationale: ["[verify] " + (best.reason || "smallest |Δ%| eligible candidate")]
+                }
+            }
+        }
+        // Fallback — pick any visible row with cached own pricing and synthesise
+        // a no-op apply (current Y → current Y). Still exercises GET handshake +
+        // parse + preflight + body construction + log write, so the user gets
+        // confirmation the pipeline plumbing is alive even when no proposer
+        // signal exists (e.g., zero competitors cached).
+        const rows = (this.scoredRows || this.rows || []).filter(r => r && r.destIata)
+        for (const r of rows) {
+            const cached = this._lookupCachedOwnPricing(this.hubIata, String(r.destIata).toUpperCase())
+            const prices = this._silentAutoPrices(cached)
+            if (!prices || !Object.keys(prices).length) continue
+            const noOp = {}
+            if (isFinite(prices.Y)) noOp.Y = Math.round(prices.Y)
+            if (!Object.keys(noOp).length) continue
+            return {
+                dest:      String(r.destIata).toUpperCase(),
+                prices:    noOp,
+                rationale: ["[verify] no proposer signal — sending current Y as no-op to exercise pipeline"]
+            }
+        }
+        return null
+    }
+
+    /** Open Settings drawer and scroll to the Auto-Pricing diagnostics block. */
+    _jumpToAutoPricingSection() {
+        if (!this.settingsHost) return
+        if (this.settingsHost.dataset.open !== "1" && typeof this._toggleSettings === "function") {
+            this._toggleSettings()
+        }
+        setTimeout(() => {
+            if (!this.settingsHost) return
+            const node = this.settingsHost.querySelector("[data-aes-pricing-diagnostics]")
+                || this.settingsHost.querySelector("[data-aes-silent-auto-host]")
+            if (node && typeof node.scrollIntoView === "function") {
+                node.scrollIntoView({behavior: "smooth", block: "start"})
+            }
+        }, 220)
     }
 
     _buildPricingDiagnosticsGate({ok, label, state, hint}) {
@@ -21395,6 +21708,8 @@ class RouteAssistantPanel {
             // updates without waiting for a full panel re-render.
             try { this._refreshSilentAutoActivity() }
             catch (e) { /* sub-block may not be mounted */ }
+            try { this._refreshAutoPricingPill() }
+            catch (e) { /* pill host may not be mounted */ }
         }
     }
 

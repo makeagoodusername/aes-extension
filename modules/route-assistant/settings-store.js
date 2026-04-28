@@ -277,17 +277,72 @@ class RouteAssistantSettings {
                     circuitBreakerThreshold:  3,
                     circuitBreakerCooldownMs: 600000,  // 10 min
                     circuitBreakerTrippedAt:  null,    // ms epoch; null = breaker armed
-                    circuitBreakerHaltReason: null
+                    circuitBreakerHaltReason: null,
+
+                    // Pre-apply orchestrator pass — runs schedule + ORS scrapes
+                    // before each apply so the user sees fresh ORS rank +
+                    // sandbox projections when picking Δ%, instead of stale
+                    // cache that may tag legs as "not ours" on freshly-added
+                    // routes (see route-sync-orchestrator.js header comment).
+                    // Two freshness floors: projection accepts hours-old data
+                    // for picking-time UI; apply gets a tighter floor since
+                    // it commits real money.
+                    refreshBeforeApply:           true,
+                    refreshMaxAgeMinProjection:   5,
+                    refreshMaxAgeMinApply:        1,
+
+                    // Tier 3.4 — narrow live-writes scope. When `enabled`
+                    // is true, ALL writes are unlocked unless one of these
+                    // flips back to false. Manual = single-route apply
+                    // modal, Bulk = multi-row bulk modal, SilentAuto = the
+                    // background loop. Keeping bulk + silent-auto disabled
+                    // by default lets the operator unlock manual writes
+                    // first, build trust, then expand scope per axis.
+                    // Read at the panel call site, not by the applier:
+                    // when a scope is locked, the call forces dryRun=true
+                    // regardless of the top-level toggle.
+                    liveScopes: {
+                        manual:     true,
+                        bulk:       false,
+                        silentAuto: false
+                    },
+
+                    // Tier 3.4 — advanced tunables surfaced in the
+                    // "Advanced" subsection of the settings drawer. All
+                    // had hard-coded equivalents in the old code; defaults
+                    // here exactly match the previous baked-in values so
+                    // existing setups don't drift on upgrade.
+                    pricingApplyLogDedupWindowMin:        5,
+                    preApplySyncTimeoutMs:                30000,
+                    silentAutoCompetitorMinCount:         2,
+                    silentAutoOrsMaxAgeMin:               60,
+                    silentAutoStaleCompetitorWarnDays:    7,
+                    silentAutoBlockOnStaleCompetitors:    false,
+                    silentAutoStrategySnapshotMaxAgeMin:  10
                 },
 
-                // Pre-staged for Tier 3.3 silent-auto loop. Both must be
-                // explicitly enabled by the user; the panel surfaces a
-                // confirm modal on the first flip.
-                autonomyMode:       "off",   // off | suggest | oneClick | batch
-                silentAutoEnabled:  false,   // separate explicit gate for silent auto-apply
-                silentAutoMaxPerDay:    20,
-                silentAutoMaxPerHour:   5,
-                silentAutoMinDeltaPct:  3,
+                // Silent auto-pricing loop. The first flip of
+                // `silentAutoEnabled` is gated behind a confirmation
+                // modal; the ack timestamp lands in `silentAutoConfirmedAt`
+                // so subsequent flips don't re-prompt. Loop runs only
+                // while the RA panel is mounted; each tick proposes a
+                // Δ% per eligible route via `silentAutoStrategy` and
+                // dispatches survivors through the shared pricing
+                // applier (so the breaker spans manual + bulk + auto).
+                // Setting any cap to 0 disables that axis.
+                autonomyMode:       "off",   // off | suggest | oneClick | batch (legacy/unused — kept for forward-compat)
+                silentAutoEnabled:  false,   // top-level gate; flipping prompts the confirm modal when confirmedAt is null
+                silentAutoTickMin:      30,  // minutes between automatic ticks (clamped to [5, 240])
+                silentAutoMaxPerDay:    20,  // hard cap on successful silent-auto applies in any 24h window; 0 = disabled
+                silentAutoMaxPerHour:   5,   // hard cap in any 1h window; 0 = disabled
+                silentAutoMinDeltaPct:  3,   // |Δ%| below this is skipped (proposer noise floor)
+                silentAutoMaxStepPct:   10,  // |Δ%| clamp — single biggest move per route per tick
+                silentAutoStrategy:     "competitor-median",  // pluggable; v1 ships one
+                silentAutoFollowMode:   "watchlist",          // "watchlist" (★-only) | "all" (every eligible route)
+                silentAutoConfirmedAt:  null,                 // ms epoch; non-null skips the confirm modal on subsequent flips
+                silentAutoLastTickAt:   null,                 // ms epoch — last tick run; surfaces in the panel sub-block
+                silentAutoLastTickResult: null,               // {ranAt, eligible, proposed, applied, capped, blocked, skipped, error?}
+                silentAutoMutedUntil:   null,                 // ms epoch; while non-null and in the future, ticks no-op (auto-disable on N consecutive errors)
                 targetMargin:       null,
                 competitorAdjust:   null
             },
@@ -442,7 +497,28 @@ class RouteAssistantSettings {
                 // Circuit breaker telemetry. If trip is recent, bulk button is
                 // disabled for 10 min and a red banner shows in the expander.
                 circuitBreakerTrippedAt: null,
-                circuitBreakerCooldownMs: 600000  // 10 min
+                circuitBreakerCooldownMs: 600000,  // 10 min
+
+                // Snapshot archival — when on, every successful ORS scrape
+                // (bulk-sync button + per-route + bulk pre-apply paths) is
+                // copied into `RouteAssistantOrsSnapshotStore` keyed by
+                // (hub, dest, ts). Builds a (config → ORS rank) calibration
+                // dataset over time — see ors-snapshot-store.js header.
+                // Off by default to avoid filling storage on the first run;
+                // user opts in via the ORS settings expander.
+                snapshotOnScrape:       false,
+                snapshotMaxPerRoute:    30,
+
+                // Velvet Cascade · PR 1B — auto-archive after every successful
+                // pricing or service-profile apply. Captures the (config →
+                // ORS) calibration pair the rank-target solver needs to
+                // measure prediction error in PR 2's outcomes attribution.
+                // Default ON because the user's recording ambition asks for
+                // it; gated by the per-route MAX_PER_ROUTE eviction so the
+                // store size stays bounded. Re-scrape delay tunable for
+                // installations where AS lazy-refreshes ORS slowly.
+                snapshotOnApply:           true,
+                postApplyRescrapeDelayMs:  5000
             },
             watchlist: {
                 // Daily-driver QoL — per-row star toggle persists in

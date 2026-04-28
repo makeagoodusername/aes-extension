@@ -132,9 +132,17 @@ class RouteAssistantWaveOverlay {
         // H slice 3 — `c.optimize` flips placement onto the
         // connection-graph-maximising hill-climb (still respects
         // overrides; forced routes stay pinned).
+        // F slice 3 — `c.mode === "profit"` flips placement onto the
+        // per-slot profit greedy-best-marginal in
+        // `ScheduleBuilder._assignRoutesProfit`. Older callers pass no
+        // mode and keep the bucket-greedy / connection-hill-climb path.
         const assignment = builder.assignRoutes(routes, {
-            overrides: c.overrides,
-            optimize:  !!c.optimize
+            overrides:    c.overrides,
+            optimize:     !!c.optimize,
+            mode:         c.mode || null,
+            selectedSpec: c.selectedSpec,
+            fleetSpecs:   c.fleetSpecs,
+            demandHourMap: c.demandHourMap
         })
         out.placements   = assignment.placements
         out.unplaced     = assignment.unplaced

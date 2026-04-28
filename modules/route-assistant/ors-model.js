@@ -137,6 +137,7 @@ class RouteAssistantOrsModel {
                 observedPrice: observed,
                 newPrice:      newPrice,
                 comfortDelta:  Number(scenario.comfortDelta) || 0,
+                aircraftBonus: Number(route.aircraftBonus) || 0,
                 params:        params,
                 T:             T,
                 notes:         notes,
@@ -493,6 +494,7 @@ class RouteAssistantOrsModel {
             ? params.ratingPriceElasticityByClass[cls]
             : params.ratingPriceElasticity
         let clampedHigh = false, clampedLow = false
+        const aircraftBonus = Number(arg.aircraftBonus) || 0
         const projectedRatings = tagged.map(t => {
             if (!t.oursAll) return t.rating  // leave competitors + mixed-ownership rows fixed
             const base = t.rating
@@ -500,12 +502,16 @@ class RouteAssistantOrsModel {
             const shifted = base
                 - alphaForClass * priceRatio
                 + params.ratingComfortLift * (arg.comfortDelta || 0)
+                + aircraftBonus
             const lo = base * RouteAssistantOrsModel.RATING_CLAMP_LOW
             const hi = base * RouteAssistantOrsModel.RATING_CLAMP_HIGH
             if (shifted < lo) { clampedLow  = true; return lo }
             if (shifted > hi) { clampedHigh = true; return hi }
             return shifted
         })
+        if (aircraftBonus !== 0) {
+            notes && notes.push("class " + cls + ": aircraft ORS bonus " + (aircraftBonus > 0 ? "+" : "") + aircraftBonus + " pts")
+        }
         if (clampedLow)  notes && notes.push("class " + cls + ": projected rating clamped low")
         if (clampedHigh) notes && notes.push("class " + cls + ": projected rating clamped high")
 
@@ -626,6 +632,71 @@ class RouteAssistantOrsModel {
         }
         if (total <= 0) return null
         return ours / total
+    }
+
+    /**
+     * Slice 4a — sweet-spot finder. Scan a uniform price multiplier across
+     * `[lo, hi]` in `step` increments, calling `project()` for each step
+     * and returning the profit-maximising multiplier alongside the full
+     * sweep so callers can render a preview / sparkline (slice 5a reuses
+     * this for inline charts).
+     *
+     * Inputs match `project()` exactly; the scan overrides the scenario's
+     * `priceMultipliers` to {Y:m, C:m, F:m} for each step but keeps cargo /
+     * frequency / comfort fixed at their current values. Y is the only
+     * channel that drives the demand-pool elasticity inside `project()`,
+     * so a uniform sweep already exercises the dominant lever.
+     *
+     * Returns null when the baseline projection has no profit signal
+     * (typically: no own connection or missing fuel/spec input).
+     *
+     * @param {object} input — same shape as `project()`
+     * @param {object} [input.scan] — {lo, hi, step} (defaults 0.7 / 1.3 / 0.05)
+     * @return {object|null} {points, baselineMultiplier, optimal}
+     */
+    static scanPriceCurve(input) {
+        input = input || {}
+        const scanCfg = input.scan || {}
+        const lo   = isFinite(scanCfg.lo)   && scanCfg.lo   > 0   ? Number(scanCfg.lo)   : 0.7
+        const hi   = isFinite(scanCfg.hi)   && scanCfg.hi   > lo  ? Number(scanCfg.hi)   : 1.3
+        const step = isFinite(scanCfg.step) && scanCfg.step > 0   ? Number(scanCfg.step) : 0.05
+        const baseScenario = RouteAssistantOrsModel._normaliseScenario(input.scenario)
+        const baseRes = RouteAssistantOrsModel.project(Object.assign({}, input, {
+            scenario: Object.assign({}, baseScenario, {priceMultipliers: {Y: 1, C: 1, F: 1}})
+        }))
+        const baseProfit = baseRes && baseRes.baseline ? _safeNumber(baseRes.baseline.profitPerWeek) : null
+        const points = []
+        // Iterate via integer steps to dodge float drift (0.7 + 0.05 × 12 = 1.3).
+        const steps = Math.round((hi - lo) / step)
+        let optimal = null
+        for (let i = 0; i <= steps; i++) {
+            const m = Math.round((lo + i * step) * 10000) / 10000
+            const scenarioStep = Object.assign({}, baseScenario, {
+                priceMultipliers: {Y: m, C: m, F: m}
+            })
+            const res = RouteAssistantOrsModel.project(Object.assign({}, input, {scenario: scenarioStep}))
+            const profit = res && res.projected ? _safeNumber(res.projected.profitPerWeek) : null
+            const deltaProfit = (profit != null && baseProfit != null) ? (profit - baseProfit) : null
+            const point = {multiplier: m, profitPerWeek: profit, deltaProfit: deltaProfit}
+            points.push(point)
+            if (profit != null && (optimal == null || profit > optimal.profitPerWeek)) {
+                optimal = point
+            }
+        }
+        if (!optimal) return null
+        const deltaPct = (baseProfit != null && baseProfit !== 0)
+            ? (optimal.profitPerWeek - baseProfit) / Math.abs(baseProfit) : null
+        return {
+            points:             points,
+            baselineMultiplier: 1,
+            baselineProfit:     baseProfit,
+            optimal: {
+                multiplier:     optimal.multiplier,
+                profitPerWeek:  optimal.profitPerWeek,
+                deltaProfit:    optimal.deltaProfit,
+                deltaPct:       deltaPct
+            }
+        }
     }
 
     /**

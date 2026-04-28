@@ -35,7 +35,14 @@
  *   weeklyFlights, seatsPerWeek,
  *   paxScore, cargoScore (or null when demand is unresolved),
  *   ownPaxFreq, ownCargoFreq, ownTotalFreq,
- *   status — "NEW" | "OK" | "UNDER" | "OVER" | "OOR"
+ *   operating — boolean (true iff ownTotalFreq > 0)
+ *   health    — "OK" | "UNDER" | "OVER" | "OOR" — independent of operating;
+ *               an unflown route with paxScore ≥ 8 reads as UNDER (candidate),
+ *               an unreachable spec reads as OOR, etc.
+ *   status    — "NEW" | "OK" | "UNDER" | "OVER" | "OOR" — derived as
+ *               `operating ? health : "NEW"`. Kept for back-compat with the
+ *               status-history-store transition log + the right-click menu
+ *               that gates the opening-checklist on status === "NEW".
  *
  * When `fleetContext` is provided, rows additionally carry:
  *   aircraftFit ("optimal"|"falloff"|"oor"|null), blockHours,
@@ -79,6 +86,7 @@ class RouteAssistantAggregator {
                 ownPaxFreq:    own.paxFreq || 0,
                 ownCargoFreq:  own.cargoFreq || 0,
                 ownTotalFreq:  totalFreq,
+                congestionIndex:  null,
                 override:         override,
                 routeNote:        routeNote,
                 routeNoteText:    (routeNote && typeof routeNote.text === "string") ? routeNote.text : null,
@@ -120,7 +128,19 @@ class RouteAssistantAggregator {
                 RouteAssistantAggregator._applyServiceProjection(row, serviceProfilesDef, svcRec, fleet)
             }
 
-            row.status = RouteAssistantAggregator._statusFor(totalFreq, paxScore, weeklyFlights, row.aircraftFit)
+            // Slice S1 — congestion signal for the strategy proposers.
+            // Pure function, no IO; safe to call always.
+            if (typeof window !== "undefined"
+                    && window.AesStrategyCongestion
+                    && typeof window.AesStrategyCongestion.computeCongestion === "function") {
+                try {
+                    const c = window.AesStrategyCongestion.computeCongestion(row, null)
+                    row.congestionIndex = c && typeof c.congestionIndex === "number"
+                        ? c.congestionIndex : null
+                } catch (_) { /* leave null */ }
+            }
+
+            RouteAssistantAggregator._assignStatus(row, totalFreq, paxScore, weeklyFlights)
             return row
         })
     }
@@ -166,11 +186,11 @@ class RouteAssistantAggregator {
             } else {
                 RouteAssistantAggregator._clearServiceProjection(row)
             }
-            row.status = RouteAssistantAggregator._statusFor(
+            RouteAssistantAggregator._assignStatus(
+                row,
                 row.ownTotalFreq || 0,
                 row.paxScore,
-                row.weeklyFlights || 0,
-                row.aircraftFit
+                row.weeklyFlights || 0
             )
         }
     }
@@ -561,24 +581,42 @@ class RouteAssistantAggregator {
     }
 
     /**
-     * Status flag rules — kept conservative so they only highlight clear
-     * situations:
+     * Health flag — orthogonal to operating. Computed for every route, flown
+     * or not, so the user can see UNDER/OVER/OK/OOR independently from "do I
+     * fly this":
      *   OOR   — selected aircraft can't reach the destination (overrides
      *           everything else; must fix fleet/aircraft choice first)
-     *   NEW   — you don't fly the route
-     *   UNDER — you fly it, demand is high (paxScore ≥ 8) but your weekly
-     *           freq is < 1/10 of real-world
-     *   OVER  — you fly it more than 1/5 of real-world
-     *   OK    — anything else
+     *   UNDER — demand is high (paxScore ≥ 8) and your weekly freq is < 1/10
+     *           of real-world. For an unflown route (ownTotalFreq = 0) this
+     *           collapses to "high demand and you're not flying it" — i.e. a
+     *           candidate to start.
+     *   OVER  — you fly it more than 1/5 of real-world. Unflown routes can
+     *           never be OVER (0 is not > anything).
+     *   OK    — anything else.
      * weeklyFlights = 0 means "no real-world reference", so we fall back to OK.
      */
-    static _statusFor(ownTotalFreq, paxScore, weeklyFlights, aircraftFit) {
+    static _healthFor(ownTotalFreq, paxScore, weeklyFlights, aircraftFit) {
         if (aircraftFit === "oor") return "OOR"
-        if (ownTotalFreq <= 0) return "NEW"
         if (!weeklyFlights) return "OK"
         if (typeof paxScore === "number" && paxScore >= 8 && ownTotalFreq < weeklyFlights / 10) return "UNDER"
         if (ownTotalFreq > weeklyFlights / 5) return "OVER"
         return "OK"
+    }
+
+    /**
+     * Sets the three correlated fields on `row`:
+     *   operating — boolean (true iff ownTotalFreq > 0)
+     *   health    — OK / UNDER / OVER / OOR (always)
+     *   status    — operating ? health : "NEW"  (legacy combined value)
+     */
+    static _assignStatus(row, ownTotalFreq, paxScore, weeklyFlights) {
+        const operating = (ownTotalFreq || 0) > 0
+        const health    = RouteAssistantAggregator._healthFor(
+            ownTotalFreq || 0, paxScore, weeklyFlights || 0, row.aircraftFit
+        )
+        row.operating = operating
+        row.health    = health
+        row.status    = operating ? health : "NEW"
     }
 }
 

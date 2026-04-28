@@ -35,7 +35,9 @@ class RouteAssistantServiceProfileApplier {
      * @param {string} server  — `free1`, `tristar`, etc.
      * @param {object} [opts]
      * @param {RouteAssistantServiceProfileApplyLog} [opts.applyLog]
-     * @param {boolean} [opts.applyEnabled=true]   — set false to dry-run only
+     * @param {boolean} [opts.applyEnabled=true]   — set false → return noop without POST
+     * @param {boolean} [opts.dryRunOnly=false]    — true → log status:"dry-run" and skip POST
+     *                                                (mirrors pricing-applier.js Tier 3.1)
      */
     constructor(server, opts) {
         if (!server) throw new Error("RouteAssistantServiceProfileApplier: server required")
@@ -43,6 +45,7 @@ class RouteAssistantServiceProfileApplier {
         this.server = server
         this.applyLog = opts.applyLog || null
         this.applyEnabled = opts.applyEnabled !== false
+        this.dryRunOnly   = !!opts.dryRunOnly
     }
 
     static _baseUrl(server) {
@@ -319,6 +322,15 @@ class RouteAssistantServiceProfileApplier {
         baseEnvelope.bodyPreview = RouteAssistantServiceProfileApplier._summariseBody(body)
         baseEnvelope.newValues = RouteAssistantServiceProfileApplier._projectValues(formContext, cleanChanges)
 
+        // Tier 3.1 — explicit dry-run gate. Logs an audit entry with
+        // status:"dry-run" so the user/strategy can preview what would
+        // have been written without actually firing the POST.
+        if (this.dryRunOnly) {
+            return await this._completeAsDryRun(Object.assign({}, baseEnvelope, {
+                warning: "dryRunOnly=true — POST suppressed (audit logged as dry-run)"
+            }))
+        }
+
         if (!this.applyEnabled) {
             return await this._completeAsNoop(Object.assign({}, baseEnvelope, {
                 warning: "applyEnabled=false — POST suppressed (dry-run)"
@@ -398,7 +410,95 @@ class RouteAssistantServiceProfileApplier {
     // ------------------------------------------------------------------
 
     async _completeAsPosted(envelope) {
-        return await this._writeLog(Object.assign({}, envelope, {status: "posted"}))
+        const written = await this._writeLog(Object.assign({}, envelope, {status: "posted"}))
+        this._schedulePostApplyOrsArchive(written)
+        return written
+    }
+
+    /**
+     * Velvet Cascade · PR 1B — fan out a post-apply ORS rescrape across
+     * every route that mounts this profile. Service changes are batch
+     * effects, so the calibration dataset needs an after-snapshot per
+     * affected route. v1 reads the user's schedule to discover hub-dest
+     * pairs and best-effort archives each. Errors swallow into a console
+     * warn — the user's apply has already succeeded.
+     */
+    _schedulePostApplyOrsArchive(record) {
+        if (!record || record.status !== "posted") return
+        if (record.profileId == null) return
+        const settings = this.settings || (typeof window !== "undefined"
+            ? (window.RouteAssistantSettings && window.RouteAssistantSettings._cached) : null)
+        const orsCfg = settings && settings.ors
+        if (orsCfg && orsCfg.snapshotOnApply === false) return
+        const delayMs = (orsCfg && Number(orsCfg.postApplyRescrapeDelayMs)) || 5000
+
+        setTimeout(async () => {
+            try {
+                const scraper = (typeof window !== "undefined") && window.RouteAssistantOrsScraper
+                const store   = (typeof window !== "undefined") && window.RouteAssistantOrsSnapshotStore
+                if (!scraper || !store) return
+                const pairs = await this._collectAffectedPairs(record.profileId)
+                if (!pairs.length) return
+                for (const [hub, dest] of pairs.slice(0, 12)) {
+                    try {
+                        let rec = null
+                        if (typeof scraper.scrape === "function") {
+                            try { rec = await scraper.scrape(hub, dest, {refresh: true}) }
+                            catch (_) { rec = null }
+                        }
+                        if (!rec && typeof scraper.loadRecord === "function") {
+                            rec = await scraper.loadRecord(hub, dest)
+                        }
+                        if (!rec) continue
+                        await store.archive(hub, dest, rec, {
+                            reason: "post-apply",
+                            label:  "after profile #" + record.profileId + " apply " + (record.id || "")
+                        })
+                    } catch (e) {
+                        console.warn("[AES serviceProfileApplier] per-route archive failed", hub, dest, e)
+                    }
+                }
+            } catch (e) {
+                console.warn("[AES serviceProfileApplier] post-apply ORS archive failed", e)
+            }
+        }, Math.max(0, delayMs))
+    }
+
+    /**
+     * Discover (hub, dest) pairs that mount this profile. v1 walks the
+     * user's schedule cache (the shape that ors-scraper uses to derive
+     * `getOurFlightNumbers`) and surfaces every (origin, destination) it
+     * sees. v2 will join against a per-aircraft profile assignment when
+     * such a mapping is plumbed into the snapshot.
+     */
+    async _collectAffectedPairs(profileId) {
+        const out = []
+        const seen = new Set()
+        try {
+            if (typeof window === "undefined") return out
+            // Walk every "<server><airline>schedule" key — there's only one
+            // per active install but the prefix scan keeps us tolerant of
+            // multi-airline canopy data without coupling to AccountRegistry.
+            const all = await chrome.storage.local.get(null)
+            for (const k in all) {
+                if (!k.endsWith("schedule")) continue
+                const rec = all[k]
+                if (!rec || !rec.date) continue
+                for (const day in rec.date) {
+                    const sched = rec.date[day] && rec.date[day].schedule
+                    if (!Array.isArray(sched)) continue
+                    for (const route of sched) {
+                        if (!route || !route.origin || !route.destination) continue
+                        const pairKey = String(route.origin).toUpperCase() + "-"
+                                      + String(route.destination).toUpperCase()
+                        if (seen.has(pairKey)) continue
+                        seen.add(pairKey)
+                        out.push([route.origin, route.destination])
+                    }
+                }
+            }
+        } catch (_) {}
+        return out
     }
 
     async _completeAsFailure(envelope, error) {
@@ -407,6 +507,10 @@ class RouteAssistantServiceProfileApplier {
 
     async _completeAsNoop(envelope) {
         return await this._writeLog(Object.assign({}, envelope, {status: "noop"}))
+    }
+
+    async _completeAsDryRun(envelope) {
+        return await this._writeLog(Object.assign({}, envelope, {status: "dry-run"}))
     }
 
     async _writeLog(record) {

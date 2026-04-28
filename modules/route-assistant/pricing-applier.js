@@ -39,6 +39,12 @@
  *     reason:       <string, optional, persisted to apply log>,
  *     sandboxScenario: <object, optional>,
  *     projectedDelta:  <object, optional>,
+ *     preApplySync:    <{scheduleAt, orsAt, halted}, optional> — captured
+ *                      by the panel from the route-sync orchestrator's
+ *                      pre-apply pass; threaded straight into the apply
+ *                      log so the audit trail records whether this apply
+ *                      was data-refreshed beforehand. Applier itself does
+ *                      not inspect.
  *     onPreflight:  fn(preflightResult) — called BEFORE POST; can
  *                   abort by returning `false` or {abort: true, reason}
  *   })
@@ -120,6 +126,9 @@ class RouteAssistantPricingApplier {
      *   real write happens. Belt-and-braces.
      * @param {number} [opts.cooldownMinPerRoute=60] — minutes; preflight
      *   blocks an apply for the same route within this window.
+     * @param {number} [opts.cooldownMinGlobal=5] — minutes; preflight
+     *   blocks an apply when ANY route was written in this window. 0
+     *   disables. Floor-level throttle to catch rapid-fire chains.
      * @param {number} [opts.warnAboveDeltaPct=5]   — issues a preflight
      *   warning (NOT a blocker) when any class's |Δ%| exceeds this.
      * @param {RouteAssistantPricingApplyLog} [opts.applyLog] — log store
@@ -133,6 +142,7 @@ class RouteAssistantPricingApplier {
         this.dryRunOnly         = opts.dryRunOnly !== false
         this.applyEnabled       = !!opts.applyEnabled
         this.cooldownMinPerRoute = isFinite(opts.cooldownMinPerRoute) ? Math.max(0, opts.cooldownMinPerRoute) : 60
+        this.cooldownMinGlobal   = isFinite(opts.cooldownMinGlobal)   ? Math.max(0, opts.cooldownMinGlobal)   : 5
         this.warnAboveDeltaPct  = isFinite(opts.warnAboveDeltaPct) ? Math.max(0, opts.warnAboveDeltaPct) : 5
         this.applyLog           = opts.applyLog || null
         // Tier 3.2 — circuit breaker. Threshold/cooldown/trippedAt are read
@@ -447,10 +457,20 @@ class RouteAssistantPricingApplier {
             submitButton,
             sandboxScenario:  opts.sandboxScenario || null,
             projectedDelta:   opts.projectedDelta  || null,
+            preApplySync:     opts.preApplySync    || null,
             reason,
             fingerprint,
             requestedPrices:  prices,
-            dryRun
+            dryRun,
+            // Tier 3.4 — pass-through observability fields. All optional;
+            // the applier doesn't act on them, just threads them onto the
+            // log entry so the audit modal can group / annotate.
+            batchId:          opts.batchId  || null,
+            batchSize:        isFinite(opts.batchSize) ? opts.batchSize : null,
+            undoOf:           opts.undoOf   || null,
+            proposerStrategy: opts.proposerStrategy || null,
+            rationale:        Array.isArray(opts.rationale) ? opts.rationale.slice(0, 12) : null,
+            objective:        opts.objective || null
         }
 
         // Step 0 — circuit-breaker cooldown gate. Skip in dry-run; the
@@ -512,9 +532,11 @@ class RouteAssistantPricingApplier {
         const preflight = RouteAssistantPricingApplier.preflight({
             formContext,
             prices,
-            warnAboveDeltaPct: this.warnAboveDeltaPct,
+            warnAboveDeltaPct:   this.warnAboveDeltaPct,
             cooldownMinPerRoute: this.cooldownMinPerRoute,
-            lastApplyAt: opts.lastApplyAt || null
+            lastApplyAt:         opts.lastApplyAt || null,
+            cooldownMinGlobal:   this.cooldownMinGlobal,
+            lastApplyAtGlobal:   opts.lastApplyAtGlobal || null
         })
         baseEnvelope.preflight = preflight
         baseEnvelope.prevPrices = Object.assign({}, formContext.currentPrices)
@@ -633,7 +655,9 @@ class RouteAssistantPricingApplier {
      * — caller decides what to do with each. The modal in panel.js
      * renders both lists; blockers disable the Apply button outright.
      */
-    static preflight({formContext, prices, warnAboveDeltaPct, cooldownMinPerRoute, lastApplyAt}) {
+    static preflight({formContext, prices, warnAboveDeltaPct,
+                      cooldownMinPerRoute, lastApplyAt,
+                      cooldownMinGlobal, lastApplyAtGlobal}) {
         const out = {blockers: [], warnings: [], deltas: {}, percentDeltas: {}}
         if (!formContext) {
             out.blockers.push({code: "noFormContext", message: "No form context"})
@@ -698,6 +722,25 @@ class RouteAssistantPricingApplier {
             }
         }
 
+        // Tier 3.2 — second-axis cooldown across every route.
+        // Triggers when ANY successful apply landed within the global
+        // window. Always evaluated alongside the per-route check so a
+        // user who just wrote LAX→JFK can't immediately fire SFO→ORD
+        // even though SFO→ORD has its own 0-minute history.
+        if (cooldownMinGlobal > 0 && lastApplyAtGlobal) {
+            const minsSinceG = (Date.now() - lastApplyAtGlobal) / 60000
+            if (minsSinceG < cooldownMinGlobal) {
+                const remainingG = Math.ceil(cooldownMinGlobal - minsSinceG)
+                out.blockers.push({
+                    code:    "cooldownActiveGlobal",
+                    message: "A successful apply landed " + Math.round(minsSinceG)
+                        + " min ago somewhere in your network; global cooldown is "
+                        + cooldownMinGlobal + " min (" + remainingG + " min remaining).",
+                    remainingMin: remainingG
+                })
+            }
+        }
+
         return out
     }
 
@@ -745,7 +788,9 @@ class RouteAssistantPricingApplier {
     async _completeAsVerified(envelope) {
         this._resetBreakerCounter()
         const final = Object.assign({}, envelope, {status: "verified"})
-        return await this._writeLog(final)
+        const written = await this._writeLog(final)
+        this._schedulePostApplyOrsArchive(written)
+        return written
     }
 
     async _completeAsPostedUnverified(envelope) {
@@ -754,7 +799,50 @@ class RouteAssistantPricingApplier {
             status: "posted",
             warning: "POST returned 200 but post-write verification didn't match expected prices."
         })
-        return await this._writeLog(final)
+        const written = await this._writeLog(final)
+        this._schedulePostApplyOrsArchive(written)
+        return written
+    }
+
+    /**
+     * Velvet Cascade · PR 1B — schedule a post-apply ORS rescrape +
+     * snapshot archive when the user has opted in via
+     * `settings.ors.snapshotOnApply` (default true). Fire-and-forget; the
+     * delay defaults to 5s to give AS time to lazy-refresh the ORS view.
+     * Errors are swallowed — apply success is the user-visible outcome,
+     * post-apply observation is best-effort instrumentation.
+     */
+    _schedulePostApplyOrsArchive(record) {
+        if (!record || !record.hub || !record.dest) return
+        if (record.status !== "verified" && record.status !== "posted") return
+        const settings = this.settings || (typeof window !== "undefined"
+            ? (window.RouteAssistantSettings && window.RouteAssistantSettings._cached) : null)
+        const orsCfg   = settings && settings.ors
+        if (orsCfg && orsCfg.snapshotOnApply === false) return
+        const delayMs = (orsCfg && Number(orsCfg.postApplyRescrapeDelayMs)) || 5000
+
+        setTimeout(async () => {
+            try {
+                const scraper = (typeof window !== "undefined") && window.RouteAssistantOrsScraper
+                const store   = (typeof window !== "undefined") && window.RouteAssistantOrsSnapshotStore
+                if (!scraper || !store) return
+                let rec = null
+                if (typeof scraper.scrape === "function") {
+                    try { rec = await scraper.scrape(record.hub, record.dest, {refresh: true}) }
+                    catch (_) { rec = null }
+                }
+                if (!rec && typeof scraper.loadRecord === "function") {
+                    rec = await scraper.loadRecord(record.hub, record.dest)
+                }
+                if (!rec) return
+                await store.archive(record.hub, record.dest, rec, {
+                    reason: "post-apply",
+                    label:  "after price apply " + (record.id || "")
+                })
+            } catch (e) {
+                console.warn("[AES pricingApplier] post-apply ORS archive failed", e)
+            }
+        }, Math.max(0, delayMs))
     }
 
     async _completeAsFailure(envelope, error) {

@@ -337,3 +337,7 @@ class RouteAssistantServiceProfileScraper {
         return isFinite(n) ? n : null
     }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantServiceProfileScraper = RouteAssistantServiceProfileScraper
+}

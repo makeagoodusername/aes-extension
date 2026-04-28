@@ -21,7 +21,12 @@
  *        ourTopRating, ourBestNonstopRating, topCompetitorRating, ratingGapToTop,
  *        connections: [{idx, rating, totalDuration, totalPrice, bookable,
  *          legs: [{flightCode, flightId, typeCode, typeId, rating, price,
- *                  serviceClass, status, isOurs, isGround}]}]}
+ *                  serviceClass, status, isOurs, isGround}]}],
+ *        context?: {                              // optional — populated by
+ *          serviceProfile?, priceSnapshot?,       // orchestrator's contextBuilder.
+ *          aircraft?,       overrides?,           // Used by the snapshot store
+ *          serviceConfig?,  capturedAt           // for (config → ORS rank)
+ *        }}                                       // calibration time-series.
  *
  * Pair key is **directional** — ORS rank differs by direction (different
  * competitors, different alternatives via different hubs).
@@ -467,6 +472,18 @@ class RouteAssistantOrsScraper {
         }
     }
 
+    /**
+     * Extract a carrier prefix from a flightCode like "AAL 123" → "AAL".
+     * Returns null when the code is empty or has no leading-letter run.
+     * Used for per-competitor ORS rating attribution and for the outline
+     * aggregator to resolve carrierPrefix → enterpriseId via marketShare.
+     */
+    static _carrierPrefixFromCode(code) {
+        if (!code) return null
+        const m = /^([A-Z0-9]+)/.exec(String(code).trim().toUpperCase())
+        return m && m[1] ? m[1] : null
+    }
+
     static _parseInt(text) {
         if (text == null) return null
         const m = /-?\d[\d,.]*/.exec(String(text).replace(/[^\d,.\-]/g, " "))
@@ -495,7 +512,14 @@ class RouteAssistantOrsScraper {
             ourTopRating:         null,
             ourBestNonstopRating: null,
             topCompetitorRating:  null,
-            ratingGapToTop:       null
+            ratingGapToTop:       null,
+            // Per-competitor max nonstop rating, keyed by carrier prefix
+            // (the leading flightCode token, e.g. "AAL" from "AAL 123").
+            // Populated only for non-us, single-leg connections so
+            // outline-aggregator can answer "what ORS does competitor X
+            // get on this lane?" The map is empty when no competitor
+            // operates a nonstop on the lane.
+            competitorRatings:    {}
         }
         const fnSet = ourFlightNumberSet instanceof Set ? ourFlightNumberSet : new Set(ourFlightNumberSet || [])
         const prefixes = (ourCarrierPrefixes || []).map(p => String(p).toUpperCase())
@@ -551,6 +575,19 @@ class RouteAssistantOrsScraper {
                 if (summary.topCompetitorRating == null
                     || (conn.rating != null && conn.rating > summary.topCompetitorRating)) {
                     summary.topCompetitorRating = conn.rating
+                }
+                // Per-competitor: only count nonstop "all theirs" connections
+                // so the rating cleanly attributes to one carrier. Multi-leg
+                // mixed-carrier connections wouldn't tell you whose schedule
+                // produced the rating.
+                if (isNonstop && conn.rating != null) {
+                    const prefix = RouteAssistantOrsScraper._carrierPrefixFromCode(flightLegs[0] && flightLegs[0].flightCode)
+                    if (prefix) {
+                        const cur = summary.competitorRatings[prefix]
+                        if (cur == null || conn.rating > cur) {
+                            summary.competitorRatings[prefix] = conn.rating
+                        }
+                    }
                 }
             }
         }
@@ -661,6 +698,15 @@ class RouteAssistantOrsScraper {
             ourCarrierPrefixes: prefixes,
             byClass,
             classesScraped
+        }
+        // Calibration-set context — opaque passthrough. Caller (typically the
+        // orchestrator's contextBuilder) supplies a snapshot of the route
+        // config that produced this scrape (service profile, current price,
+        // aircraft type, overrides, service config). Stored verbatim under
+        // `record.context`; the snapshot store reads it for time-series
+        // (config → ORS rank) calibration.
+        if (params.context && typeof params.context === "object") {
+            fields.context = params.context
         }
         const saved = await RouteAssistantOrsScraper.saveRecord(hubIata, destIata, fields)
         this._sessionCache.set(pair, saved)
@@ -910,16 +956,19 @@ class RouteAssistantOrsScraper {
             const compactLegs = []
             for (const leg of c.legs || []) {
                 compactLegs.push({
-                    flightCode:   leg.flightCode,
-                    flightId:     leg.flightId,
-                    typeCode:     leg.typeCode,
-                    typeId:       leg.typeId,
-                    rating:       leg.rating,
-                    price:        leg.price,
-                    serviceClass: leg.serviceClass,
-                    status:       leg.status,
-                    isOurs:       !!leg.isOurs,
-                    isGround:     !!leg.isGround
+                    flightCode:    leg.flightCode,
+                    flightId:      leg.flightId,
+                    typeCode:      leg.typeCode,
+                    typeId:        leg.typeId,
+                    rating:        leg.rating,
+                    price:         leg.price,
+                    serviceClass:  leg.serviceClass,
+                    status:        leg.status,
+                    isOurs:        !!leg.isOurs,
+                    isGround:      !!leg.isGround,
+                    carrierPrefix: leg.isGround
+                        ? null
+                        : RouteAssistantOrsScraper._carrierPrefixFromCode(leg.flightCode)
                 })
                 if (leg.isOurs && leg.flightId != null) ourFlightIds.push(leg.flightId)
             }
