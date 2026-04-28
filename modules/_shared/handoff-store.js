@@ -11,6 +11,12 @@
  * on mount, pre-selects the matching preset, and auto-Generates the
  * Gantt — no second navigation, no manual preset re-pick.
  *
+ * Track C extension — fleet-schedule-grid drag-to-schedule drop also
+ * writes through this store with `source: "dnd-grid"`, carrying
+ * `destIata` + `dropMin` instead of a `presetId`. AFP consumers branch
+ * on `source` to either pre-select a preset (wave-designer) or scroll
+ * to the matching candidate row (dnd-grid).
+ *
  * Single key: `_shared:handoff:wave-designer`. Holds at most one
  * pending handoff at a time (last writer wins). 60-second TTL prevents
  * a forgotten record from auto-applying days later when the user
@@ -19,6 +25,9 @@
  * Public API (window.AesHandoffStore):
  *   .set({aircraftId, presetId, hub, generatedAt?, source?})
  *     → Promise<void> — overwrites any existing pending handoff.
+ *     Required fields by source:
+ *       - default / "wave-designer": aircraftId + presetId
+ *       - "dnd-grid":                aircraftId + destIata
  *   .consume(aircraftId)
  *     → Promise<record|null> — read + delete in one shot. Returns null
  *       when no record matches the aircraftId or when TTL expired.
@@ -28,31 +37,56 @@
  *     → Promise<void> — explicit cleanup (rarely needed; consume is
  *       the normal disposal path).
  *
- * The record shape:
- *   {
- *     aircraftId:  "12345",
- *     presetId:    "preset-uuid",
- *     hub:         "JFK",
- *     generatedAt: 1714123456789,
- *     source:      "wave-designer" | …,
- *     writtenAt:   1714123456789  // server-set on write
- *   }
+ * Record shapes:
+ *   wave-designer (Schedule Panel + RA panel):
+ *     {
+ *       aircraftId:  "12345",
+ *       presetId:    "preset-uuid",
+ *       hub:         "JFK",
+ *       generatedAt: 1714123456789,
+ *       source:      "wave-designer",
+ *       writtenAt:   1714123456789
+ *     }
+ *
+ *   dnd-grid (Fleet Schedule Grid drop popover):
+ *     {
+ *       aircraftId:  "12345",
+ *       destIata:    "MIA",
+ *       dropMin:     540,            // 0..1439, optional
+ *       source:      "dnd-grid",
+ *       writtenAt:   1714123456789
+ *     }
  */
 class AesHandoffStore {
     static KEY = "_shared:handoff:wave-designer"
     static TTL_MS = 60 * 1000
 
     static async set(record) {
-        if (!record || !record.aircraftId || !record.presetId) {
-            throw new Error("AesHandoffStore.set: aircraftId + presetId required")
+        if (!record || !record.aircraftId) {
+            throw new Error("AesHandoffStore.set: aircraftId required")
         }
+        const source = (record.source && String(record.source).slice(0, 32)) || "wave-designer"
         const payload = {
             aircraftId:  String(record.aircraftId),
-            presetId:    String(record.presetId),
-            hub:         record.hub ? String(record.hub).toUpperCase() : "",
             generatedAt: Number(record.generatedAt) || Date.now(),
-            source:      (record.source && String(record.source).slice(0, 32)) || "wave-designer",
+            source:      source,
             writtenAt:   Date.now()
+        }
+        if (source === "dnd-grid") {
+            if (!record.destIata) {
+                throw new Error("AesHandoffStore.set: destIata required for dnd-grid source")
+            }
+            payload.destIata = String(record.destIata).toUpperCase()
+            if (record.dropMin != null && isFinite(record.dropMin)) {
+                payload.dropMin = Math.max(0, Math.min(1439, Math.round(Number(record.dropMin))))
+            }
+            if (record.hub) payload.hub = String(record.hub).toUpperCase()
+        } else {
+            if (!record.presetId) {
+                throw new Error("AesHandoffStore.set: presetId required for " + source + " source")
+            }
+            payload.presetId = String(record.presetId)
+            payload.hub = record.hub ? String(record.hub).toUpperCase() : ""
         }
         await chrome.storage.local.set({[AesHandoffStore.KEY]: payload})
     }

@@ -415,6 +415,10 @@
             this._renderChipBar(host)
             this._renderTable(host, list)
             this._renderFooter(host, list)
+            // Track C — pick up a fleet-schedule-grid drop handoff if one is
+            // pending for this aircraft. Deferred until after the table is
+            // painted so the row data attributes exist for scroll-into-view.
+            this._consumeDndHandoff()
         },
 
         /** Mount the wave-pattern overlay above the chip bar when the
@@ -697,6 +701,7 @@
             tr.style.cssText = "cursor:pointer;border-bottom:1px solid #1f2937;"
                 + (idx % 2 ? "background:#0f1623;" : "")
             tr.title = c.destName ? (c.destIata + " · " + c.destName) : c.destIata
+            tr.dataset.aesAfpCandIata = String(c.destIata || "").toUpperCase()
             tr.addEventListener("mouseenter", () => { tr.style.background = "#1f2937" })
             tr.addEventListener("mouseleave", () => {
                 tr.style.background = (idx % 2) ? "#0f1623" : ""
@@ -780,6 +785,25 @@
             iataText.innerHTML = escapeHtml(c.destIata) + glyphs
             destCell.appendChild(iataText)
             if (baseTitle) destCell.title = baseTitle
+
+            // F3b — ⓘ Detail button. Opens the station drawer for this dest;
+            // stopPropagation keeps the row's fill-form click and the row's
+            // dragstart unaffected. Hidden when the drawer module is absent
+            // so an old install never shows a dead button.
+            if (window.AesAfpStationDrawer && typeof AesAfpStationDrawer.open === "function") {
+                const info = document.createElement("span")
+                info.textContent = "ⓘ"
+                info.title = "Open station detail drawer"
+                info.style.cssText = "color:#6b7280;cursor:pointer;margin-left:6px;"
+                    + "font-size:11px;user-select:none;"
+                info.addEventListener("mouseenter", () => { info.style.color = "#60a5fa" })
+                info.addEventListener("mouseleave", () => { info.style.color = "#6b7280" })
+                info.addEventListener("click", (ev) => {
+                    ev.stopPropagation()
+                    AesAfpStationDrawer.open(c.destIata)
+                })
+                destCell.appendChild(info)
+            }
 
             const distCell = this._mkNumCell(
                 (c.distanceKm == null) ? "—" : Math.round(c.distanceKm).toLocaleString())
@@ -948,6 +972,68 @@
         _reRender() {
             if (!this._lastHost) return
             this.render(this._lastHost, this.last || [], this._lastCtx)
+        },
+
+        /**
+         * Track C — consume a `dnd-grid` handoff (set by
+         * fleet-schedule-grid/dnd-drop-popover after a successful drop +
+         * "Open in Flight Studio" click), scroll the matching row into
+         * view, flash a highlight, and pre-fill the per-row Departure
+         * input with the dropMin. The wave-applier consumer leaves
+         * dnd-grid records alone so we can claim them here.
+         *
+         * Idempotent per page-mount via `_dndHandoffConsumed`.
+         * Defensive: no AS form mutation, no candidate:selected emit —
+         * this is a navigation aid only.
+         */
+        async _consumeDndHandoff() {
+            if (typeof window.AesHandoffStore === "undefined") return
+            if (this._dndHandoffConsumed) return
+            const ctx = (window.AesAfp && window.AesAfp.ctx) || {}
+            if (!ctx.aircraftId) return
+            let rec
+            try { rec = await window.AesHandoffStore.peek() }
+            catch (_) { return }
+            if (!rec || rec.source !== "dnd-grid") return
+            if (String(rec.aircraftId) !== String(ctx.aircraftId)) return
+            this._dndHandoffConsumed = true
+            try { rec = await window.AesHandoffStore.consume(ctx.aircraftId) }
+            catch (_) { return }
+            if (!rec) return
+            const dest = String(rec.destIata || "").toUpperCase()
+            if (!dest) return
+            const host = this._lastHost
+            if (!host) return
+            const row = host.querySelector('tr[data-aes-afp-cand-iata="' + dest + '"]')
+            if (!row) {
+                // Row may be filtered out by chip state; nudge the user toward
+                // the toggles. Toast is best-effort — silent if missing.
+                if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.info) {
+                    try { RouteAssistantToast.info("Drag handoff: " + dest
+                        + " not in current candidate filter — toggle chips to reveal.") }
+                    catch (_) { /* noop */ }
+                }
+                return
+            }
+            try { row.scrollIntoView({behavior: "smooth", block: "center"}) } catch (_) {}
+            const prevBg = row.style.background
+            row.style.transition = "background 600ms ease"
+            row.style.background = "#3b82f6"
+            setTimeout(() => { row.style.background = prevBg }, 1400)
+            if (rec.dropMin != null && isFinite(rec.dropMin)) {
+                const m = Math.max(0, Math.min(1439, Math.round(Number(rec.dropMin))))
+                const hh = String(Math.floor(m / 60)).padStart(2, "0")
+                const mm = String(m % 60).padStart(2, "0")
+                const depInput = row.querySelector(".aes-afp-row-dep")
+                if (depInput) {
+                    // Set value only — do NOT dispatch change. The change
+                    // handler emits candidate:selected, which form-driver
+                    // listens to and writes to AS's New Flight form. The
+                    // dnd-grid handoff is a navigation aid only; the user
+                    // commits via row click / Enter when ready.
+                    depInput.value = hh + ":" + mm
+                }
+            }
         },
 
         _visibleSet(candidates) {

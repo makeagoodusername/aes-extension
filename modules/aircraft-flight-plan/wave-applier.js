@@ -895,8 +895,16 @@
         if (!ctx.aircraftId) return
         // Ensure we only consume once per mount lifecycle.
         if (_state._handoffConsumed) return
-        _state._handoffConsumed = true
+        // Track C — peek first so dnd-grid records (no presetId) stay in
+        // the store for route-candidates.js to consume. Only claim records
+        // that carry a presetId.
         let rec
+        try { rec = await window.AesHandoffStore.peek() }
+        catch (e) { console.warn("[AFP-8c] handoff peek threw", e); return }
+        if (!rec) return
+        if (String(rec.aircraftId) !== String(ctx.aircraftId)) return
+        if (rec.source === "dnd-grid" || !rec.presetId) return
+        _state._handoffConsumed = true
         try { rec = await window.AesHandoffStore.consume(ctx.aircraftId) }
         catch (e) { console.warn("[AFP-8c] handoff consume threw", e); return }
         if (!rec) return
