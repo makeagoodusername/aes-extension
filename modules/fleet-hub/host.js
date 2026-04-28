@@ -35,6 +35,7 @@ class FleetHubHost {
         this._storageListener = null
         this._boundTable = null
         this._dashboardHost = null    // lazy AesAfpDashboardHost
+        this._commandCenter = null    // FleetHubCommandCenter
     }
 
     /** Idempotent. Returns immediately if the page hasn't mounted yet. */
@@ -118,6 +119,40 @@ class FleetHubHost {
         this._bindTableListeners()
 
         FleetHubSummaryStrip.render(this.anchorEl, rows, FleetHubHost._latestScrapeTime(fleet))
+
+        await this._mountOrUpdateCommandCenter(rows)
+    }
+
+    /**
+     * Fleet Command Center — central tabbed island for cross-module route
+     * management data (per-hub roster, saved schedules, wave presets,
+     * per-aircraft drafts). Mounts beneath the summary strip on first paint;
+     * subsequent enrich passes call update(rows) to keep counts fresh
+     * without rebuilding the DOM. The CC also subscribes to its own
+     * chrome.storage.onChanged so a write that doesn't touch the table
+     * (e.g. saving a new schedule) still triggers its own repaint.
+     */
+    async _mountOrUpdateCommandCenter(rows) {
+        if (typeof FleetHubCommandCenter === "undefined") return
+        if (!this.anchorEl) return
+        if (!this._commandCenter) {
+            this._commandCenter = new FleetHubCommandCenter({
+                server:      this.server,
+                airlineCode: this.airlineCode,
+                anchorEl:    this.anchorEl
+            })
+            this._commandCenter.setRows(rows)
+            await this._commandCenter.mount()
+            // Start unconditionally — the driver self-gates on tier each tick,
+            // so it's a safe no-op outside apply-auto.
+            if (typeof AesStrategyAutoDriver !== "undefined"
+                    && typeof AesStrategyAutoDriver.start === "function") {
+                AesStrategyAutoDriver.start().catch(err =>
+                    console.warn("[AES Fleet Hub] auto-driver start failed", err))
+            }
+            return
+        }
+        await this._commandCenter.update(rows)
     }
 
     static _latestScrapeTime(fleet) {
