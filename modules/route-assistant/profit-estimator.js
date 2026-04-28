@@ -228,6 +228,21 @@ class RouteAssistantProfitEstimator {
             : 0
         const revenue = paxRevenue + cargoRevenue
 
+        // H slice 3b.2.2 — sensitivity surfacing. Pre-interline revenue is
+        // what you'd earn with the same demand-derived LF if the codeshare
+        // were ended; the delta is the dollar cost of the partner deal,
+        // since operating cost stays the same regardless. Computing here
+        // (rather than at consumer time) keeps the math co-located with
+        // the LF-trim and avoids consumers having to know the formula.
+        const paxRevenuePreInterline = paxSeats > 0
+            ? paxSeats * paxLoadFactorPreInterline * effectivePaxYield * distanceRoundTripKm * yieldMult
+            : 0
+        const cargoRevenuePreInterline = (cargoKg > 0 && effectiveCargoYield > 0)
+            ? cargoKg * cargoLoadFactorPreInterline * effectiveCargoYield * distanceRoundTripKm * yieldMult
+            : 0
+        const revenuePreInterline = paxRevenuePreInterline + cargoRevenuePreInterline
+        const interlineRevenueLoss = revenuePreInterline - revenue
+
         // ---------- Fuel cost: distance-based when AS price + spec available ----------
         // Preferred path: AS computes fuel as (cycle_L + per_km_L × dist) ×
         // priceASc / 100. We use that when the user's enabled the per-type
@@ -301,6 +316,14 @@ class RouteAssistantProfitEstimator {
             paxRevenue:               Math.round(paxRevenue),
             cargoRevenue:             Math.round(cargoRevenue),
             revenue:                  Math.round(revenue),
+            // H slice 3b.2.2 — pre-interline revenue + the loss delta.
+            // Cost is unchanged by codeshare, so revenue loss == profit loss.
+            paxRevenuePreInterline:   Math.round(paxRevenuePreInterline),
+            cargoRevenuePreInterline: Math.round(cargoRevenuePreInterline),
+            revenuePreInterline:      Math.round(revenuePreInterline),
+            interlineRevenueLossPerFlight: Math.round(interlineRevenueLoss),
+            interlineRevenueLossPerWeek:   freq > 0
+                ? Math.round(interlineRevenueLoss * freq) : 0,
             blockHours:               result.blockHours,
             aircraftAge:              aircraftAge,
             fuelAgePenaltyPerYear:    fuelAgePenaltyPerYear,

@@ -3865,6 +3865,15 @@ class RouteAssistantPanel {
             }
             if (bd.paxRevenue   != null) addRow("Pax revenue",   _formatCompactCurrency(bd.paxRevenue))
             if (bd.cargoRevenue != null && bd.cargoRevenue > 0) addRow("Cargo revenue", _formatCompactCurrency(bd.cargoRevenue))
+            // H slice 3b.2.2 — surface the codeshare cost so the user can
+            // see what the partner deal is taking. Amber, with a "(forgone)"
+            // suffix so it doesn't read as a direct cash cost.
+            if (typeof bd.interlineRevenueLossPerFlight === "number"
+                    && bd.interlineRevenueLossPerFlight > 0) {
+                addRow("Interline (forgone)",
+                    "−" + _formatCompactCurrency(bd.interlineRevenueLossPerFlight),
+                    "#fbbf24")
+            }
             if (bd.fuelCost     != null) addRow("Fuel cost",     "−" + _formatCompactCurrency(bd.fuelCost))
             if (bd.crewCost     != null && bd.crewCost > 0)        addRow("Crew",        "−" + _formatCompactCurrency(bd.crewCost))
             if (bd.maintenanceCost != null && bd.maintenanceCost > 0) addRow("Maintenance", "−" + _formatCompactCurrency(bd.maintenanceCost))
@@ -6838,11 +6847,29 @@ class RouteAssistantPanel {
         if (!cache || cache.size === 0) return null
         const hub = String(hubIata || this.hubIata || "").toUpperCase()
         if (!hub) return null
+        // Build a one-shot dest→row index so the closure can decorate the
+        // share record with the per-route dollar cost (`interlineRevenueLossPerWeek`
+        // from the estimator breakdown). Captured by reference, so subsequent
+        // applyFleetContext calls still flow through to the tooltip without
+        // having to rebuild the lookup.
+        const rowsByDest = new Map()
+        for (const r of (this.rows || [])) {
+            if (r && r.destIata) rowsByDest.set(r.destIata, r)
+        }
         return (destIata) => {
             if (!destIata) return null
-            const rec = cache.get(hub + "-" + String(destIata).toUpperCase())
+            const dest = String(destIata).toUpperCase()
+            const rec = cache.get(hub + "-" + dest)
             if (!rec) return null
-            return RouteAssistantAggregator._interlineSharesFromRecord(rec)
+            const shares = RouteAssistantAggregator._interlineSharesFromRecord(rec)
+            if (!shares) return null
+            const row = rowsByDest.get(dest) || null
+            const bk = row && row.profitBreakdown
+            if (bk) {
+                shares.revenueLossPerFlight = Number(bk.interlineRevenueLossPerFlight) || 0
+                shares.revenueLossPerWeek   = Number(bk.interlineRevenueLossPerWeek)   || 0
+            }
+            return shares
         }
     }
 
@@ -18372,6 +18399,21 @@ class RouteAssistantPanel {
                 }
                 left.textContent = partnerCount + " entr" + (partnerCount === 1 ? "y" : "ies")
                     + (totals.length ? "  ·  " + totals.join(" · ") : "")
+                // H slice 3b.2.2 — surface the dollar cost so the user
+                // sees what they're paying for the partner deal. Pulled
+                // off the matching row's estimator breakdown; only shows
+                // when the estimator has run (fleet/aircraft mode active).
+                const matchingRow = (this.rows || []).find(r =>
+                    r && r.destIata === destU)
+                const lossPerWeek = matchingRow && matchingRow.profitBreakdown
+                    && Number(matchingRow.profitBreakdown.interlineRevenueLossPerWeek) || 0
+                if (lossPerWeek > 0) {
+                    const lossLine = document.createElement("div")
+                    lossLine.style.cssText = "color:#fbbf24;font-size:10px;margin-top:2px;"
+                    lossLine.textContent = "Forgone revenue ≈ $"
+                        + Math.round(lossPerWeek).toLocaleString() + "/wk (cost stays the same)"
+                    left.append(lossLine)
+                }
             } else {
                 left.textContent = "(no entries)"
             }

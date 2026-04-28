@@ -809,7 +809,32 @@ class RouteAssistantWaveOverlay {
             lines.push("• Cargo: " + Math.round(share.cargoPercent) + "% interlined")
         }
         if (!lines.length) return null
+        // H slice 3b.2.2 — sensitivity surfacing. Estimator-derived loss in
+        // weekly revenue (cost stays fixed regardless of codeshare share,
+        // so revenue loss == profit loss). Surfaced when the panel's
+        // lookup decorated the share with non-zero figures.
+        const lossPerWeek = Number(share.revenueLossPerWeek) || 0
+        if (lossPerWeek > 0) {
+            lines.push("")
+            lines.push("Forgone revenue ≈ "
+                + RouteAssistantWaveOverlay._formatMoneyShort(lossPerWeek) + "/wk")
+            lines.push("(cost stays the same — make sure the deal is worth it)")
+        }
         return "Interline share on this route\n" + lines.join("\n") + "\nClick to edit partners."
+    }
+
+    /**
+     * H slice 3b.2.2 — compact money formatter for tooltip lines.
+     * `123456` → `"$123K"`, `1234567` → `"$1.2M"`, smaller values rounded
+     * to the nearest hundred. Negative values flow through with the sign.
+     */
+    static _formatMoneyShort(n) {
+        const v = Number(n) || 0
+        const sign = v < 0 ? "-" : ""
+        const a = Math.abs(v)
+        if (a >= 1e6) return sign + "$" + (Math.round(a / 1e5) / 10) + "M"
+        if (a >= 1e3) return sign + "$" + Math.round(a / 1e3) + "K"
+        return sign + "$" + Math.round(a / 100) * 100
     }
 
     /**

@@ -13,6 +13,30 @@ This is the live current-state doc for the **AirlineSim Enhancement Suite (AES)*
 
 ## 1 · Current state
 
+### H slice 3b.2.2 — interline cost sensitivity surfacing — shipped this session
+**Surfaces in:** the per-flight breakdown card ("Interline (forgone)" line in amber, between cargo revenue and fuel cost), the wave-overlay pill tooltip ("Forgone revenue ≈ $X/wk"), and the per-route popover footer (same dollar figure under the partner-count line). **Files:** `modules/route-assistant/profit-estimator.js`, `modules/route-assistant/aggregator.js` (no changes — breakdown flows through automatically), `modules/route-assistant/panel.js`, `modules/route-assistant/wave-overlay.js`.
+
+The data through 3b.2.1 was correct and live but the *cost* of each codeshare deal was buried in the math. Users could see post-interline LF + post-interline revenue per class, but no single number answered "what is this codeshare deal taking from me each week?" — they'd have had to mentally compute `preInterlineRevenue × interlineSharePercent` from the breakdown to find out. This slice lifts that figure into three places where users naturally ask the question.
+
+**Estimator (`profit-estimator.js`).** New breakdown fields computed alongside the existing revenue line:
+- `paxRevenuePreInterline`, `cargoRevenuePreInterline`, `revenuePreInterline` — what the route would earn at the demand-derived LF if the codeshare were ended.
+- `interlineRevenueLossPerFlight` = `revenuePreInterline − revenue`. Cost is fixed regardless of codeshare share, so revenue loss == profit loss; we don't need a separate profit-delta field.
+- `interlineRevenueLossPerWeek` — same multiplied by frequency.
+
+Computed inline with the existing revenue calc (same formula, just substituting `paxLoadFactorPreInterline` for the post-interline LF) so the math stays co-located and consumers can't drift from the source. Cost is unchanged by codeshare so we don't need a separate `profitPerFlightPreInterline` — `interlineRevenueLossPerFlight` IS the profit delta.
+
+**Per-flight breakdown card (`panel.js`).** Adds an amber "Interline (forgone)" row right after the cargo revenue line (so it reads as a revenue-side adjustment, not a cost). Only renders when `interlineRevenueLossPerFlight > 0`, so non-codeshared routes look exactly as before. Color `#fbbf24` matches the wave-overlay pill stroke for cross-surface consistency.
+
+**Wave-overlay tooltip (`wave-overlay.js`).** `_formatInterlineShareTooltip` now appends a blank line + "Forgone revenue ≈ $XK/wk" + "(cost stays the same — make sure the deal is worth it)" when the panel's lookup decorated the share with non-zero figures. New `_formatMoneyShort` helper picks compact units ($X / $XK / $X.XM) so the tooltip stays readable at typical wave-overlay zoom. The lookup itself (`panel._interlineShareLookup`) builds a one-shot dest→row map at buildSchedule time and decorates the share record with `revenueLossPerFlight` + `revenueLossPerWeek` from the matching row's profit breakdown — captured by reference so subsequent applyFleetContext calls still flow through to the tooltip without rebuilding.
+
+**Popover footer (`panel.js`).** Right under the partner-count + per-class share summary, when the matching row has a non-zero loss, an amber "Forgone revenue ≈ $X/wk (cost stays the same)" line appears. Reads `this.rows.find(r => r.destIata === destU).profitBreakdown` — only populated when the user has a fleet/aircraft selected (estimator hasn't run otherwise), which is the same gate the breakdown card already uses, so the popover surface is consistent with the table surface.
+
+**Why "forgone" not "cost".** The codeshare doesn't cost cash — it gives partners a fraction of the seats you'd otherwise sell. Calling it "forgone revenue" with a clarifying parenthetical ("cost stays the same — make sure the deal is worth it") makes the asymmetry explicit: this is income you're trading away, not a fee you're paying. The breakdown card uses "(forgone)" suffix; the tooltip + footer use a longer parenthetical.
+
+**Verification.** `node --check` clean. Manual smoke: select a fleet aircraft so the estimator runs; on a route with no record the breakdown shows the existing pax/cargo/cost lines and no interline row; add a Y 30% partner via the popover → breakdown gains "Interline (forgone) −$X" between cargo revenue and fuel cost; popover footer gains "Forgone revenue ≈ $Y/wk"; wave-overlay pill tooltip ends with the same figure. Numbers cross-check: `interlineRevenueLossPerFlight × frequency ≈ interlineRevenueLossPerWeek`.
+
+**Composability.** The new breakdown fields ride on the same row that the strategy outcomes module (`modules/strategy/outcomes.js`) already reads for fleet-level rollups. Phase 4 attribution (when the strategy module starts attributing closed-loop deltas to specific moves) can subtract `interlineRevenueLossPerWeek` from the headline P&L to separate "codeshare-induced revenue mix change" from "operational moves we made." No coupling cost today — purely a future-readiness benefit.
+
 ### H slice 3b.2.1 — interline accuracy + actionability follow-up — shipped this session
 **Surfaces in:** Route Assistant service-projection (per-class revenue is now class-asymmetric-correct), wave-overlay pill (clickable + multi-line tooltip), and live consistency on popover edits (no stale pills, no stale LFs). **Files:** `modules/route-assistant/aggregator.js`, `modules/route-assistant/panel.js`, `modules/route-assistant/wave-overlay.js`. **No new storage keys, no new bus events, no manifest change.**
 
