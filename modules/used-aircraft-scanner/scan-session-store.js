@@ -69,13 +69,26 @@ class MarketScanSession {
     }
 
     /**
-     * Reads every per-type result blob for a session. Returns an object keyed by
+     * Reads per-type result blobs for a session. Returns an object keyed by
      * the type name → {status, rows, error}.
+     *
+     * `knownTypes` (optional) caps the read to those exact result keys, so we
+     * skip a full-storage scan during in-flight refreshes. Falls back to the
+     * legacy prefix sweep when the caller doesn't know the type set.
      */
-    static async loadResults(server, scanId) {
+    static async loadResults(server, scanId, knownTypes) {
+        const out = {}
+        if (Array.isArray(knownTypes) && knownTypes.length) {
+            const keys = knownTypes.map(t => MarketScanSession._resultKey(server, scanId, t))
+            const data = await chrome.storage.local.get(keys)
+            for (const k in data) {
+                const blob = data[k]
+                if (blob && blob.type) out[blob.type] = blob
+            }
+            return out
+        }
         const all = await chrome.storage.local.get(null)
         const prefix = server + "marketScan:" + scanId + ":r:"
-        const out = {}
         for (const k in all) {
             if (k.indexOf(prefix) === 0) {
                 const blob = all[k]

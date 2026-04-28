@@ -22,6 +22,14 @@ class MarketScanResultsTable {
         // Defaults are nulls so the table works without RA loaded.
         this.context = {fleetByType: null, economics: null, topRoutes: null,
                         topRoutesHub: null, routeFitConfig: null}
+        // When set, replaces the within-set relative scorer with an absolute
+        // composite score + deal-class bucketing. The market panel passes
+        // one in; the dashboard tile leaves it null and uses the legacy
+        // relative scorer so existing behaviour is preserved verbatim.
+        this.classifier = null
+        // Narrow mode hides low-priority columns and tightens padding so
+        // the table fits inside a sidebar without horizontal scroll.
+        this.narrowMode = false
     }
 
     /** Replace the rows and re-render. */
@@ -75,17 +83,63 @@ class MarketScanResultsTable {
         this._draw()
     }
 
+    /**
+     * Provide a `MarketScanDealClassifier` instance. When present the
+     * relative `_scoreRows` blender is bypassed; the classifier decorates
+     * each row with {dealScore, dealClass, dealLabel, dealColor,
+     * dealReasons, dealBreakdown} and the score column reads from
+     * `dealScore`. A "Class" badge column is also added.
+     *
+     * Pass null to revert to the legacy relative scorer.
+     */
+    setClassifier(classifier) {
+        this.classifier = classifier || null
+        this._draw()
+    }
+
+    /**
+     * Toggles narrow mode for embedding inside a sidebar:
+     *   - hides cargoCapacity, paxSatisfaction, leasingRate columns
+     *   - tightens td/th padding via a one-shot stylesheet
+     * Re-renders. Pass false to restore the full column set.
+     */
+    setNarrowMode(narrow) {
+        this.narrowMode = !!narrow
+        if (this.narrowMode) MarketScanResultsTable._ensureNarrowStyle()
+        this._draw()
+    }
+
+    static _ensureNarrowStyle() {
+        if (document.getElementById("aes-marketScan-narrow-style")) return
+        const s = document.createElement("style")
+        s.id = "aes-marketScan-narrow-style"
+        s.textContent = "table#aes-marketScan-resultsTable.narrow td,"
+                      + "table#aes-marketScan-resultsTable.narrow th {"
+                      + "padding:3px 6px !important;font-size:11px;line-height:1.3;}"
+                      + "table#aes-marketScan-resultsTable.narrow th {"
+                      + "letter-spacing:0.02em;}"
+        document.head.appendChild(s)
+    }
+
     _draw() {
         this.target.innerHTML = ""
 
         const scoringActive = this._scoringActive()
-        // Enrich BEFORE filter/score/sort so familyName participates in sort
-        // and survives _scoreRows()'s Object.assign spread. Deal metrics
-        // (pricePerSeat, breakEvenDays, etc.) are decorated in the same pass
-        // so they're available for both filtering and the score blend.
-        const enriched = this._enrichDeal(this._enrichFamily(this.rows))
+        // When a classifier is set, the caller (the in-page market panel) is
+        // expected to have pre-decorated rows with family + deal metrics +
+        // dealScore. Skipping re-decoration eliminates the dominant CPU
+        // cost on rapid filter/sort interactions. The dashboard tile path
+        // still passes through the legacy enrich + relative-scorer flow.
+        let enriched
+        if (this.classifier) {
+            enriched = this.rows
+            for (const r of enriched) r.score = r.dealScore
+        } else {
+            enriched = this._enrichDeal(this._enrichFamily(this.rows))
+        }
         const filteredRows = this._applyFilters(enriched)
-        const scoredRows = scoringActive ? this._scoreRows(filteredRows) : filteredRows
+        const useRelativeScorer = scoringActive && !this.classifier
+        const scoredRows = useRelativeScorer ? this._scoreRows(filteredRows) : filteredRows
 
         // Default to sorting by Score when scoring is active and the user
         // hasn't picked a different column yet.
@@ -109,6 +163,7 @@ class MarketScanResultsTable {
 
         const table = document.createElement("table")
         table.className = "table table-bordered table-striped table-hover"
+            + (this.narrowMode ? " narrow" : "")
         table.id = "aes-marketScan-resultsTable"
 
         const thead = document.createElement("thead")
@@ -163,6 +218,8 @@ class MarketScanResultsTable {
                     MarketScanResultsTable._renderMaintCell(td, row)
                 } else if (col.renderer === "fleetBadge") {
                     MarketScanResultsTable._renderFleetCell(td, row)
+                } else if (col.renderer === "dealBadge") {
+                    MarketScanResultsTable._renderDealCell(td, row)
                 } else if (col.currency) {
                     if (value === null || value === undefined || value === "") {
                         td.innerText = "—"
@@ -193,6 +250,9 @@ class MarketScanResultsTable {
     }
 
     _scoringActive() {
+        // Classifier always activates the score column — it produces a score
+        // for every row that has any input signal at all.
+        if (this.classifier) return true
         if (!this.scoring) return false
         for (const f of MarketScanResultsTable.scoringFields()) {
             if (this.scoring[f.field] && this.scoring[f.field].enabled) return true
@@ -201,9 +261,19 @@ class MarketScanResultsTable {
     }
 
     _activeColumns(scoringActive) {
-        const cols = MarketScanResultsTable.columns().slice()
-        if (scoringActive) {
-            cols.unshift({field: "score", label: "Score", align: "right", number: true, defaultDir: -1})
+        let cols = MarketScanResultsTable.columns().slice()
+        if (this.classifier) {
+            // Score column reads from dealScore (mapped to `score` in _draw).
+            // Class badge sits at position 0 so the strongest signal — the
+            // bucket — is the leftmost cell after the family rail.
+            cols.unshift({field: "score", label: "Score", align: "right",
+                          number: true, defaultDir: -1})
+            cols.unshift({field: "dealClass", label: "Class",
+                          renderer: "dealBadge", sortKey: "dealScore",
+                          defaultDir: -1, csv: r => r.dealLabel || ""})
+        } else if (scoringActive) {
+            cols.unshift({field: "score", label: "Score", align: "right",
+                          number: true, defaultDir: -1})
         }
         // When the user has a Route Assistant hub published, name it in
         // the Route-fit header so the count is unambiguous about which
@@ -212,6 +282,15 @@ class MarketScanResultsTable {
         if (hub) {
             const fit = cols.find(c => c.field === "routeFitLabel")
             if (fit) fit.label = "Route-fit (" + hub + ")"
+        }
+        if (this.narrowMode) {
+            const hide = new Set([
+                "cargoCapacity", "paxSatisfaction",
+                "leasingRate", "speed",
+                "seatKmYearCost", "breakEvenDays",
+                "currentBid"
+            ])
+            cols = cols.filter(c => !hide.has(c.field))
         }
         return cols
     }
@@ -596,6 +675,25 @@ class MarketScanResultsTable {
         pill.style.fontSize     = "85%"
         pill.style.fontWeight   = "600"
         td.append(pill)
+    }
+
+    /**
+     * Deal-class badge — Steal/Great/Good/Fair/Pass with the class color from
+     * the classifier. Tooltip lists the rationale chips so the user can see
+     * *why* the row landed where it did without opening the side panel.
+     */
+    static _renderDealCell(td, row) {
+        if (!row || !row.dealClass) { td.innerText = "—"; return }
+        const pill = document.createElement("span")
+        pill.textContent = row.dealLabel || row.dealClass
+        pill.style.cssText = "display:inline-block;padding:2px 8px;border-radius:10px;"
+            + "background:" + (row.dealColor || "#666") + ";"
+            + "color:#fff;font-size:85%;font-weight:700;"
+            + "text-transform:uppercase;letter-spacing:0.04em;"
+        td.append(pill)
+        if (row.dealReasons && row.dealReasons.length) {
+            td.title = row.dealReasons.join(" · ")
+        }
     }
 
     /**

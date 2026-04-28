@@ -61,6 +61,119 @@ class MarketScanDealMetrics {
     }
 
     /**
+     * Monthly lease payment scraped from the offer. AS publishes leases as a
+     * monthly figure, so no unit conversion. Returns null when the row has
+     * no lease offer or the rate is zero/non-finite.
+     */
+    static monthlyLeasePayment(row) {
+        const r = numOrNull(row && row.leasingRate)
+        return r !== null && r > 0 ? r : null
+    }
+
+    /**
+     * Picks the cost basis for "$/seat"-style metrics. With leaseFirst on
+     * AND a lease offer present: returns {cost: monthly × termMonths,
+     * kind: "lease", monthly}. Else falls back to the purchase price (when
+     * fallbackPurchase is on; otherwise returns null so the row is scored
+     * without a price component).
+     */
+    static effectiveAcquisitionCost(row, leaseConfig) {
+        const cfg = leaseConfig || {}
+        if (cfg.leaseFirst !== false) {
+            const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
+            const term    = numOrDefault(cfg.termMonths, 60)
+            if (monthly !== null && term > 0) {
+                return {cost: monthly * term, kind: "lease", monthly: monthly, termMonths: term}
+            }
+        }
+        if (cfg.fallbackPurchase === false) return null
+        const purchase = MarketScanDealMetrics.acquisitionPrice(row)
+        if (purchase === null) return null
+        return {cost: purchase, kind: "purchase"}
+    }
+
+    /**
+     * Lease-equivalent "$/seat" — monthly lease ÷ seats. Lower is better.
+     * Comparable across lease offers; for cross-mode comparison the
+     * classifier scores lease and purchase separately (see priceBasis).
+     */
+    static leasePerSeat(row) {
+        const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
+        const seats   = numOrNull(row && row.seats)
+        if (monthly === null || seats === null || seats <= 0) return null
+        return Math.round(monthly / seats)
+    }
+
+    /**
+     * Lease-mode lifecycle ratio: annual lease cost per seat-km. No
+     * remaining-life term — lease is recurring, you pay per month
+     * regardless of airframe age.
+     *
+     *   value = monthly × 12 / (seats × range)
+     */
+    static leaseSeatKmYearCostBreakdown(row) {
+        const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
+        const seats   = numOrNull(row && row.seats)
+        const range   = numOrNull(row && row.range)
+        if (monthly === null || seats === null || seats <= 0) return null
+        if (range === null || range <= 0) return null
+        const value = Math.round((monthly * 12 / (seats * range)) * 10000) / 10000
+        return {
+            value:   value,
+            monthly: monthly,
+            seats:   seats,
+            range:   range,
+            basis:   "lease"
+        }
+    }
+
+    /**
+     * Fuel cost per seat-km, derived from RouteAssistantFuelBurn.heuristic
+     * + the user's RA fuel price. Lower is better.
+     *
+     *   fuelL/km   = perKmL × ageMult   (cycleL is fixed-per-flight, so
+     *                                    it doesn't enter the per-seat-km
+     *                                    metric — that would skew toward
+     *                                    long-range aircraft)
+     *   fuel$/km   = fuelL/km × priceASc / 100
+     *   per seat   = fuel$/km / seats
+     *
+     *   ageMult    = 1 + (ageYears × fuelAgePenaltyPerYear)
+     *
+     * fuelCtx shape: {fuelPriceASc, fuelAgePenaltyPerYear}. When
+     * RouteAssistantFuelBurn isn't loaded (manifest miswiring), returns
+     * null so the component drops out without breaking the scorer.
+     */
+    static fuelCostPerSeatKm(row, fuelCtx) {
+        if (!row || !fuelCtx) return null
+        if (typeof RouteAssistantFuelBurn === "undefined") return null
+        const seats = numOrNull(row.seats)
+        if (seats === null || seats <= 0) return null
+        const priceASc = numOrNull(fuelCtx.fuelPriceASc)
+        if (priceASc === null || priceASc <= 0) return null
+        const burn = RouteAssistantFuelBurn.heuristic({
+            seats:         row.seats,
+            cargoCapacity: row.cargoCapacity,
+            speed:         row.speed
+        })
+        if (!burn || !isFinite(burn.perKmL)) return null
+        const age      = numOrNull(row.ageYears) || 0
+        const penalty  = numOrDefault(fuelCtx.fuelAgePenaltyPerYear, 0)
+        const ageMult  = 1 + age * penalty
+        const litresPerKm = burn.perKmL * ageMult
+        const dollarsPerKm = litresPerKm * priceASc / 100
+        const value = dollarsPerKm / seats
+        return {
+            value:    Math.round(value * 100000) / 100000,
+            perKmL:   burn.perKmL,
+            cycleL:   burn.cycleL,
+            ageMult:  ageMult,
+            priceASc: priceASc,
+            source:   burn.source
+        }
+    }
+
+    /**
      * AS$ per seat — purchase efficiency. Lower is better.
      */
     static pricePerSeat(row) {
@@ -342,9 +455,14 @@ class MarketScanDealMetrics {
      * the table renderer. Mutates and returns the row for chaining.
      *
      * Decorated keys:
-     *   pricePerSeat        — number | null
+     *   priceBasis          — "lease" | "purchase" | null   (drives reasons)
+     *   pricePerSeat        — number | null   (lease-or-purchase $/seat)
+     *   leasePerSeat        — number | null   (always lease, when available)
+     *   monthlyLease        — number | null   (raw monthly lease, when available)
      *   seatKmYearCost      — number | null
-     *   breakEvenDays       — number | null
+     *   breakEvenDays       — number | null   (days to recoup lease term OR purchase)
+     *   fuelPerSeatKm       — number | null   (AS$/seat-km from heuristic fuel burn)
+     *   fuelBreakdown       — {value, perKmL, cycleL, ageMult, priceASc, source} | null
      *   fleetOwned          — true | false | null   (null = no fleet ctx)
      *   fleetOwnedCount     — number | null
      *   routeFitCount       — number | null         (null = no topRoutes)
@@ -357,16 +475,54 @@ class MarketScanDealMetrics {
      *   maintLevel          — "green" | "amber" | "red" | null
      *   maintLabel          — "Fresh" | "Mid-life" | "Heavy" | null
      *   maintColor          — hex string | null
+     *
+     * ctx fields:
+     *   economics       — RouteAssistant economics block
+     *   fleetByType     — Map | object keyed by typeId
+     *   topRoutes       — array for route-fit
+     *   routeFitConfig  — {paxSeatsPerScorePoint, weeklyDemandPerScorePoint}
+     *   leaseConfig     — {leaseFirst, termMonths, fallbackPurchase}
+     *   fuelCtx         — {fuelPriceASc, fuelAgePenaltyPerYear}
      */
     static decorate(row, ctx) {
         ctx = ctx || {}
-        row.pricePerSeat   = MarketScanDealMetrics.pricePerSeat(row)
-        const seatKm = MarketScanDealMetrics.seatKmYearCostBreakdown(row)
-        row.seatKmYearCost      = seatKm ? seatKm.value : null
-        row.seatKmYearBreakdown = seatKm
-        const be = MarketScanDealMetrics.daysToBreakEvenBreakdown(row, ctx.economics)
-        row.breakEvenDays      = be ? be.value : null
-        row.breakEvenBreakdown = be
+        const leaseConfig = ctx.leaseConfig || null
+
+        // Pick basis once and use it everywhere downstream so the row reads
+        // coherently — no half-lease half-purchase rows.
+        const basis = MarketScanDealMetrics.effectiveAcquisitionCost(row, leaseConfig)
+        row.priceBasis  = basis ? basis.kind : null
+        row.leasePerSeat = MarketScanDealMetrics.leasePerSeat(row)
+        row.monthlyLease = MarketScanDealMetrics.monthlyLeasePayment(row)
+
+        if (basis && basis.kind === "lease") {
+            row.pricePerSeat = row.leasePerSeat
+            const seatKm = MarketScanDealMetrics.leaseSeatKmYearCostBreakdown(row)
+            row.seatKmYearCost      = seatKm ? seatKm.value : null
+            row.seatKmYearBreakdown = seatKm
+            // Lease-mode payback: how many days to recoup the SIGNED lease
+            // term (monthly × termMonths). Reuses the existing daily-profit
+            // model via a synthetic price input.
+            const synth = Object.assign({}, row, {
+                nextBid:           basis.cost,
+                immediatePurchase: null
+            })
+            const be = MarketScanDealMetrics.daysToBreakEvenBreakdown(synth, ctx.economics)
+            row.breakEvenDays      = be ? be.value : null
+            row.breakEvenBreakdown = be
+        } else {
+            row.pricePerSeat = MarketScanDealMetrics.pricePerSeat(row)
+            const seatKm = MarketScanDealMetrics.seatKmYearCostBreakdown(row)
+            row.seatKmYearCost      = seatKm ? seatKm.value : null
+            row.seatKmYearBreakdown = seatKm
+            const be = MarketScanDealMetrics.daysToBreakEvenBreakdown(row, ctx.economics)
+            row.breakEvenDays      = be ? be.value : null
+            row.breakEvenBreakdown = be
+        }
+
+        const fuel = MarketScanDealMetrics.fuelCostPerSeatKm(row, ctx.fuelCtx)
+        row.fuelPerSeatKm    = fuel ? fuel.value : null
+        row.fuelBreakdown    = fuel
 
         const synergy = MarketScanDealMetrics.fleetSynergy(row, ctx.fleetByType)
         row.fleetOwned       = synergy ? synergy.owned : null

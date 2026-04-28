@@ -59,13 +59,51 @@ class UsedAircraftPresets {
                 breakEvenDays:     {enabled: false, weight: 1, min: null, max: null},
                 routeFitCount:     {enabled: false, weight: 1, min: null, max: null}
             },
+            // User-tunable weights for the absolute deal classifier (in-page
+            // market panel). Numbers are relative — what matters is the share
+            // each component takes of the total. `enabled` lets a user zero
+            // out a component without losing its weight value.
+            classifierWeights: {
+                pricePerSeat:    35,
+                seatKmYearCost:  15,
+                fuelEfficiency:  20,
+                condition:       10,
+                age:             10,
+                expiry:           5,
+                fleetSynergy:     5,
+                routeFit:        10,
+                enabled: {
+                    pricePerSeat: true, seatKmYearCost: true, fuelEfficiency: true,
+                    condition: true, age: true, expiry: true, fleetSynergy: true, routeFit: true
+                }
+            },
+            // Lease-economics handling. When leaseFirst is on, $/seat and
+            // payback math use monthly lease × termMonths as the cost basis;
+            // rows without a lease offer fall back to purchase math when
+            // fallbackPurchase is on (otherwise they're scored without a
+            // pricePerSeat component at all).
+            leaseConfig: {
+                leaseFirst:       true,
+                termMonths:       60,
+                fallbackPurchase: true
+            },
+            // Fuel-efficiency component knobs. The classifier reuses
+            // RouteAssistantFuelBurn.heuristic — overrideFuelPriceASc lets a
+            // user pin the fuel price (cents/litre) instead of pulling it
+            // from RouteAssistantSettings.economics.
+            fuelConfig: {
+                enabled:              true,
+                overrideFuelPriceASc: null
+            },
             // Persisted collapse state for the dashboard panel sections.
             // Filters open by default since they're high-utility; advanced and
-            // queue tucked away by default.
+            // queue tucked away by default. scoringOpen is the in-page market
+            // panel's Scoring section.
             uiState: {
                 advancedOpen: false,
                 filtersOpen:  true,
-                queueOpen:    false
+                queueOpen:    false,
+                scoringOpen:  false
             }
         }
     }
@@ -93,6 +131,17 @@ class UsedAircraftPresets {
                 stored.scoring[k] || {}
             )
         }
+        // New (lease-first rework) blocks. Sub-merge so older blobs missing
+        // these keys get the defaults without overwriting any partial overrides.
+        block.classifierWeights = Object.assign(
+            {}, defaults.classifierWeights, stored.classifierWeights || {}
+        )
+        block.classifierWeights.enabled = Object.assign(
+            {}, defaults.classifierWeights.enabled,
+            (stored.classifierWeights && stored.classifierWeights.enabled) || {}
+        )
+        block.leaseConfig = Object.assign({}, defaults.leaseConfig, stored.leaseConfig || {})
+        block.fuelConfig  = Object.assign({}, defaults.fuelConfig,  stored.fuelConfig  || {})
         if (!settings.usedAircraftScanner) {
             settings.usedAircraftScanner = block
             await chrome.storage.local.set({settings: settings})
