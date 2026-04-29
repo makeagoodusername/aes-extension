@@ -54,8 +54,20 @@
             card.appendChild(H.row("Auto-propose",      s.autoProposeEnabled ? "ON" : "off"));
             card.appendChild(H.row("Apply guard",       s.applyGuardEnabled === false ? "off" : "ON"));
             card.appendChild(H.row("Min ORS target",    s.minOrsTarget != null ? String(s.minOrsTarget) : "—"));
-            card.appendChild(H.row("Watchlist size",    (window.RouteAssistantWatchlist && typeof window.RouteAssistantWatchlist.size === "function")
-                ? window.RouteAssistantWatchlist.size() : "—"));
+            const watchlistRow = H.row("Watchlist size", "…");
+            card.appendChild(watchlistRow);
+            if (window.RouteAssistantWatchlistStore && typeof window.RouteAssistantWatchlistStore.loadKeys === "function") {
+                Promise.resolve(window.RouteAssistantWatchlistStore.loadKeys()).then(function (keys) {
+                    const valueCell = watchlistRow.lastElementChild;
+                    if (valueCell) valueCell.textContent = String((keys && keys.size) || 0);
+                }).catch(function () {
+                    const valueCell = watchlistRow.lastElementChild;
+                    if (valueCell) valueCell.textContent = "—";
+                });
+            } else {
+                const valueCell = watchlistRow.lastElementChild;
+                if (valueCell) valueCell.textContent = "—";
+            }
 
             const note = document.createElement("div");
             note.style.cssText = "font-size:11px;color:#7A6F66;margin-top:10px;line-height:1.5";
