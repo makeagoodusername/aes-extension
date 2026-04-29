@@ -161,6 +161,8 @@ in:  competitorIntel:updated    → invalidate proposed plan cache
 ## Part III — The slices
 
 > **Status legend** — ✅ shipped (this branch) · 🟡 in-progress · ⬜ planned
+>
+> _Status reconciled 2026-04-29 against `NORTH-STAR.md` §7 Epoch tables and code in `modules/strategy/`. 🟡 = deliverable file present on this branch but not yet committed, or committed without full runtime wiring (e.g. missing from `manifest.json`)._
 
 ### Slice 1 ✅ Strategy Context
 
@@ -199,7 +201,7 @@ in:  competitorIntel:updated    → invalidate proposed plan cache
 
 ---
 
-### Slice 3 ⬜ Fleet Co-Allocator
+### Slice 3 ✅ Fleet Co-Allocator
 
 **Goal:** lift the per-aircraft greedy allocator to fleet-level co-allocation that decides simultaneously: which aircraft flies which routes, with which service profile, at which price, with which crew prerequisites.
 
@@ -477,7 +479,7 @@ async function learn(opts) {
 
 ---
 
-### Slice 7 ⬜ Service Profile Auto-Tuner
+### Slice 7 🟡 Service Profile Auto-Tuner
 
 **Goal:** the engine proposes service-profile changes that maximize ORS-weighted profit.
 
@@ -500,7 +502,7 @@ async function learn(opts) {
 
 ---
 
-### Slice 8 ⬜ Crew Pay & Hiring Auto-Tuner
+### Slice 8 🟡 Crew Pay & Hiring Auto-Tuner
 
 **Goal:** model the user's stated insight — *"personnel changes that might affect the ORS system by how the perception of the company changes with how much employees are payed"*.
 
@@ -521,7 +523,7 @@ async function learn(opts) {
 
 ---
 
-### Slice 9 ⬜ Inventory Pricing Auto-Tuner
+### Slice 9 🟡 Inventory Pricing Auto-Tuner
 
 **Goal:** dynamic pricing across the network. User said: *"the demand and therefore price is considered along with the competitors."*
 
@@ -542,7 +544,7 @@ async function learn(opts) {
 
 ---
 
-### Slice 10 ⬜ Competitor Response Engine
+### Slice 10 ✅ Competitor Response Engine
 
 **Goal:** the user said *"the competitors who are present or not present to define the strategy"* and *"dynamic positioning of the various companies"*. Slice 10 adds **active reaction** to competitor moves.
 
@@ -566,7 +568,7 @@ async function learn(opts) {
 
 ---
 
-### Slice 11 ⬜ Cross-Airline / Sister Coordination
+### Slice 11 🟡 Cross-Airline / Sister Coordination
 
 **Goal:** the user said *"the dynamic positioning of the various companies that hopefully will be integrated into the rest of the management of these different companies in the same game world"*.
 
@@ -591,7 +593,7 @@ async function learn(opts) {
 
 ---
 
-### Slice 12 ⬜ Alliance & IL Codeshare Optimization
+### Slice 12 🟡 Alliance & IL Codeshare Optimization
 
 **Goal:** maximize feed traffic via interline / alliance partnerships.
 
@@ -614,7 +616,7 @@ async function learn(opts) {
 
 ---
 
-### Slice 13 ⬜ Fleet Renewal Planner
+### Slice 13 🟡 Fleet Renewal Planner
 
 **Goal:** decide which aircraft to lease, buy, retire, or convert.
 
@@ -656,7 +658,7 @@ async function learn(opts) {
 
 ---
 
-### Slice 15 ⬜ Backtesting Harness
+### Slice 15 🟡 Backtesting Harness
 
 **Goal:** validate the engine against history before letting it touch the future.
 
@@ -738,7 +740,7 @@ See `HANDOVER.md §1 "Strategy Slice 17 — Risk Profiles + User Tuning"` for fu
 
 ---
 
-### Slice 19 ⬜ Marketing & Brand Investment
+### Slice 19 🟡 Marketing & Brand Investment
 
 **Goal:** if AS exposes marketing budgets (it does, per region), the engine optimizes spend.
 
