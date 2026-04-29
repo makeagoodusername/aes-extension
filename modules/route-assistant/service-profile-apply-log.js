@@ -50,6 +50,14 @@ class RouteAssistantServiceProfileApplyLog {
         const cleaned = RouteAssistantServiceProfileApplyLog._cleanRecord(record)
         cleaned.ts = ts
         cleaned.id = cleaned.id || RouteAssistantServiceProfileApplyLog._newId(ts)
+        // Phase A4 — stamp accountId so a future split-by-account migration
+        // doesn't have to guess.
+        if (cleaned.accountId == null
+                && window.AesAccountKey
+                && typeof window.AesAccountKey.currentAccountIdSync === "function") {
+            const acctId = window.AesAccountKey.currentAccountIdSync()
+            if (acctId) cleaned.accountId = acctId
+        }
 
         const got = await chrome.storage.local.get([
             RouteAssistantServiceProfileApplyLog.GLOBAL_KEY
@@ -74,9 +82,16 @@ class RouteAssistantServiceProfileApplyLog {
         if (!merged) entries.unshift(cleaned)
         if (entries.length > this.limit) entries = entries.slice(0, this.limit)
 
-        await chrome.storage.local.set({
+        const writes = {
             [RouteAssistantServiceProfileApplyLog.GLOBAL_KEY]: {entries, updatedAt: ts}
-        })
+        }
+        // Phase A4 — dual-write to account-scoped key alongside legacy.
+        if (cleaned.accountId) {
+            const scoped = RouteAssistantServiceProfileApplyLog.GLOBAL_KEY
+                + ":acct:" + cleaned.accountId
+            writes[scoped] = {entries, updatedAt: ts}
+        }
+        await chrome.storage.local.set(writes)
         return cleaned
     }
 

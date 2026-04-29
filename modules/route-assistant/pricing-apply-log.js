@@ -90,6 +90,16 @@ class RouteAssistantPricingApplyLog {
         const cleaned = RouteAssistantPricingApplyLog._cleanRecord(record)
         cleaned.ts = ts
         cleaned.id = cleaned.id || RouteAssistantPricingApplyLog._newId(ts)
+        // Phase A4 — stamp accountId on every record so a future migration
+        // can split legacy entries without guessing. Best-effort: when the
+        // bootstrap hasn't resolved yet, accountId stays null and the
+        // splitter will skip those rows.
+        if (cleaned.accountId == null
+                && window.AesAccountKey
+                && typeof window.AesAccountKey.currentAccountIdSync === "function") {
+            const acctId = window.AesAccountKey.currentAccountIdSync()
+            if (acctId) cleaned.accountId = acctId
+        }
 
         const routeKey = RouteAssistantPricingApplyLog._routeKey(cleaned.hub, cleaned.dest)
         const got = await chrome.storage.local.get([
@@ -129,6 +139,17 @@ class RouteAssistantPricingApplyLog {
         const writes = {
             [RouteAssistantPricingApplyLog.GLOBAL_KEY]: {entries, updatedAt},
             [routeKey]: {hub: cleaned.hub, dest: cleaned.dest, entries: routeEntries, updatedAt}
+        }
+        // Phase A4 — dual-write to account-scoped keys. Legacy keys remain
+        // the read source; the scoped keys give the migration's second
+        // slice a clean per-account history to switch readers to.
+        if (cleaned.accountId) {
+            const scopedGlobal = RouteAssistantPricingApplyLog.GLOBAL_KEY
+                + ":acct:" + cleaned.accountId
+            const scopedRoute = scopedGlobal + ":"
+                + RouteAssistantPricingApplyLog._pairKey(cleaned.hub, cleaned.dest)
+            writes[scopedGlobal] = {entries, updatedAt}
+            writes[scopedRoute]  = {hub: cleaned.hub, dest: cleaned.dest, entries: routeEntries, updatedAt}
         }
         await chrome.storage.local.set(writes)
         return cleaned
