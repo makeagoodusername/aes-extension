@@ -325,23 +325,62 @@
         catch (_) { return null }
     }
 
+    async function _loadLegacy() {
+        const data = await chrome.storage.local.get(["settings"])
+        const settings = data.settings || {}
+        const id = _accountId()
+        let block = null
+        if (id && settings.acct && settings.acct[id] && typeof settings.acct[id] === "object") {
+            if (settings.acct[id].strategy && typeof settings.acct[id].strategy === "object") {
+                block = settings.acct[id].strategy
+            }
+        }
+        if (!block) block = settings.strategy || null
+        return _merge(block)
+    }
+
+    async function _layeredEnabled() {
+        try {
+            return !!(window.AesStrategyLayered &&
+                     typeof window.AesStrategyLayered.featureEnabled === "function" &&
+                     await window.AesStrategyLayered.featureEnabled())
+        } catch (_) { return false }
+    }
+
     async function load() {
         try {
-            const data = await chrome.storage.local.get(["settings"])
-            const settings = data.settings || {}
-            const id = _accountId()
-            let block = null
-            if (id && settings.acct && settings.acct[id] && typeof settings.acct[id] === "object") {
-                if (settings.acct[id].strategy && typeof settings.acct[id].strategy === "object") {
-                    block = settings.acct[id].strategy
-                }
+            if (await _layeredEnabled()) {
+                const r = await window.AesStrategyLayered.resolveEffectiveStrategy({accountId: _accountId()})
+                if (r && r.effective) return _merge(r.effective)
             }
-            if (!block) block = settings.strategy || null
-            return _merge(block)
+            return await _loadLegacy()
         } catch (e) {
             console.warn("[AesStrategySettings] load failed", e)
             return _defaults()
         }
+    }
+
+    /**
+     * Slice 1 — context-aware effective strategy. Callers that already
+     * know the route hub/dest (and optionally an aircraftId) get the
+     * fully-resolved block (family → account → division → fleet → route).
+     * With the kill switch off this is identical to load().
+     */
+    async function loadForRoute(hub, dest, aircraftId) {
+        try {
+            if (await _layeredEnabled()) {
+                const r = await window.AesStrategyLayered.resolveEffectiveStrategy({
+                    accountId:  _accountId(),
+                    hub:        hub        || null,
+                    dest:       dest       || null,
+                    aircraftId: aircraftId || null
+                })
+                if (r && r.effective) return _merge(r.effective)
+            }
+        } catch (e) {
+            console.warn("[AesStrategySettings] loadForRoute failed", e)
+        }
+        return load()
     }
 
     async function save(partial) {
@@ -372,6 +411,7 @@
 
     window.AesStrategySettings = {
         load:           load,
+        loadForRoute:   loadForRoute,
         save:           save,
         defaults:       _defaults,
         resolveTier:    resolveTier,
@@ -443,6 +483,20 @@
                 "[smoke] serviceCosts negative category weight rejects to default")
             console.assert(clamped.serviceCosts.classMultipliers.F !== -1,
                 "[smoke] serviceCosts negative class mul rejected")
+            // Slice 1 layered façade smoke — loadForRoute exists and,
+            // with the kill switch off, equals load(). When on, the
+            // resolver runs and the result still passes through _merge
+            // so the shape contract is invariant.
+            console.assert(typeof loadForRoute === "function",
+                "[smoke] loadForRoute exposed on AesStrategySettings")
+            ;(async function () {
+                try {
+                    const a = await load()
+                    const b = await loadForRoute(null, null)
+                    console.assert(JSON.stringify(a) === JSON.stringify(b),
+                        "[smoke] loadForRoute equals load when no route context (layered off)")
+                } catch (_) {}
+            })()
         }
     } catch (_) { /* never let smoke break the page */ }
 })()
