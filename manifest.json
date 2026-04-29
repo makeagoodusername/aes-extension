@@ -56,6 +56,8 @@
                 "modules/_shared/account-registry.js",
                 "modules/_shared/account-scoped-key.js",
                 "modules/_shared/migrate-legacy.js",
+                "modules/_shared/data-bus.js",
+                "modules/_shared/data-bus-topics.js",
                 "modules/_shared/utils.js",
                 "modules/_shared/settings-bridge.js",
                 "modules/_shared/prefix-store.js",
