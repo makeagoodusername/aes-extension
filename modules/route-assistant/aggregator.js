@@ -21,6 +21,16 @@
  *                   Shape: {date: {<dateYYYYMMDD>: {date, schedule:
  *                     [{origin, destination, flightNumber: {<n>: {paxFreq,
  *                     cargoFreq, ...}}}]}}}
+ *   afpSchedules  — array of per-aircraft AFP schedule records from
+ *                   `aircraftFlightPlan:schedule:<server>:<aircraftId>`
+ *                   keys (Track 7 / AesAfpScheduleStore). Each record
+ *                   carries `legs[]` with `{origin, destination, flightCode}`.
+ *                   The legacy ownSchedule is a manual snapshot that goes
+ *                   stale; AFP records are written live whenever the user
+ *                   visits an AFP page. Whichever source shows MORE weekly
+ *                   freq for a given (hub, dest) pair wins per-pair, so a
+ *                   route the user has built is correctly marked "operating"
+ *                   even if only one of the two sources knows about it.
  *   fleetContext  — optional Phase 2 input for aircraft-aware columns:
  *                   {selectedSpec, fleetSpecs, falloffPct, economics, overrides}
  *                     selectedSpec — chosen aircraft spec to evaluate every
@@ -66,6 +76,18 @@ class RouteAssistantAggregator {
         const serviceProfilesDef  = (input && input.serviceProfiles) || null
         const fleet               = (input && input.fleet) || null
         const ownByDest           = RouteAssistantAggregator._collectOwnFreq(input && input.ownSchedule, hubIata)
+        const afpByDest           = RouteAssistantAggregator._collectAfpFreq(input && input.afpSchedules, hubIata)
+        // Per-pair max merge — either source can undercount (legacy is a
+        // manual snapshot, AFP only covers aircraft the user has visited),
+        // so taking the max of each freq flips `operating` correctly when
+        // ANY source shows the route is flown. This is the fix for the
+        // "every route shows NEW" symptom: AFP-only users had ownTotalFreq=0.
+        for (const [dest, afp] of afpByDest) {
+            const cur = ownByDest.get(dest) || {paxFreq: 0, cargoFreq: 0}
+            cur.paxFreq   = Math.max(cur.paxFreq   || 0, afp.paxFreq   || 0)
+            cur.cargoFreq = Math.max(cur.cargoFreq || 0, afp.cargoFreq || 0)
+            ownByDest.set(dest, cur)
+        }
         const fleetCtx            = (input && input.fleetContext) || null
         const interlineByPair     = (input && input.interlineByPair) || null
 
@@ -90,6 +112,7 @@ class RouteAssistantAggregator {
                 airportId:     demand ? (demand.airportId || null) : null,
                 distanceKm:    distanceKm,
                 airlineCount:  Array.isArray(r.airlines) ? r.airlines.length : null,
+                airlines:      Array.isArray(r.airlines) ? r.airlines.slice() : null,
                 weeklyFlights: weeklyFlights || null,
                 seatsPerWeek:  typeof r.seatsPerWeek === "number" ? r.seatsPerWeek : null,
                 paxScore:      paxScore,
@@ -684,6 +707,38 @@ class RouteAssistantAggregator {
                 acc.cargoFreq += Number(fn.cargoFreq) || 0
             }
             out.set(dest, acc)
+        }
+        return out
+    }
+
+    /**
+     * Per-destination weekly frequency aggregated from per-aircraft AFP
+     * schedule records (the modern source written live whenever the user
+     * visits an AFP page). `afpSchedules` is an array of records loaded
+     * from `aircraftFlightPlan:schedule:<server>:<aircraftId>` — each
+     * carries a `legs[]` array. We only count legs whose `origin` matches
+     * the current hub (an aircraft based at hub X but flying through hub Y
+     * still has Y→Z legs that count for hub Y).
+     *
+     * AFP records carry no pax/cargo distinction per leg, so every leg
+     * counts as paxFreq. Downstream code that reads `ownTotalFreq` is
+     * correct either way; the rare consumer that needs a pax/cargo split
+     * gets pax-only from AFP and the legacy schedule's split when it's
+     * also present (max merge in `buildRouteRows`).
+     */
+    static _collectAfpFreq(afpSchedules, hubIata) {
+        const out = new Map()
+        if (!Array.isArray(afpSchedules) || !afpSchedules.length || !hubIata) return out
+        for (const rec of afpSchedules) {
+            if (!rec || !Array.isArray(rec.legs)) continue
+            for (const leg of rec.legs) {
+                if (!leg || !leg.origin || !leg.destination) continue
+                if (String(leg.origin).toUpperCase() !== hubIata) continue
+                const dest = String(leg.destination).toUpperCase()
+                const acc  = out.get(dest) || {paxFreq: 0, cargoFreq: 0}
+                acc.paxFreq += 1
+                out.set(dest, acc)
+            }
         }
         return out
     }

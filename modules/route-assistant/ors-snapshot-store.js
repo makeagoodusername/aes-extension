@@ -130,6 +130,30 @@ class RouteAssistantOrsSnapshotStore {
     }
 
     /**
+     * Per-class competitor price timeseries built from the snapshot history.
+     * Returns `[{ts, median, min, max, count}, ...]` sorted ascending by ts.
+     * Skips snapshots whose class has no competitor nonstop. Pass cls as
+     * "ECONOMY" / "BUSINESS" / "FIRST" / "CARGO".
+     *
+     * Cheap — walks the full record once per snapshot but reuses the same
+     * stats helper as the summary, so the data shape matches what
+     * bulkList consumers already see.
+     */
+    static async getCompetitorPriceTimeseries(hub, dest, cls) {
+        const rec = await RouteAssistantOrsSnapshotStore.getRecord(hub, dest)
+        if (!rec || !Array.isArray(rec.snapshots)) return []
+        const out = []
+        for (const s of rec.snapshots) {
+            if (!s || !s.ts || !s.record || !s.record.byClass) continue
+            const stats = RouteAssistantOrsSnapshotStore._competitorPriceStats(s.record.byClass[cls])
+            if (!stats.count) continue
+            out.push({ts: s.ts, median: stats.median, min: stats.min, max: stats.max, count: stats.count})
+        }
+        out.sort((a, b) => a.ts - b.ts)
+        return out
+    }
+
+    /**
      * Archive one ORS scrape result as a snapshot. Caller passes the live
      * record (typically straight from `RouteAssistantOrsScraper.loadRecord`
      * or the result of `scrape()`); we deep-clone so subsequent mutations
@@ -288,6 +312,38 @@ class RouteAssistantOrsSnapshotStore {
     }
 
     /**
+     * Per-class competitor pricing stats from the connection list — median /
+     * min / max across nonstop competitor (isOurs=false on every leg) prices.
+     * Returns nulls when no competitor nonstop is in the cache. Multi-leg
+     * connections are skipped: their `totalPrice` aggregates legs flown by
+     * different carriers, so it can't be cleanly attributed to one competitor
+     * for time-series modeling.
+     */
+    static _competitorPriceStats(classRec) {
+        const out = {median: null, min: null, max: null, count: 0}
+        if (!classRec || !Array.isArray(classRec.connections)) return out
+        const prices = []
+        for (const c of classRec.connections) {
+            const flightLegs = (c.legs || []).filter(l => !l.isGround)
+            if (!flightLegs.length || flightLegs.length > 1) continue
+            if (flightLegs[0].isOurs) continue
+            const p = Number(c.totalPrice)
+            if (!isFinite(p) || p <= 0) continue
+            prices.push(p)
+        }
+        if (!prices.length) return out
+        prices.sort((a, b) => a - b)
+        const mid = Math.floor(prices.length / 2)
+        out.count  = prices.length
+        out.min    = prices[0]
+        out.max    = prices[prices.length - 1]
+        out.median = (prices.length % 2)
+            ? prices[mid]
+            : Math.round((prices[mid - 1] + prices[mid]) / 2)
+        return out
+    }
+
+    /**
      * Compact summary for the lightweight `list()` and `bulkList()` outputs.
      * Pulls per-class rank + rating + the top context highlights so a
      * snapshots-browser can render rows without paying full-record cost.
@@ -304,6 +360,7 @@ class RouteAssistantOrsSnapshotStore {
         if (rec.byClass && typeof rec.byClass === "object") {
             for (const cls in rec.byClass) {
                 const c = rec.byClass[cls] || {}
+                const compPrices = RouteAssistantOrsSnapshotStore._competitorPriceStats(c)
                 out.byClass[cls] = {
                     rankAny:              c.rankAny              != null ? c.rankAny              : null,
                     rankFirstLegOurs:     c.rankFirstLegOurs     != null ? c.rankFirstLegOurs     : null,
@@ -311,7 +368,11 @@ class RouteAssistantOrsSnapshotStore {
                     ourTopRating:         c.ourTopRating         != null ? c.ourTopRating         : null,
                     topCompetitorRating:  c.topCompetitorRating  != null ? c.topCompetitorRating  : null,
                     ratingGapToTop:       c.ratingGapToTop       != null ? c.ratingGapToTop       : null,
-                    totalConnections:     c.totalConnections     != null ? c.totalConnections     : 0
+                    totalConnections:     c.totalConnections     != null ? c.totalConnections     : 0,
+                    competitorPriceMedian: compPrices.median,
+                    competitorPriceMin:    compPrices.min,
+                    competitorPriceMax:    compPrices.max,
+                    competitorPriceCount:  compPrices.count
                 }
                 out.totalConnections = Math.max(out.totalConnections, out.byClass[cls].totalConnections || 0)
             }

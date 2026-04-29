@@ -130,6 +130,227 @@ class RouteAssistantWaveEditor {
     }
 
     /**
+     * Phase 3 Lane A — duplicate `waveId` and append the clone with all
+     * times shifted by `staggerMin` (default 180 ≈ 3h). composition,
+     * subBands, byDay, priority, geo, kin, preferredAircraft, etc all
+     * deep-copy. The clone gets a fresh wave id so wave-overrides aren't
+     * accidentally inherited.
+     */
+    static async cloneWave(presetId, waveId, staggerMin) {
+        const block = await SchedulePresets.load()
+        const preset = block.presets.find(p => p.id === presetId)
+        if (!preset) return null
+        const src = preset.waves.find(w => w.id === waveId)
+        if (!src) return null
+        const stagger = isFinite(Number(staggerMin)) ? Number(staggerMin) : 180
+        const dup = JSON.parse(JSON.stringify(src))
+        // Fresh id — SchedulePresets.newWave generates a UUIDish.
+        const tmp = SchedulePresets.newWave(src.label || "Wave")
+        dup.id = tmp.id
+        dup.label = (src.label || "Wave") + " (copy)"
+        dup.arrivalWindow   = RouteAssistantWaveEditor._shiftWindow(src.arrivalWindow,   stagger)
+        dup.departureWindow = RouteAssistantWaveEditor._shiftWindow(src.departureWindow, stagger)
+        if (Array.isArray(src.subBands)) {
+            dup.subBands = src.subBands.map(sb => Object.assign({}, sb, {
+                id: (typeof tmp.id === "string" ? tmp.id : "sb") + "-" + Math.random().toString(36).slice(2, 6),
+                start: RouteAssistantWaveEditor._shiftHHMM(sb.start, stagger),
+                end:   RouteAssistantWaveEditor._shiftHHMM(sb.end,   stagger)
+            }))
+        }
+        // Reset wave-override-touching state so clones land clean.
+        dup.archivedAt = null
+        preset.waves.push(dup)
+        await SchedulePresets.update(presetId, {waves: preset.waves})
+        RouteAssistantWaveEditor._emitPresetUpdated(preset)
+        try { if (window.CentralHubBus) window.CentralHubBus.emit("waveeditor:wave-cloned",
+            {presetId, sourceId: waveId, cloneId: dup.id}) } catch (_) {}
+        return preset
+    }
+
+    /**
+     * Phase 3 Lane A — toggle archivedAt on a wave. Archived waves are
+     * filtered out of new placement assignment by wave-overlay's existing
+     * `_buildAssignment` logic; existing forced-placement overrides stay
+     * visible so the user can release them manually.
+     *
+     * Pass `archived: true` to archive, `false` to un-archive. Default
+     * toggle when `archived` is undefined.
+     */
+    static async archiveWave(presetId, waveId, archived) {
+        const block = await SchedulePresets.load()
+        const preset = block.presets.find(p => p.id === presetId)
+        if (!preset) return null
+        const wave = preset.waves.find(w => w.id === waveId)
+        if (!wave) return null
+        const wantArchived = (typeof archived === "boolean") ? archived : !wave.archivedAt
+        wave.archivedAt = wantArchived ? Date.now() : null
+        await SchedulePresets.update(presetId, {waves: preset.waves})
+        RouteAssistantWaveEditor._emitPresetUpdated(preset)
+        try { if (window.CentralHubBus) window.CentralHubBus.emit("waveeditor:wave-archived",
+            {presetId, waveId, archived: wantArchived}) } catch (_) {}
+        return preset
+    }
+
+    /**
+     * Phase 3 Lane A — split a wave at HH:MM. Produces two sequential
+     * waves: the first keeps the start half (arr.start..at, dep.start..at)
+     * and the second takes the end half. Composition splits proportionally
+     * by total window minutes. subBands are partitioned by start time.
+     */
+    static async splitWave(presetId, waveId, atHHMM) {
+        if (!/^\d{2}:\d{2}$/.test(String(atHHMM))) return null
+        const block = await SchedulePresets.load()
+        const preset = block.presets.find(p => p.id === presetId)
+        if (!preset) return null
+        const idx = preset.waves.findIndex(w => w.id === waveId)
+        if (idx < 0) return null
+        const src = preset.waves[idx]
+        const at = RouteAssistantWaveEditor._parseHHMM(atHHMM)
+        const arrS = RouteAssistantWaveEditor._parseHHMM(src.arrivalWindow && src.arrivalWindow.start)
+        const arrE = RouteAssistantWaveEditor._parseHHMM(src.arrivalWindow && src.arrivalWindow.end)
+        const depS = RouteAssistantWaveEditor._parseHHMM(src.departureWindow && src.departureWindow.start)
+        const depE = RouteAssistantWaveEditor._parseHHMM(src.departureWindow && src.departureWindow.end)
+        if (!isFinite(at) || !isFinite(arrS) || !isFinite(arrE)) return null
+        if (at <= arrS || at >= depE) return null
+
+        const totalMin = depE - arrS
+        const firstMin = at - arrS
+        const ratio = Math.max(0, Math.min(1, firstMin / Math.max(1, totalMin)))
+
+        const splitComp = (key) => {
+            const v = Number((src.composition || {})[key]) || 0
+            const a = Math.round(v * ratio)
+            return [a, Math.max(0, v - a)]
+        }
+        const [s1, s2] = splitComp("shortHaul")
+        const [m1, m2] = splitComp("mediumHaul")
+        const [l1, l2] = splitComp("longHaul")
+
+        const fmt = (m) => {
+            const mm = Math.max(0, Math.min(24 * 60 - 1, Math.round(m)))
+            return String(Math.floor(mm / 60)).padStart(2, "0") + ":" + String(mm % 60).padStart(2, "0")
+        }
+        const tmp = SchedulePresets.newWave("part 2")
+        const partA = JSON.parse(JSON.stringify(src))
+        const partB = JSON.parse(JSON.stringify(src))
+        partB.id = tmp.id
+        partA.label = (src.label || "Wave") + " · 1"
+        partB.label = (src.label || "Wave") + " · 2"
+        partA.arrivalWindow   = {start: fmt(arrS), end: fmt(Math.min(arrE, at))}
+        partA.departureWindow = {start: fmt(depS), end: fmt(Math.min(depE, at))}
+        partB.arrivalWindow   = {start: fmt(Math.max(arrS, at)), end: fmt(arrE)}
+        partB.departureWindow = {start: fmt(Math.max(depS, at)), end: fmt(depE)}
+        partA.composition = {shortHaul: s1, mediumHaul: m1, longHaul: l1}
+        partB.composition = {shortHaul: s2, mediumHaul: m2, longHaul: l2}
+        if (Array.isArray(src.subBands)) {
+            partA.subBands = src.subBands.filter(sb =>
+                RouteAssistantWaveEditor._parseHHMM(sb.start) < at)
+            partB.subBands = src.subBands.filter(sb =>
+                RouteAssistantWaveEditor._parseHHMM(sb.start) >= at)
+        }
+
+        preset.waves.splice(idx, 1, partA, partB)
+        await SchedulePresets.update(presetId, {waves: preset.waves})
+        RouteAssistantWaveEditor._emitPresetUpdated(preset)
+        try { if (window.CentralHubBus) window.CentralHubBus.emit("waveeditor:wave-split",
+            {presetId, sourceId: waveId, partAId: partA.id, partBId: partB.id, at: atHHMM}) } catch (_) {}
+        return preset
+    }
+
+    /**
+     * Phase 3 Lane A — patch the per-day composition of a wave for one
+     * dayIdx (0..6, 0 = Sunday). null entries inherit from `wave.composition`.
+     * Pass `dayIdx = "*"` and `partial = null` to clear all per-day
+     * overrides on the wave.
+     */
+    static async setWaveByDayComposition(presetId, waveId, dayIdx, partial) {
+        const block = await SchedulePresets.load()
+        const preset = block.presets.find(p => p.id === presetId)
+        if (!preset) return null
+        const wave = preset.waves.find(w => w.id === waveId)
+        if (!wave) return null
+        if (!wave.composition || typeof wave.composition !== "object") {
+            wave.composition = {shortHaul: 0, mediumHaul: 0, longHaul: 0}
+        }
+        if (!Array.isArray(wave.composition.byDay)) wave.composition.byDay = [null,null,null,null,null,null,null]
+        if (dayIdx === "*" && partial === null) {
+            wave.composition.byDay = [null,null,null,null,null,null,null]
+        } else {
+            const i = Number(dayIdx)
+            if (!isFinite(i) || i < 0 || i > 6) return null
+            if (partial === null) {
+                wave.composition.byDay[i] = null
+            } else if (partial && typeof partial === "object") {
+                const cur = wave.composition.byDay[i] || {
+                    shortHaul:  wave.composition.shortHaul  || 0,
+                    mediumHaul: wave.composition.mediumHaul || 0,
+                    longHaul:   wave.composition.longHaul   || 0
+                }
+                const next = Object.assign({}, cur, partial)
+                for (const k of ["shortHaul", "mediumHaul", "longHaul"]) {
+                    const v = Number(next[k])
+                    next[k] = isFinite(v) ? Math.max(0, Math.min(99, Math.floor(v))) : 0
+                }
+                wave.composition.byDay[i] = next
+            }
+        }
+        await SchedulePresets.update(presetId, {waves: preset.waves})
+        RouteAssistantWaveEditor._emitPresetUpdated(preset)
+        return preset
+    }
+
+    /**
+     * Phase 3 Lane A — append a SubBand to wave.subBands[]. The kind is
+     * "arrival" | "departure" | "groundOnly" (Lane C ownership for the
+     * groundOnly maintenance hint per §A.3 / §C plumbing).
+     */
+    static async addSubBand(presetId, waveId, partial) {
+        const block = await SchedulePresets.load()
+        const preset = block.presets.find(p => p.id === presetId)
+        if (!preset) return null
+        const wave = preset.waves.find(w => w.id === waveId)
+        if (!wave) return null
+        if (!Array.isArray(wave.subBands)) wave.subBands = []
+        const p = partial || {}
+        const sb = (typeof SchedulePresets.newSubBand === "function")
+            ? SchedulePresets.newSubBand(p.kind, p.start, p.end, p.label)
+            : {
+                id: "sb-" + Math.random().toString(36).slice(2, 8),
+                kind: (p.kind === "departure" || p.kind === "groundOnly") ? p.kind : "arrival",
+                start: p.start || "06:00",
+                end:   p.end   || "06:15",
+                weight: 1,
+                label: p.label || ""
+            }
+        if (isFinite(Number(p.weight))) sb.weight = Number(p.weight)
+        wave.subBands.push(sb)
+        await SchedulePresets.update(presetId, {waves: preset.waves})
+        RouteAssistantWaveEditor._emitPresetUpdated(preset)
+        return preset
+    }
+
+    /** Internal — minute-of-day parsing/shift helpers reused by clone/split. */
+    static _parseHHMM(s) {
+        if (typeof s !== "string") return NaN
+        const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim())
+        if (!m) return NaN
+        return Number(m[1]) * 60 + Number(m[2])
+    }
+    static _shiftHHMM(s, deltaMin) {
+        const v = RouteAssistantWaveEditor._parseHHMM(s)
+        if (!isFinite(v)) return s
+        const next = Math.max(0, Math.min(24 * 60 - 1, v + Number(deltaMin || 0)))
+        return String(Math.floor(next / 60)).padStart(2, "0") + ":" + String(next % 60).padStart(2, "0")
+    }
+    static _shiftWindow(win, deltaMin) {
+        if (!win) return win
+        return {
+            start: RouteAssistantWaveEditor._shiftHHMM(win.start, deltaMin),
+            end:   RouteAssistantWaveEditor._shiftHHMM(win.end,   deltaMin)
+        }
+    }
+
+    /**
      * Track B — broadcast a same-page notification so wave-strip /
      * wave-overlay can refresh without polling. Cross-page propagation
      * still runs through chrome.storage.onChanged on the SchedulePresets

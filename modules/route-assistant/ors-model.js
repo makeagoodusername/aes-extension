@@ -700,6 +700,78 @@ class RouteAssistantOrsModel {
     }
 
     /**
+     * Slice 5c — sensitivity sweep heatmap. 2-D scan over a uniform price
+     * multiplier (applied to Y/C/F together) crossed with a frequency axis
+     * derived from the route's current frequency. Returns one cell per
+     * (price, freq) pair with the projected profit/wk and delta vs the
+     * (1.0×, current frequency) baseline.
+     *
+     * Default grid is 5 × 5 — price ±20% in 10% steps, freq ×0.6/0.8/1.0/
+     * 1.2/1.4 (rounded, floored to 1). Callers can pass `grid.priceMultipliers`
+     * or `grid.freqMultipliers` arrays to override.
+     *
+     * Pure — same purity contract as `scanPriceCurve`. Returns null on
+     * degenerate input (no baseline profit signal).
+     *
+     * @param {object} input — same shape as `project()`
+     * @param {object} [input.grid] — `{priceMultipliers?, freqMultipliers?}`
+     * @return {object|null} `{cells, priceMultipliers, frequencies,
+     *                         baselineFreq, baselineProfit, optimal}`
+     */
+    static scanPriceFreqGrid(input) {
+        input = input || {}
+        const cfg = input.grid || {}
+        const baseScenario = RouteAssistantOrsModel._normaliseScenario(input.scenario)
+        const baseFreq = (input.route && _safeNumber(input.route.currentFrequency)) || 0
+        const priceMults = (Array.isArray(cfg.priceMultipliers) && cfg.priceMultipliers.length)
+            ? cfg.priceMultipliers.map(Number).filter(v => isFinite(v) && v > 0)
+            : [0.80, 0.90, 1.00, 1.10, 1.20]
+        const freqMults = (Array.isArray(cfg.freqMultipliers) && cfg.freqMultipliers.length)
+            ? cfg.freqMultipliers.map(Number).filter(v => isFinite(v) && v > 0)
+            : [0.60, 0.80, 1.00, 1.20, 1.40]
+        // Round to integers; clamp to ≥1 so the synthesiser always has at
+        // least one own-connection to work with. Dedup adjacent collisions
+        // (a base of 1/wk produces 1/1/1/1/1 across the whole row).
+        const frequencies = []
+        for (const fm of freqMults) {
+            const f = Math.max(1, Math.round(baseFreq * fm) || 1)
+            if (frequencies.length === 0 || frequencies[frequencies.length - 1] !== f) frequencies.push(f)
+        }
+        if (!frequencies.length) frequencies.push(Math.max(1, Math.round(baseFreq) || 1))
+
+        const baseRes = RouteAssistantOrsModel.project(Object.assign({}, input, {
+            scenario: Object.assign({}, baseScenario, {priceMultipliers: {Y: 1, C: 1, F: 1}})
+        }))
+        const baseProfit = baseRes && baseRes.baseline ? _safeNumber(baseRes.baseline.profitPerWeek) : null
+
+        const cells = []
+        let optimal = null
+        for (const m of priceMults) {
+            for (const f of frequencies) {
+                const scenarioStep = Object.assign({}, baseScenario, {
+                    priceMultipliers: {Y: m, C: m, F: m},
+                    frequency:        f
+                })
+                const res = RouteAssistantOrsModel.project(Object.assign({}, input, {scenario: scenarioStep}))
+                const profit = res && res.projected ? _safeNumber(res.projected.profitPerWeek) : null
+                const deltaProfit = (profit != null && baseProfit != null) ? (profit - baseProfit) : null
+                const cell = {priceMultiplier: m, frequency: f, profitPerWeek: profit, deltaProfit: deltaProfit}
+                cells.push(cell)
+                if (profit != null && (optimal == null || profit > optimal.profitPerWeek)) optimal = cell
+            }
+        }
+        if (!optimal) return null
+        return {
+            cells:            cells,
+            priceMultipliers: priceMults,
+            frequencies:      frequencies,
+            baselineFreq:     baseFreq,
+            baselineProfit:   baseProfit,
+            optimal:          optimal
+        }
+    }
+
+    /**
      * Solve for T given an observed share and the rating list. Bisection
      * over [1, 200] — share is monotonic in T (higher T = more uniform).
      * Returns T (rounded to 1 decimal) or null on degenerate input.
@@ -783,6 +855,56 @@ class RouteAssistantOrsModel {
             if (row && row.enterpriseId != null && String(row.enterpriseId) === idStr) return row
         }
         return null
+    }
+
+    /**
+     * End-to-end T calibration for a route. Resolves the observed share
+     * from the leaderboard, picks the primary class with cached connections,
+     * builds the ratings + ourIndices vectors, and runs calibrateTemperature.
+     *
+     * Returns `{ok: true, T, observedShare, ourRow}` on success or
+     * `{ok: false, code}` on any precondition miss. Codes are stable —
+     * UX layers map them to user copy; the auto-loop ignores all of them.
+     *
+     * Codes: "no-marketShare" | "no-ourEnterpriseId" | "not-in-leaderboard"
+     *      | "no-share" | "no-connections" | "no-own-connections"
+     *      | "solver-failed"
+     */
+    static calibrateRouteT(arg) {
+        const orsByClass      = arg && arg.orsByClass
+        const marketSharePax  = arg && arg.marketSharePax
+        const ourEnterpriseId = arg && arg.ourEnterpriseId
+
+        if (!marketSharePax || !marketSharePax.length) return {ok: false, code: "no-marketShare"}
+        if (!ourEnterpriseId)                          return {ok: false, code: "no-ourEnterpriseId"}
+        const ourRow = RouteAssistantOrsModel.findOurInLeaderboard(marketSharePax, ourEnterpriseId)
+        if (!ourRow) return {ok: false, code: "not-in-leaderboard"}
+        const observedShare = (ourRow.sharePct != null) ? Number(ourRow.sharePct) / 100 : null
+        if (observedShare == null || !isFinite(observedShare) || observedShare <= 0) {
+            return {ok: false, code: "no-share"}
+        }
+
+        const byClass = orsByClass || {}
+        const primary = byClass.ECONOMY || byClass.BUSINESS || byClass.FIRST
+        if (!primary || !Array.isArray(primary.connections) || !primary.connections.length) {
+            return {ok: false, code: "no-connections"}
+        }
+        const conns = primary.connections.slice(0, RouteAssistantOrsModel.MAX_FOR_SOFTMAX)
+        const ratings = conns.map(c => Number(c.rating) || 0)
+        const ourIndices = []
+        for (let i = 0; i < conns.length; i++) {
+            const legs = (conns[i].legs || []).filter(l => !l.isGround)
+            if (legs.length && legs.every(l => !!l.isOurs)) ourIndices.push(i)
+        }
+        if (!ourIndices.length) return {ok: false, code: "no-own-connections"}
+
+        const T = RouteAssistantOrsModel.calibrateTemperature({
+            allRatings:    ratings,
+            ourIndices:    ourIndices,
+            observedShare: observedShare
+        })
+        if (T == null || !isFinite(T) || T <= 0) return {ok: false, code: "solver-failed"}
+        return {ok: true, T, observedShare, ourRow}
     }
 }
 

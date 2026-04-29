@@ -23,7 +23,9 @@ class RouteAssistantPanel {
         this.controlsHost = null   // hosts the Mode + Aircraft dropdowns
         this.chipBar = null        // Q1 quick-filter chips, between tabBar and tableHost
         this.tableHost = null
-        this.settingsHost = null
+        this.settingsHost = null   // current settings render target (drawer or modal pane)
+        this._drawerHost   = null  // the slide-out drawer DOM (state, animation, mount)
+        this._modalHost    = null  // unified-settings modal pane (when embedded)
         this.collapsed = false
         this._hubShortcutHandler = null   // Q15 hub keyboard quick-swap (Alt+1..5)
 
@@ -50,6 +52,12 @@ class RouteAssistantPanel {
         // refresh() so the aggregator can attach per-row pax/cargo
         // share to feed the estimator + wave-overlay pill.
         this.interlineByPair = new Map()
+        // Coherence slice — track which hubs have had their interline
+        // records hydrated into interlineByPair, so the cross-hub wave
+        // picker can lazily extend the cache without re-bulkLoading on
+        // every render. Primary hub is added in refresh().
+        this._interlineHydratedHubs = new Set()
+        this._interlineHydrationsInFlight = new Set()
         this.serviceProfilesCache = new Map()  // Map<id, profileDetail> from RouteAssistantServiceProfileScraper
         this._serviceProfilesList = null    // {profiles, scrapedAt}
         this._serviceProfileSyncRunning = false
@@ -122,6 +130,26 @@ class RouteAssistantPanel {
         // user picks a different route so we never render a pin from a
         // stale route on top of a fresh one.
         this._orsSandboxPinnedResult = null
+        // Slice 5a — refs to the scenario card's controls so the results-
+        // card sparkline (different scope) can dispatch input events on
+        // them when the user clicks a point. Refreshed on every scenario
+        // card build; results-card click defensively no-ops if missing.
+        this._orsSandboxControlRefs = null
+        // Slice 5a — memoized scanPriceCurve sweep keyed on inputs that
+        // don't change during a price-slider drag (route + cargo / freq /
+        // comfort / model α / perRouteT / economics fingerprint). Lets a
+        // Y/C/F drag re-render the marker without re-projecting 13×.
+        this._orsSandboxCurveCache = null
+        // Slice 5c — memoized 5×N sensitivity sweep keyed off the same
+        // inputs as the sparkline plus the frequency-axis fingerprint. The
+        // row-reference invariant from 6a (WeakMap on _orsSandboxRouteCache)
+        // means refresh() blows this too — fresh row refs never match.
+        this._orsSandboxHeatmapCache = null
+        // Slice 6b — track last project() duration so _recomputeOrsSandbox
+        // can paint a "computing…" overlay when the prior call was slow.
+        // The overlay shows up only on routes that have already proven
+        // slow (50+ connections), so fast routes never flicker.
+        this._orsSandboxLastProjectMs = 0
 
         // Active prompts — alert rules + per-mount fired set.
         // The fired set keeps the same rule+route from spamming toasts on
@@ -303,6 +331,10 @@ class RouteAssistantPanel {
                         else        this._hubScheduleRecords.delete(key)
                     }
                     needScheduleRepaint = true
+                    // AFP changes feed `ownTotalFreq` via _collectAfpFreq, so
+                    // a route the user just constructed in AFP needs to flip
+                    // out of "NEW" without waiting for a manual refresh.
+                    needFullRefresh = true
                 }
             }
             if (needFullRefresh) {
@@ -1457,6 +1489,18 @@ class RouteAssistantPanel {
         stationStatusHost.style.cssText = "display:inline-flex;align-items:center;margin-left:2px;"
         this._stationStatusHost = stationStatusHost
         this._ensureStationStatusStrip()
+        // Unified change log — delegates to the global standalone modal
+        // `window.AesChangeLogModal.open()` (modules/_shared/change-log-modal.js)
+        // so the same UI appears here AND from the floating launcher mounted
+        // on every AS page. Single source of truth for the modal logic.
+        this._changeLogBtn = makeBtn("📜", "Change log — every applied change across pricing, service, flight numbers, and strategy",
+            () => {
+                if (window.AesChangeLogModal && typeof window.AesChangeLogModal.open === "function") {
+                    window.AesChangeLogModal.open()
+                } else if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.error("Change log module not loaded — reload the extension.")
+                }
+            })
         const settingsBtn = makeBtn("⚙", "Score weights & filters", () => this._toggleSettings())
         // N2 notification center — bell opens a dropdown showing every
         // toast fired this session. Click any past entry to re-execute
@@ -1486,7 +1530,7 @@ class RouteAssistantPanel {
             () => this._toggleCollapse()
         )
         this._collapseBtn = toggleBtn
-        header.append(title, refreshBtn, openStationsBtn, stationStatusHost, this._retireBtn, this._inspectorBtn, settingsBtn, this._notifBtn, configBtn, toggleBtn)
+        header.append(title, refreshBtn, openStationsBtn, stationStatusHost, this._retireBtn, this._inspectorBtn, this._changeLogBtn, settingsBtn, this._notifBtn, configBtn, toggleBtn)
 
         this.statusBar = document.createElement("div")
         Object.assign(this.statusBar.style, {
@@ -1527,8 +1571,9 @@ class RouteAssistantPanel {
         // overlaying — not displacing — the body. The gear button stays
         // visible in the header so the same control closes it; ESC,
         // clicking the backdrop, and the drawer's own ✕ also close.
-        this.settingsHost = document.createElement("div")
-        Object.assign(this.settingsHost.style, {
+        this._drawerHost = document.createElement("div")
+        this.settingsHost = this._drawerHost
+        Object.assign(this._drawerHost.style, {
             position:       "absolute",
             top:            "0",            // refreshed in _toggleSettings to clear the header
             right:          "0",
@@ -1568,7 +1613,7 @@ class RouteAssistantPanel {
         })
         this._settingsBackdrop.title = "Click to close settings"
         this._settingsBackdrop.addEventListener("click", () => {
-            if (this.settingsHost.dataset.open === "1") this._toggleSettings()
+            if (this._drawerHost.dataset.open === "1") this._toggleSettings()
         })
 
         this.body = document.createElement("div")
@@ -1642,7 +1687,7 @@ class RouteAssistantPanel {
         // controlsHost / body are normal flex children of the column;
         // settingsHost + _settingsBackdrop are absolute overlays.
         this.root.append(header, this.statusBar, this.controlsHost, this.body,
-            this._settingsBackdrop, this.settingsHost)
+            this._settingsBackdrop, this._drawerHost)
         if (this.collapsed) {
             this.statusBar.style.display = "none"
             this.controlsHost.style.display = "none"
@@ -1667,7 +1712,7 @@ class RouteAssistantPanel {
         // panel collapses to header-only, force the drawer closed (it'd
         // otherwise float over the hidden body region and the user can't
         // reach the gear button to close it). The backdrop follows.
-        if (this.collapsed && this.settingsHost.dataset.open === "1") {
+        if (this.collapsed && this._drawerHost.dataset.open === "1") {
             this._toggleSettings()
         }
         RouteAssistantSettings.save({collapsed: this.collapsed})
@@ -1687,38 +1732,65 @@ class RouteAssistantPanel {
      * drawer. Backdrop catches outside clicks; ESC closes it too.
      */
     _toggleSettings() {
-        const open = this.settingsHost.dataset.open !== "1"
-        this.settingsHost.dataset.open = open ? "1" : "0"
+        const open = this._drawerHost.dataset.open !== "1"
+        this._drawerHost.dataset.open = open ? "1" : "0"
         if (open) {
             // Compute the drawer's top offset so it clears the panel
             // header + status bar + controls bar (all variable-height).
             // The body region is what we want to overlay; the header
             // region must stay visible so the gear button still works.
             const headerOffset = this._computeBodyTopOffset()
-            this.settingsHost.style.top = headerOffset + "px"
+            this._drawerHost.style.top = headerOffset + "px"
             this._settingsBackdrop.style.top = headerOffset + "px"
-            this.settingsHost.style.transform = "translateX(0)"
+            this._drawerHost.style.transform = "translateX(0)"
             this._settingsBackdrop.style.display = "block"
+            // Drawer wins focus: route subsequent renders to the drawer DOM.
+            this.settingsHost = this._drawerHost
+            this._modalHost = null
             this._renderSettings()
             // ESC handler — installed only while the drawer is open so
             // we don't intercept the user's keystrokes the rest of the
             // time (AS scheduling page has its own keyboard handlers).
             if (!this._settingsEscHandler) {
                 this._settingsEscHandler = (e) => {
-                    if (e.key === "Escape" && this.settingsHost.dataset.open === "1") {
+                    if (e.key === "Escape" && this._drawerHost.dataset.open === "1") {
                         this._toggleSettings()
                     }
                 }
                 document.addEventListener("keydown", this._settingsEscHandler)
             }
         } else {
-            this.settingsHost.style.transform = "translateX(100%)"
+            this._drawerHost.style.transform = "translateX(100%)"
             this._settingsBackdrop.style.display = "none"
             if (this._settingsEscHandler) {
                 document.removeEventListener("keydown", this._settingsEscHandler)
                 this._settingsEscHandler = null
             }
         }
+    }
+
+    /**
+     * Public — render the settings UI into an arbitrary host element so
+     * the unified-settings modal can embed it. Routes subsequent
+     * re-renders (triggered by inputs inside the rendered tree) to the
+     * same host until either `unmountModalSettings()` is called or the
+     * drawer is opened (which reclaims render focus).
+     */
+    renderSettingsInto(host) {
+        if (!host) return
+        this._modalHost   = host
+        this.settingsHost = host
+        this._renderSettings()
+    }
+
+    /**
+     * Public — companion to `renderSettingsInto`. Restores render target
+     * to the drawer DOM. Safe to call when no modal embed is active.
+     */
+    unmountModalSettings() {
+        if (!this._modalHost) return
+        this._modalHost   = null
+        this.settingsHost = this._drawerHost
     }
 
     /**
@@ -1943,6 +2015,7 @@ class RouteAssistantPanel {
         if (this.hubIata !== iata) {
             this._hubScheduleRecords = null
             this._hubSchedulesScannedFor = null
+            this._billboardActiveAircraftId = null
         }
         this.hubIata = iata
         this._trackRecentHub(iata)
@@ -1965,6 +2038,7 @@ class RouteAssistantPanel {
 
         this.ffData = await FlightsFromStore.loadAirport(iata)
         this.ownSchedule = await this._loadOwnSchedule()
+        this.afpSchedules = await this._loadAfpSchedules(iata)
         this.fuelPrice = await RouteAssistantFuelPriceScraper.getCached()
         if (RouteAssistantFuelPriceScraper.isStale(this.fuelPrice)) this._scrapeFuelPriceAsync()
 
@@ -2000,9 +2074,12 @@ class RouteAssistantPanel {
         // this. The store returns `{pair: rec}` keyed by "HUB-DEST"; we
         // promote to a Map for symmetry with the other per-route caches.
         this.interlineByPair = new Map()
+        this._interlineHydratedHubs.clear()
+        this._interlineHydrationsInFlight.clear()
         if (typeof RouteAssistantInterlineStore !== "undefined" && dests.length) {
             const blob = await RouteAssistantInterlineStore.bulkLoad(dests.map(d => [iata, d]))
             for (const pair in blob) this.interlineByPair.set(pair, blob[pair])
+            this._interlineHydratedHubs.add(String(iata).toUpperCase())
         }
         // Q8 status-history — bulk-load every visible route's transition log
         // so the St cell tooltip can render "OVER since 12d · was OK
@@ -2035,7 +2112,8 @@ class RouteAssistantPanel {
             interlineByPair:  this.interlineByPair,
             serviceProfiles:  (this.settings && this.settings.serviceProfiles) || null,
             fleet:            this.fleet,
-            ownSchedule:      this.ownSchedule
+            ownSchedule:      this.ownSchedule,
+            afpSchedules:     this.afpSchedules
         })
 
         // Paint instantly with any distances we already have cached, then
@@ -2050,6 +2128,8 @@ class RouteAssistantPanel {
         await this._applyCachedContractualPartners()
         await this._applyCachedOrs()
         await this._applyCachedDemand()
+        await this._applyCanopySupply()
+        await this._loadCanopyDnaContext()
         RouteAssistantAggregator.applyFleetContext(this.rows, this._fleetContext(), this._serviceContext())
         this._render()
         this._enrichDistancesAsync()
@@ -2548,6 +2628,212 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Letter L slice L6 — combined-supply decoration. Classifies every
+     * row's competitorEntries via the affiliation graph and computes
+     * `canopySupply` on the row (kinFlights, kinShare, partnerFlights,
+     * effectiveCompetitorCount, cannibalizationRisk). Always runs when the
+     * affiliations + combined-supply modules are loaded — cheap (single
+     * storage round-trip + pure-CPU walk), and lets the canopy-view
+     * columns render fresh data the moment the user flips the toggle.
+     *
+     * Gap detection is gated on canopy-view being active because it
+     * requires loading multiple hubs' topRoutes caches (one storage call
+     * per hub).
+     */
+    async _applyCanopySupply() {
+        if (!this.rows || !this.rows.length) return
+        if (typeof window === "undefined") return
+        const affiliations = window.AesCanopyAffiliations
+        const supply       = window.AesCanopyCombinedSupply
+        if (!affiliations || !supply) return
+
+        // Collect every enterpriseId visible in any leaderboard row. The
+        // affiliations store keys by enterpriseId so a single bulk classify
+        // covers all rows.
+        const allIds = new Set()
+        for (const r of this.rows) {
+            if (!Array.isArray(r.competitorEntries)) continue
+            for (const c of r.competitorEntries) {
+                if (c && c.enterpriseId != null) allIds.add(String(c.enterpriseId))
+            }
+        }
+        const idArr = Array.from(allIds)
+        const classifyMap = idArr.length
+            ? await affiliations.classifyMany(idArr)
+            : new Map()
+        this._canopyAffiliationMap = classifyMap
+
+        // Resolve the user's "ours" set so combinedSupply can recognise the
+        // current account's enterprises (already excluded from
+        // competitorEntries, but kept for parity with future per-account
+        // walk paths). Mirrors `_applyCachedMarkets`'s navbar-id harvest.
+        const ourEnterpriseIds = new Set()
+        try {
+            for (const a of document.querySelectorAll(".as-navbar-main a[href*='dashboard?select=']")) {
+                const m = /select=(\d+)/.exec(a.getAttribute("href") || "")
+                if (m) ourEnterpriseIds.add(String(parseInt(m[1], 10)))
+            }
+        } catch (e) { /* ignore */ }
+
+        const ctx = {
+            classifyKind: (eid) => {
+                if (eid == null) return "neutral"
+                const rec = classifyMap.get(String(eid))
+                return rec ? rec.kind : "neutral"
+            },
+            isOurs: (eid) => eid != null && ourEnterpriseIds.has(String(eid))
+        }
+        const supplyOpts = (this.settings && this.settings.canopyView) || {}
+
+        for (const r of this.rows) {
+            r.canopySupply = supply.combinedSupply(r, ctx, {
+                cannibShareThresholdPct: supplyOpts.cannibShareThresholdPct,
+                cannibMinKin:            supplyOpts.cannibMinKin
+            })
+        }
+
+        // Gap detection — federation-wide. Only run when the canopy view
+        // is active, because it loads N additional hubs' topRoutes records
+        // (one storage call per hub). When inactive, leave row.canopyGap
+        // null.
+        const canopyOn = !!(supplyOpts.active === true)
+        if (canopyOn) {
+            const gapKeys = await this._loadCanopyGapKeys(supplyOpts)
+            for (const r of this.rows) {
+                const key = (this.hubIata || "") + "-" + (r.destIata || "")
+                r.canopyGap = gapKeys.has(key.toUpperCase())
+            }
+        } else {
+            for (const r of this.rows) r.canopyGap = null
+        }
+    }
+
+    /**
+     * Load the effective DNA + origin geography for the destIata column's
+     * DNA-fit pill. Cached once per refresh on `this._canopyDnaCtx`. Reads
+     * via `AesCanopyDnaStore.effectiveDna(accountId)`; gracefully no-ops
+     * when the canopy modules or current accountId are absent. Origin
+     * country / continent come from `routeAssistant:demand:<HUB>` (already
+     * loaded into demandMap by `_applyCachedDemand`).
+     */
+    async _loadCanopyDnaContext() {
+        this._canopyDnaCtx = null
+        if (typeof window === "undefined") return
+        const dnaStore = window.AesCanopyDnaStore
+        if (!dnaStore || typeof dnaStore.effectiveDna !== "function") return
+        const cv = (this.settings && this.settings.canopyView) || {}
+        if (cv.showDnaFitOpportunities === false) return
+        // accountId resolution: prefer the registry's bootstrapped value;
+        // fall back to a server+airline-derived id when the registry hasn't
+        // bootstrapped yet (the panel may mount before page identity
+        // resolves on first paint).
+        let accountId = null
+        try {
+            if (typeof window.currentAccountIdSync === "function") {
+                accountId = window.currentAccountIdSync()
+            } else if (window.__aesAccountId) {
+                accountId = window.__aesAccountId
+            }
+        } catch (_) { accountId = null }
+        if (!accountId && typeof AES !== "undefined") {
+            try {
+                const srv = AES.getServerName ? AES.getServerName() : ""
+                const airline = AES.getAirlineCode ? AES.getAirlineCode() : ""
+                const code = airline && airline.code ? airline.code : (typeof airline === "string" ? airline : "")
+                if (srv && code) accountId = String(srv) + ":" + String(code)
+            } catch (_) { /* leave null */ }
+        }
+        let dna = null
+        try {
+            dna = await dnaStore.effectiveDna(accountId)
+        } catch (e) { dna = null }
+        if (!dna) return
+
+        const hubDemand = (this.demandMap && this.hubIata)
+            ? (this.demandMap.get(String(this.hubIata).toUpperCase()) || null)
+            : null
+        const originCountry = (hubDemand && hubDemand.countryId) || null
+        const originContinent = (hubDemand && hubDemand.continent) || null
+
+        // Decorate every row with destCountry / destContinent so the pill
+        // closure has them available at render time. Read from the
+        // demandMap (per-IATA records).
+        if (this.demandMap) {
+            for (const r of (this.rows || [])) {
+                const d = r.destIata ? this.demandMap.get(r.destIata) : null
+                r.destCountry   = (d && d.countryId)  || null
+                r.destContinent = (d && d.continent)  || null
+            }
+        }
+
+        this._canopyDnaCtx = {
+            dna:             dna,
+            accountId:       accountId,
+            originCountry:   originCountry,
+            originContinent: originContinent
+        }
+    }
+
+    /**
+     * Build the federation-wide Gap set: load each kin hub's topRoutes
+     * cache, hand them to `detectGapRoutes`. v1 sources kin hubs from the
+     * current account's `settings.recentHubs` list — once L1–L3 ship the
+     * registry, this expands to walk every registered kin's hub set.
+     *
+     * Returns Set<"HUB-DEST"> (uppercase).
+     */
+    async _loadCanopyGapKeys(supplyOpts) {
+        const supply = window.AesCanopyCombinedSupply
+        if (!supply) return new Set()
+
+        // v1 kin hubs: this account's recentHubs (cap 5 per Q15) + current
+        // hub. Future L7 expands to sister-kin hubs across registered
+        // accounts.
+        const seen = new Set()
+        const hubs = []
+        const push = (h) => {
+            if (!h) return
+            const HUB = String(h).toUpperCase()
+            if (seen.has(HUB)) return
+            seen.add(HUB)
+            hubs.push(HUB)
+        }
+        push(this.hubIata)
+        const recents = (this.settings && Array.isArray(this.settings.recentHubs))
+            ? this.settings.recentHubs : []
+        for (const h of recents) push(h)
+
+        if (!hubs.length) return new Set()
+
+        const topRoutesByHub = (typeof RouteAssistantPanel.loadAllHubTopRoutes === "function")
+            ? await RouteAssistantPanel.loadAllHubTopRoutes(hubs)
+            : new Map()
+
+        // Convert to the shape detectGapRoutes expects.
+        const kinHubsTopRoutes = []
+        for (const HUB of hubs) {
+            const blob = topRoutesByHub.get(HUB)
+            if (!blob || !Array.isArray(blob.rows)) continue
+            kinHubsTopRoutes.push({hub: HUB, rows: blob.rows})
+        }
+
+        // Current hub's in-memory rows are authoritative for "operating"
+        // since they reflect the latest fleet/AFP merge — feed them in via
+        // thisAccountKinFreqs to override any stale topRoutes cache.
+        const localFreqs = new Map()
+        for (const r of (this.rows || [])) {
+            if (!r || !r.destIata) continue
+            const key = (this.hubIata || "") + "-" + r.destIata
+            localFreqs.set(key.toUpperCase(), !!r.operating || (r.ownTotalFreq || 0) > 0)
+        }
+
+        return supply.detectGapRoutes(kinHubsTopRoutes, localFreqs, {
+            minPaxScore: supplyOpts && typeof supplyOpts.gapMinPaxScore === "number"
+                ? supplyOpts.gapMinPaxScore : undefined
+        })
+    }
+
+    /**
      * Background distance enrichment: for any row still missing distanceKm,
      * fire the three-tier resolver in parallel batches. Re-renders the
      * table after each batch so the km column fills in incrementally.
@@ -2682,7 +2968,7 @@ class RouteAssistantPanel {
         } catch (e) { /* graceful */ }
         finally {
             this._fuelScrapeInFlight = false
-            if (!this._disposed && this.settingsHost && this.settingsHost.dataset.open === "1") {
+            if (!this._disposed && this.settingsHost && (this._drawerHost.dataset.open === "1" || this._modalHost)) {
                 this._renderSettings()
             }
         }
@@ -2735,6 +3021,37 @@ class RouteAssistantPanel {
         return candidates[0]
     }
 
+    /**
+     * Read every AFP per-aircraft schedule record (Track 7c) and return
+     * the subset relevant to this hub — either based here, or carrying at
+     * least one leg whose origin is this hub. The aggregator's
+     * `_collectAfpFreq` filters legs by origin again, so passing more
+     * records than strictly necessary is harmless; the inclusion test
+     * here is just a perf trim. Legacy `_loadOwnSchedule()` only sees the
+     * manual-extract snapshot, which goes stale the moment the user
+     * adds/removes flights via AFP — this loader fills that gap.
+     */
+    async _loadAfpSchedules(hubIata) {
+        if (!hubIata) return []
+        if (typeof AesAfpScheduleStore === "undefined") return []
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return []
+        const myHub = String(hubIata).toUpperCase()
+        const all = await chrome.storage.local.get(null)
+        const out = []
+        for (const key of Object.keys(all)) {
+            if (key.indexOf(AesAfpScheduleStore.PREFIX) !== 0) continue
+            const rec = all[key]
+            if (!rec || typeof rec !== "object") continue
+            if (!Array.isArray(rec.legs) || !rec.legs.length) continue
+            const basedHere = String(rec.hubIata || "").toUpperCase() === myHub
+            const flyingHere = !basedHere && rec.legs.some(L =>
+                L && L.origin && String(L.origin).toUpperCase() === myHub)
+            if (!basedHere && !flyingHere) continue
+            out.push(rec)
+        }
+        return out
+    }
+
     // ---------- Status bar + actions ----------
 
     /**
@@ -2781,7 +3098,7 @@ class RouteAssistantPanel {
                     await RouteAssistantSettings.save({viewMode: t.id})
                 } catch (e) { /* persist failure is non-fatal — re-render anyway */ }
                 this._renderRows()
-                if (this.settingsHost && this.settingsHost.dataset.open === "1") {
+                if (this.settingsHost && (this._drawerHost.dataset.open === "1" || this._modalHost)) {
                     this._renderSettings()
                 }
             })
@@ -2823,12 +3140,53 @@ class RouteAssistantPanel {
             })
         }
 
+        const extraModes = this._federationModeAvailable() ? [{
+            id:    "federation",
+            label: "Canopy",
+            glyph: "🌐",
+            view:  null
+        }] : []
+
         RouteAssistantModeTabs.render(this.modeTabsHost, {
             activeMode:   activeMode,
             summaries:    RouteAssistantModeTabs.buildSummaries(this),
             onChange:     (mode) => this._switchPanelMode(mode),
-            rightActions: rightActions
+            rightActions: rightActions,
+            extraModes:   extraModes
         })
+    }
+
+    /**
+     * Phase 4 Lane B — show the Canopy pill when at least one of:
+     *   (a) settings.routeAssistant.federationMode.enabled === true
+     *   (b) AesAccountRegistry has 2+ accounts
+     *   (c) AesFleetCommand aggregator is loaded (signals canopy plumbing
+     *       is on this page)
+     * Hidden in legacy single-account installs so the pill bar stays calm.
+     */
+    _federationModeAvailable() {
+        const cfg = (this.settings && this.settings.federationMode) || null
+        if (cfg && cfg.enabled === true) return true
+        if (typeof window.AesFleetCommandPanel === "undefined") return false
+        try {
+            if (window.AesAccountRegistry
+                    && typeof window.AesAccountRegistry.list === "function") {
+                const list = window.AesAccountRegistry.list()
+                if (list && typeof list.then === "function") {
+                    // Async list — best-effort: cache the last resolved length.
+                    list.then(rows => {
+                        const next = Array.isArray(rows) && rows.length > 1
+                        if (next !== this._lastFederationVisible) {
+                            this._lastFederationVisible = next
+                            this._renderModeTabs()
+                        }
+                    }).catch(() => {})
+                    return !!this._lastFederationVisible
+                }
+                if (Array.isArray(list)) return list.length > 1
+            }
+        } catch (_) { /* non-fatal */ }
+        return false
     }
 
     /**
@@ -2836,8 +3194,22 @@ class RouteAssistantPanel {
      * cache invalidation that the legacy per-mode toggles used to do
      * individually (clearing `_waveBuild`, `_orsSandboxResult`, etc.)
      * so the pill never stales the next view.
+     *
+     * Phase 4 Lane B — "federation" is a pseudo-mode that opens the
+     * Fleet Command modal instead of mutating panelMode. The pill
+     * highlight reverts to the previously-active mode after the modal
+     * opens so users don't get stuck in an unowned tab state.
      */
     async _switchPanelMode(mode) {
+        if (mode === "federation") {
+            if (typeof window.AesFleetCommandPanel === "undefined") return
+            try { await window.AesFleetCommandPanel.open() }
+            catch (e) { console.warn("[panel] fleet-command open threw", e) }
+            // Re-paint the mode tabs so the pill goes back to whichever
+            // mode was active before the click.
+            this._renderModeTabs()
+            return
+        }
         const current = (this.settings && this.settings.panelMode) || "table"
         if (current === mode) return
         await this._setPanelMode(mode)
@@ -3014,7 +3386,7 @@ class RouteAssistantPanel {
         // Re-render the settings drawer if it's open so the checkboxes
         // stay in sync with the chip flip.
         this._renderRows()
-        if (this.settingsHost && this.settingsHost.dataset.open === "1") {
+        if (this.settingsHost && (this._drawerHost.dataset.open === "1" || this._modalHost)) {
             this._renderSettings()
         }
     }
@@ -3031,7 +3403,7 @@ class RouteAssistantPanel {
         this.settings.filters = filters
         try { await RouteAssistantSettings.save({filters: filters}) } catch (e) { /* non-fatal */ }
         this._renderRows()
-        if (this.settingsHost && this.settingsHost.dataset.open === "1") {
+        if (this.settingsHost && (this._drawerHost.dataset.open === "1" || this._modalHost)) {
             this._renderSettings()
         }
     }
@@ -3736,7 +4108,7 @@ class RouteAssistantPanel {
             toast = document.createElement("div")
             toast.className = "aes-ra-toast"
             toast.style.cssText = "padding:4px 12px;font-size:11px;background:#0f1623;border-bottom:1px solid #374151;"
-            this.statusBar.parentNode.insertBefore(toast, this.settingsHost)
+            this.statusBar.parentNode.insertBefore(toast, this._drawerHost)
         }
         toast.style.color = isError ? "#f87171" : "#60a5fa"
         toast.textContent = msg
@@ -4395,6 +4767,11 @@ class RouteAssistantPanel {
         // every changed leaf before commit.
         this._renderStrategyPresetsControl(this.controlsHost)
 
+        // L6 — canopy-view pill. One-click toggle for the cyan-tinted
+        // MyWk / Cmp* / FShare / Cannib / Gap? column group. Persists
+        // to settings.routeAssistant.canopyView.active.
+        this._renderCanopyViewToggle(this.controlsHost)
+
         const fleetEmpty = !this.fleet || !this.fleet.aircraft || !this.fleet.aircraft.length
         const a = this.settings.aircraft || {}
         const currentMode = a.mode || ""
@@ -4566,6 +4943,16 @@ class RouteAssistantPanel {
         RouteAssistantPanel._orsPrimaryColumn = (ors && ors.primaryColumn) || "ratingGapToTop"
         const wl = this.settings && this.settings.watchlist
         RouteAssistantPanel._showWatchTriggers = !wl || wl.showAlertBadges !== false
+        // L6 — DNA-fit pill on opportunity rows. The destIata column
+        // render closure reads `_dnaOpportunityCtx`; null means the
+        // pill suppresses (toggle off, no DNA loaded, or canopy module
+        // missing). `_canopyDnaCtx` is the panel-level cache populated
+        // by `_loadCanopyDnaContext()`.
+        const cv = this.settings && this.settings.canopyView
+        const dnaOn = !cv || cv.showDnaFitOpportunities !== false
+        RouteAssistantPanel._dnaOpportunityCtx = (dnaOn && this._canopyDnaCtx)
+            ? this._canopyDnaCtx
+            : null
     }
 
     /**
@@ -4629,51 +5016,38 @@ class RouteAssistantPanel {
 
     _paintHubSchedulesCard(records) {
         const host = this._hubSchedulesHost
-        host.innerHTML = ""
-        host.style.display = "block"
-        host.style.cssText += ";margin:6px 0;padding:6px 8px;border:1px solid var(--aes-paper-rule, #374151);"
-            + "border-radius:4px;background:var(--aes-bone-2, #0f1623);font-family:var(--aes-font-mono, monospace);"
-            + "font-size:11px;color:var(--aes-slate, #cbd5e1);"
-
-        const head = document.createElement("div")
-        head.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;color:#9ca3af;"
-        head.innerHTML = "<strong style=\"color:#f3f4f6;\">Aircraft schedules at " + escapeHtml(this.hubIata) + "</strong>"
-            + " <span style=\"color:#6b7280;\">· " + records.length + " cached"
-            + " · click to open</span>"
-        host.appendChild(head)
-
-        // Sort by registration / aircraftId for stable display.
-        records.sort((a, b) => String(a.aircraftId || "").localeCompare(String(b.aircraftId || "")))
-
-        const list = document.createElement("div")
-        list.style.cssText = "display:flex;flex-direction:column;gap:2px;"
-        for (const rec of records) {
-            const flightCount = (rec.summary && Number(rec.summary.flightCount)) || 0
-            const ageMs = AesAfpScheduleStore.getStaleness(rec)
-            const ageStr = isFinite(ageMs) ? this._raAgeLabel(ageMs) : "?"
-            const url = "https://" + (rec.server || this.server) + ".airlinesim.aero/app/fleets/aircraft/"
-                + encodeURIComponent(rec.aircraftId) + "/0"
-            const row = document.createElement("a")
-            row.href = url
-            row.target = "_blank"
-            row.rel = "noopener"
-            row.style.cssText = "display:flex;align-items:center;gap:8px;padding:2px 4px;"
-                + "color:inherit;text-decoration:none;border-radius:3px;cursor:pointer;"
-            row.addEventListener("mouseenter", () => row.style.background = "rgba(96,165,250,0.08)")
-            row.addEventListener("mouseleave", () => row.style.background = "")
-            row.title = "Open AFP page for aircraft " + rec.aircraftId
-                + " (" + flightCount + " legs, scraped " + ageStr + " ago)"
-            row.innerHTML = "<span style=\"color:#60a5fa;font-weight:600;\">"
-                + escapeHtml(String(rec.aircraftId || "—")) + "</span>"
-                + "<span style=\"flex:1 1 auto;color:#9ca3af;\">"
-                + flightCount + " leg" + (flightCount === 1 ? "" : "s")
-                + "</span>"
-                + "<span style=\"color:#6b7280;font-variant-numeric:tabular-nums;\">"
-                + escapeHtml(ageStr)
-                + "</span>"
-            list.appendChild(row)
+        if (typeof RouteAssistantBillboard === "undefined") {
+            host.style.display = "none"
+            host.innerHTML = ""
+            return
         }
-        host.appendChild(list)
+        records.sort((a, b) => String(a.aircraftId || "").localeCompare(String(b.aircraftId || "")))
+        RouteAssistantBillboard.paint(host, {
+            records,
+            hubIata:          this.hubIata,
+            server:           this.server,
+            activeAircraftId: this._billboardActiveAircraftId || null,
+            timeMode:         this._billboardTimeMode || "1d",
+            onBandClick: (aircraftId) => {
+                this._billboardActiveAircraftId =
+                    (this._billboardActiveAircraftId === aircraftId) ? null : aircraftId
+                this._paintHubSchedulesFromCache()
+            },
+            onCanvasClick: () => {
+                if (!this._billboardActiveAircraftId) return
+                this._billboardActiveAircraftId = null
+                this._paintHubSchedulesFromCache()
+            },
+            onBandDoubleClick: (rec) => {
+                const url = "https://" + (rec.server || this.server) + ".airlinesim.aero/app/fleets/aircraft/"
+                    + encodeURIComponent(rec.aircraftId) + "/0"
+                window.open(url, "_blank", "noopener")
+            },
+            onModeChange: (mode) => {
+                this._billboardTimeMode = (mode === "7d") ? "7d" : "1d"
+                this._paintHubSchedulesFromCache()
+            }
+        })
     }
 
     _raAgeLabel(ms) {
@@ -4709,9 +5083,14 @@ class RouteAssistantPanel {
             return
         }
 
-        // Empty-cache banner — most common first-run state.
+        // Empty-cache banner — most common first-run state. Only short-
+        // circuits the TABLE view; WAVES / SANDBOX / HEATMAP have their
+        // own data dependencies (presets / ORS / topRoutes cache) and
+        // render their own empty states, so we let the dispatcher reach
+        // them rather than gating every tab on the demand cache.
         const resolved = this.rows.filter(r => r.paxScore !== null).length
-        if (resolved === 0) {
+        const panelMode = (this.settings && this.settings.panelMode) || "table"
+        if (resolved === 0 && panelMode === "table") {
             this._renderSeedPrompt()
             return
         }
@@ -5153,6 +5532,18 @@ class RouteAssistantPanel {
         // per-hub topRoutes cache populated by _publishTopRoutes.
         const {routes: hubRoutes, banner: hubBanner} =
             await this._resolvePickedHubRoutes(pickedHub, sorted)
+
+        // Coherence slice — hydrate the interline cache for the picked
+        // hub so cross-hub waves render pills. No-op when pickedHub
+        // matches the panel's primary hub (already hydrated in refresh)
+        // or when the hub has been hydrated previously.
+        if (pickedHub
+            && this.hubIata
+            && String(pickedHub).toUpperCase() !== String(this.hubIata).toUpperCase()
+            && Array.isArray(hubRoutes) && hubRoutes.length) {
+            const dests = hubRoutes.map(r => r && r.destIata).filter(Boolean)
+            await this._hydrateInterlineCacheForHub(pickedHub, dests)
+        }
         if (hubBanner) {
             const banner = document.createElement("div")
             banner.style.cssText = "margin:6px 0;padding:6px 10px;font-size:11px;"
@@ -6769,6 +7160,54 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Coherence slice — closes H 3b.2.1's cross-hub interline deferral.
+     *
+     * When the user switches the wave-overlay cross-hub picker to a hub
+     * other than the panel's primary, the interlineByPair cache only
+     * carries primary-hub records. This method extends the cache lazily:
+     * for each picked hub, bulkLoad its destinations once, mark the hub
+     * as hydrated, and trigger one wave-build invalidation so pills
+     * appear without a page reload. Multiple wave renders for the same
+     * hub short-circuit via the hydrated set; an in-flight hydration
+     * short-circuits via the inflight set so rapid picker-switching
+     * doesn't fire N parallel bulkLoads for the same hub.
+     */
+    async _hydrateInterlineCacheForHub(hubIata, dests) {
+        if (!hubIata) return false
+        if (typeof RouteAssistantInterlineStore === "undefined") return false
+        const HUB = String(hubIata).toUpperCase()
+        if (this._interlineHydratedHubs.has(HUB)) return false
+        if (this._interlineHydrationsInFlight.has(HUB)) return false
+        if (!Array.isArray(dests) || !dests.length) return false
+        this._interlineHydrationsInFlight.add(HUB)
+        try {
+            const pairs = dests
+                .map(d => String(d || "").toUpperCase())
+                .filter(d => d && d !== HUB)
+                .map(d => [HUB, d])
+            if (!pairs.length) {
+                this._interlineHydratedHubs.add(HUB)
+                return false
+            }
+            const blob = await RouteAssistantInterlineStore.bulkLoad(pairs)
+            let added = 0
+            for (const pair in blob) {
+                if (!this.interlineByPair.has(pair)) {
+                    this.interlineByPair.set(pair, blob[pair])
+                    added += 1
+                }
+            }
+            this._interlineHydratedHubs.add(HUB)
+            return added > 0
+        } catch (e) {
+            console.warn("[AES wave] cross-hub interline hydration failed for", HUB, e)
+            return false
+        } finally {
+            this._interlineHydrationsInFlight.delete(HUB)
+        }
+    }
+
+    /**
      * Slice 2 — produce a closure that classifies an outbound flight as
      * "own" / "interline" / "alliance" / null based on the panel's
      * already-loaded F slice 3 partner cache and own-enterprise list.
@@ -7891,6 +8330,15 @@ class RouteAssistantPanel {
         freqInput.addEventListener("input",   onChange)
         comfortSel.addEventListener("change", onChange)
 
+        // Slice 5a — expose control refs so the sparkline in the results
+        // card (built separately) can dispatch input events on click.
+        this._orsSandboxControlRefs = {
+            sliders:     sliders,
+            cargoSlider: cargoSlider,
+            freqInput:   freqInput,
+            comfortSel:  comfortSel
+        }
+
         // ----- Calibrate T affordance + per-route T banner --------------
         const calibrateRow = document.createElement("div")
         calibrateRow.style.cssText = "margin-top:10px;padding-top:10px;border-top:1px solid rgba(100,116,139,0.30);"
@@ -8628,11 +9076,625 @@ class RouteAssistantPanel {
 
         card.append(tbl)
 
+        // Slice 5b — historical pax/wk overlay (last 8–12 weeks) for context.
+        const paxHist = this._buildOrsSandboxPaxHistory(result, route)
+        if (paxHist) card.append(paxHist)
+
+        // Slice 5a — price-vs-profit sparkline below the outcome table.
+        const spark = this._buildOrsSandboxSparkline(result, route)
+        if (spark) card.append(spark)
+
+        // Slice 5c — sensitivity sweep heatmap (price × frequency).
+        const heatmap = this._buildOrsSandboxHeatmap(result, route)
+        if (heatmap) card.append(heatmap)
+
         // Slice 2c — collapsed per-class α override expander.
         const alphaExpander = this._buildOrsSandboxAlphaExpander(result, route)
         if (alphaExpander) card.append(alphaExpander)
 
         return card
+    }
+
+    /**
+     * Slice 5a — inline SVG sparkline of profit/wk over priceMultiplier
+     * across [0.7, 1.3] in 5% steps. Reuses `RouteAssistantOrsModel.
+     * scanPriceCurve` (the same helper slice 4a's "Find optimal price"
+     * button uses). Marks the current Y multiplier with a dashed green
+     * line, the optimal point with an amber dot, and the 1.0× baseline
+     * with a subdued tick. Click a point to apply that multiplier.
+     *
+     * Memoized on `this._orsSandboxCurveCache` keyed on every input
+     * except priceMultipliers — Y-slider drags hit cache, frequency /
+     * cargo / comfort / α / T / route changes bust it.
+     */
+    _buildOrsSandboxSparkline(result, route) {
+        if (!result || !result.modelParams) return null
+        if (!route || !route.dest) return null
+        const mp = result.modelParams
+        const baseScenario = (result.scenario && typeof result.scenario === "object") ? result.scenario : {}
+        const useReal = !!(this.settings.demandDepth && this.settings.demandDepth.useRealDemandForLF)
+        const econ    = this.settings.economics || {}
+        // Cache key: stable across priceMultiplier changes only.
+        const econFingerprint = [
+            econ.fuelPriceASc, econ.cargoYieldPerKgKm, econ.crewCostPerKm,
+            econ.maintCostPerKm, econ.depreciationPerKm, econ.miscOpsPerKm
+        ].map(v => (v == null ? "_" : String(v))).join(",")
+        // Route fingerprint covers the inputs scanPriceCurve actually
+        // reads via project(): observed prices, demand pools, distance,
+        // seats, current frequency. A bulk scrape that shifts any of
+        // these busts the cache without manual invalidation at the 13
+        // _orsSandboxResult reset sites.
+        const obs = (route.ownPricing && route.ownPricing.prices) || {}
+        const routeFingerprint = [
+            obs.Y != null ? obs.Y : "_",
+            obs.C != null ? obs.C : "_",
+            obs.F != null ? obs.F : "_",
+            route.paxDemandPool   != null ? route.paxDemandPool   : "_",
+            route.cargoDemandPool != null ? route.cargoDemandPool : "_",
+            route.distanceKm      != null ? route.distanceKm      : "_",
+            (route.spec && route.spec.seats != null) ? route.spec.seats : "_",
+            route.currentFrequency != null ? route.currentFrequency : "_"
+        ].join(",")
+        const cacheKey = [
+            String(route.hub  || this.hubIata || "").toUpperCase(),
+            String(route.dest || "").toUpperCase(),
+            routeFingerprint,
+            baseScenario.cargoMultiplier != null ? Number(baseScenario.cargoMultiplier) : 1,
+            baseScenario.frequency       != null ? Number(baseScenario.frequency)       : "_",
+            baseScenario.comfortDelta    != null ? Number(baseScenario.comfortDelta)    : 0,
+            mp.T != null ? Number(mp.T) : "_",
+            mp.ratingPriceElasticity != null ? Number(mp.ratingPriceElasticity) : "_",
+            JSON.stringify(mp.ratingPriceElasticityByClass || {}),
+            useReal ? 1 : 0,
+            econFingerprint
+        ].join("|")
+        let sweep = (this._orsSandboxCurveCache && this._orsSandboxCurveCache.key === cacheKey)
+            ? this._orsSandboxCurveCache.sweep : null
+        if (!sweep) {
+            sweep = RouteAssistantOrsModel.scanPriceCurve({
+                route:              route,
+                scenario:           baseScenario,
+                modelParams: {
+                    ratingPriceElasticity:        mp.ratingPriceElasticity,
+                    ratingComfortLift:            mp.ratingComfortLift,
+                    ratingPriceElasticityByClass: mp.ratingPriceElasticityByClass,
+                    alphaSourceByClass:           mp.alphaSourceByClass,
+                    perRouteT:                    mp.T
+                },
+                economics:          econ,
+                useRealDemandForLF: useReal,
+                scan:               {lo: 0.7, hi: 1.3, step: 0.05}
+            })
+            if (sweep) this._orsSandboxCurveCache = {key: cacheKey, sweep: sweep}
+        }
+        if (!sweep || !sweep.points || !sweep.points.length) return null
+        const profitPts = sweep.points.filter(p => p.profitPerWeek != null && isFinite(p.profitPerWeek))
+        if (!profitPts.length) return null
+
+        const W = 360, H = 56, PAD_L = 4, PAD_R = 4, PAD_T = 6, PAD_B = 12
+        const innerW = W - PAD_L - PAD_R
+        const innerH = H - PAD_T - PAD_B
+        const profits = profitPts.map(p => p.profitPerWeek)
+        const minP = Math.min.apply(null, profits)
+        const maxP = Math.max.apply(null, profits)
+        const range = (maxP - minP) || 1
+        const lo = sweep.points[0].multiplier
+        const hi = sweep.points[sweep.points.length - 1].multiplier
+        const xRange = (hi - lo) || 1
+        const xOf = (m) => PAD_L + (innerW * (m - lo) / xRange)
+        const yOf = (p) => PAD_T + innerH - (innerH * ((p - minP) / range))
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:8px;padding-top:8px;border-top:1px solid rgba(100,116,139,0.30);"
+        const head = document.createElement("div")
+        head.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:4px;"
+        const optMult  = sweep.optimal.multiplier
+        const optDelta = sweep.optimal.deltaPct
+        const deltaTxt = (optDelta != null)
+            ? ((optDelta >= 0 ? "+" : "") + (optDelta * 100).toFixed(1) + "%")
+            : "—"
+        head.innerHTML = "<strong style='color:#cbd5e1;'>Profit curve</strong> "
+            + "<span>0.70× → 1.30× · click any point to apply · optimal "
+            + "<span style='color:#fbbf24;'>" + optMult.toFixed(2) + "×</span> "
+            + "(" + deltaTxt + " vs current price)</span>"
+        wrap.append(head)
+
+        const svgNs = "http://www.w3.org/2000/svg"
+        const svg = document.createElementNS(svgNs, "svg")
+        svg.setAttribute("width", String(W))
+        svg.setAttribute("height", String(H))
+        svg.setAttribute("viewBox", "0 0 " + W + " " + H)
+        svg.style.cssText = "display:block;background:rgba(15,22,35,0.45);"
+            + "border:1px solid rgba(100,116,139,0.20);border-radius:3px;cursor:crosshair;"
+        const tip = document.createElementNS(svgNs, "title")
+        tip.textContent = "click a point to set Y/C/F price multiplier"
+        svg.append(tip)
+
+        // 1.0× baseline tick (subdued grey, dashed).
+        if (lo <= 1 && hi >= 1) {
+            const xb = xOf(1)
+            const tick = document.createElementNS(svgNs, "line")
+            tick.setAttribute("x1", String(xb)); tick.setAttribute("x2", String(xb))
+            tick.setAttribute("y1", String(PAD_T)); tick.setAttribute("y2", String(PAD_T + innerH))
+            tick.setAttribute("stroke", "#475569")
+            tick.setAttribute("stroke-width", "1")
+            tick.setAttribute("stroke-dasharray", "1,2")
+            svg.append(tick)
+        }
+
+        // Profit polyline.
+        const poly = document.createElementNS(svgNs, "polyline")
+        poly.setAttribute("points", profitPts.map(p => xOf(p.multiplier) + "," + yOf(p.profitPerWeek)).join(" "))
+        poly.setAttribute("fill", "none")
+        poly.setAttribute("stroke", "#60a5fa")
+        poly.setAttribute("stroke-width", "1.5")
+        poly.setAttribute("stroke-linecap", "round")
+        poly.setAttribute("stroke-linejoin", "round")
+        svg.append(poly)
+
+        // Optimal dot (amber).
+        const optProfit = sweep.optimal.profitPerWeek
+        if (optProfit != null && isFinite(optProfit)) {
+            const dot = document.createElementNS(svgNs, "circle")
+            dot.setAttribute("cx", String(xOf(optMult)))
+            dot.setAttribute("cy", String(yOf(optProfit)))
+            dot.setAttribute("r", "3")
+            dot.setAttribute("fill", "#fbbf24")
+            dot.setAttribute("stroke", "rgba(15,22,35,0.85)")
+            dot.setAttribute("stroke-width", "1")
+            svg.append(dot)
+        }
+
+        // Current Y multiplier marker (green dashed vertical).
+        const yMult = (baseScenario.priceMultipliers && Number(baseScenario.priceMultipliers.Y)) || 1
+        if (yMult >= lo && yMult <= hi) {
+            const xm = xOf(yMult)
+            const cur = document.createElementNS(svgNs, "line")
+            cur.setAttribute("x1", String(xm)); cur.setAttribute("x2", String(xm))
+            cur.setAttribute("y1", String(PAD_T)); cur.setAttribute("y2", String(PAD_T + innerH))
+            cur.setAttribute("stroke", "#34d399")
+            cur.setAttribute("stroke-width", "1.2")
+            cur.setAttribute("stroke-dasharray", "3,2")
+            svg.append(cur)
+        }
+
+        // X-axis labels (lo / 1× / hi).
+        const xLabels = (lo <= 1 && hi >= 1) ? [lo, 1, hi] : [lo, hi]
+        for (const m of xLabels) {
+            const t = document.createElementNS(svgNs, "text")
+            t.setAttribute("x", String(xOf(m)))
+            t.setAttribute("y", String(H - 2))
+            t.setAttribute("fill", "#6b7280")
+            t.setAttribute("font-size", "9")
+            t.setAttribute("text-anchor", m === lo ? "start" : (m === hi ? "end" : "middle"))
+            t.textContent = m.toFixed(2) + "×"
+            svg.append(t)
+        }
+
+        // Hover tooltip via the SVG's <title> element — updates on move.
+        const findNearest = (clientX) => {
+            const rect = svg.getBoundingClientRect()
+            const px = clientX - rect.left
+            const m = lo + ((px - PAD_L) / innerW) * xRange
+            let nearest = null, nearestDiff = Infinity
+            for (const p of sweep.points) {
+                const d = Math.abs(p.multiplier - m)
+                if (d < nearestDiff) { nearest = p; nearestDiff = d }
+            }
+            return nearest
+        }
+        const fmtMoney = (v) => (v == null || !isFinite(v))
+            ? "—"
+            : (v >= 0 ? "" : "−") + "$" + Math.abs(Math.round(v)).toLocaleString()
+        svg.addEventListener("mousemove", (e) => {
+            const n = findNearest(e.clientX)
+            if (!n || n.profitPerWeek == null || !isFinite(n.profitPerWeek)) return
+            const dp = (n.deltaProfit != null && isFinite(n.deltaProfit))
+                ? " (" + (n.deltaProfit >= 0 ? "+" : "") + fmtMoney(n.deltaProfit) + " vs base)"
+                : ""
+            tip.textContent = n.multiplier.toFixed(2) + "× → " + fmtMoney(n.profitPerWeek) + "/wk" + dp
+        })
+        svg.addEventListener("click", (e) => {
+            const n = findNearest(e.clientX)
+            if (!n) return
+            this._applyOrsSandboxPriceMultiplier(n.multiplier)
+        })
+
+        wrap.append(svg)
+        return wrap
+    }
+
+    /**
+     * Slice 5a click-to-apply — snap every cabin price slider to the
+     * given multiplier and dispatch its input event so the existing
+     * recompute pipeline picks the change up. No-ops if the scenario
+     * card hasn't built yet (refs missing).
+     */
+    _applyOrsSandboxPriceMultiplier(mult) {
+        const refs = this._orsSandboxControlRefs
+        if (!refs || !refs.sliders) return
+        const v = Number(mult)
+        if (!isFinite(v) || v <= 0) return
+        for (const cls of ["Y", "C", "F"]) {
+            const slider = refs.sliders[cls]
+            if (!slider) continue
+            slider.value = v.toFixed(2)
+            slider.dispatchEvent(new Event("input", {bubbles: true}))
+        }
+    }
+
+    /**
+     * Slice 5c — heatmap click-to-apply. Snaps cabin sliders to the cell's
+     * price multiplier AND sets the frequency input to the cell's frequency,
+     * then dispatches one consolidated `input` event so the existing
+     * onChange path runs `project()` exactly once for the new state.
+     */
+    _applyOrsSandboxPriceFreq(priceMult, frequency) {
+        const refs = this._orsSandboxControlRefs
+        if (!refs || !refs.sliders) return
+        const pm = Number(priceMult), fq = Number(frequency)
+        if (!isFinite(pm) || pm <= 0) return
+        for (const cls of ["Y", "C", "F"]) {
+            const slider = refs.sliders[cls]
+            if (slider) slider.value = pm.toFixed(2)
+        }
+        if (refs.freqInput && isFinite(fq) && fq > 0) {
+            refs.freqInput.value = String(Math.round(fq))
+        }
+        const fire = refs.freqInput || refs.sliders.Y || refs.sliders.C || refs.sliders.F
+        if (fire) fire.dispatchEvent(new Event("input", {bubbles: true}))
+    }
+
+    /**
+     * Slice 5c — sensitivity sweep heatmap. 5×N grid of price multiplier ×
+     * frequency, cell-coloured by profit/wk delta vs the (1.0×, current freq)
+     * baseline. Click any cell to apply both axes simultaneously. Mounted
+     * between the slice-5a profit-curve sparkline and the slice-2c α expander
+     * inside the results card.
+     *
+     * Reuses the same modelParams + economics fingerprint as slice 5a's
+     * cache so a Y/C/F drag hits both caches and the only real recompute
+     * is `project()` itself plus the result-card swap.
+     *
+     * Returns null when scan produces no profit signal (degenerate route)
+     * or when current frequency is 0 (no synthesis basis).
+     */
+    _buildOrsSandboxHeatmap(result, route) {
+        if (!result || !result.modelParams) return null
+        if (!route || !route.dest) return null
+        const baseFreq = Number(route.currentFrequency) || 0
+        if (baseFreq <= 0) return null
+        const mp = result.modelParams
+        const baseScenario = (result.scenario && typeof result.scenario === "object") ? result.scenario : {}
+        const useReal = !!(this.settings.demandDepth && this.settings.demandDepth.useRealDemandForLF)
+        const econ    = this.settings.economics || {}
+
+        const econFp = [
+            econ.fuelPriceASc, econ.cargoYieldPerKgKm, econ.crewCostPerKm,
+            econ.maintCostPerKm, econ.depreciationPerKm, econ.miscOpsPerKm
+        ].map(v => (v == null ? "_" : String(v))).join(",")
+        const obs = (route.ownPricing && route.ownPricing.prices) || {}
+        const routeFp = [
+            obs.Y != null ? obs.Y : "_",
+            obs.C != null ? obs.C : "_",
+            obs.F != null ? obs.F : "_",
+            route.paxDemandPool   != null ? route.paxDemandPool   : "_",
+            route.cargoDemandPool != null ? route.cargoDemandPool : "_",
+            route.distanceKm      != null ? route.distanceKm      : "_",
+            (route.spec && route.spec.seats != null) ? route.spec.seats : "_",
+            route.currentFrequency != null ? route.currentFrequency : "_"
+        ].join(",")
+        const cacheKey = [
+            String(route.hub  || this.hubIata || "").toUpperCase(),
+            String(route.dest || "").toUpperCase(),
+            routeFp,
+            baseScenario.cargoMultiplier != null ? Number(baseScenario.cargoMultiplier) : 1,
+            baseScenario.comfortDelta    != null ? Number(baseScenario.comfortDelta)    : 0,
+            mp.T != null ? Number(mp.T) : "_",
+            mp.ratingPriceElasticity != null ? Number(mp.ratingPriceElasticity) : "_",
+            JSON.stringify(mp.ratingPriceElasticityByClass || {}),
+            useReal ? 1 : 0,
+            econFp
+        ].join("|")
+        let grid = (this._orsSandboxHeatmapCache && this._orsSandboxHeatmapCache.key === cacheKey)
+            ? this._orsSandboxHeatmapCache.grid : null
+        if (!grid) {
+            grid = RouteAssistantOrsModel.scanPriceFreqGrid({
+                route:              route,
+                scenario:           baseScenario,
+                modelParams: {
+                    ratingPriceElasticity:        mp.ratingPriceElasticity,
+                    ratingComfortLift:            mp.ratingComfortLift,
+                    ratingPriceElasticityByClass: mp.ratingPriceElasticityByClass,
+                    alphaSourceByClass:           mp.alphaSourceByClass,
+                    perRouteT:                    mp.T
+                },
+                economics:          econ,
+                useRealDemandForLF: useReal
+            })
+            if (grid) this._orsSandboxHeatmapCache = {key: cacheKey, grid: grid}
+        }
+        if (!grid || !grid.cells || !grid.cells.length) return null
+
+        const valid = grid.cells.filter(c => c.deltaProfit != null && isFinite(c.deltaProfit))
+        if (valid.length < 2) return null
+        let absMax = 0
+        for (const c of valid) {
+            const a = Math.abs(c.deltaProfit)
+            if (a > absMax) absMax = a
+        }
+        if (absMax === 0) absMax = 1
+
+        const priceMults = grid.priceMultipliers
+        const frequencies = grid.frequencies
+        const cellByKey = new Map()
+        for (const c of grid.cells) cellByKey.set(c.priceMultiplier + "|" + c.frequency, c)
+
+        const Y_LABEL = 38, X_LABEL = 14
+        const CELL_W = 56, CELL_H = 24
+        const totalW = Y_LABEL + frequencies.length * CELL_W + 4
+        const totalH = X_LABEL + priceMults.length * CELL_H + 4
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:8px;padding-top:8px;border-top:1px solid rgba(100,116,139,0.30);"
+        const head = document.createElement("div")
+        head.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:4px;"
+        const opt = grid.optimal
+        const optDelta = (opt && opt.deltaProfit != null && grid.baselineProfit != null && grid.baselineProfit !== 0)
+            ? ((opt.deltaProfit / Math.abs(grid.baselineProfit)) * 100)
+            : null
+        const optTxt = (opt && opt.priceMultiplier != null && opt.frequency != null)
+            ? (opt.priceMultiplier.toFixed(2) + "× · " + opt.frequency + "/wk")
+            : "—"
+        const deltaTxt = (optDelta != null) ? ((optDelta >= 0 ? "+" : "") + optDelta.toFixed(1) + "%") : "—"
+        head.innerHTML = "<strong style='color:#cbd5e1;'>Sensitivity</strong> "
+            + "<span>price × freq · click any cell to apply · best <span style='color:#fbbf24;'>"
+            + optTxt + "</span> (" + deltaTxt + " vs current)</span>"
+        wrap.append(head)
+
+        const svgNs = "http://www.w3.org/2000/svg"
+        const svg = document.createElementNS(svgNs, "svg")
+        svg.setAttribute("width", String(totalW))
+        svg.setAttribute("height", String(totalH))
+        svg.setAttribute("viewBox", "0 0 " + totalW + " " + totalH)
+        svg.style.cssText = "display:block;background:rgba(15,22,35,0.45);"
+            + "border:1px solid rgba(100,116,139,0.20);border-radius:3px;"
+
+        for (let j = 0; j < frequencies.length; j++) {
+            const t = document.createElementNS(svgNs, "text")
+            t.setAttribute("x", String(Y_LABEL + j * CELL_W + CELL_W / 2))
+            t.setAttribute("y", "10")
+            t.setAttribute("text-anchor", "middle")
+            t.setAttribute("font-size", "9")
+            t.setAttribute("fill", "#94a3b8")
+            t.textContent = frequencies[j] + "/wk"
+            svg.append(t)
+        }
+
+        const fmtMoney = (v) => {
+            if (v == null || !isFinite(v)) return "—"
+            const a = Math.abs(v)
+            if (a >= 1e6) return (v / 1e6).toFixed(1) + "M"
+            if (a >= 1e3) return Math.round(v / 1e3) + "K"
+            return Math.round(v).toString()
+        }
+        const tintFor = (delta) => {
+            if (delta == null || !isFinite(delta)) return "rgba(100,116,139,0.20)"
+            const ratio = Math.max(-1, Math.min(1, delta / absMax))
+            const intensity = Math.abs(ratio) * 0.55
+            if (ratio >= 0) return "rgba(52,211,153," + intensity.toFixed(2) + ")"
+            return "rgba(248,113,113," + intensity.toFixed(2) + ")"
+        }
+
+        for (let i = 0; i < priceMults.length; i++) {
+            const m = priceMults[i]
+            const yLabel = document.createElementNS(svgNs, "text")
+            yLabel.setAttribute("x", String(Y_LABEL - 4))
+            yLabel.setAttribute("y", String(X_LABEL + i * CELL_H + CELL_H / 2 + 3))
+            yLabel.setAttribute("text-anchor", "end")
+            yLabel.setAttribute("font-size", "9")
+            yLabel.setAttribute("fill", "#94a3b8")
+            yLabel.textContent = m.toFixed(2) + "×"
+            svg.append(yLabel)
+            for (let j = 0; j < frequencies.length; j++) {
+                const f = frequencies[j]
+                const cell = cellByKey.get(m + "|" + f)
+                const x = Y_LABEL + j * CELL_W
+                const y = X_LABEL + i * CELL_H
+                const rect = document.createElementNS(svgNs, "rect")
+                rect.setAttribute("x", String(x))
+                rect.setAttribute("y", String(y))
+                rect.setAttribute("width",  String(CELL_W - 1))
+                rect.setAttribute("height", String(CELL_H - 1))
+                rect.setAttribute("fill", tintFor(cell ? cell.deltaProfit : null))
+                rect.setAttribute("stroke", "rgba(100,116,139,0.30)")
+                rect.setAttribute("stroke-width", "0.5")
+                if (cell && opt && cell === opt) {
+                    rect.setAttribute("stroke", "#fbbf24")
+                    rect.setAttribute("stroke-width", "1.5")
+                }
+                rect.style.cursor = "pointer"
+                const tip = document.createElementNS(svgNs, "title")
+                if (cell && cell.profitPerWeek != null) {
+                    const dPct = (cell.deltaProfit != null && grid.baselineProfit != null && grid.baselineProfit !== 0)
+                        ? ((cell.deltaProfit / Math.abs(grid.baselineProfit)) * 100) : null
+                    const dPctTxt = (dPct != null) ? ((dPct >= 0 ? "+" : "") + dPct.toFixed(1) + "%") : "—"
+                    tip.textContent = m.toFixed(2) + "× · " + f + "/wk\n"
+                        + "Profit/wk: $" + fmtMoney(cell.profitPerWeek) + "\n"
+                        + "Δ vs current: " + dPctTxt + "\n"
+                        + "Click to apply."
+                } else {
+                    tip.textContent = m.toFixed(2) + "× · " + f + "/wk · no projection"
+                }
+                rect.append(tip)
+                if (cell) {
+                    rect.addEventListener("click", () => {
+                        this._applyOrsSandboxPriceFreq(cell.priceMultiplier, cell.frequency)
+                    })
+                }
+                svg.append(rect)
+
+                if (cell && cell.deltaProfit != null && grid.baselineProfit != null && grid.baselineProfit !== 0) {
+                    const dPct = (cell.deltaProfit / Math.abs(grid.baselineProfit)) * 100
+                    const tx = document.createElementNS(svgNs, "text")
+                    tx.setAttribute("x", String(x + CELL_W / 2))
+                    tx.setAttribute("y", String(y + CELL_H / 2 + 3))
+                    tx.setAttribute("text-anchor", "middle")
+                    tx.setAttribute("font-size", "9")
+                    tx.setAttribute("fill", Math.abs(dPct) > 5 ? "#f3f4f6" : "#9ca3af")
+                    tx.style.pointerEvents = "none"
+                    tx.textContent = (dPct >= 0 ? "+" : "") + dPct.toFixed(0) + "%"
+                    svg.append(tx)
+                }
+            }
+        }
+        wrap.append(svg)
+        return wrap
+    }
+
+    /**
+     * Slice 5b — historical pax/wk overlay. Reads the last 8–12 weeks of
+     * the PAX bookings/wk series stashed on the route by `_applyCachedDemand`
+     * and renders an inline 360×40 SVG. A horizontal dashed reference line
+     * marks the projection's `paxDemandPool` (the average over the window),
+     * so the user can see at a glance whether the projection's pool number
+     * sits above or below the recent trend.
+     *
+     * No new fetches — the series is already in memory once demand-depth
+     * has resolved. Returns null when the route lacks the series (route
+     * never demand-derived, or markets-historic missing/expired).
+     */
+    _buildOrsSandboxPaxHistory(result, route) {
+        if (!route) return null
+        const series = route.paxHistorySeries
+        if (!series || !Array.isArray(series.capacities) || !series.capacities.length) return null
+        const periods = Array.isArray(series.periods) ? series.periods : []
+        const caps    = series.capacities
+            .map(v => (v == null || !isFinite(v)) ? null : Number(v))
+        const valid   = caps.filter(v => v != null && v >= 0)
+        if (valid.length < 2) return null
+
+        const W = 360, H = 40, PAD_L = 4, PAD_R = 4, PAD_T = 4, PAD_B = 12
+        const innerW = W - PAD_L - PAD_R
+        const innerH = H - PAD_T - PAD_B
+        const minV = Math.min.apply(null, valid)
+        const maxV = Math.max.apply(null, valid)
+        const range = (maxV - minV) || 1
+        const N = caps.length
+        const xOf = (i) => (N === 1) ? (PAD_L + innerW / 2)
+            : PAD_L + (innerW * i / (N - 1))
+        const yOf = (v) => PAD_T + innerH - (innerH * ((v - minV) / range))
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:8px;padding-top:8px;border-top:1px solid rgba(100,116,139,0.30);"
+        const head = document.createElement("div")
+        head.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:4px;"
+        const last  = caps[caps.length - 1]
+        const first = caps.find(v => v != null) || null
+        const trendTxt = (last != null && first != null && first !== 0)
+            ? (((last - first) / first) >= 0 ? "+" : "")
+              + (((last - first) / first) * 100).toFixed(0) + "%"
+            : "—"
+        const pool = (route.paxDemandPool != null) ? Math.round(route.paxDemandPool) : null
+        head.innerHTML = "<strong style='color:#cbd5e1;'>Pax/wk · last " + N + " weeks</strong> "
+            + "<span>min " + Math.round(minV).toLocaleString()
+            + " · max " + Math.round(maxV).toLocaleString()
+            + (pool != null ? " · pool " + pool.toLocaleString() : "")
+            + " · trend <span style='color:" + (trendTxt.startsWith("-") ? "#f87171" : (trendTxt === "—" ? "#6b7280" : "#34d399")) + ";'>"
+            + trendTxt + "</span></span>"
+        wrap.append(head)
+
+        const svgNs = "http://www.w3.org/2000/svg"
+        const svg = document.createElementNS(svgNs, "svg")
+        svg.setAttribute("width", String(W))
+        svg.setAttribute("height", String(H))
+        svg.setAttribute("viewBox", "0 0 " + W + " " + H)
+        svg.style.cssText = "display:block;background:rgba(15,22,35,0.45);"
+            + "border:1px solid rgba(100,116,139,0.20);border-radius:3px;"
+        const tip = document.createElementNS(svgNs, "title")
+        tip.textContent = "Hover any point for the period's pax/wk."
+        svg.append(tip)
+
+        // Pool reference line (dashed, subdued) — only renders when pool
+        // sits inside the rendered range so the line stays informative.
+        if (pool != null && pool >= minV && pool <= maxV) {
+            const yp = yOf(pool)
+            const ref = document.createElementNS(svgNs, "line")
+            ref.setAttribute("x1", String(PAD_L)); ref.setAttribute("x2", String(PAD_L + innerW))
+            ref.setAttribute("y1", String(yp));    ref.setAttribute("y2", String(yp))
+            ref.setAttribute("stroke", "#475569")
+            ref.setAttribute("stroke-width", "1")
+            ref.setAttribute("stroke-dasharray", "2,3")
+            svg.append(ref)
+        }
+
+        // Polyline of the series — gaps drawn as separate sub-segments so
+        // a missing period doesn't create a phantom interpolation.
+        const segs = []
+        let cur = []
+        for (let i = 0; i < N; i++) {
+            const v = caps[i]
+            if (v == null || !isFinite(v)) {
+                if (cur.length) { segs.push(cur); cur = [] }
+                continue
+            }
+            cur.push(xOf(i) + "," + yOf(v))
+        }
+        if (cur.length) segs.push(cur)
+        for (const seg of segs) {
+            if (seg.length < 2) continue
+            const poly = document.createElementNS(svgNs, "polyline")
+            poly.setAttribute("points", seg.join(" "))
+            poly.setAttribute("fill", "none")
+            poly.setAttribute("stroke", "#a78bfa")
+            poly.setAttribute("stroke-width", "1.5")
+            poly.setAttribute("stroke-linecap", "round")
+            poly.setAttribute("stroke-linejoin", "round")
+            svg.append(poly)
+        }
+
+        // Most-recent-period dot — anchors "current" in the trend visually.
+        if (last != null && isFinite(last)) {
+            const dot = document.createElementNS(svgNs, "circle")
+            dot.setAttribute("cx", String(xOf(N - 1)))
+            dot.setAttribute("cy", String(yOf(last)))
+            dot.setAttribute("r", "2.5")
+            dot.setAttribute("fill", "#c4b5fd")
+            dot.setAttribute("stroke", "rgba(15,22,35,0.85)")
+            dot.setAttribute("stroke-width", "1")
+            svg.append(dot)
+        }
+
+        // X-axis: just the oldest and newest period labels.
+        const oldestLabel = (periods[0] != null) ? String(periods[0]) : "wk -" + (N - 1)
+        const newestLabel = (periods[N - 1] != null) ? String(periods[N - 1]) : "wk 0"
+        const tStart = document.createElementNS(svgNs, "text")
+        tStart.setAttribute("x", String(PAD_L)); tStart.setAttribute("y", String(H - 2))
+        tStart.setAttribute("fill", "#6b7280"); tStart.setAttribute("font-size", "9")
+        tStart.setAttribute("text-anchor", "start")
+        tStart.textContent = oldestLabel
+        const tEnd = document.createElementNS(svgNs, "text")
+        tEnd.setAttribute("x", String(PAD_L + innerW)); tEnd.setAttribute("y", String(H - 2))
+        tEnd.setAttribute("fill", "#6b7280"); tEnd.setAttribute("font-size", "9")
+        tEnd.setAttribute("text-anchor", "end")
+        tEnd.textContent = newestLabel
+        svg.append(tStart, tEnd)
+
+        // Hover tooltip: pick the closest period's value and surface it.
+        svg.addEventListener("mousemove", (e) => {
+            const rect = svg.getBoundingClientRect()
+            const px = e.clientX - rect.left
+            const norm = Math.max(0, Math.min(1, (px - PAD_L) / innerW))
+            const idx  = (N === 1) ? 0 : Math.round(norm * (N - 1))
+            const v    = caps[idx]
+            const periodLabel = (periods[idx] != null) ? String(periods[idx]) : ("wk " + (idx - (N - 1)))
+            tip.textContent = (v == null || !isFinite(v))
+                ? periodLabel + ": no data"
+                : periodLabel + ": " + Math.round(v).toLocaleString() + " pax/wk"
+        })
+
+        wrap.append(svg)
+        return wrap
     }
 
     /**
@@ -9042,7 +10104,48 @@ class RouteAssistantPanel {
         let ourEnterpriseId = null
         const myIds = (this.settings && this.settings.carriers && this.settings.carriers.myEnterpriseIds) || []
         if (myIds.length) ourEnterpriseId = myIds[0]
-        return {
+        const falloffPct = (this.settings && this.settings.aircraft && this.settings.aircraft.falloffPct) || 10
+        const useDistFuel = !!(this.settings && this.settings.economics && this.settings.economics.fuelPriceAutoEnabled)
+        const fleetMedAlpha = this._ratingAlphaFleetMedian || null
+
+        // Slice 6a — memoize the bundle on the row reference. The bundle
+        // reads ~25 fields; rebuilding it on every recompute (60Hz during
+        // a slider drag) is wasteful when row + settings + fleet haven't
+        // changed. WeakMap keying auto-GCs old entries when the panel
+        // rebuilds rows. The signature array catches mutation paths the
+        // row reference doesn't (`_applyCachedDemand` mutates row fields
+        // in-place, leaving the reference stable but data fresh — so
+        // every field the bundle reads goes into the signature).
+        const cache = this._orsSandboxRouteCache || (this._orsSandboxRouteCache = new WeakMap())
+        const sig = [
+            // Settings + fleet inputs (panel-instance state, not row data).
+            spec, ourEnterpriseId, falloffPct, useDistFuel ? 1 : 0, fleetMedAlpha,
+            // Row data — every field the bundle reads. Order is part of
+            // the contract; do not reshuffle without checking the build
+            // block below stays in sync.
+            row.destIata, row.distanceKm,
+            row.ownPricing, row.ownPriceDefaults,
+            row.orsByClass, row.marketSharePax,
+            row.orsOurFlightIds, row.orsOurCarrierPrefixes,
+            currentFreq,
+            row.paxDemandPool, row.cargoDemandPool, row.paxHistorySeries,
+            row.paxElasticity, row.cargoElasticity,
+            row.paxScore, row.cargoScore,
+            row.fuelPriceASc,
+            row.ratingPriceElasticityByClass, row.ratingObservationCounts,
+            row.ratingAlphaOverride, row.ratingDerivationNotes,
+            row.demandDerivedAt
+        ]
+        const entry = cache.get(row)
+        if (entry && entry.sig.length === sig.length) {
+            let same = true
+            for (let i = 0; i < sig.length; i++) {
+                if (!Object.is(entry.sig[i], sig[i])) { same = false; break }
+            }
+            if (same) return entry.bundle
+        }
+
+        const bundle = {
             hub:                this.hubIata,
             dest:               row.destIata,
             distanceKm:         row.distanceKm,
@@ -9056,13 +10159,15 @@ class RouteAssistantPanel {
             currentFrequency:   currentFreq,
             paxDemandPool:      row.paxDemandPool != null ? row.paxDemandPool : null,
             cargoDemandPool:    row.cargoDemandPool != null ? row.cargoDemandPool : null,
+            // Slice 5b — slim PAX history series for the outcome card overlay.
+            paxHistorySeries:   row.paxHistorySeries || null,
             paxElasticity:      row.paxElasticity != null ? row.paxElasticity : null,
             cargoElasticity:    row.cargoElasticity != null ? row.cargoElasticity : null,
             paxScore:           row.paxScore,
             cargoScore:         row.cargoScore,
             aircraftAge:        spec && spec.aircraftAge,
-            falloffPct:         (this.settings && this.settings.aircraft && this.settings.aircraft.falloffPct) || 10,
-            useDistanceFuel:    !!(this.settings && this.settings.economics && this.settings.economics.fuelPriceAutoEnabled),
+            falloffPct:         falloffPct,
+            useDistanceFuel:    useDistFuel,
             fuelPriceASc:       row.fuelPriceASc != null ? row.fuelPriceASc : null,
             // Slice 2c — per-route per-class rating-price elasticity bundle.
             // The cascade resolver in `_recomputeOrsSandbox` consumes these
@@ -9071,9 +10176,11 @@ class RouteAssistantPanel {
             ratingPriceElasticityByClass: row.ratingPriceElasticityByClass || null,
             ratingObservationCounts:      row.ratingObservationCounts      || {Y: 0, C: 0, F: 0},
             ratingAlphaOverride:          row.ratingAlphaOverride          || null,
-            fleetMedianAlpha:             this._ratingAlphaFleetMedian     || null,
+            fleetMedianAlpha:             fleetMedAlpha,
             ratingDerivationNotes:        row.ratingDerivationNotes        || []
         }
+        cache.set(row, {sig: sig, bundle: bundle})
+        return bundle
     }
 
     /**
@@ -9104,6 +10211,15 @@ class RouteAssistantPanel {
         }, 250)
 
         if (this._orsSandboxRaf) cancelAnimationFrame(this._orsSandboxRaf)
+        // Slice 6b — paint the overlay BEFORE scheduling the heavy work
+        // when the previous project() was slow. project() runs synchronously
+        // inside the rAF, so a setTimeout watchdog inside the rAF can't fire
+        // until project() returns; only an upfront paint can show feedback.
+        // The card swap at the end of the rAF removes the overlay along
+        // with the previous results-card subtree.
+        if (this._orsSandboxLastProjectMs > 100 && this._orsSandboxResultsHost) {
+            this._paintOrsSandboxComputingOverlay(this._orsSandboxResultsHost)
+        }
         this._orsSandboxRaf = requestAnimationFrame(() => {
             this._orsSandboxRaf = 0
             const route = this._orsSandboxRoute && this._orsSandboxRoute._row
@@ -9165,6 +10281,11 @@ class RouteAssistantPanel {
                     alphaSourceByClass[cls]   = "global"
                 }
             }
+            // Slice 6b — measure project() so subsequent recomputes know
+            // whether to paint the upfront overlay. performance.now() is
+            // monotonic across the rAF boundary; falls back to Date.now()
+            // when performance is missing (older test contexts).
+            const _t0 = (typeof performance !== "undefined") ? performance.now() : Date.now()
             this._orsSandboxResult = RouteAssistantOrsModel.project({
                 route:              route,
                 scenario:           scenario,
@@ -9175,6 +10296,7 @@ class RouteAssistantPanel {
                 economics:          this.settings.economics || {},
                 useRealDemandForLF: !!(this.settings.demandDepth && this.settings.demandDepth.useRealDemandForLF)
             })
+            this._orsSandboxLastProjectMs = ((typeof performance !== "undefined") ? performance.now() : Date.now()) - _t0
             // Swap just the results card + notes — leaves the controls card alone
             // (preserves slider drag focus + cursor position).
             if (this._orsSandboxResultsHost && this._orsSandboxResultsHost.parentNode) {
@@ -9192,6 +10314,26 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Slice 6b — paint a faint "computing…" overlay on the results card
+     * while the next projection runs. Idempotent: a second call before the
+     * card swap clears returns the existing node. The overlay is removed
+     * implicitly when `_recomputeOrsSandbox` swaps the results-card subtree.
+     */
+    _paintOrsSandboxComputingOverlay(host) {
+        if (!host || host.querySelector("[data-aes-ors-computing]")) return
+        const cs = window.getComputedStyle ? getComputedStyle(host) : null
+        if (cs && cs.position === "static") host.style.position = "relative"
+        const veil = document.createElement("div")
+        veil.setAttribute("data-aes-ors-computing", "1")
+        veil.style.cssText = "position:absolute;inset:0;display:flex;align-items:flex-start;"
+            + "justify-content:flex-end;padding:6px 10px;pointer-events:none;"
+            + "background:rgba(15,22,35,0.35);color:#94a3b8;font-size:10px;"
+            + "letter-spacing:0.4px;text-transform:uppercase;border-radius:inherit;"
+        veil.textContent = "computing…"
+        host.append(veil)
+    }
+
+    /**
      * Solve T from the cached marketShare leaderboard observation for
      * this route. Refuses calibration if marketShare is missing, the
      * user's enterprise isn't in the leaderboard, or the freshness
@@ -9204,38 +10346,26 @@ class RouteAssistantPanel {
             banner.textContent = msg
             setTimeout(() => this._refreshOrsSandboxTBanner(route), 6000)
         }
-        const mkt = route.marketSharePax
         const ourId = route.ourEnterpriseId
-        if (!mkt || !mkt.length) return out("Calibration unavailable — no market-share data cached for this route.", false)
-        if (!ourId) return out("Calibration unavailable — set your enterprise id in Settings → Carriers → Contractual partners.", false)
-        const ourRow = RouteAssistantOrsModel.findOurInLeaderboard(mkt, ourId)
-        if (!ourRow) return out("Your enterprise (id " + ourId + ") isn't in this route's leaderboard. Confirm Settings → Carriers → my enterprise IDs.", false)
-        const observedShare = (ourRow.sharePct != null) ? Number(ourRow.sharePct) / 100 : null
-        if (observedShare == null || !isFinite(observedShare)) return out("Calibration unavailable — leaderboard row has no share%.", false)
-
-        // Use the primary class connection list (Y first, then C, then F).
-        const byClass = route.orsByClass || {}
-        const primaryClass = byClass.ECONOMY || byClass.BUSINESS || byClass.FIRST
-        if (!primaryClass || !Array.isArray(primaryClass.connections) || !primaryClass.connections.length) {
-            return out("Calibration unavailable — no ORS connection list cached for any class.", false)
-        }
-
-        // Build the ratings array + ourIndices the same way the model does.
-        const conns = primaryClass.connections.slice(0, RouteAssistantOrsModel.MAX_FOR_SOFTMAX)
-        const ratings = conns.map(c => Number(c.rating) || 0)
-        const ourIndices = []
-        for (let i = 0; i < conns.length; i++) {
-            const legs = (conns[i].legs || []).filter(l => !l.isGround)
-            if (legs.length && legs.every(l => !!l.isOurs)) ourIndices.push(i)
-        }
-        if (!ourIndices.length) return out("Calibration unavailable — no own connections in the ORS data.", false)
-
-        const T = RouteAssistantOrsModel.calibrateTemperature({
-            allRatings:    ratings,
-            ourIndices:    ourIndices,
-            observedShare: observedShare
+        const result = RouteAssistantOrsModel.calibrateRouteT({
+            orsByClass:      route.orsByClass,
+            marketSharePax:  route.marketSharePax,
+            ourEnterpriseId: ourId
         })
-        if (T == null || !isFinite(T)) return out("Calibration failed — solver did not converge.", false)
+        if (!result.ok) {
+            const messages = {
+                "no-marketShare":      "Calibration unavailable — no market-share data cached for this route.",
+                "no-ourEnterpriseId":  "Calibration unavailable — set your enterprise id in Settings → Carriers → Contractual partners.",
+                "not-in-leaderboard":  "Your enterprise (id " + ourId + ") isn't in this route's leaderboard. Confirm Settings → Carriers → my enterprise IDs.",
+                "no-share":            "Calibration unavailable — leaderboard row has no share%.",
+                "no-connections":      "Calibration unavailable — no ORS connection list cached for any class.",
+                "no-own-connections":  "Calibration unavailable — no own connections in the ORS data.",
+                "solver-failed":       "Calibration failed — solver did not converge."
+            }
+            return out(messages[result.code] || ("Calibration unavailable — " + result.code), false)
+        }
+        const T = result.T
+        const observedShare = result.observedShare
 
         // Persist per-route T + the calibration timestamp so the results
         // card can flag stale calibrations (markets drift; 30+ day-old
@@ -9292,6 +10422,72 @@ class RouteAssistantPanel {
         }
         this._orsSandboxResult = null
         this._render()
+    }
+
+    /**
+     * Auto-T-calibration over every visible row whose inputs satisfy the
+     * same gates the manual calibrate button enforces (marketSharePax
+     * cached, ourEnterpriseId in leaderboard, primary-class connections
+     * with ≥1 own index). Per-route freshness gate: skip when the saved T
+     * was calibrated against this exact orsScrapedAt OR within the last
+     * 6 hours, so panel mounts on a stale cache don't churn the solver
+     * for every route on every refresh.
+     *
+     * One bulk save at the end. Per-route failures swallow silently —
+     * one bad route never blocks the rest of the run.
+     */
+    async _autoCalibrateOrsT() {
+        const cfg = this.settings.orsSandbox || {}
+        if (cfg.autoCalibrateTOnScrape === false) return
+        if (typeof RouteAssistantOrsModel === "undefined") return
+        if (!this.rows || !this.rows.length || !this.hubIata) return
+
+        const myIds = (this.settings.carriers && this.settings.carriers.myEnterpriseIds) || []
+        const ourEnterpriseId = myIds[0]
+        if (!ourEnterpriseId) return
+
+        const map   = Object.assign({}, cfg.perRouteTemperature             || {})
+        const tsMap = Object.assign({}, cfg.perRouteTemperatureCalibratedAt || {})
+        const sixHoursAgo = Date.now() - 6 * 3600 * 1000
+        const hubU = String(this.hubIata).toUpperCase()
+        let calibrated = 0
+
+        for (const r of this.rows) {
+            if (!r || !r.destIata) continue
+            const orsScrapedAt = Number(r.orsScrapedAt) || 0
+            if (!orsScrapedAt) continue
+            const key = hubU + "-" + String(r.destIata).toUpperCase()
+            const lastAt = Number(tsMap[key]) || 0
+            if (lastAt > sixHoursAgo && orsScrapedAt <= lastAt) continue
+
+            let result
+            try {
+                result = RouteAssistantOrsModel.calibrateRouteT({
+                    orsByClass:      r.orsByClass,
+                    marketSharePax:  r.marketSharePax,
+                    ourEnterpriseId: ourEnterpriseId
+                })
+            } catch (e) { continue }
+            if (!result || !result.ok) continue
+
+            map[key]   = result.T
+            tsMap[key] = Date.now()
+            calibrated++
+        }
+
+        if (!calibrated) return
+        const next = Object.assign({}, cfg, {
+            perRouteTemperature:             map,
+            perRouteTemperatureCalibratedAt: tsMap
+        })
+        this.settings.orsSandbox = next
+        try {
+            await RouteAssistantSettings.save({orsSandbox: next})
+            console.log("[AES orsModel] auto-calibrated T for " + calibrated + " route" + (calibrated === 1 ? "" : "s"))
+        } catch (e) {
+            console.warn("[AES orsModel] auto-T persist failed", e)
+        }
+        this._orsSandboxResult = null
     }
 
     /**
@@ -9910,6 +11106,12 @@ class RouteAssistantPanel {
         const showDemand   = !compact && (!this.settings || !this.settings.demandDepth
             ? true
             : this.settings.demandDepth.showDemandColumns !== false)
+        // L6 — canopy-view group is hidden by default; user opts in via
+        // settings.routeAssistant.canopyView.active. Compact mode hides
+        // it automatically alongside the other heavy groups.
+        const showCanopy   = !compact && !!(this.settings
+            && this.settings.canopyView
+            && this.settings.canopyView.active === true)
         // Per-class ORS columns (Y / C / F) need an extra gate on top of
         // the ors-group gate. Compact view always hides them; user can
         // also turn them off via the More-options checkbox even in full view.
@@ -9938,6 +11140,7 @@ class RouteAssistantPanel {
             if (c.group === "ors"         && !showOrs)      return false
             if (PER_CLASS_FIELDS[c.field]  && !showOrsPerClass) return false
             if (c.group === "demand"      && !showDemand)   return false
+            if (c.group === "canopy"      && !showCanopy)   return false
             // Tabbed view filter — derive `modes` via _columnModes so
             // we don't have to tag every entry in the large COLUMNS
             // array. Only paxScore / cargoScore are mode-specific
@@ -10040,7 +11243,7 @@ class RouteAssistantPanel {
         this.settings.columnPrefs = cp
         try { await RouteAssistantSettings.save({columnPrefs: cp}) } catch (e) { /* non-fatal */ }
         this._renderRows()
-        if (this.settingsHost && this.settingsHost.dataset.open === "1") {
+        if (this.settingsHost && (this._drawerHost.dataset.open === "1" || this._modalHost)) {
             this._renderSettings()
         }
     }
@@ -10281,6 +11484,7 @@ class RouteAssistantPanel {
     // ---------- Settings UI ----------
 
     _renderSettings() {
+        if (!this.settingsHost) return
         this.settingsHost.innerHTML = ""
 
         // Slice C — sticky drawer header (title + ✕ close). Pins to the
@@ -10548,6 +11752,12 @@ class RouteAssistantPanel {
         // Audit-all-routes-at-once entry point for per-route interline /
         // codeshare partners. Layered above the global Carriers cache.
         this._renderInterlineRecordsSection()
+
+        // ----- Canopy view (Letter L slice L6 — combined-supply view)
+        // Federation-aware classification of every leaderboard entry +
+        // five new columns gated on settings.routeAssistant.canopyView.active.
+        // Builds on L4-lite affiliations + L5 DNA scoring infrastructure.
+        this._renderCanopyViewSection()
 
         // ----- Market Analysis (Tier 2a — per-route markets-page scraper)
         // Bulk-sync /app/com/markets/<HUB><DEST> for competitor flights,
@@ -12212,7 +13422,8 @@ class RouteAssistantPanel {
             }
         } catch (err) { /* fail-open */ }
 
-        const result = await applier.apply(entry.hub, entry.dest, entry.prevPrices, {
+        const endpointOpts = await this._resolveEndpointOpts(entry.hub, entry.dest)
+        const result = await applier.apply(entry.hub, entry.dest, entry.prevPrices, Object.assign({
             scope:        entry.scope || undefined,
             source:       "undo",
             submitButton,
@@ -12220,7 +13431,7 @@ class RouteAssistantPanel {
             lastApplyAtGlobal,
             reason:       "Undo " + (entry.id || "<unknown>"),
             undoOf:       entry.id || null
-        })
+        }, endpointOpts))
         const ok = result && (result.status === "verified" || result.status === "posted" || result.status === "dry-run")
         if (ok && entry.id && log && typeof log.markUndone === "function") {
             try { await log.markUndone(entry.id) }
@@ -12711,13 +13922,14 @@ class RouteAssistantPanel {
         const applier = this._getPricingApplier()
         let result = null
         try {
-            result = await applier.apply(this.hubIata, target.dest, target.prices, {
+            const endpointOpts = await this._resolveEndpointOpts(this.hubIata, target.dest)
+            result = await applier.apply(this.hubIata, target.dest, target.prices, Object.assign({
                 dryRun:  true,
                 source:  "verify-cta",
                 reason:  "Pipeline verify (forced dry-run)",
                 scope:   Object.assign({}, RouteAssistantPricingApplier.DEFAULT_SCOPE),
                 rationale: target.rationale ? target.rationale.slice(0, 4) : null
-            })
+            }, endpointOpts))
         } catch (e) {
             result = {status: "failed", error: {code: "ctaThrew", message: String(e && e.message || e)}}
         }
@@ -12810,7 +14022,7 @@ class RouteAssistantPanel {
     /** Open Settings drawer and scroll to the Auto-Pricing diagnostics block. */
     _jumpToAutoPricingSection() {
         if (!this.settingsHost) return
-        if (this.settingsHost.dataset.open !== "1" && typeof this._toggleSettings === "function") {
+        if (this._drawerHost.dataset.open !== "1" && typeof this._toggleSettings === "function") {
             this._toggleSettings()
         }
         setTimeout(() => {
@@ -12969,6 +14181,46 @@ class RouteAssistantPanel {
             })
         }
         return this._pricingApplyLog
+    }
+
+    /**
+     * Resolve the endpoint-mode opts for an apply call. When the user has
+     * flipped `pricing.apply.endpointMode` to `"flightNumbers"`, look up
+     * the representative flight-number id for the route via
+     * `AesRouteAssistantFlightNumberResolver` and return
+     * `{endpoint, flightNumberId, legIndex}`. On a resolver miss + fallback
+     * enabled (default), returns markets-mode silently with a console hint;
+     * when fallback is disabled, returns flight-numbers-mode with a null
+     * `flightNumberId` so the applier records a `noFlightNumberForRoute`
+     * blocker in the audit trail.
+     *
+     * Always returns a plain object; callers spread it into their existing
+     * opts. No-op (returns `{}`) when the markets endpoint is selected.
+     */
+    async _resolveEndpointOpts(hub, dest) {
+        const apply = (this.settings && this.settings.pricing && this.settings.pricing.apply) || {}
+        if (apply.endpointMode !== "flightNumbers") return {}
+        const Resolver = (typeof window !== "undefined") && window.AesRouteAssistantFlightNumberResolver
+        const fallback = apply.flightNumbersFallbackToMarkets !== false
+        if (!Resolver || typeof Resolver.resolve !== "function") {
+            if (fallback) {
+                console.warn("[AES pricing] flight-number resolver not loaded; falling back to markets endpoint")
+                return {}
+            }
+            return {endpoint: "flightNumbers", flightNumberId: null, legIndex: 0}
+        }
+        let hit = null
+        try { hit = await Resolver.resolve(this.server, hub, dest) }
+        catch (e) {
+            console.warn("[AES pricing] flight-number resolver threw", e)
+            if (fallback) return {}
+            return {endpoint: "flightNumbers", flightNumberId: null, legIndex: 0}
+        }
+        if (!hit || hit.flightNumberId == null) {
+            if (fallback) return {}
+            return {endpoint: "flightNumbers", flightNumberId: null, legIndex: 0}
+        }
+        return {endpoint: "flightNumbers", flightNumberId: hit.flightNumberId, legIndex: hit.legIndex || 0}
     }
 
     /** Build a fresh applier from current settings — kill switch is a setting. */
@@ -13798,6 +15050,42 @@ class RouteAssistantPanel {
     }
 
     /**
+     * L6 — controls-bar pill that flips
+     * `settings.routeAssistant.canopyView.active`. Cyan when on, grey
+     * when off; tooltip surfaces the visible-column count + a hint about
+     * the settings expander for finer control.
+     */
+    _renderCanopyViewToggle(host) {
+        if (!host) return
+        const cv = (this.settings && this.settings.canopyView) || {}
+        const active = cv.active === true
+        const wrap = document.createElement("label")
+        wrap.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;cursor:pointer;"
+        wrap.title = active
+            ? "Canopy view ON — kin/partner classification, MyWk · Cmp* · FShare · Cannib · Gap? columns visible. Click to hide."
+            : "Canopy view OFF — click to surface federation-aware columns (MyWk · Cmp* · FShare · Cannib · Gap?). Configure thresholds in Settings → Canopy view."
+        const pill = document.createElement("span")
+        pill.textContent = "🌐 Canopy"
+        pill.style.cssText = "display:inline-flex;align-items:center;gap:3px;"
+            + "padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;"
+            + "border:1px solid " + (active ? "#06b6d4" : "#475569") + ";"
+            + "background:" + (active ? "rgba(6, 182, 212, 0.18)" : "rgba(148, 163, 184, 0.10)") + ";"
+            + "color:" + (active ? "#67e8f9" : "#94a3b8") + ";"
+        wrap.append(pill)
+        wrap.addEventListener("click", async () => {
+            this.settings.canopyView = Object.assign({}, cv, {active: !active})
+            try { await RouteAssistantSettings.save({canopyView: this.settings.canopyView}) }
+            catch (e) { /* non-fatal */ }
+            // Need to re-run combined-supply with the new active flag so
+            // Gap detection actually loads multi-hub topRoutes when the
+            // toggle goes ON. Re-render afterward.
+            await this._applyCanopySupply()
+            this._render()
+        })
+        host.append(wrap)
+    }
+
+    /**
      * Settings-drawer expander for the carrier-list scraper.
      * Mirrors `_renderAutoPricingSection`:
      *   - status line: "Synced X/Y routes · last bulk sync: …"
@@ -14379,6 +15667,42 @@ class RouteAssistantPanel {
                 }
                 r.ourPaxShare = ourPaxShare
 
+                // Validate the leaderboard. The Mkt% reading is only
+                // trustworthy when the visible rows account for ~all of the
+                // route. The markets page truncates after a few entries on
+                // crowded routes, so a 60% sum means our 25% reading is
+                // really 25% of THE TRUNCATED SET, not 25% of the route.
+                // Surface the totals + a status (ok / partial / unmatched)
+                // so the cell can render a glyph the user can trust.
+                const sumPctValid = arr => {
+                    if (!Array.isArray(arr) || !arr.length) return null
+                    let sum = 0, seen = 0
+                    for (const e of arr) {
+                        if (typeof e.sharePct === "number" && isFinite(e.sharePct)) {
+                            sum += e.sharePct
+                            seen++
+                        }
+                    }
+                    return seen ? sum : null
+                }
+                const paxSum = sumPctValid(r.marketSharePax)
+                const cargoSum = sumPctValid(r.marketShareCargo)
+                let validity = null
+                if (paxSum != null) {
+                    if (ourPaxShare == null && r.marketSharePax.length > 0) {
+                        validity = "unmatched"
+                    } else if (paxSum >= 95 && paxSum <= 105) {
+                        validity = "ok"
+                    } else if (paxSum >= 80) {
+                        validity = "partial"
+                    } else {
+                        validity = "truncated"
+                    }
+                }
+                r.marketShareValidity      = validity
+                r.marketSharePaxSumPct     = paxSum
+                r.marketShareCargoSumPct   = cargoSum
+
                 // Competitor count: distinct enterprises across BOTH pax
                 // and cargo leaderboards, excluding ours. A pax-only
                 // count missed any cargo-only operators on mixed
@@ -14673,6 +15997,180 @@ class RouteAssistantPanel {
             status.textContent = "Failed to load interline records: "
                 + (e && e.message ? e.message : String(e))
         }
+
+        this.settingsHost.append(wrap)
+    }
+
+    /**
+     * Letter L slice L6 — Canopy view settings expander.
+     *
+     *   - Status line: "X kin · Y partners · Z neutral · N unclassified"
+     *     summarising the affiliation graph as it sees the leaderboards
+     *     across visible rows.
+     *   - "Active" toggle (also surfaced as the controls-bar pill).
+     *   - Cannib threshold sliders (sharePct + minKin).
+     *   - "Open Affiliations editor" CTA → existing options-page.
+     *
+     * Builds on L4-lite affiliations + L5 DNA. Read-only by default —
+     * the only writes are local settings persistence.
+     */
+    _renderCanopyViewSection() {
+        const cv = this.settings.canopyView = Object.assign({
+            active: false,
+            cannibShareThresholdPct: 80,
+            cannibMinKin: 2,
+            gapMinPaxScore: 8,
+            showDnaFitOpportunities: true
+        }, this.settings.canopyView || {})
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-top:10px;padding:6px 8px;"
+            + "background:rgba(6, 182, 212, 0.06);border:1px solid rgba(6, 182, 212, 0.25);"
+            + "border-radius:4px;"
+
+        const header = document.createElement("div")
+        header.style.cssText = "color:#67e8f9;font-size:11px;margin-bottom:4px;"
+        header.innerHTML = "<strong>Canopy view</strong> "
+            + "<span style='color:#9ca3af;font-weight:normal;'>— Federation-aware columns. "
+            + "Classifies every leaderboard entry as kin (self) / partner (allied + interline + "
+            + "codeshare) / neutral via the L4 affiliation graph and surfaces MyWk · Cmp* · "
+            + "FShare · Cannib · Gap? columns. v1 sources kin hubs from this account's recent "
+            + "hubs — sister-kin hubs land in L7.</span>"
+        wrap.append(header)
+
+        // Status: count classifications across visible rows.
+        const counts = {kin: 0, partner: 0, neutral: 0, unclassified: 0, rowsWithSupply: 0}
+        for (const r of (this.rows || [])) {
+            const sup = r && r.canopySupply
+            if (!sup) continue
+            counts.rowsWithSupply++
+            counts.kin += sup.kinCount || 0
+            counts.partner += sup.partnerFlights || 0
+            counts.neutral += sup.effectiveCompetitorCount || 0
+            counts.unclassified += sup.unclassifiedCount || 0
+        }
+        const status = document.createElement("div")
+        status.style.cssText = "color:#9ca3af;font-size:10px;margin-bottom:6px;"
+        if (counts.rowsWithSupply === 0) {
+            status.textContent = "No leaderboard data on visible rows yet — sync Markets to populate kin/partner/competitor counts."
+        } else {
+            status.textContent = "Across " + counts.rowsWithSupply + " row(s): "
+                + counts.kin + " kin · " + counts.partner + " partner · "
+                + counts.neutral + " neutral"
+                + (counts.unclassified > 0 ? " · " + counts.unclassified + " unclassified (no enterpriseId)" : "")
+        }
+        wrap.append(status)
+
+        const ctrlRow = document.createElement("div")
+        ctrlRow.style.cssText = "display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:11px;"
+
+        // Active toggle.
+        const activeCb = mkInput("checkbox", null)
+        activeCb.checked = cv.active === true
+        const activeLbl = document.createElement("label")
+        activeLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#67e8f9;"
+        activeLbl.append(activeCb, document.createTextNode("Active (show columns)"))
+        activeCb.addEventListener("change", async () => {
+            this.settings.canopyView.active = activeCb.checked
+            try { await RouteAssistantSettings.save({canopyView: this.settings.canopyView}) }
+            catch (e) { /* non-fatal */ }
+            await this._applyCanopySupply()
+            this._render()
+        })
+        ctrlRow.append(activeLbl)
+
+        // DNA-fit opportunity pill toggle (L5 deferral, surfaced in L6).
+        const dnaCb = mkInput("checkbox", null)
+        dnaCb.checked = cv.showDnaFitOpportunities !== false
+        const dnaLbl = document.createElement("label")
+        dnaLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#a7f3d0;"
+        dnaLbl.title = "Show ◉/◐/◯ DNA-fit pill on opportunity rows (NEW or UNDER status). Scores against effective DNA via dnaFitScoreRoute."
+        dnaLbl.append(dnaCb, document.createTextNode("DNA-fit pill on opportunities"))
+        dnaCb.addEventListener("change", async () => {
+            this.settings.canopyView.showDnaFitOpportunities = dnaCb.checked
+            try { await RouteAssistantSettings.save({canopyView: this.settings.canopyView}) }
+            catch (e) { /* non-fatal */ }
+            this._renderRows()
+        })
+        ctrlRow.append(dnaLbl)
+
+        wrap.append(ctrlRow)
+
+        // Threshold row.
+        const thrRow = document.createElement("div")
+        thrRow.style.cssText = "display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:11px;margin-top:6px;color:#9ca3af;"
+
+        const cannibPctInp = mkInput("number", String(cv.cannibShareThresholdPct))
+        cannibPctInp.style.width = "55px"
+        cannibPctInp.min = "10"
+        cannibPctInp.max = "100"
+        cannibPctInp.step = "5"
+        cannibPctInp.title = "Cannibalization fires when combined kin share crosses this percent."
+        cannibPctInp.addEventListener("change", async () => {
+            const v = Math.max(10, Math.min(100, Number(cannibPctInp.value) || 80))
+            this.settings.canopyView.cannibShareThresholdPct = v
+            cannibPctInp.value = String(v)
+            try { await RouteAssistantSettings.save({canopyView: this.settings.canopyView}) }
+            catch (e) { /* non-fatal */ }
+            await this._applyCanopySupply()
+            this._renderRows()
+        })
+        const cannibPctLbl = document.createElement("label")
+        cannibPctLbl.style.cssText = "display:flex;gap:4px;align-items:center;"
+        cannibPctLbl.append(document.createTextNode("Cannib threshold %:"), cannibPctInp)
+        thrRow.append(cannibPctLbl)
+
+        const cannibMinInp = mkInput("number", String(cv.cannibMinKin))
+        cannibMinInp.style.width = "44px"
+        cannibMinInp.min = "1"
+        cannibMinInp.max = "10"
+        cannibMinInp.step = "1"
+        cannibMinInp.title = "Minimum kin count required before cannibalization fires (single-kin users never see it at minKin=2)."
+        cannibMinInp.addEventListener("change", async () => {
+            const v = Math.max(1, Math.min(10, Number(cannibMinInp.value) || 2))
+            this.settings.canopyView.cannibMinKin = v
+            cannibMinInp.value = String(v)
+            try { await RouteAssistantSettings.save({canopyView: this.settings.canopyView}) }
+            catch (e) { /* non-fatal */ }
+            await this._applyCanopySupply()
+            this._renderRows()
+        })
+        const cannibMinLbl = document.createElement("label")
+        cannibMinLbl.style.cssText = "display:flex;gap:4px;align-items:center;"
+        cannibMinLbl.append(document.createTextNode("min kin:"), cannibMinInp)
+        thrRow.append(cannibMinLbl)
+
+        const gapInp = mkInput("number", String(cv.gapMinPaxScore))
+        gapInp.style.width = "44px"
+        gapInp.min = "0"
+        gapInp.max = "10"
+        gapInp.step = "1"
+        gapInp.title = "Minimum paxScore required for the Gap? glyph to fire on a kin-absent destination."
+        gapInp.addEventListener("change", async () => {
+            const v = Math.max(0, Math.min(10, Number(gapInp.value) || 8))
+            this.settings.canopyView.gapMinPaxScore = v
+            gapInp.value = String(v)
+            try { await RouteAssistantSettings.save({canopyView: this.settings.canopyView}) }
+            catch (e) { /* non-fatal */ }
+            await this._applyCanopySupply()
+            this._renderRows()
+        })
+        const gapLbl = document.createElement("label")
+        gapLbl.style.cssText = "display:flex;gap:4px;align-items:center;"
+        gapLbl.append(document.createTextNode("Gap? min paxScore:"), gapInp)
+        thrRow.append(gapLbl)
+
+        wrap.append(thrRow)
+
+        const note = document.createElement("div")
+        note.style.cssText = "color:#6b7280;font-size:10px;margin-top:6px;line-height:1.4;"
+        note.innerHTML = "Affiliations are auto-classified from your contractual partners cache (L4-lite). "
+            + "Adjust per-enterprise classification via "
+            + "<strong>Settings → Account → Affiliations</strong> "
+            + "(the Cmp popover's enterprise rows also surface affiliation badges). "
+            + "Sister-kin federation hubs require the L1–L3 registry refactor — until then, kin "
+            + "hub enumeration uses this account's recent hubs only."
+        wrap.append(note)
 
         this.settingsHost.append(wrap)
     }
@@ -15189,6 +16687,25 @@ class RouteAssistantPanel {
             r.rmTightness     = derived.rmTightness
             r.demandDerivedAt = derived.scrapedAt
             r.demandNotes     = derived.derivationNotes
+            // Slice 5b — slim PAX history series (last 12 periods) for the
+            // ORS sandbox's pax/wk overlay. Reuses the derivator's series
+            // picker so what's plotted matches what powered paxDemandPool.
+            // Stored on the row so the sandbox doesn't have to re-load the
+            // historic record (already loaded above, discarded otherwise).
+            if (historic) {
+                const fullPax = RouteAssistantDemandDerivator._pickPaxSeries(historic, [])
+                if (fullPax && Array.isArray(fullPax.periods) && fullPax.periods.length) {
+                    const start = Math.max(0, fullPax.periods.length - 12)
+                    r.paxHistorySeries = {
+                        periods:    fullPax.periods.slice(start),
+                        capacities: (fullPax.capacities || []).slice(start)
+                    }
+                } else {
+                    r.paxHistorySeries = null
+                }
+            } else {
+                r.paxHistorySeries = null
+            }
             // Slice 2c — per-route per-class rating-price elasticity.
             r.ratingPriceElasticityByClass = derived.ratingPriceElasticityByClass
             r.ratingObservationCounts      = derived.ratingObservationCounts
@@ -15417,7 +16934,8 @@ class RouteAssistantPanel {
             lastScenarioByRoute: {},
             modelParams:   {ratingPriceElasticity: 8, ratingComfortLift: 5, shareTemperature: 25.0},
             perRouteTemperature:             {},
-            perRouteTemperatureCalibratedAt: {}
+            perRouteTemperatureCalibratedAt: {},
+            autoCalibrateTOnScrape: true
         }, this.settings.orsSandbox || {})
         const params = cfg.modelParams = Object.assign(
             {ratingPriceElasticity: 8, ratingComfortLift: 5, shareTemperature: 25.0},
@@ -15544,6 +17062,22 @@ class RouteAssistantPanel {
         ctrlRow.append(resetDefaultsBtn)
 
         wrap.append(ctrlRow)
+
+        const autoTRow = document.createElement("div")
+        autoTRow.style.cssText = "margin-top:6px;display:flex;gap:8px;align-items:center;font-size:11px;color:#cbd5e1;"
+        const autoTLab = document.createElement("label")
+        autoTLab.style.cssText = "display:flex;gap:6px;align-items:center;cursor:pointer;"
+        autoTLab.title = "After every ORS cache load, run calibrateTemperature() against routes with marketSharePax + ourEnterpriseId + cached connections. Per-route freshness gate avoids re-calibrating against unchanged inputs."
+        const autoTCb = document.createElement("input")
+        autoTCb.type = "checkbox"
+        autoTCb.checked = cfg.autoCalibrateTOnScrape !== false
+        autoTCb.addEventListener("change", async () => {
+            this.settings.orsSandbox.autoCalibrateTOnScrape = !!autoTCb.checked
+            await RouteAssistantSettings.save({orsSandbox: this.settings.orsSandbox})
+        })
+        autoTLab.append(autoTCb, document.createTextNode("Auto-calibrate per-route T after every ORS scrape"))
+        autoTRow.append(autoTLab)
+        wrap.append(autoTRow)
 
         // Slice 2c — auto-log toggle + observation count + reset-all.
         if (typeof RouteAssistantRatingObservationStore !== "undefined") {
@@ -16062,6 +17596,8 @@ class RouteAssistantPanel {
         RouteAssistantPanel._orsCircuitCooldown  = cfg.circuitBreakerCooldownMs || 600000
         RouteAssistantPanel._orsPrimaryColumn    = cfg.primaryColumn || "ratingGapToTop"
         RouteAssistantPanel._orsActiveWeights    = weights
+
+        await this._autoCalibrateOrsT()
     }
 
     /**
@@ -18516,18 +20052,35 @@ class RouteAssistantPanel {
         //      flight-prefix backfill for routes without a leaderboard.
         //   2. marketSharePax — raw pax leaderboard (older cache shape).
         //   3. row.carriers — flightsfrom.com per-carrier list (Letter F).
-        //   4. Empty popover with a "no data yet" message — at least the
-        //      hover registers and the user knows what to do next.
+        //   4. row.airlines — bare airline list from the flightsfrom listing
+        //      page (only the primary name is known; remaining slots render
+        //      as "?"). Without this, the Cmp pill could show "2~3" from
+        //      `airlineCount` while the popover bailed to "no data" — leaving
+        //      the user staring at a count with no airline to attach it to.
+        //   5. Empty popover with a "no data yet" message.
         const fromMerged = Array.isArray(row.competitorEntries) ? row.competitorEntries.slice() : null
         const fromPaxOnly = Array.isArray(row.marketSharePax) ? row.marketSharePax.slice() : []
         let shares = (fromMerged && fromMerged.length) ? fromMerged : fromPaxOnly
         let usingFlightsFromFallback = false
+        let usingAirlinesListFallback = false
         if (!shares.length && Array.isArray(row.carriers) && row.carriers.length) {
             usingFlightsFromFallback = true
             shares = row.carriers.map(c => ({
                 enterpriseId:    null,
                 name:            (c.name || c.code || "?")
                                   + (c.weeklyFlights ? "  ·  " + c.weeklyFlights + "/wk" : ""),
+                paxShare:        null,
+                cargoShare:      null,
+                paxRank:         null,
+                cargoRank:       null,
+                fromFlightsFrom: true
+            }))
+        }
+        if (!shares.length && Array.isArray(row.airlines) && row.airlines.length) {
+            usingAirlinesListFallback = true
+            shares = row.airlines.map((name, i) => ({
+                enterpriseId:    null,
+                name:            name || (i === 0 ? "?" : "(name not on listing)"),
                 paxShare:        null,
                 cargoShare:      null,
                 paxRank:         null,
@@ -18587,6 +20140,10 @@ class RouteAssistantPanel {
         let label
         if (!shares.length) {
             label = "No detail data yet"
+        } else if (usingAirlinesListFallback) {
+            const known = shares.filter(e => e.name && e.name !== "?" && e.name !== "(name not on listing)").length
+            label = shares.length + " real-world airline" + (shares.length === 1 ? "" : "s")
+                + " · " + known + " named"
         } else if (usingFlightsFromFallback) {
             label = shares.length + " real-world carrier" + (shares.length === 1 ? "" : "s")
         } else {
@@ -18611,6 +20168,13 @@ class RouteAssistantPanel {
                 const note = document.createElement("div")
                 note.style.cssText = "color:#fbbf24;font-size:10px;margin-top:6px;font-style:italic;"
                 note.textContent = "↑ flightsfrom.com real-world carriers (no AS in-game market data scraped yet)."
+                pop.append(note)
+            } else if (usingAirlinesListFallback) {
+                const note = document.createElement("div")
+                note.style.cssText = "color:#fbbf24;font-size:10px;margin-top:6px;font-style:italic;"
+                note.innerHTML = "↑ partial real-world list from the flightsfrom listing scan — only the primary carrier name is available. "
+                    + "Open <em>Settings → Carriers</em> and click <em>Sync carriers</em> to fill in the rest, "
+                    + "or <em>Settings → Market Analysis</em> for the AS in-game leaderboard."
                 pop.append(note)
             }
         } else {
@@ -20682,13 +22246,14 @@ class RouteAssistantPanel {
                             fn: async () => {
                                 try {
                                     const undoApplier = applierUsed || this._getPricingApplier()
-                                    const undoResult = await undoApplier.apply(hub, dest, result.prevPrices, {
+                                    const undoEndpointOpts = await this._resolveEndpointOpts(hub, dest)
+                                    const undoResult = await undoApplier.apply(hub, dest, result.prevPrices, Object.assign({
                                         scope:        result.scope,
                                         source:       "undo",
                                         reason:       "Undo of " + (result.logId || result.fingerprint || "previous apply"),
                                         submitButton: result.submitButton,
                                         lastApplyAt:  null
-                                    })
+                                    }, undoEndpointOpts))
                                     if (undoResult.status === "verified" || undoResult.status === "posted") {
                                         RouteAssistantToast.info("Reverted " + hub + "→" + dest)
                                     } else {
@@ -20740,6 +22305,7 @@ class RouteAssistantPanel {
             dryBtn.textContent = "Running…"
             try {
                 const a = collectArgs(true, null)
+                Object.assign(a.opts, await this._resolveEndpointOpts(a.hub, a.dest))
                 const applier = this._getPricingApplier()
                 const result = await applier.apply(a.hub, a.dest, a.prices, a.opts)
                 renderResult(result, applier)
@@ -20779,6 +22345,7 @@ class RouteAssistantPanel {
                     fetchLastApplyAt(), fetchLastApplyAtGlobal()
                 ])
                 const a = collectArgs(false, lastApplyAt, lastApplyAtGlobal)
+                Object.assign(a.opts, await this._resolveEndpointOpts(a.hub, a.dest))
                 if (cachedOwn && cachedOwn.scrapedAt) {
                     a.opts.preApplySync = {
                         scheduleAt: cachedOwn.scrapedAt,
@@ -21604,6 +23171,7 @@ class RouteAssistantPanel {
                     batchId, batchSize
                 }
                 if (preSync) opts.preApplySync = preSync
+                Object.assign(opts, await this._resolveEndpointOpts(this.hubIata, dest))
                 const result = await applier.apply(this.hubIata, dest, prices, opts)
                 if (typeof onRowResult === "function") onRowResult(dest, result)
                 if (result.status === "verified" || result.status === "posted" || result.status === "dry-run") okCount++
@@ -22046,7 +23614,8 @@ class RouteAssistantPanel {
                 const lastApplyAt = perRouteLast.has(pairKey) ? perRouteLast.get(pairKey) : null
                 let applyResult = null
                 try {
-                    applyResult = await applier.apply(this.hubIata, prop.dest, prop.prices, {
+                    const silentEndpointOpts = await this._resolveEndpointOpts(this.hubIata, prop.dest)
+                    applyResult = await applier.apply(this.hubIata, prop.dest, prop.prices, Object.assign({
                         scope,
                         source: "silent-auto",
                         submitButton,
@@ -22058,7 +23627,7 @@ class RouteAssistantPanel {
                         rationale:        prop.rationale  || null,
                         objective:        prop.objective  || null,
                         projectedDelta:   prop.projectedDelta || null
-                    })
+                    }, silentEndpointOpts))
                 } catch (e) {
                     applyResult = {status: "failed", error: {code: "applierThrew", message: String(e && e.message || e)}}
                 }
@@ -22758,6 +24327,72 @@ class RouteAssistantPanel {
         feed.textContent = "Loading recent silent-auto applies…"
         host.append(feed)
         this._fillSilentAutoFeed(feed).catch(e => console.warn("[AES silent-auto] feed fill failed", e))
+
+        // Persistent "why aren't these routes moving" — pulls from the
+        // AesPriceDiagnostics store (capped 500, oldest-skip evicted).
+        // Complements the per-tick trace which is capped at 50 entries.
+        // Only renders when the store carries unresolved skips.
+        const diagSection = document.createElement("div")
+        diagSection.style.cssText = "margin-top:6px;"
+        host.append(diagSection)
+        this._fillSilentAutoSkipDiagnostics(diagSection)
+            .catch(e => console.warn("[AES silent-auto] skip diagnostics fill failed", e))
+    }
+
+    /**
+     * Pull recent skip reasons from `AesPriceDiagnostics` and render a
+     * compact table of "routes that aren't moving" — routes whose last
+     * skip-at is more recent than their last successful apply (i.e. the
+     * skip is unresolved). Best-effort; quietly empties when the store
+     * isn't loaded or has no records.
+     */
+    async _fillSilentAutoSkipDiagnostics(host) {
+        host.innerHTML = ""
+        if (typeof window === "undefined" || !window.AesPriceDiagnostics
+                || typeof window.AesPriceDiagnostics.getAll !== "function") return
+        let map
+        try { map = await window.AesPriceDiagnostics.getAll() }
+        catch (_) { return }
+        if (!map || typeof map !== "object") return
+        const entries = []
+        for (const k of Object.keys(map)) {
+            const r = map[k]
+            if (!r || !r.lastSkipReason || !isFinite(r.lastSkipAt)) continue
+            // Skip resolution: if a successful apply landed AFTER the
+            // last skip, the route is no longer "stuck".
+            if (isFinite(r.lastAppliedAt) && r.lastAppliedAt > r.lastSkipAt && r.lastAppliedOk) continue
+            entries.push({pair: k, reason: r.lastSkipReason, ts: r.lastSkipAt})
+        }
+        if (!entries.length) return
+        entries.sort((a, b) => b.ts - a.ts)
+        const top = entries.slice(0, 12)
+
+        const wrap = document.createElement("details")
+        wrap.style.cssText = "border:1px solid #1f2937;background:rgba(15, 23, 42, 0.55);"
+                          + "border-radius:3px;font-size:10px;"
+        const summary = document.createElement("summary")
+        summary.style.cssText = "padding:4px 8px;color:#cbd5e1;cursor:pointer;"
+        summary.textContent = "Why aren't these routes moving? · " + entries.length
+            + (entries.length > top.length ? " (showing 12)" : "")
+        wrap.append(summary)
+        const list = document.createElement("div")
+        list.style.cssText = "display:flex;flex-direction:column;gap:1px;padding:0 8px 6px 8px;"
+        const now = Date.now()
+        for (const e of top) {
+            const row = document.createElement("div")
+            row.style.cssText = "display:flex;gap:6px;line-height:1.45;color:#94a3b8;"
+            const route = document.createElement("span")
+            route.textContent = e.pair
+            route.style.cssText = "color:#e2e8f0;width:80px;flex-shrink:0;font-variant-numeric:tabular-nums;"
+            const reason = document.createElement("span")
+            reason.style.cssText = "flex:1;"
+            const ago = Math.max(0, Math.round((now - e.ts) / 60000))
+            reason.textContent = e.reason + " · " + ago + "m ago"
+            row.append(route, reason)
+            list.append(row)
+        }
+        wrap.append(list)
+        host.append(wrap)
     }
 
     /**
@@ -23095,7 +24730,8 @@ RouteAssistantPanel.COLUMN_GROUPS = {
     actuals:  {label: "Actuals",     tint: "rgba(168, 85, 247, 0.10)",    headerTint: "rgba(168, 85, 247, 0.24)"},
     service:  {label: "Service",     tint: "rgba(56, 189, 248, 0.10)",    headerTint: "rgba(56, 189, 248, 0.24)"},
     markets:  {label: "Market Analysis", tint: "rgba(20, 184, 166, 0.10)", headerTint: "rgba(20, 184, 166, 0.24)"},
-    ors:      {label: "ORS Rank",         tint: "rgba(245, 158, 11, 0.10)", headerTint: "rgba(245, 158, 11, 0.24)"}
+    ors:      {label: "ORS Rank",         tint: "rgba(245, 158, 11, 0.10)", headerTint: "rgba(245, 158, 11, 0.24)"},
+    canopy:   {label: "Canopy view",      tint: "rgba(6, 182, 212, 0.10)",  headerTint: "rgba(6, 182, 212, 0.24)"}
 }
 
 RouteAssistantPanel.STATUS_DEF = {
@@ -23250,6 +24886,42 @@ RouteAssistantPanel.COLUMNS = [
         // default <a> activation; rendering the inner content first via
         // innerHTML keeps the rest of the cell unchanged.
         td.prepend(_buildWatchlistStar(row, hub))
+        // L6 (closes L5 deferral) — DNA-fit pill on opportunity rows.
+        // Renders only when the panel-level DNA context is loaded AND
+        // the row reads as an opportunity (NEW or UNDER status). The
+        // pill scores the route against effective DNA via dnaFitScoreRoute.
+        const dnaCtx = RouteAssistantPanel._dnaOpportunityCtx
+        if (dnaCtx
+                && (row.status === "NEW" || row.status === "UNDER")
+                && typeof window !== "undefined"
+                && window.AesCanopyDnaFit
+                && typeof window.AesCanopyDnaFit.dnaFitScoreRoute === "function"
+                && typeof window.AesCanopyDnaFit.pillFor === "function") {
+            try {
+                const result = window.AesCanopyDnaFit.dnaFitScoreRoute(dnaCtx.dna, {
+                    originIata:      hub,
+                    destIata:        dest,
+                    distanceKm:      row.distanceKm,
+                    originCountry:   dnaCtx.originCountry,
+                    destCountry:     row.destCountry || null,
+                    originContinent: dnaCtx.originContinent,
+                    destContinent:   row.destContinent || null,
+                    classMix:        row.classMix || null
+                })
+                const p = window.AesCanopyDnaFit.pillFor(result.score)
+                const pillEl = document.createElement("span")
+                pillEl.style.cssText = "display:inline-block;margin-left:4px;"
+                    + "padding:0 4px;border-radius:8px;font-size:9px;font-weight:600;"
+                    + "color:" + p.color + ";border:1px solid " + p.color + "55;"
+                    + "background:" + p.color + "12;cursor:help;"
+                pillEl.textContent = p.glyph
+                pillEl.title = "DNA fit: " + p.label + " (" + result.score.toFixed(2) + ")"
+                    + (row.status === "NEW"
+                        ? " — opportunity (you don't fly this route yet)"
+                        : " — under-served (high demand, low your-frequency)")
+                td.append(pillEl)
+            } catch (e) { /* graceful */ }
+        }
     }},
     {field: "status", label: "St", group: "computed",
      title: "Two-axis status — left pill is whether you fly (NEW or weekly frequency), right pill is health (OK / UNDER / OVER / OOR). Hover a cell for the rule + transition history; click to sort. A V+/V− pill is appended when the latest snapshot's Δ% exceeds the variance warn threshold.",
@@ -23395,6 +25067,20 @@ RouteAssistantPanel.COLUMNS = [
             pill.style.cursor       = "pointer"
             if (asCount != null) pill.style.boxShadow = "inset 0 0 0 1px rgba(15,23,42,0.4)"
         }
+        // Per-cell title surfaces which source the displayed count came from.
+        // Without this, a yellow "2" pill could come from either the AS
+        // leaderboard (rich detail) or the flightsfrom listing (count only),
+        // and the user couldn't tell why the popover was thinner than
+        // expected for the same number.
+        if (asCount != null) {
+            pill.title = "AS in-game competitors: " + asCount
+        } else if (row.airlineCount != null) {
+            pill.title = "Real-world airlines on flightsfrom listing: " + row.airlineCount
+                + (Array.isArray(row.airlines)
+                    ? ((row.airlines[0] ? " (" + row.airlines[0] + (row.airlines.length > 1 ? " + " + (row.airlines.length - 1) + " more" : "") + ")" : ""))
+                    : "")
+                + " — sync Markets or Carriers for in-game detail"
+        }
         td.append(pill)
         // Diff badge — prefer competitorCount (AS-side count) when set,
         // else fall back to airlineCount so the badge tracks whichever
@@ -23437,7 +25123,12 @@ RouteAssistantPanel.COLUMNS = [
     // Cmp pill does, so all in-game competition intel — your share AND the
     // full leaderboard — is one hover away from this column too.
     {field: "ourPaxShare", label: "Mkt%", group: "competition", align: "right", defaultDir: -1,
-     title: "Your pax market share on this route — from /app/com/markets/<HUB><DEST>'s Market Shares section. Hover ANY row (even '—') to see who's on the route. Color rail: ≥40% green, 20–40% amber, <20% red.",
+     title: "Your pax market share on this route — from /app/com/markets/<HUB><DEST>'s Market Shares section. "
+        + "Trust glyph: ✓ leaderboard sums to ~100% (reading is reliable); "
+        + "≈ leaderboard sums to 80–95% (a few small carriers truncated, reading is close); "
+        + "△ leaderboard sums below 80% (leaderboard cut off — reading reflects only the visible rows); "
+        + "? we couldn't find your airline in the leaderboard (could be your pax share is 0, or name match failed). "
+        + "Hover ANY row (even '—') to see who's on the route. Color rail: ≥40% green, 20–40% amber, <20% red.",
      render(td, row) {
         // Always wire the rich popover. The popover handles empty-data
         // cases gracefully (AS leaderboard → flight-prefix backfill →
@@ -23457,6 +25148,35 @@ RouteAssistantPanel.COLUMNS = [
         }
         cell.style.cursor = "pointer"
         td.append(cell)
+        // Trust glyph — without it, "25%" on a partial leaderboard reads
+        // identical to "25%" on a complete one. The user reported the % was
+        // "hard to tell whether it's right or wrong" — surfacing the
+        // leaderboard sum is the cheapest way to make that judgement explicit.
+        const validity = row.marketShareValidity
+        if (validity) {
+            const glyph = document.createElement("span")
+            glyph.style.cssText = "margin-left:3px;font-size:9px;font-weight:600;cursor:help;"
+            const paxSum = row.marketSharePaxSumPct
+            const sumStr = (typeof paxSum === "number" && isFinite(paxSum)) ? paxSum.toFixed(1) + "%" : "?"
+            if (validity === "ok") {
+                glyph.textContent = "✓"
+                glyph.style.color = "#22c55e"
+                glyph.title = "Leaderboard sum: " + sumStr + " — reading is reliable."
+            } else if (validity === "partial") {
+                glyph.textContent = "≈"
+                glyph.style.color = "#fbbf24"
+                glyph.title = "Leaderboard sum: " + sumStr + " — a few small carriers were truncated, reading is close but not exact."
+            } else if (validity === "truncated") {
+                glyph.textContent = "△"
+                glyph.style.color = "#ef4444"
+                glyph.title = "Leaderboard sum: " + sumStr + " — markets page cut off the list. The displayed share applies only to the visible rows; actual share will be lower."
+            } else if (validity === "unmatched") {
+                glyph.textContent = "?"
+                glyph.style.color = "#9ca3af"
+                glyph.title = "Couldn't match your airline in the leaderboard. Either your pax share is 0% on this route or the name match failed (multi-enterprise users — see Settings → Market Analysis)."
+            }
+            td.append(glyph)
+        }
         if (v != null) _appendDiffBadge(td, "ourPaxShare", row)
 
         let openTimer = null
@@ -23478,6 +25198,98 @@ RouteAssistantPanel.COLUMNS = [
             e.stopPropagation()
             open(true)
         })
+    }},
+
+    // ----- Letter L slice L6 — Canopy view columns. Hidden by default;
+    // toggled visible via `settings.routeAssistant.canopyView.active`.
+    // Reads `row.canopySupply` (set by `_applyCanopySupply`) and
+    // `row.canopyGap` (set by `_loadCanopyGapKeys`). Empty/missing data
+    // → "—" or hidden glyph; never throws.
+    {field: "canopyMyWk", label: "MyWk", group: "canopy", align: "right", defaultDir: -1,
+     title: "Canopy — combined kin weekly flights on this route. v1 surfaces "
+        + "this account's own frequency (ownPaxFreq + ownCargoFreq); sister-kin "
+        + "frequencies require the L1–L3 markets refactor (per-account scoping). "
+        + "Once L3 lands, this rolls up every kin's freq.",
+     render(td, row) {
+        const sup = row.canopySupply
+        const v = sup ? sup.kinFlights : null
+        if (v == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+        td.textContent = String(v)
+        td.style.color = v > 0 ? "#67e8f9" : "#6b7280"
+    }},
+    {field: "canopyEffComp", label: "Cmp*", group: "canopy", align: "right", defaultDir: 1,
+     title: "Canopy — true effective competitor count. Excludes self/allied/"
+        + "interline/codeshare from the Cmp leaderboard. THIS is the number "
+        + "that should drive pricing aggressiveness — partners contribute "
+        + "connections, not direct competition. When unaffiliated enterprises "
+        + "(no enterpriseId or no record) are present, they're counted as "
+        + "competitors by default.",
+     render(td, row) {
+        const sup = row.canopySupply
+        if (!sup || sup.classified == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+        const eff = sup.effectiveCompetitorCount
+        td.textContent = String(eff)
+        td.style.fontWeight = "bold"
+        if (eff <= 1) td.style.color = "#86efac"
+        else if (eff <= 3) td.style.color = "#fde68a"
+        else td.style.color = "#fca5a5"
+        const partners = sup.partnerFlights || 0
+        const kin = sup.kinCount || 0
+        const unc = sup.unclassifiedCount || 0
+        const lines = ["Effective competitors: " + eff]
+        if (kin > 0)      lines.push("Kin (excluded): " + kin)
+        if (partners > 0) lines.push("Partners (excluded): " + partners)
+        if (unc > 0)      lines.push("Unclassified (counted as competitor): " + unc)
+        td.title = lines.join("\n")
+    }},
+    {field: "canopyFShare", label: "FShare", group: "canopy", align: "right", defaultDir: -1,
+     title: "Canopy — combined kin pax market share. Sums your ourPaxShare "
+        + "with sister-kin shares observed in the leaderboard. Falls back to "
+        + "your own share when no sister-kin is on the route. '—' when the "
+        + "leaderboard hasn't been scraped or no kin is present.",
+     render(td, row) {
+        const sup = row.canopySupply
+        if (!sup || sup.kinShare == null) { td.textContent = "—"; td.style.color = "#6b7280"; return }
+        const v = sup.kinShare
+        td.textContent = v.toFixed(1) + "%"
+        td.style.fontWeight = "bold"
+        if      (v >= 60) td.style.color = "#86efac"
+        else if (v >= 30) td.style.color = "#fde68a"
+        else              td.style.color = "#fca5a5"
+        const sib = (sup.kinCount || 0)
+        td.title = "Combined kin share: " + v.toFixed(1) + "%"
+            + (sib > 0 ? "\n+ " + sib + " sister kin in leaderboard" : "\n(this account only)")
+    }},
+    {field: "canopyCannib", label: "Cannib", group: "canopy", align: "center",
+     title: "Canopy — federation self-cannibalization warning. Fires when "
+        + "2+ kin are on the same route AND combined kin share ≥ 80%. The "
+        + "federation is collectively over-serving — kin are eating each "
+        + "others' demand. Hover for the rationale and consider consolidating "
+        + "onto fewer kin.",
+     render(td, row) {
+        const sup = row.canopySupply
+        if (!sup || !sup.cannibalizationRisk) {
+            td.textContent = ""
+            return
+        }
+        td.textContent = "⚠"
+        td.style.color = "#fbbf24"
+        td.style.fontWeight = "bold"
+        td.title = sup.cannibRationale || "Cannibalization risk"
+    }},
+    {field: "canopyGap", label: "Gap?", group: "canopy", align: "center",
+     title: "Canopy — high-demand kin-absent destination. Fires when this "
+        + "route's paxScore ≥ 8 AND no kin (this account or sister kin) "
+        + "currently operates the route from any kin hub. v1 sources kin hubs "
+        + "from this account's recent hubs; sister-kin hubs land in L7. The "
+        + "Gap? glyph hints at a route the federation could open without "
+        + "intra-kin competition.",
+     render(td, row) {
+        if (!row.canopyGap) { td.textContent = ""; return }
+        td.textContent = "✚"
+        td.style.color = "#67e8f9"
+        td.style.fontWeight = "bold"
+        td.title = "Federation gap — paxScore ≥ 8 and no kin operates this destination from any kin hub. Candidate for new-route creation."
     }},
 
     {field: "aircraftFit", label: "Fit", group: "aircraft",

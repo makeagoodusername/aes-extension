@@ -184,6 +184,11 @@ class RouteAssistantSettings {
                 // 30-day-old calibrations should be re-run).
                 perRouteTemperature:             {},  // {<HUB>-<DEST>: T}
                 perRouteTemperatureCalibratedAt: {},  // {<HUB>-<DEST>: ms epoch}
+                // Auto-run calibrateTemperature() against every route with
+                // usable inputs after each ORS cache load. Gated per-route by
+                // freshness (orsScrapedAt > calibratedAt) and by 6h floor so
+                // panel mounts on stale caches don't burn cycles.
+                autoCalibrateTOnScrape: true,
                 // Slice 2c — per-route per-class rating-price elasticity.
                 // Auto-log default `true` is STABLE across versions: flipping
                 // it would silently change user-observable behaviour (the
@@ -248,6 +253,21 @@ class RouteAssistantSettings {
                 apply: {
                     enabled:               false,   // top-level kill switch — false = no writes regardless of dryRunOnly
                     dryRunOnly:            false,   // 3.2 default; user can re-enable via Settings → Auto-Pricing toggle
+                    // Endpoint dispatch — "markets" (default) targets the
+                    // route-level form at `/app/com/markets/<HUB><DEST>`;
+                    // "flightNumbers" targets the per-leg form at
+                    // `/app/com/numbers/<flightNumberId>/<legIndex>`. The
+                    // leg form gives single-flight granularity (different
+                    // morning vs. evening flight numbers on the same route
+                    // can be priced independently). Resolver picks the
+                    // lowest flightNumberId on the route as the
+                    // representative target. When the resolver finds no
+                    // candidate (no scraped aircraftFlights data yet),
+                    // `flightNumbersFallbackToMarkets` decides whether to
+                    // fall through to the markets endpoint or surface a
+                    // preflight blocker.
+                    endpointMode:                  "markets",  // "markets" | "flightNumbers"
+                    flightNumbersFallbackToMarkets: true,
                     defaultScope: {
                         airportPair:         true,
                         flightNumbers:       true,
@@ -771,6 +791,7 @@ class RouteAssistantSettings {
             modelParams:   Object.assign({}, def.modelParams || {}, b.modelParams || {}),
             perRouteTemperature:             {},
             perRouteTemperatureCalibratedAt: {},
+            autoCalibrateTOnScrape: b.autoCalibrateTOnScrape !== false,
             // Slice 2c — deep-merge nested ratingObservations block. Booleans
             // pass through `!!` so a stored stale string can't break the
             // downstream auto-log gate. Numerics fall through Object.assign
@@ -941,6 +962,16 @@ class RouteAssistantSettings {
             settings.routeAssistant = next
         }
         await chrome.storage.local.set({settings: settings})
+        // Slice-1 foundation — broadcast on the cross-module data bus so
+        // consumers in other surfaces (scanner panel, dashboard tiles) react
+        // without polling. Pure additive — chrome.storage.onChanged still
+        // fires for any tab that wants to listen the legacy way.
+        if (typeof AesDataBus !== "undefined") {
+            AesDataBus.emit("data:route-assistant:settings:saved", {
+                accountId: id || null,
+                sections:  Object.keys(partial || {})
+            })
+        }
         return next
     }
 }

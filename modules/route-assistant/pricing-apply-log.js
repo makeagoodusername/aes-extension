@@ -450,7 +450,19 @@ class RouteAssistantPricingApplyLog {
             rationale:        Array.isArray(r.rationale)
                                 ? r.rationale.slice(0, 12).map(s => String(s).slice(0, 240))
                                 : null,
-            objective:        r.objective ? Object.assign({}, r.objective) : null
+            objective:        r.objective ? Object.assign({}, r.objective) : null,
+            // Endpoint targeting — present only when this apply went via
+            // `/app/com/numbers/<flightNumberId>/<legIndex>`. The audit
+            // modal shows "via FN <id>/<leg>" when these are non-null.
+            // The legacy markets-page apply omits all three; downstream
+            // readers MUST treat absence as "markets" for backward compat.
+            endpoint:         r.endpoint === "flightNumbers" ? "flightNumbers" : null,
+            flightNumberId:   r.endpoint === "flightNumbers" && r.flightNumberId != null
+                                ? String(r.flightNumberId).slice(0, 32)
+                                : null,
+            legIndex:         r.endpoint === "flightNumbers" && isFinite(r.legIndex)
+                                ? r.legIndex
+                                : null
         }
         // Drop nulls to keep storage small.
         for (const k in out) {

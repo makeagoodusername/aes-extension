@@ -333,28 +333,169 @@
     }
 
     /**
+     * Compute the worst-of cache age for a route as the silent-auto loop
+     * sees it. We look at the strategy snapshot's `cacheAge.maxMs` when
+     * present (preferred — reflects the same view the strategy proposers
+     * use) and fall back to the route's per-source `scrapedAt` fields the
+     * panel populates. Returns null when no age signal exists.
+     */
+    function _routeMaxCacheAgeMs(route, ctx) {
+        const now = (ctx && ctx.now) || Date.now()
+        let max = null
+        // Prefer the strategy snapshot's pre-computed cacheAge.
+        if (ctx && ctx.routesByDest && route && route.destIata) {
+            const full = ctx.routesByDest.get(String(route.destIata).toUpperCase())
+            if (full && full.cacheAge && isFinite(full.cacheAge.maxMs)) return full.cacheAge.maxMs
+        }
+        const fields = []
+        if (route && route.competitorScrapedAt) fields.push(route.competitorScrapedAt)
+        if (route && route.orsScrapedAt)        fields.push(route.orsScrapedAt)
+        if (route && route.ownPricingScrapedAt) fields.push(route.ownPricingScrapedAt)
+        for (const ts of fields) {
+            const age = now - ts
+            if (isFinite(age) && (max == null || age > max)) max = age
+        }
+        return max
+    }
+
+    /**
+     * Fire-and-forget skip diagnostic. The store is loaded by RA hosts
+     * but apply / strategy hosts may not have it; defensively guard.
+     */
+    function _recordSkip(hub, dest, reason) {
+        try {
+            if (typeof window === "undefined" || !window.AesPriceDiagnostics) return
+            if (typeof window.AesPriceDiagnostics.recordSkip !== "function") return
+            window.AesPriceDiagnostics.recordSkip({hub: hub, dest: dest, reason: reason})
+        } catch (_) { /* never break dispatch on a diagnostics write */ }
+    }
+
+    /**
      * Dispatch to the named proposer. Returns a uniform skip envelope
      * when the strategy is unknown so the caller can record it in the
      * tick trace without crashing.
+     *
+     * Optional `cfg.silentAutoMaxCacheAgeMin` — when set, routes whose
+     * worst-of cache age exceeds the threshold are skipped before the
+     * proposer runs. Default unset = legacy behaviour.
      */
     function dispatch(strategy, route, prices, cfg, ctx) {
         const dest = String((route && route.destIata) || "").toUpperCase()
+        const hub  = String((route && route.hub) || (ctx && ctx.hub) || "").toUpperCase()
         const key  = strategy || "competitor-median"
         const entry = PROPOSERS[key]
         if (!entry || typeof entry.fn !== "function") {
-            return {ok: false, dest, skipReason: "unknown strategy '" + key + "'"}
+            const skipReason = "unknown strategy '" + key + "'"
+            _recordSkip(hub, dest, skipReason)
+            return {ok: false, dest, skipReason}
         }
+
+        // Snapshot freshness gate (opt-in via cfg.silentAutoMaxCacheAgeMin).
+        const maxAgeMin = Number(cfg && cfg.silentAutoMaxCacheAgeMin)
+        if (isFinite(maxAgeMin) && maxAgeMin > 0) {
+            const ageMs = _routeMaxCacheAgeMs(route, ctx)
+            if (isFinite(ageMs) && ageMs > maxAgeMin * 60000) {
+                const skipReason = "cache stale (>" + maxAgeMin + " min · max="
+                                + Math.round(ageMs / 60000) + " min)"
+                _recordSkip(hub, dest, skipReason)
+                return {ok: false, dest, skipReason}
+            }
+        }
+
+        let result
         try {
-            return entry.fn(route, prices, cfg || {}, ctx || {})
+            result = entry.fn(route, prices, cfg || {}, ctx || {})
         } catch (e) {
-            return {ok: false, dest,
-                    skipReason: "proposer '" + key + "' threw: " + (e && e.message || String(e))}
+            const skipReason = "proposer '" + key + "' threw: " + (e && e.message || String(e))
+            _recordSkip(hub, dest, skipReason)
+            return {ok: false, dest, skipReason}
         }
+        if (result && result.ok === false && result.skipReason) {
+            _recordSkip(hub, dest, result.skipReason)
+        }
+        return result
+    }
+
+    /**
+     * Schedule Canvas hook — runs `dispatch()` and, on a positive proposal,
+     * also emits a `canvas:advisor-suggestion` so the rail surfaces the
+     * proposer's intent instead of the silent loop applying it
+     * blindly. The Advisor card's primary action stages an `applyPricing`
+     * edit; the user commits it via the rail footer (which honors the
+     * pricing.apply gates the same way silent-auto does).
+     *
+     * Caller still receives the proposer's result object — the surface
+     * decision is purely additive. Existing silent-loop callers can keep
+     * using `dispatch()` directly when they don't want the user-visible
+     * card.
+     *
+     * @param {string} strategy
+     * @param {object} route
+     * @param {object} prices
+     * @param {object} cfg
+     * @param {object} ctx
+     * @returns {object} same envelope as dispatch()
+     */
+    function surface(strategy, route, prices, cfg, ctx) {
+        const result = dispatch(strategy, route, prices, cfg, ctx)
+        if (!result || result.ok !== true) return result
+        if (typeof window === "undefined" || !window.CentralHubBus || !window.AesCanvasEvents) {
+            return result
+        }
+        const hub  = String((route && route.hub) || (ctx && ctx.hub) || "").toUpperCase()
+        const dest = String(result.dest || (route && route.destIata) || "").toUpperCase()
+        if (!hub || !dest) return result
+        const newY = result.newY != null ? result.newY : (result.prices && result.prices.Y)
+        const prevY = result.prevY != null ? result.prevY : (prices && prices.Y)
+        const deltaPct = isFinite(result.deltaPct) ? Number(result.deltaPct).toFixed(1) : null
+        const reason = result.reason || strategy
+        const message = "Auto-proposer (" + (strategy || "?") + ") suggests Y "
+            + (prevY != null ? prevY : "?") + " → " + (newY != null ? newY : "?")
+            + " for " + hub + " · " + dest
+            + (deltaPct != null ? " (Δ " + deltaPct + "%)" : "")
+            + (reason && reason !== strategy ? ". " + reason : ".")
+        const suggestionId = "s-prop-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 5)
+        // Emit. Advisor card's Apply button stages an applyPricing edit
+        // carrying the new prices + rationale; the canvas commit-bar will
+        // route that through RouteAssistantPricingApplier.apply().
+        window.CentralHubBus.emit(window.AesCanvasEvents.ADVISOR_SUGGESTION, {
+            id:        suggestionId,
+            kind:      "auto-proposer",
+            severity:  "info",
+            // dedupe per (strategy, route) so dismissing a proposer's
+            // recommendation suppresses repeats for an hour.
+            dedupeKey: "auto-proposer:" + (strategy || "?") + ":" + hub + "-" + dest,
+            signature: hub + "-" + dest + ":" + (strategy || "?"),
+            message,
+            action: {
+                label: "Apply auto-proposer",
+                run:   () => {
+                    if (typeof window === "undefined" || !window.CentralHubBus) return
+                    window.CentralHubBus.emit(window.AesCanvasEvents.EDIT_STAGED, {
+                        kind:    "applyPricing",
+                        payload: {
+                            hub,
+                            dest,
+                            prices:           result.prices || {},
+                            source:           "silent-auto",
+                            reason:           reason,
+                            proposerStrategy: strategy,
+                            rationale:        Array.isArray(result.rationale)
+                                                ? result.rationale.slice(0, 12)
+                                                : null,
+                            projectedDelta:   result.projectedDelta || null
+                        }
+                    })
+                }
+            }
+        })
+        return result
     }
 
     window.RouteAssistantSilentAutoProposers = {
         list,
         dispatch,
+        surface,
         buildContext,
         // Internal — exposed for Phase 3 tests / future strategy registration.
         _proposers: PROPOSERS

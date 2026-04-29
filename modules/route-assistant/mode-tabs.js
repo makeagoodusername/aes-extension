@@ -31,11 +31,15 @@ class RouteAssistantModeTabs {
      *
      * @param {HTMLElement} host
      * @param {object} opts
-     *   - activeMode: "table" | "waves" | "sandbox" | "heatmap"
+     *   - activeMode: "table" | "waves" | "sandbox" | "heatmap" | "federation"
      *   - summaries:  optional {<modeId>: "171 routes" | "no preset" | …}
      *                 small secondary text rendered under each pill label
      *   - onChange:   (mode) => void
      *   - rightActions: optional [{label, glyph, title, active, onClick}]
+     *   - extraModes: optional [{id, label, glyph}] appended after the
+     *                 baseline four modes. Phase 4 Lane B uses this for
+     *                 the canopy/federation pill (gated to multi-account
+     *                 installs by the panel before passing in).
      */
     static render(host, opts) {
         if (!host) return
@@ -61,7 +65,10 @@ class RouteAssistantModeTabs {
         pillRow.style.cssText = "display:flex;align-items:stretch;gap:0;flex:1;min-width:0;"
         host.append(pillRow)
 
-        for (const mode of RouteAssistantModeTabs.MODES) {
+        const allModes = Array.isArray(o.extraModes) && o.extraModes.length
+            ? RouteAssistantModeTabs.MODES.concat(o.extraModes)
+            : RouteAssistantModeTabs.MODES
+        for (const mode of allModes) {
             pillRow.append(RouteAssistantModeTabs._mkPill(
                 mode,
                 mode.id === active,

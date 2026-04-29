@@ -398,10 +398,23 @@ class RouteAssistantWaveOverlay {
                         e.dataTransfer.effectAllowed = "move"
                         e.dataTransfer.setData("text/plain",
                             "aes-wave-route:" + r.destination)
+                        RouteAssistantWaveOverlay._emitGestureBus("dragschedule:gesture-start", {
+                            gestureId: "ra.unplaced.toLane", surface: "ra",
+                            kind: "native", destination: r.destination, presetId: preset.id
+                        })
                     })
-                    chip.addEventListener("dragend", () => {
+                    chip.addEventListener("dragend", (e) => {
                         chip.style.cursor = "grab"
                         chip.style.opacity = "1"
+                        // dropEffect "none" on dragend → drop was cancelled (ESC,
+                        // dragged outside any drop target, etc). Browser-native
+                        // ESC works on HTML5 drag — emit cancelled outcome.
+                        const cancelled = !e.dataTransfer || e.dataTransfer.dropEffect === "none"
+                        RouteAssistantWaveOverlay._emitGestureBus("dragschedule:gesture-end", {
+                            gestureId: "ra.unplaced.toLane", surface: "ra",
+                            outcome:   cancelled ? "cancelled" : "applied",
+                            destination: r.destination, presetId: preset.id
+                        })
                     })
                 }
                 chips.append(chip)
@@ -485,6 +498,10 @@ class RouteAssistantWaveOverlay {
                 const m = data.match(/^aes-wave-route:(.+)$/)
                 if (!m) return
                 ctx.onPlace(m[1], wave.id)
+                RouteAssistantWaveOverlay._emitGestureBus("dragschedule:applied", {
+                    gestureId: "ra.unplaced.toLane",
+                    effect: {kind: "ra-unplaced-place", destination: m[1], waveId: wave.id}
+                })
             })
         }
 
@@ -939,5 +956,21 @@ class RouteAssistantWaveOverlay {
         }
 
         host.append(wrap)
+    }
+
+    /**
+     * Phase A1: emit gesture lifecycle to whichever buses are present so
+     * the chip→lane HTML5 native drag participates in the same audit
+     * trail as arbiter-routed manual drags. Browser ESC already cancels
+     * HTML5 drag natively — this is purely instrumentation.
+     */
+    static _emitGestureBus(event, payload) {
+        const buses = []
+        try { if (window.AesAfp && window.AesAfp.bus) buses.push(window.AesAfp.bus) } catch (_) {}
+        try { if (window.AesStrategy && window.AesStrategy.bus) buses.push(window.AesStrategy.bus) } catch (_) {}
+        try { if (window.CentralHubBus) buses.push(window.CentralHubBus) } catch (_) {}
+        for (const bus of buses) {
+            try { bus.emit(event, payload) } catch (_) {}
+        }
     }
 }

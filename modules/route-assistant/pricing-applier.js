@@ -37,6 +37,15 @@
  *     dryRun:       <bool — overrides the instance dryRunOnly only when truthy>,
  *     submitButton: "submit-prices" | "p::submit" | "submit-settings",
  *     reason:       <string, optional, persisted to apply log>,
+ *     endpoint:     "markets" (default) | "flightNumbers" — when "flightNumbers",
+ *                   targets `/app/com/numbers/<flightNumberId>/<legIndex>` instead
+ *                   of the route-level markets page. Per-leg writes only affect
+ *                   that one flight number; scope checkboxes are absent on the
+ *                   leg form so `scope` is ignored in that mode.
+ *     flightNumberId: required when `endpoint==="flightNumbers"` — AS flight
+ *                   number id (the integer in `/app/com/numbers/<id>`).
+ *     legIndex:     defaults to 0 when `endpoint==="flightNumbers"` (the
+ *                   outbound leg). Multi-stop legs are out-of-scope for this slice.
  *     sandboxScenario: <object, optional>,
  *     projectedDelta:  <object, optional>,
  *     preApplySync:    <{scheduleAt, orsAt, halted}, optional> — captured
@@ -96,6 +105,18 @@ class RouteAssistantPricingApplier {
     }
 
     static DEFAULT_SUBMIT = "submit-prices"
+
+    // Endpoint mode — "markets" is the default route-level form at
+    // `/app/com/markets/<HUB><DEST>`; "flightNumbers" targets the
+    // per-leg form at `/app/com/numbers/<flightNumberId>/<legIndex>`.
+    // Forms are structurally identical (same FIELD_NAMES.prices, same
+    // submit-prices button, same slider ranges) — only the URL, the
+    // form-action suffix, and the absence of scope checkboxes differ.
+    static FORM_ACTION_SUFFIXES = {
+        markets:       "panel-settings-settings~form",
+        flightNumbers: "panel-leg~settings~form"
+    }
+    static DEFAULT_ENDPOINT = "markets"
 
     // Watchful regexes for a few Wicket failure modes that return HTTP 200
     // bodies but represent silent failures. Same approach as ors-scraper.js.
@@ -174,6 +195,20 @@ class RouteAssistantPricingApplier {
             + "/app/com/markets/" + String(hub).toUpperCase() + String(dest).toUpperCase()
     }
 
+    static _numbersUrl(server, flightNumberId, legIndex) {
+        const leg = (legIndex == null || !isFinite(legIndex)) ? 0 : Math.max(0, parseInt(legIndex, 10))
+        return RouteAssistantPricingApplier._baseUrl(server)
+            + "/app/com/numbers/" + String(flightNumberId) + "/" + leg
+    }
+
+    static _endpointUrl(server, opts) {
+        const o = opts || {}
+        if (o.endpoint === "flightNumbers") {
+            return RouteAssistantPricingApplier._numbersUrl(server, o.flightNumberId, o.legIndex)
+        }
+        return RouteAssistantPricingApplier._markUrl(server, o.hub, o.dest)
+    }
+
     // ------------------------------------------------------------------
     // Form parsing — pure, static. Walks the GET response to harvest the
     // Wicket session, the form action URL, every hidden input, and the
@@ -190,9 +225,11 @@ class RouteAssistantPricingApplier {
      * blocker which the modal renders with a clear "couldn't locate
      * pricing form on AS — refresh the page and try again" hint.
      */
-    static parseFormContext(html) {
+    static parseFormContext(html, opts) {
         if (!html) return null
         const doc = new DOMParser().parseFromString(html, "text/html")
+        const endpoint = (opts && opts.endpoint) || RouteAssistantPricingApplier.DEFAULT_ENDPOINT
+        const expectedSuffix = RouteAssistantPricingApplier.FORM_ACTION_SUFFIXES[endpoint] || null
 
         // Session ID lives in the wicket-ajax-base-url script. Same
         // structure as the ORS form. The number after the `?` is what we
@@ -204,18 +241,28 @@ class RouteAssistantPricingApplier {
             if (m) sessionId = m[1]
         }
 
-        // Locate the pricing form — it's the form whose action URL ends
-        // in `~panel-settings-settings~form` (NOT the search form which
-        // ends in `-base.search` or the pair-form which is the legend
-        // submission). Disambiguate by looking for the `submit-prices`
-        // button inside the form.
+        // Locate the pricing form. Markets-page form's action ends in
+        // `~panel-settings-settings~form`; the per-leg form on
+        // `/app/com/numbers/<id>/<leg>` ends in `~panel-leg~settings~form`.
+        // Both carry the same `submit-prices` button. Disambiguate first
+        // by suffix when the caller specifies an endpoint, then fall
+        // back to the submit-prices button check so older snapshots
+        // (no suffix match yet) still parse.
         let pricingForm = null
+        const candidates = []
         for (const f of doc.querySelectorAll("form[method='post']")) {
-            if (f.querySelector("button[name='submit-prices']") || f.querySelector("input[name='submit-prices']")) {
-                pricingForm = f
-                break
+            const hasSubmitPrices = f.querySelector("button[name='submit-prices']")
+                || f.querySelector("input[name='submit-prices']")
+            if (!hasSubmitPrices) continue
+            candidates.push(f)
+        }
+        if (expectedSuffix) {
+            for (const f of candidates) {
+                const action = f.getAttribute("action") || ""
+                if (action.indexOf(expectedSuffix) !== -1) { pricingForm = f; break }
             }
         }
+        if (!pricingForm && candidates.length) pricingForm = candidates[0]
         if (!pricingForm) return null
 
         const formAction = pricingForm.getAttribute("action") || ""
@@ -322,6 +369,7 @@ class RouteAssistantPricingApplier {
         }
 
         return {
+            endpoint,
             sessionId,
             formActionPath,
             formId,
@@ -383,10 +431,16 @@ class RouteAssistantPricingApplier {
 
         // Scope checkboxes — Wicket only sends checked checkboxes on
         // <form>.submit(); unchecked boxes are absent from the body. Mirror that.
-        const eff = Object.assign({}, RouteAssistantPricingApplier.DEFAULT_SCOPE, scope || {})
-        const scopeFields = RouteAssistantPricingApplier.FIELD_NAMES.scope
-        for (const k in scopeFields) {
-            if (eff[k]) body.set(scopeFields[k], "on")
+        // The per-leg form on `/app/com/numbers/<id>/<leg>` doesn't expose
+        // these checkboxes — its scope is implicit (this leg, this flight
+        // number). Only emit them on the markets-page form.
+        const endpoint = (formContext && formContext.endpoint) || RouteAssistantPricingApplier.DEFAULT_ENDPOINT
+        if (endpoint === "markets") {
+            const eff = Object.assign({}, RouteAssistantPricingApplier.DEFAULT_SCOPE, scope || {})
+            const scopeFields = RouteAssistantPricingApplier.FIELD_NAMES.scope
+            for (const k in scopeFields) {
+                if (eff[k]) body.set(scopeFields[k], "on")
+            }
         }
 
         // Submit button. Required — Wicket disambiguates which submit
@@ -404,7 +458,7 @@ class RouteAssistantPricingApplier {
      * identical entries). Sub-classes / future modes can extend the
      * input set.
      */
-    static fingerprint(hub, dest, prices, scope) {
+    static fingerprint(hub, dest, prices, scope, target) {
         const parts = []
         parts.push("h=" + String(hub || "").toUpperCase())
         parts.push("d=" + String(dest || "").toUpperCase())
@@ -418,12 +472,100 @@ class RouteAssistantPricingApplier {
         parts.push("fn=" + (s.flightNumbers       ? 1 : 0))
         parts.push("rap=" + (s.returnAirportPair  ? 1 : 0))
         parts.push("rfn=" + (s.returnFlightNumbers ? 1 : 0))
+        // Endpoint targeting — fold in flight-number id + leg so a
+        // dedup window doesn't collapse two distinct per-FN applies
+        // that happen to ask for the same prices on the same route.
+        const t = target || {}
+        if (t.endpoint === "flightNumbers") {
+            parts.push("ep=fn")
+            parts.push("fnId=" + (t.flightNumberId != null ? t.flightNumberId : ""))
+            parts.push("leg=" + (t.legIndex != null ? t.legIndex : 0))
+        }
         return parts.join("|")
     }
 
     // ------------------------------------------------------------------
     // Apply pipeline — orchestrates GET handshake → preflight → POST.
     // ------------------------------------------------------------------
+
+    /**
+     * Warm the per-route own-pricing cache by issuing one GET to the
+     * markets page and persisting the parsed `currentPrices` so subsequent
+     * apply calls can read absolute prices without requiring the user to
+     * navigate the page first. Delegates to the markets-page-scraper when
+     * available (which writes the canonical `routeAssistant:markets:ownPricing:HUB-DEST`
+     * record under the account-scoped key); falls back to a self-contained
+     * GET + parseFormContext when the scraper module isn't loaded.
+     *
+     * Best-effort and idempotent — any error path returns `{ok: false}`
+     * with a reason; callers should fall through to whatever they were
+     * going to do without the cache.
+     */
+    async warmCache(hub, dest, opts) {
+        if (!hub || !dest) return {ok: false, error: "hub/dest required"}
+        const o = opts || {}
+        const endpoint = o.endpoint === "flightNumbers" ? "flightNumbers" : "markets"
+        // Markets-page scraper is the canonical writer for the
+        // routeAssistant:markets:ownPricing cache; only consult it when
+        // we're warming the markets endpoint. The flight-numbers page
+        // is per-leg and shares the route's competitor band, so we
+        // still write under the same HUB-DEST pair key but tag the
+        // record's source so consumers know it came from the leg form.
+        if (endpoint === "markets"
+                && typeof RouteAssistantMarketsPageScraper !== "undefined"
+                && typeof RouteAssistantMarketsPageScraper.prototype !== "undefined"
+                && typeof RouteAssistantMarketsPageScraper.prototype.scrape === "function") {
+            try {
+                const scraper = new RouteAssistantMarketsPageScraper(this.server)
+                const saved = await scraper.scrape(hub, dest)
+                if (saved && saved.ownPricing && saved.ownPricing.prices
+                        && Object.keys(saved.ownPricing.prices).length) {
+                    return {ok: true, prices: saved.ownPricing.prices, source: "marketsScraper"}
+                }
+                return {ok: false, error: "scraper returned no ownPricing"}
+            } catch (e) {
+                return {ok: false, error: "scraper threw: " + (e && e.message || String(e))}
+            }
+        }
+        try {
+            const url = endpoint === "flightNumbers"
+                ? RouteAssistantPricingApplier._numbersUrl(this.server, o.flightNumberId, o.legIndex)
+                : RouteAssistantPricingApplier._markUrl(this.server, hub, dest)
+            const resp = await fetch(url, {credentials: "include"})
+            if (!resp.ok) return {ok: false, error: "HTTP " + resp.status}
+            const html = await resp.text()
+            if (RouteAssistantPricingApplier.AUTHENTICATION_RE.test(html)) {
+                return {ok: false, error: "notLoggedIn"}
+            }
+            const fc = RouteAssistantPricingApplier.parseFormContext(html, {endpoint})
+            if (!fc || !fc.currentPrices || !Object.keys(fc.currentPrices).length) {
+                return {ok: false, error: "noFormContext"}
+            }
+            const pair = RouteAssistantPricingApplier._pairKey(hub, dest)
+            const rec = {
+                hub:       String(hub).toUpperCase(),
+                dest:      String(dest).toUpperCase(),
+                scrapedAt: Date.now(),
+                source:    endpoint === "flightNumbers" ? "warmCache:flightNumbers" : "warmCache",
+                prices:    fc.currentPrices,
+                defaults:  fc.defaults || null,
+                sliderRanges: fc.sliderRanges || null,
+                generalSettings: fc.generalSettings || null
+            }
+            const writes = {}
+            const legacyKey = "routeAssistant:markets:ownPricing:" + pair
+            writes[legacyKey] = rec
+            if (typeof window !== "undefined" && window.AesAccountKey
+                    && typeof window.AesAccountKey.acctKey === "function") {
+                const scopedKey = window.AesAccountKey.acctKey("routeAssistant:markets:ownPricing", pair)
+                if (scopedKey !== legacyKey) writes[scopedKey] = rec
+            }
+            await chrome.storage.local.set(writes)
+            return {ok: true, prices: fc.currentPrices, source: endpoint === "flightNumbers" ? "warmCacheFallback:flightNumbers" : "warmCacheFallback"}
+        } catch (e) {
+            return {ok: false, error: "warmCache threw: " + (e && e.message || String(e))}
+        }
+    }
 
     /**
      * Tier 3.1 entry. Walks the full pipeline; in dry-run mode (the
@@ -445,7 +587,16 @@ class RouteAssistantPricingApplier {
         const submitButton = opts.submitButton || RouteAssistantPricingApplier.DEFAULT_SUBMIT
         const reason = (opts.reason || "").toString().slice(0, 240) || null
 
-        const fingerprint = RouteAssistantPricingApplier.fingerprint(hub, dest, prices, scope)
+        const endpoint = opts.endpoint === "flightNumbers" ? "flightNumbers" : RouteAssistantPricingApplier.DEFAULT_ENDPOINT
+        const flightNumberId = endpoint === "flightNumbers" && opts.flightNumberId != null
+            ? String(opts.flightNumberId)
+            : null
+        const legIndex = endpoint === "flightNumbers" && isFinite(opts.legIndex)
+            ? Math.max(0, parseInt(opts.legIndex, 10))
+            : (endpoint === "flightNumbers" ? 0 : null)
+
+        const target = {endpoint, flightNumberId, legIndex}
+        const fingerprint = RouteAssistantPricingApplier.fingerprint(hub, dest, prices, scope, target)
         const startedAt = Date.now()
 
         const baseEnvelope = {
@@ -455,6 +606,9 @@ class RouteAssistantPricingApplier {
             source,
             scope,
             submitButton,
+            endpoint,
+            flightNumberId,
+            legIndex,
             sandboxScenario:  opts.sandboxScenario || null,
             projectedDelta:   opts.projectedDelta  || null,
             preApplySync:     opts.preApplySync    || null,
@@ -473,6 +627,16 @@ class RouteAssistantPricingApplier {
             objective:        opts.objective || null
         }
 
+        // Endpoint-mode preflight: flight-numbers writes need a target id.
+        if (endpoint === "flightNumbers" && !flightNumberId) {
+            return await this._completeAsAborted(baseEnvelope, {
+                code:    "noFlightNumberForRoute",
+                message: "endpointMode='flightNumbers' but no flightNumberId provided. "
+                       + "Resolver couldn't find a flight number on " + pair
+                       + "; either flip flightNumbersFallbackToMarkets on or revisit the aircraft pages so AES can scrape the per-tail roster."
+            })
+        }
+
         // Step 0 — circuit-breaker cooldown gate. Skip in dry-run; the
         // breaker exists to throttle real POST traffic, dry-run is a pure
         // GET + parse and is safe to run while AS is rate-limiting us.
@@ -488,8 +652,13 @@ class RouteAssistantPricingApplier {
             }
         }
 
-        // Step 1 — GET the markets page so we have a fresh form context.
-        const url = RouteAssistantPricingApplier._markUrl(this.server, hub, dest)
+        // Step 1 — GET the pricing page so we have a fresh form context.
+        // Endpoint dispatch — markets-page (route-level) vs flight-numbers
+        // (per-leg). The form structure is identical apart from action
+        // suffix + scope-checkbox absence.
+        const url = endpoint === "flightNumbers"
+            ? RouteAssistantPricingApplier._numbersUrl(this.server, flightNumberId, legIndex)
+            : RouteAssistantPricingApplier._markUrl(this.server, hub, dest)
         let html = null
         let formContext = null
         try {
@@ -514,14 +683,18 @@ class RouteAssistantPricingApplier {
         if (RouteAssistantPricingApplier.AUTHENTICATION_RE.test(html)) {
             return await this._completeAsFailure(baseEnvelope, {
                 code:    "notLoggedIn",
-                message: "Markets page returned a login form — sign into AS in this browser tab and retry."
+                message: (endpoint === "flightNumbers" ? "Flight-numbers" : "Markets")
+                       + " page returned a login form — sign into AS in this browser tab and retry."
             })
         }
-        formContext = RouteAssistantPricingApplier.parseFormContext(html)
+        formContext = RouteAssistantPricingApplier.parseFormContext(html, {endpoint})
         if (!formContext) {
+            const where = endpoint === "flightNumbers"
+                ? "/app/com/numbers/" + flightNumberId + "/" + legIndex
+                : "/app/com/markets/" + pair.replace("-", "")
             return await this._completeAsFailure(baseEnvelope, {
                 code:    "noFormContext",
-                message: "Couldn't locate the pricing form on /app/com/markets/" + pair.replace("-", "")
+                message: "Couldn't locate the pricing form on " + where
                        + ". AS markup may have changed; refresh the page and retry."
             })
         }
@@ -628,16 +801,16 @@ class RouteAssistantPricingApplier {
         }
 
         // Step 5 — verify by parsing the response (which is the same
-        // markets page re-rendered with the new prices applied). When
-        // the response doesn't carry the new values, fall back to a
+        // markets/numbers page re-rendered with the new prices applied).
+        // When the response doesn't carry the new values, fall back to a
         // separate verify() round-trip — Wicket sometimes returns just
         // a redirect-snippet response.
         let verifiedPrices = null
-        const respContext = RouteAssistantPricingApplier.parseFormContext(respHtml)
+        const respContext = RouteAssistantPricingApplier.parseFormContext(respHtml, {endpoint})
         if (respContext && respContext.currentPrices) {
             verifiedPrices = respContext.currentPrices
         } else {
-            verifiedPrices = await this._verify(hub, dest)
+            verifiedPrices = await this._verify(hub, dest, {endpoint, flightNumberId, legIndex})
         }
         const verifyOk = RouteAssistantPricingApplier._verifyMatches(baseEnvelope.newPrices, verifiedPrices)
 
@@ -750,13 +923,17 @@ class RouteAssistantPricingApplier {
      * POST response doesn't carry the expected values, and exposed so
      * 3.2's Tier 3 batch can sweep verify across a list of routes.
      */
-    async _verify(hub, dest) {
+    async _verify(hub, dest, opts) {
+        const o = opts || {}
+        const endpoint = o.endpoint === "flightNumbers" ? "flightNumbers" : "markets"
         try {
-            const url = RouteAssistantPricingApplier._markUrl(this.server, hub, dest)
+            const url = endpoint === "flightNumbers"
+                ? RouteAssistantPricingApplier._numbersUrl(this.server, o.flightNumberId, o.legIndex)
+                : RouteAssistantPricingApplier._markUrl(this.server, hub, dest)
             const resp = await fetch(url, {credentials: "include"})
             if (!resp.ok) return null
             const html = await resp.text()
-            const ctx = RouteAssistantPricingApplier.parseFormContext(html)
+            const ctx = RouteAssistantPricingApplier.parseFormContext(html, {endpoint})
             return ctx ? ctx.currentPrices : null
         } catch (e) {
             return null
