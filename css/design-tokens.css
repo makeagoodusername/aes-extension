@@ -140,9 +140,12 @@
 
 /* ===========================================================
    Font faces — shipped locally, zero network on AS pages.
-   Paths are relative to this CSS file (resolves to extension origin
-   when injected via content_scripts.css; manifest declares fonts/*
-   in web_accessible_resources for host-page font requests).
+   Inlined as base64 data URIs because Chrome MV3 resolves url()
+   in content_scripts CSS against the *host page's* origin, not
+   the extension origin — so '../fonts/...' would 404 on AS pages.
+   Data URIs avoid this entirely; ~88KB cost, paid once per page.
+   web_accessible_resources entry for /fonts/* is kept for any
+   future JS-driven font load path that opts in via runtime.getURL.
    =========================================================== */
 
 @font-face {
