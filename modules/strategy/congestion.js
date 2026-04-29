@@ -40,8 +40,10 @@
     if (typeof window === "undefined") return
     if (window.AesStrategyCongestion) return
 
-    function _num(v, f) { const n = Number(v); return isFinite(n) ? n : f }
-    function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+    const _num = (window.AesUtils && window.AesUtils._num)
+        || function (v, f) { const n = Number(v); return isFinite(n) ? n : f }
+    const _clamp = (window.AesUtils && window.AesUtils._clamp)
+        || function (v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
 
     function _operatorCountFromOrs(orsRecord) {
         const econ = orsRecord && orsRecord.byClass && orsRecord.byClass.ECONOMY

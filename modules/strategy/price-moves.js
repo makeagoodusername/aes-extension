@@ -9,11 +9,18 @@
  * (share/profit/rank) is resolved per-route via AesStrategyObjective so
  * the user's global goal AND per-route overrides both apply.
  *
- * S1 keeps the proposer cheap: it does NOT load full ORS projections per
- * route; instead it computes an objective-weighted target percent in the
- * competitor band, applies a congestion damper, and clips to the
- * deadband + max-move-per-window guardrails. S2 will widen this to a
- * full ORS-model curve sweep when route ORS data is in the snapshot.
+ * Tier ordering:
+ *   1. Joint rank-target tuner (`tuneJointly`) — when route ORS data is
+ *      attached, the solver picks (Y, C, F) multipliers under the model
+ *      with comfortDelta locked. Returns directly.
+ *   2. S1 + Slice 9 fallback — no ORS data: emit per-class moves anchored
+ *      at the route's `ownPricing.prices` (each class scored independently
+ *      against the live competitor band), an asymmetric cargo move whose
+ *      direction is driven by cargoScore × cargo competitor presence
+ *      rather than mirroring pax, and an elasticity hint mined from
+ *      `orsHistory` when ≥3 snapshots show our prior price moves
+ *      degrading rank (yield-curve fit is direction-only — full curve
+ *      lands when a competitor-price history store ships).
  *
  * NO POSTs. Slice 4 (`apply()`) routes through RouteAssistantPricingApplier.
  *
@@ -171,6 +178,137 @@
         return _round(Math.max(70, Math.min(150, target + shareTilt)), 0)
     }
 
+    // ── Slice 9 — yield-curve elasticity hint ─────────────────────────
+    //
+    // Mine `r.orsHistory` for a coarse direction signal: when prior
+    // upward price moves on this route correlated with rank degradation,
+    // dampen the next upward move (and vice versa). Only emits a signal
+    // when ≥3 snapshots and a clear sign-correlation; otherwise returns
+    // `{available: false}` so the proposer keeps the legacy behaviour.
+    //
+    // This is intentionally not a full elasticity fit — full curve lands
+    // when a per-route competitor-price history store ships and we can
+    // cross-reference our price changes against competitor responses.
+    // The direction-only signal is enough to flag obvious "we already
+    // tried that and it cost us" cases.
+    function _elasticityHint(route, classKey, intendedMove) {
+        const hist = route && route.orsHistory
+        if (!Array.isArray(hist) || hist.length < 3) return {available: false}
+        const priceField = "price" + classKey
+        const samples = []
+        for (const s of hist) {
+            if (!s || !s.context) continue
+            const px   = _num(s.context[priceField], NaN)
+            const cls  = s.byClass && s.byClass[classKey]
+            const rank = cls && _num(cls.rankAny, NaN)
+            const ts   = _num(s.scrapedAt, NaN)
+            if (!isFinite(px) || !isFinite(rank) || !isFinite(ts)) continue
+            samples.push({px: px, rank: rank, ts: ts})
+        }
+        if (samples.length < 3) return {available: false}
+        samples.sort((a, b) => a.ts - b.ts)
+        // Direction of price drift across the window — sum of consecutive
+        // signed deltas. Same for rank. Lower rank value = better, so we
+        // negate to align "rank up" with "rank improved".
+        let priceDrift = 0
+        let rankDrift  = 0
+        for (let i = 1; i < samples.length; i++) {
+            priceDrift += samples[i].px   - samples[i - 1].px
+            rankDrift  -= samples[i].rank - samples[i - 1].rank   // sign-flip
+        }
+        // Hint fires only when we have a non-trivial price drift and a
+        // contradicting rank drift (price ↑ but rank ↓, or price ↓ but
+        // rank ↑). When the intended move shares the price-drift sign
+        // we've been hurt by, dampen.
+        if (Math.abs(priceDrift) < 1) return {available: false, samples: samples.length}
+        const priceDir = Math.sign(priceDrift)
+        const rankDir  = Math.sign(rankDrift)
+        const damper = (priceDir === Math.sign(intendedMove) && rankDir < 0) ? 0.6 : 1
+        return {
+            available:  true,
+            damper:     damper,
+            samples:    samples.length,
+            priceDrift: priceDrift,
+            rankDrift:  rankDrift
+        }
+    }
+
+    // ── Slice 9 — cargo asymmetric decision ───────────────────────────
+    //
+    // Cargo demand is decoupled from passenger pricing — it's driven by
+    // freight network presence, not pax service quality. The pre-S9
+    // heuristic mirrored pax move at half magnitude, which is wrong
+    // direction in the (very common) "weak pax, strong cargo" case.
+    //
+    // Direction logic, ranked by signal strength:
+    //   - cargoScore high (≥7) AND no observed competitor band on Cargo
+    //     → undercut current Cargo by 4pp (capture share)
+    //   - cargoScore high AND competitor priceMin/Max present (cargo lane
+    //     contested) → match competitor mid-anchor
+    //   - cargoScore mid (4-6) → small upward nudge (+2pp) when our price
+    //     is below competitor mid; otherwise hold (no move emitted).
+    //   - cargoScore low (<4) → no move.
+    function _cargoAsymmetric(route, weights, opts) {
+        const cargoScore = _num(route && route.cargoScore, 0)
+        if (cargoScore < 4) return null
+        const fallback = _num(opts && opts.fallbackPricePct, 100)
+        const currentPct = _num(route && route.ownPricing
+                                && route.ownPricing.prices
+                                && route.ownPricing.prices.Cargo, fallback)
+        const cargoComp = route && route.competitor   // shared with pax band today
+        const hasBand = cargoComp && cargoComp.priceMin != null && cargoComp.priceMax != null
+        let move = 0
+        let reason = null
+        if (cargoScore >= 7 && !hasBand) {
+            move = -4
+            reason = "cargoScore " + _round(cargoScore, 1)
+                   + " · no competitor band → undercut to capture share"
+        } else if (cargoScore >= 7 && hasBand) {
+            const mid = (_num(cargoComp.priceMin, currentPct)
+                       + _num(cargoComp.priceMax, currentPct)) / 2
+            move = mid - currentPct
+            reason = "cargoScore " + _round(cargoScore, 1)
+                   + " · contested lane → match competitor mid " + _round(mid, 0) + "%"
+        } else if (cargoScore >= 4 && hasBand) {
+            const mid = (_num(cargoComp.priceMin, currentPct)
+                       + _num(cargoComp.priceMax, currentPct)) / 2
+            if (currentPct < mid - 2) {
+                move = +2
+                reason = "cargoScore " + _round(cargoScore, 1)
+                       + " · room below competitor mid → nudge +2pp"
+            }
+        }
+        // Dampen by profitWeight when we're proposing a discount — same
+        // intuition as pax: profit-max users don't want surprise undercuts.
+        if (move < 0 && weights.profitWeight > 0.5) move = move * 0.6
+        return {move: move, currentPct: currentPct, reason: reason,
+                cargoScore: cargoScore, hasBand: !!hasBand}
+    }
+
+    // Slice 9 — emit one move for a single class. Pure; takes the
+    // pre-resolved weights, the per-class current pct, and the route's
+    // band + congestion. Returns the move dict ready to push, or null
+    // when the move falls under deadband/guardrails.
+    function _classMove(route, classKey, currentPct, weights, opts, snapshot) {
+        const deadband = _num(opts.deadband,         5)
+        const maxMove  = _num(opts.maxMovePerWindow, 10)
+        const target = _targetPct(route, weights, opts)
+        let delta = target - currentPct
+        if (Math.abs(delta) < deadband) return null
+        const cong = _num(route.congestionIndex, 0)
+        const damper = Math.max(0.4, 1 - 0.5 * cong)
+        delta = delta * damper
+        let move = Math.sign(delta) * Math.min(Math.abs(delta), maxMove)
+        const guard = _competitorIncomeGuard(route, move, snapshot)
+        if (guard.available && guard.damper < 1) move = move * guard.damper
+        const elast = _elasticityHint(route, classKey, move)
+        if (elast.available && elast.damper < 1) move = move * elast.damper
+        if (Math.abs(move) < deadband) return null
+        const toPct = _round(currentPct + move, 0)
+        return {move: move, toPct: toPct, target: target, cong: cong, damper: damper,
+                guard: guard, elast: elast, maxMove: maxMove}
+    }
+
     function proposePriceMoves(snapshot, opts) {
         const o = opts || {}
 
@@ -188,99 +326,113 @@
             }
         }
 
-        const deadband      = _num(o.deadband,            5)
-        const maxMove       = _num(o.maxMovePerWindow,    10)
-        const fallbackPct   = _num(o.fallbackPricePct,    100)
+        const fallbackPct   = _num(o.fallbackPricePct, 100)
         const includeCargo  = o.includeCargo !== false
 
         const moves = []
         for (const r of _flatten(snapshot)) {
             const resolved = _resolveWeights(snapshot, o, r.hub, r.dest)
             const w        = resolved.weights
-
-            const currentPct = (r.override && _num(r.override.yieldPerKm, NaN))
-                || fallbackPct
-            const target     = _targetPct(r, w, o)
-            let delta        = target - currentPct
-            if (Math.abs(delta) < deadband) continue
-
-            // Congestion damper — damp moves on saturated routes so we
-            // don't kick off a price war that other tiles will match.
-            const cong = _num(r.congestionIndex, 0)
-            const damper = Math.max(0.4, 1 - 0.5 * cong)
-            delta = delta * damper
-
-            let move = Math.sign(delta) * Math.min(Math.abs(delta), maxMove)
-            // Anti-spiral guard (§4.17): consult competitor-income-estimator
-            // before committing the downward portion of the move.
-            const guard = _competitorIncomeGuard(r, move, snapshot)
-            if (guard.available && guard.damper < 1) move = move * guard.damper
-            if (Math.abs(move) < deadband) continue
-            const toPct = _round(currentPct + move, 0)
-
-            const rationale = []
-            const c = r.competitor
-            if (c && c.priceMin != null && c.priceMax != null) {
-                rationale.push("[market] competitor band " + c.priceMin + "–" + c.priceMax + "%")
-            }
-            if (c && c.dominantCarrier) rationale.push("[market] dominant carrier " + c.dominantCarrier)
-            if (r.ourPaxShare != null) rationale.push("[share] our pax share "
-                + Math.round(_num(r.ourPaxShare, 0) * 100) + "%")
-            rationale.push("[goal] " + resolved.kind
-                + " · weights share=" + _round(w.shareWeight, 2)
-                + " profit=" + _round(w.profitWeight, 2)
-                + " rank=" + _round(w.rankWeight, 2))
-            if (cong > 0) {
-                rationale.push("[congestion] index " + _round(cong, 2)
-                    + " — move damped ×" + _round(damper, 2))
-            }
-            rationale.push("[move] " + currentPct + "% → " + toPct + "% (capped at ±" + maxMove + ")")
-            if (Math.abs(target - currentPct) > maxMove) {
-                rationale.push("[guardrail] full target " + target + "% clipped to ±" + maxMove
-                            + "pp — re-evaluate next window")
-            }
-            if (guard.available) {
-                if (guard.damper < 1) {
-                    rationale.push("[anti-spiral] competitor income est ~$"
-                        + Math.round(guard.estProfit) + "/wk below floor $"
-                        + guard.floor + "/wk (confidence " + guard.confidence
-                        + ") — downward move dampened ×" + guard.damper)
-                } else {
-                    rationale.push("[anti-spiral] competitor income est ~$"
-                        + Math.round(guard.estProfit) + "/wk (confidence " + guard.confidence
-                        + ") — above floor $" + guard.floor + "/wk")
-                }
-            } else {
-                rationale.push("[anti-spiral] competitor-income data unavailable — using legacy weights")
-            }
-
             const profitPerWeek = _num(r.profitPerWeek, 0)
-            const impact = Math.round((move / 100) * profitPerWeek * 0.5)
-            moves.push({
-                hub:        r.hub,
-                dest:       r.dest,
-                classKey:   "Y",
-                fromPct:    currentPct,
-                toPct:      toPct,
-                deltaPct:   move,
-                rationale:  rationale,
-                impactWeekly: impact,
-                profitPerWeek: profitPerWeek,
-                objective:  {kind: resolved.kind, weights: w}
-            })
+            const ownPrices = (r.ownPricing && r.ownPricing.prices) || null
 
-            if (includeCargo && r.cargoScore != null && _num(r.cargoScore, 0) >= 5) {
-                const cargoMove = Math.sign(move) * Math.min(Math.abs(move) / 2, maxMove / 2)
-                if (Math.abs(cargoMove) >= deadband / 2) {
+            // Slice 9 — per-class iteration. When the route lacks
+            // per-class own pricing data, fall back to a single Y move
+            // anchored at the legacy override or fallbackPct.
+            const classKeys = ownPrices
+                ? ["Y", "C", "F"].filter(k => isFinite(_num(ownPrices[k], NaN)))
+                : ["Y"]
+            for (const cls of classKeys) {
+                const currentPct = ownPrices ? _num(ownPrices[cls], fallbackPct)
+                    : ((r.override && _num(r.override.yieldPerKm, NaN)) || fallbackPct)
+                const m = _classMove(r, cls, currentPct, w, o, snapshot)
+                if (!m) continue
+
+                const rationale = []
+                const c = r.competitor
+                if (c && c.priceMin != null && c.priceMax != null) {
+                    rationale.push("[market] competitor band " + c.priceMin + "–" + c.priceMax + "%")
+                }
+                if (c && c.dominantCarrier) rationale.push("[market] dominant carrier " + c.dominantCarrier)
+                if (r.ourPaxShare != null) rationale.push("[share] our pax share "
+                    + Math.round(_num(r.ourPaxShare, 0) * 100) + "%")
+                rationale.push("[goal] " + resolved.kind
+                    + " · weights share=" + _round(w.shareWeight, 2)
+                    + " profit=" + _round(w.profitWeight, 2)
+                    + " rank=" + _round(w.rankWeight, 2))
+                if (m.cong > 0) {
+                    rationale.push("[congestion] index " + _round(m.cong, 2)
+                        + " — move damped ×" + _round(m.damper, 2))
+                }
+                rationale.push("[" + cls + "] " + currentPct + "% → " + m.toPct + "% (cap ±" + m.maxMove + ")")
+                if (Math.abs(m.target - currentPct) > m.maxMove) {
+                    rationale.push("[guardrail] full target " + m.target + "% clipped to ±" + m.maxMove
+                                + "pp — re-evaluate next window")
+                }
+                if (m.guard.available) {
+                    if (m.guard.damper < 1) {
+                        rationale.push("[anti-spiral] competitor income est ~$"
+                            + Math.round(m.guard.estProfit) + "/wk below floor $"
+                            + m.guard.floor + "/wk (confidence " + m.guard.confidence
+                            + ") — downward move dampened ×" + m.guard.damper)
+                    } else {
+                        rationale.push("[anti-spiral] competitor income est ~$"
+                            + Math.round(m.guard.estProfit) + "/wk (confidence " + m.guard.confidence
+                            + ") — above floor $" + m.guard.floor + "/wk")
+                    }
+                } else {
+                    rationale.push("[anti-spiral] competitor-income data unavailable — using legacy weights")
+                }
+                if (m.elast.available && m.elast.damper < 1) {
+                    rationale.push("[elasticity] " + m.elast.samples
+                        + " prior snapshots show same-direction price moves degraded rank — dampened ×"
+                        + m.elast.damper + " (drift price " + _round(m.elast.priceDrift, 1)
+                        + " / rank " + _round(m.elast.rankDrift, 1) + ")")
+                } else if (m.elast.available) {
+                    rationale.push("[elasticity] " + m.elast.samples
+                        + " prior snapshots — no penalty (drift price "
+                        + _round(m.elast.priceDrift, 1) + " / rank " + _round(m.elast.rankDrift, 1) + ")")
+                }
+
+                // Per-class impact weighting — Y carries most of the pax
+                // P&L, so split 0.5 / 0.3 / 0.2 across Y / C / F.
+                const impactWeight = cls === "Y" ? 0.5 : cls === "C" ? 0.3 : 0.2
+                const impact = Math.round((m.move / 100) * profitPerWeek * impactWeight)
+                moves.push({
+                    hub:        r.hub,
+                    dest:       r.dest,
+                    classKey:   cls,
+                    fromPct:    currentPct,
+                    toPct:      m.toPct,
+                    deltaPct:   m.move,
+                    rationale:  rationale,
+                    impactWeekly: impact,
+                    profitPerWeek: profitPerWeek,
+                    objective:  {kind: resolved.kind, weights: w}
+                })
+            }
+
+            if (includeCargo) {
+                const cargo = _cargoAsymmetric(r, w, o)
+                if (cargo && Math.abs(cargo.move) >= _num(o.deadband, 5) / 2) {
+                    const toPct = _round(cargo.currentPct + cargo.move, 0)
+                    const cargoRationale = [
+                        "[cargo asymmetric] " + cargo.reason,
+                        "[Cargo] " + _round(cargo.currentPct, 0) + "% → " + toPct + "%"
+                    ]
+                    if (cargo.move < 0 && w.profitWeight > 0.5) {
+                        cargoRationale.push("[goal] profit-tilted weights (" + _round(w.profitWeight, 2)
+                            + ") dampened the discount ×0.6")
+                    }
                     moves.push({
                         hub:        r.hub,
                         dest:       r.dest,
                         classKey:   "Cargo",
-                        fromPct:    100,
-                        toPct:      _round(100 + cargoMove, 0),
-                        deltaPct:   cargoMove,
-                        rationale:  ["[mirror] cargo follows pax move at half magnitude (v1 heuristic)"],
-                        impactWeekly: Math.round((cargoMove / 100) * profitPerWeek * 0.25),
+                        fromPct:    _round(cargo.currentPct, 0),
+                        toPct:      toPct,
+                        deltaPct:   cargo.move,
+                        rationale:  cargoRationale,
+                        impactWeekly: Math.round((cargo.move / 100) * profitPerWeek * 0.25),
                         profitPerWeek: profitPerWeek,
                         objective:  {kind: resolved.kind, weights: w}
                     })
@@ -292,4 +444,72 @@
     }
 
     ns.proposePriceMoves = proposePriceMoves
+
+    // ── ?aes-debug smoke ──────────────────────────────────────────────
+    try {
+        if (typeof location !== "undefined" && /[?&]aes-debug\b/.test(location.search || "")) {
+            // Per-class S1 fallback — synthetic snapshot with no ORS data
+            // (so joint-tuner short-circuit doesn't fire) but full per-class
+            // ownPricing + competitor band.
+            const snap = {
+                hubs: [{iata: "FRA", byRoute: [{
+                    dest: "LHR", profitPerWeek: 100000,
+                    competitor: {priceMin: 90, priceMax: 110, dominantCarrier: "BA"},
+                    // Each class above the balanced-objective target (~97%)
+                    // by enough to clear deadband, so all three emit.
+                    ownPricing: {prices: {Y: 130, C: 120, F: 115, Cargo: 130}},
+                    cargoScore: 8
+                }]}]
+            }
+            const movesAll = proposePriceMoves(snap, {useJointTuner: false,
+                objective: {kind: "balanced"}})
+            const cls = new Set(movesAll.map(m => m.classKey))
+            console.assert(cls.has("Y") && cls.has("C") && cls.has("F"),
+                "[smoke s9] per-class S1 emits Y, C, and F moves")
+            console.assert(cls.has("Cargo"),
+                "[smoke s9] cargo asymmetric emits independent move when cargoScore high")
+
+            // Cargo direction independent of pax: build a route where pax
+            // would move down (profit-tilt + competitor band) but cargo is
+            // a high-score lane with no competitor band → undercut +4pp.
+            const noBandSnap = {
+                hubs: [{iata: "FRA", byRoute: [{
+                    dest: "JFK", profitPerWeek: 50000,
+                    competitor: null,                            // pax: no band
+                    ownPricing: {prices: {Y: 100, C: 100, F: 100, Cargo: 100}},
+                    cargoScore: 8
+                }]}]
+            }
+            const movesCargo = proposePriceMoves(noBandSnap, {useJointTuner: false,
+                objective: {kind: "balanced"}})
+            const cargo = movesCargo.find(m => m.classKey === "Cargo")
+            console.assert(cargo && cargo.deltaPct < 0,
+                "[smoke s9] cargo undercuts when score high + no band")
+            console.assert(cargo && /undercut to capture share/.test(cargo.rationale.join(" ")),
+                "[smoke s9] cargo rationale explains the undercut")
+
+            // Elasticity hint — three snapshots of price climbing while
+            // rank degrades. Same-direction upward intent should dampen.
+            const elastSnap = {
+                hubs: [{iata: "FRA", byRoute: [{
+                    dest: "MUC", profitPerWeek: 80000,
+                    competitor: {priceMin: 95, priceMax: 130},     // wide band → big upward move available
+                    ownPricing: {prices: {Y: 100, C: 100, F: 100}},
+                    cargoScore: 0,
+                    orsHistory: [
+                        {scrapedAt: 1000, byClass: {Y: {rankAny: 2}}, context: {priceY: 95}},
+                        {scrapedAt: 2000, byClass: {Y: {rankAny: 3}}, context: {priceY: 100}},
+                        {scrapedAt: 3000, byClass: {Y: {rankAny: 5}}, context: {priceY: 105}}
+                    ]
+                }]}]
+            }
+            const movesElast = proposePriceMoves(elastSnap, {useJointTuner: false,
+                objective: {kind: "maxProfit"}})    // pushes upward
+            const yMove = movesElast.find(m => m.classKey === "Y")
+            console.assert(yMove && /\[elasticity\]/.test(yMove.rationale.join(" ")),
+                "[smoke s9] elasticity rationale present when orsHistory has ≥3 samples")
+            console.assert(yMove && /degraded rank/.test(yMove.rationale.join(" ")),
+                "[smoke s9] elasticity flags degraded-rank case for upward moves")
+        }
+    } catch (_) { /* never let smoke break the page */ }
 })()

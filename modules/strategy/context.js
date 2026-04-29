@@ -160,6 +160,10 @@
                     out.maxWeeklyBlockHours    = b.maxWeeklyBlockHours
                     out.maxDailyBlockHours     = b.maxDailyBlockHours
                     out.source                 = b.source
+                    // Lane C Phase 2 — null until fleetOptimizer.targetingEnabled.
+                    out.targetWeeklyHours      = (b.targetWeeklyHours != null) ? b.targetWeeklyHours : null
+                    out.floorPct               = (b.floorPct          != null) ? b.floorPct          : null
+                    out.headroomPct            = (b.headroomPct       != null) ? b.headroomPct       : null
                 }
             } catch (_) {}
         }
@@ -412,6 +416,35 @@
             if (!fam || !fam.ownPricing || !fam.ownPricing.prices) continue
             r.ownPricing = {prices: Object.assign({}, fam.ownPricing.prices),
                             scrapedAt: fam.ownPricing.scrapedAt || null}
+        }
+    }
+
+    /**
+     * Surface per-route cache age — the staleness signal proposers and
+     * the apply pipeline need to gate on. Reads existing `scrapedAt`
+     * fields on competitor / ORS / ownPricing records and projects them
+     * into milliseconds since now, plus a `maxMs` worst-of for one-shot
+     * gating. All optional — missing sources just don't populate that
+     * sub-field. Pure / synchronous; runs after the parallel attaches.
+     */
+    function _attachCacheAges(hubs, ts) {
+        const now = isFinite(ts) ? ts : Date.now()
+        for (const h of hubs) for (const r of (h && h.byRoute) || []) {
+            if (!r) continue
+            const ages = {}
+            if (r.competitor && isFinite(r.competitor.scrapedAt)) {
+                ages.competitorMs = Math.max(0, now - r.competitor.scrapedAt)
+            }
+            if (isFinite(r.orsScrapedAt)) {
+                ages.orsMs = Math.max(0, now - r.orsScrapedAt)
+            }
+            if (r.ownPricing && isFinite(r.ownPricing.scrapedAt)) {
+                ages.ownPriceMs = Math.max(0, now - r.ownPricing.scrapedAt)
+            }
+            const finite = []
+            for (const k of Object.keys(ages)) if (isFinite(ages[k])) finite.push(ages[k])
+            ages.maxMs = finite.length ? Math.max.apply(null, finite) : null
+            r.cacheAge = ages
         }
     }
 
@@ -712,6 +745,7 @@
             _attachCalibrationCorpus(hubs)
         ])
         _attachRouteSpec(hubs, fleet)
+        _attachCacheAges(hubs, Date.now())
 
         const cash    = _summarizeCash(ledger)
         const sisters = ledger ? (ledger.sisters || null) : null

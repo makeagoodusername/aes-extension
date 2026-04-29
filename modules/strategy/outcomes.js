@@ -108,7 +108,15 @@
             // Network-wide rank averages — null when no per-class records
             // observed; otherwise the mean across `rankAny`-bearing routes.
             rankAvgAny:               null,
-            rankRoutesObserved:       null
+            rankRoutesObserved:       null,
+            // Wave Mechanics Expansion · Lane C closed-loop attribution.
+            // Populated when window.AesStrategyFleetUtilization is loaded
+            // (Phase-1 read-only analytics module). Null otherwise so this
+            // file works on pages that don't load the optimizer namespace.
+            fleetAvgRatioForecast14d: null,
+            fleetAvgUtilizationPct:   null,
+            fleetTargetAvgRatio:      null,
+            ratioGapHeadlinePct:      null
         }
         if (!snapshot || typeof snapshot !== "object") return out
 
@@ -176,6 +184,31 @@
             if (typeof plan.summary.predictedOrsAvg === "number")
                 out.predictedOrsAvg = plan.summary.predictedOrsAvg
         }
+
+        // Lane C fleet-utilization rollup. Defensive: aggregator may be
+        // absent (pages that don't load the strategy namespace), or its
+        // pure compute may return null (e.g. when fleet wear samples are
+        // missing). Either way we leave the four fields as null —
+        // closed-loop drift detection then ignores the row gracefully.
+        try {
+            if (window.AesStrategyFleetUtilization
+                && typeof window.AesStrategyFleetUtilization.compute === "function") {
+                const summary = window.AesStrategyFleetUtilization.compute({
+                    snapshot, fleetPlan: plan || null,
+                    settings: null, schedules: null, regions: null
+                })
+                if (summary && summary.rollups) {
+                    if (isFinite(summary.rollups.fleetAvgRatioForecast14d))
+                        out.fleetAvgRatioForecast14d = summary.rollups.fleetAvgRatioForecast14d
+                    if (isFinite(summary.rollups.fleetAvgUtilizationPct))
+                        out.fleetAvgUtilizationPct = summary.rollups.fleetAvgUtilizationPct
+                    if (isFinite(summary.rollups.fleetTargetAvgRatio))
+                        out.fleetTargetAvgRatio = summary.rollups.fleetTargetAvgRatio
+                    if (isFinite(summary.rollups.ratioGapHeadlinePct))
+                        out.ratioGapHeadlinePct = summary.rollups.ratioGapHeadlinePct
+                }
+            }
+        } catch (_) { /* aggregator missing or threw — leave fields null */ }
 
         return out
     }

@@ -134,6 +134,22 @@
         } catch (_) { /* bus emit must never break apply path */ }
     }
 
+    /**
+     * Fire-and-forget diagnostics write. When the AesPriceDiagnostics
+     * store isn't loaded on the current page (e.g. apply triggered from
+     * a non-RA host), the call is a no-op. Never awaited from the apply
+     * loop — diagnostics must never delay or break the applier path.
+     */
+    function _recordPriceDiagnostic(kind, info) {
+        try {
+            if (typeof window === "undefined" || !window.AesPriceDiagnostics) return
+            const d = window.AesPriceDiagnostics
+            if (kind === "skip"     && typeof d.recordSkip     === "function") d.recordSkip(info)
+            else if (kind === "proposed" && typeof d.recordProposal === "function") d.recordProposal(info)
+            else if (kind === "apply"    && typeof d.recordApply    === "function") d.recordApply(info)
+        } catch (_) { /* diagnostics writes must never break apply path */ }
+    }
+
     async function _persistAudit(entry, accountId) {
         try {
             const scopedKey = _scopedKey(AUDIT_KEY, accountId)
@@ -352,24 +368,59 @@
     /**
      * Price sub-pipeline. The strategy proposer outputs `toPct` (markets-
      * page percent display); the existing applier `RouteAssistantPricingApplier`
-     * accepts absolute prices. v1 reads the cached own-prices for the
-     * route from `routeAssistant:ticketPrice:<HUB>-<DEST>` and scales by
-     * `toPct/100` to derive an absolute new price. When the cache is
-     * missing we skip with a clear note so the user knows to seed it.
+     * accepts absolute prices. Reads the cached own-prices from the
+     * canonical markets-page-scraper store (`routeAssistant:markets:ownPricing:HUB-DEST`,
+     * with account-scoped fallback) and scales by `toPct/100` to derive
+     * an absolute new price. When missing, the caller will trigger a
+     * one-shot warm via `applier.warmCache()` and re-read.
+     *
+     * Falls back to the legacy `routeAssistant:ticketPrice:` key (used
+     * here historically) if the markets-page record is absent — both
+     * shapes carry `rec.prices[classKey]` in production after the
+     * markets-page scraper landed; pre-markets installs may still have
+     * the legacy shape so we keep the fallback for one release.
      */
     async function _readCachedPrice(server, hub, dest, classKey) {
         try {
-            const key = "routeAssistant:ticketPrice:" + String(hub).toUpperCase()
-                       + "-" + String(dest).toUpperCase()
-            const data = await chrome.storage.local.get([key])
-            const rec  = data[key]
-            if (!rec || !rec.prices) return null
-            const v = rec.prices[classKey]
-            return (typeof v === "number" && isFinite(v) && v > 0) ? v : null
+            const pair = String(hub).toUpperCase() + "-" + String(dest).toUpperCase()
+            const candidates = ["routeAssistant:markets:ownPricing:" + pair]
+            if (typeof window !== "undefined" && window.AesAccountKey
+                    && typeof window.AesAccountKey.acctKey === "function") {
+                const scoped = window.AesAccountKey.acctKey("routeAssistant:markets:ownPricing", pair)
+                if (candidates.indexOf(scoped) < 0) candidates.unshift(scoped)
+            }
+            candidates.push("routeAssistant:ticketPrice:" + pair)
+            const data = await chrome.storage.local.get(candidates)
+            for (const k of candidates) {
+                const rec = data[k]
+                if (!rec || !rec.prices) continue
+                const v = rec.prices[classKey]
+                if (typeof v === "number" && isFinite(v) && v > 0) return v
+            }
+            return null
         } catch (_) { return null }
     }
 
-    async function _applyPriceMoves(decisions, ctx, applied, skipped, opts) {
+    /**
+     * Build a HUB-DEST → cacheAge index from a snapshot once, so the
+     * inner loop avoids O(routes×decisions) lookups.
+     */
+    function _indexCacheAges(snapshot) {
+        const idx = new Map()
+        const hubs = snapshot && snapshot.hubs
+        if (!Array.isArray(hubs)) return idx
+        for (const h of hubs) {
+            if (!h || !Array.isArray(h.byRoute)) continue
+            for (const r of h.byRoute) {
+                if (!r || !r.dest || !r.cacheAge) continue
+                const key = String(h.iata).toUpperCase() + "-" + String(r.dest).toUpperCase()
+                idx.set(key, r.cacheAge)
+            }
+        }
+        return idx
+    }
+
+    async function _applyPriceMoves(decisions, ctx, applied, skipped, opts, snapshot) {
         if (!decisions.length) return {ok: true}
         if (typeof window.RouteAssistantPricingApplier !== "function") {
             for (const d of decisions) {
@@ -400,40 +451,83 @@
             return {ok: false, error: err}
         }
 
+        const maxCacheAgeMs = (opts && Number(opts.maxCacheAgeMin) > 0)
+            ? Number(opts.maxCacheAgeMin) * 60000 : null
+        const cacheAgeIdx = (maxCacheAgeMs && snapshot) ? _indexCacheAges(snapshot) : null
+
         let allOk = true
         for (const d of decisions) {
             const p   = d.payload || {}
             const cls = p.classKey || "Y"
-            const cached = await _readCachedPrice(server, p.hub, p.dest, cls)
+            // Optional freshness gate — skip routes whose underlying
+            // signals are older than `opts.maxCacheAgeMin`. Default unset
+            // = legacy behaviour. The applier handles its own per-route
+            // cooldown; this gate is about *snapshot* staleness driving
+            // a stale proposal, not about apply throttling.
+            if (cacheAgeIdx) {
+                const pair = String(p.hub).toUpperCase() + "-" + String(p.dest).toUpperCase()
+                const ages = cacheAgeIdx.get(pair)
+                if (ages && isFinite(ages.maxMs) && ages.maxMs > maxCacheAgeMs) {
+                    const reason = "stale-cache (>" + Math.round(maxCacheAgeMs / 60000)
+                                 + "min · max=" + Math.round(ages.maxMs / 60000) + "min)"
+                    skipped.push({decisionId: d.id, domain: "price", reason: reason,
+                                  hub: p.hub, dest: p.dest})
+                    _emit(opts, {kind: "skipped", decisionId: d.id, domain: "price", reason: reason})
+                    _recordPriceDiagnostic("skip", {hub: p.hub, dest: p.dest, reason: reason})
+                    continue
+                }
+            }
+            let cached = await _readCachedPrice(server, p.hub, p.dest, cls)
+            // Auto-seed: when the markets-page scrape hasn't run for this
+            // route, do one warm GET via the applier and re-read. Bounded
+            // (one extra GET per missing-cache route per pipeline run);
+            // failures fall through to the existing skip path.
+            if (cached == null && typeof applier.warmCache === "function") {
+                try {
+                    const warm = await applier.warmCache(p.hub, p.dest)
+                    if (warm && warm.ok) cached = await _readCachedPrice(server, p.hub, p.dest, cls)
+                } catch (_) { /* never let warm errors abort the loop */ }
+            }
             if (cached == null) {
-                applied.push({decisionId: d.id, domain: "price", ok: false,
-                              error: "no cached own-price — open /app/com/scheduling/" + p.hub + p.dest + " to seed"})
+                const errMsg = "no cached own-price after warm attempt — try a manual scrape on /app/com/markets/" + p.hub + p.dest
+                applied.push({decisionId: d.id, domain: "price", ok: false, error: errMsg})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "price", ok: false,
                              error: "no cached own-price"})
                 _busEmit("price", {decisionId: d.id, hub: p.hub, dest: p.dest, ok: false})
+                _recordPriceDiagnostic("skip", {hub: p.hub, dest: p.dest, reason: "noCachedOwnPrice"})
                 allOk = false
                 continue
             }
             const newPrice = Math.max(1, Math.round(cached * (Number(p.toPct) / 100)))
             const prices   = {[cls]: newPrice}
+            // Thread the price-move's `impactWeekly` (projected weekly profit
+            // delta from price-moves.js) into the applier as `projectedDelta`
+            // so it lands on the apply-log entry. Strategy-tile's recent-
+            // applies aggregate reads this back to show "+ $N/wk projected".
+            const impact = Number(p.impactWeekly)
             try {
                 const r = await applier.apply(p.hub, p.dest, prices, {
                     scope:  {airportPair: true},
-                    source: (opts && opts.source) || "strategy"
+                    source: (opts && opts.source) || "strategy",
+                    projectedDelta: isFinite(impact) ? {profitPerWeek: impact} : null
                 })
                 const ok = !!(r && (r.status === "verified" || r.status === "posted"))
                 if (!ok) allOk = false
+                const logId = (r && r.logId) || null
                 applied.push({decisionId: d.id, domain: "price", ok: ok,
                               result: r,
+                              logId: logId,
                               error: ok ? null : (r && r.error && r.error.message) || "unknown"})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "price", ok: ok})
                 _busEmit("price", {decisionId: d.id, hub: p.hub, dest: p.dest, ok: ok})
+                _recordPriceDiagnostic("apply", {hub: p.hub, dest: p.dest, ok: ok, logId: logId})
             } catch (e) {
                 allOk = false
                 const err = (e && e.message) || String(e)
                 applied.push({decisionId: d.id, domain: "price", ok: false, error: err})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "price", ok: false, error: err})
                 _busEmit("price", {decisionId: d.id, hub: p.hub, dest: p.dest, ok: false})
+                _recordPriceDiagnostic("apply", {hub: p.hub, dest: p.dest, ok: false})
             }
         }
         return {ok: allOk}
@@ -650,10 +744,29 @@
             await _applyServiceMoves(buckets.service, ctx, applied, skipped, o)
         }
 
-        // 3. Price moves.
+        // Shared snapshot — composed lazily on demand. Price moves use it
+        // for the optional `maxCacheAgeMin` cache-staleness gate; route
+        // creations use it for aircraft picking. Composing once keeps the
+        // one extra `chrome.storage.local.get` to a single round trip
+        // when both sub-pipelines need it.
+        let snapshotForApply = (o && o.snapshot) || null
+        async function _ensureSnapshot() {
+            if (snapshotForApply) return snapshotForApply
+            if (!window.AesStrategy || typeof window.AesStrategy.snapshot !== "function") return null
+            try { snapshotForApply = await window.AesStrategy.snapshot({}) }
+            catch (_) { snapshotForApply = null }
+            return snapshotForApply
+        }
+
+        // 3. Price moves. Snapshot composed only when the optional cache-
+        //    staleness gate is turned on; legacy (no opt) skips composition.
         if (!aborted && buckets.price.length) {
             _emit(o, {kind: "domain-start", domain: "price", count: buckets.price.length})
-            await _applyPriceMoves(buckets.price, ctx, applied, skipped, o)
+            let snapshotForPrice = snapshotForApply
+            if (!snapshotForPrice && Number(o && o.maxCacheAgeMin) > 0) {
+                snapshotForPrice = await _ensureSnapshot()
+            }
+            await _applyPriceMoves(buckets.price, ctx, applied, skipped, o, snapshotForPrice)
         }
 
         // 4. Crew moves.
@@ -666,13 +779,8 @@
         //    earlier doesn't risk creating new routes on a half-applied plan.
         //    Needs the snapshot for aircraft picking — compose lazily when
         //    not provided.
-        let snapshotForCreations = (o && o.snapshot) || null
         if (!aborted && buckets.routeCreation.length) {
-            if (!snapshotForCreations
-                    && window.AesStrategy && typeof window.AesStrategy.snapshot === "function") {
-                try { snapshotForCreations = await window.AesStrategy.snapshot({}) }
-                catch (_) { snapshotForCreations = null }
-            }
+            const snapshotForCreations = await _ensureSnapshot()
             _emit(o, {kind: "domain-start", domain: "routeCreation", count: buckets.routeCreation.length})
             await _applyRouteCreations(buckets.routeCreation, ctx, snapshotForCreations, applied, skipped, o)
         }
@@ -745,6 +853,7 @@
                             domain:     a.domain,
                             ok:         a.ok,
                             error:      a.error || null,
+                            logId:      a.logId || null,
                             rationale:  Array.isArray(d.rationale) ? d.rationale.slice(0, 4) : []
                         },
                         source: "apply-pipeline",
@@ -766,9 +875,10 @@
             if (!aborted && okCount > 0 && learningEnabled
                     && window.AesStrategyOutcomes
                     && typeof window.AesStrategyOutcomes.record === "function") {
-                // Reuse snapshotForCreations when route-creation already
-                // composed one — saves a third snapshot fetch on a busy apply.
-                let snapForMeasure = (o && o.snapshot) || snapshotForCreations || null
+                // Reuse snapshotForApply when an upstream sub-pipeline
+                // already composed one — saves a third snapshot fetch on
+                // a busy apply.
+                let snapForMeasure = (o && o.snapshot) || snapshotForApply || null
                 if (!snapForMeasure && window.AesStrategy
                                     && typeof window.AesStrategy.snapshot === "function") {
                     try { snapForMeasure = await window.AesStrategy.snapshot({}) }

@@ -238,7 +238,7 @@ class FleetHubDrilldownPanel {
                     try { weights = await window.AesStrategyLearn.getCurrentWeights() } catch (_) {}
                 }
                 const scored = ns.scoreRoutes(snapshot, weights || undefined)
-                const plan   = ns.allocateFleet(snapshot, scored, {})
+                const plan   = await ns.allocateFleet(snapshot, scored, {})
                 this.planEnvelope = {snapshot, scored, plan, weights}
             } catch (err) {
                 console.warn("[AES Fleet Hub Drilldown] compose failed", err)

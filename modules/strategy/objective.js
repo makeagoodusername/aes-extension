@@ -48,7 +48,8 @@
         balanced:  Object.freeze({shareWeight: 0.4, profitWeight: 0.4, rankWeight: 0.2})
     })
 
-    function _num(v, f) { const n = Number(v); return isFinite(n) ? n : f }
+    const _num = (window.AesUtils && window.AesUtils._num)
+        || function (v, f) { const n = Number(v); return isFinite(n) ? n : f }
 
     function _normalise(weights) {
         const s = Math.max(0, _num(weights && weights.shareWeight,  0))

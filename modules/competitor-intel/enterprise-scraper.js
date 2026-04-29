@@ -43,6 +43,10 @@ class AesCompetitorEnterpriseScraper {
 
         const rec = await AesCompetitorStore.saveEnterprise(this.server, id, merged)
         this._sessionCache.set(id, rec)
+        if (typeof AesCompetitorSnapshotStore !== "undefined") {
+            try { await AesCompetitorSnapshotStore.record(this.server, id, rec) }
+            catch (e) { console.warn("[AES competitor-intel] snapshot record failed:", e) }
+        }
         return rec
     }
 

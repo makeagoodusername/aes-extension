@@ -96,7 +96,41 @@
                     crew:          false,
                     routeCreation: false
                 }
+            },
+            // Lane C Phase 2 — Fleet Optimizer slot, owned by
+            // AesStrategyFleetOptimizerSettings (modules/strategy/fleet-optimizer-settings.js).
+            // Default `targetingEnabled: false` + `underUtilWeight: 0` keep
+            // every consumer dormant until the user explicitly opts in.
+            // _merge passes the slot through unchanged via _normFleetOptimizer.
+            fleetOptimizer: {
+                ratioFloorPct:           95,
+                headroomPct:             2,
+                underUtilWeight:         0,
+                maxRebalancesPerWindow:  3,
+                perAircraft:             {},
+                targetingEnabled:        false,
+                readinessAck:            null
             }
+        }
+    }
+
+    function _normFleetOptimizer(block, fallback) {
+        const f = fallback || {
+            ratioFloorPct: 95, headroomPct: 2, underUtilWeight: 0,
+            maxRebalancesPerWindow: 3, perAircraft: {},
+            targetingEnabled: false, readinessAck: null
+        }
+        if (!block || typeof block !== "object") return Object.assign({}, f)
+        const perAircraft = (block.perAircraft && typeof block.perAircraft === "object")
+            ? block.perAircraft : {}
+        return {
+            ratioFloorPct:          _normNum(block.ratioFloorPct,          0,  100, f.ratioFloorPct),
+            headroomPct:            _normNum(block.headroomPct,            0,  20,  f.headroomPct),
+            underUtilWeight:        _normNum(block.underUtilWeight,        0,  1e6, f.underUtilWeight),
+            maxRebalancesPerWindow: _normNum(block.maxRebalancesPerWindow, 0,  50,  f.maxRebalancesPerWindow),
+            perAircraft:            perAircraft,
+            targetingEnabled:       !!block.targetingEnabled,
+            readinessAck:           (typeof block.readinessAck === "string") ? block.readinessAck : null
         }
     }
 
@@ -198,7 +232,8 @@
             objective:              _normObjective(block.objective,    d.objective),
             aircraftOrsModifier:    _normAircraftMod(block.aircraftOrsModifier),
             serviceApply:           _normServiceApply(block.serviceApply, d.serviceApply),
-            autoTick:               _normAutoTick(block.autoTick,         d.autoTick)
+            autoTick:               _normAutoTick(block.autoTick,         d.autoTick),
+            fleetOptimizer:         _normFleetOptimizer(block.fleetOptimizer, d.fleetOptimizer)
         }
     }
 

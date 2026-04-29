@@ -149,6 +149,16 @@
         rationale.push("[budget] cap " + cap.toFixed(1)
                      + "h · used last 7d " + used0.toFixed(1) + "h"
                      + (wear.source ? " · source " + wear.source : ""))
+        // Lane C Phase 2 — surface the optimizer target gap when present.
+        // null when fleetOptimizer.targetingEnabled is false (default).
+        const targetWeeklyHours = (wear.targetWeeklyHours != null)
+            ? Number(wear.targetWeeklyHours) : null
+        if (isFinite(targetWeeklyHours) && targetWeeklyHours > 0) {
+            const gap = targetWeeklyHours - used0
+            rationale.push("[target] " + targetWeeklyHours.toFixed(1) + "h · gap "
+                + (gap >= 0 ? "+" : "") + gap.toFixed(1) + "h"
+                + (wear.floorPct != null ? " · floor " + wear.floorPct + "%" : ""))
+        }
         if (cap <= used0) {
             rationale.push("[skip] no headroom this week")
             return {legs, rationale, plannedHours: 0, plannedProfit: 0,
@@ -239,14 +249,14 @@
 
     // ── Public ──────────────────────────────────────────────────────────
 
-    function allocateFleet(snapshot, scoredRoutes, opts) {
+    async function allocateFleet(snapshot, scoredRoutes, opts) {
         const o = opts || {}
         const planId = _planId()
         if (!_scoring()) {
             return {
                 planId, error: "AesStrategyScoring not loaded",
                 perAircraft: [], routeCreations: [], priceMoves: [],
-                serviceMoves: [], crewMoves: [], summary: {}
+                serviceMoves: [], crewMoves: [], rebalanceMoves: [], summary: {}
             }
         }
 
@@ -312,11 +322,51 @@
             ? ns.proposeServiceMoves(snapshot, o.serviceMoves || {})
             : []
 
+        // Phase 3 Lane C — fleet-rebalance proposer (preview-only).
+        // Surfaces wave-add / wave-densify / service-profile-promote
+        // proposals based on the fleet utilization summary's cold-tail
+        // candidates. Pure read against snapshot + summary; no apply path
+        // wired this phase. Empty when AesStrategyFleetUtilization isn't
+        // loaded or there are no cold tails.
+        let rebalanceMoves = []
+        if (typeof ns.proposeRebalanceMoves === "function"
+            && typeof window !== "undefined"
+            && window.AesStrategyFleetUtilization) {
+            try {
+                const summary = window.AesStrategyFleetUtilization.compute({
+                    snapshot, settings: snapshot && snapshot.settings, fleetPlan: null
+                })
+                const fos = (snapshot && snapshot.settings
+                    && snapshot.settings.strategy && snapshot.settings.strategy.fleetOptimizer)
+                    || (snapshot && snapshot.settings && snapshot.settings.fleetOptimizer)
+                    || null
+                rebalanceMoves = ns.proposeRebalanceMoves(snapshot, summary, {fleetOptimizer: fos})
+                if (!Array.isArray(rebalanceMoves)) rebalanceMoves = []
+            } catch (e) {
+                console.warn("[AES allocateFleet] proposeRebalanceMoves failed", e)
+                rebalanceMoves = []
+            }
+        }
+
         // Crew moves depend on the fleet plan's per-typeId leg counts.
         const planSoFar = {planId, perAircraft}
         const crewMoves = (typeof ns.proposeCrewMoves === "function")
             ? ns.proposeCrewMoves(snapshot, planSoFar, o.crewMoves || {})
             : []
+
+        // Slice 10 — competitor reactions are async (storage read for the
+        // prior). Defensive: an empty array on missing module / failure.
+        let competitorMoves = []
+        if (typeof ns.proposeCompetitorMoves === "function") {
+            try {
+                competitorMoves = await ns.proposeCompetitorMoves(snapshot,
+                    o.competitorMoves || {})
+                if (!Array.isArray(competitorMoves)) competitorMoves = []
+            } catch (e) {
+                console.warn("[AES allocateFleet] proposeCompetitorMoves failed", e)
+                competitorMoves = []
+            }
+        }
 
         // ORS prediction = mean Y-class score of profiles currently used.
         // v1 doesn't track per-route profile assignment, so we average all
@@ -335,6 +385,7 @@
             crewTraining:            crewMoves.filter(m => m.action === "train")
                                                          .reduce((a, m) => a + (m.amount || 0), 0),
             routeCreationProposals:  routeCreations.length,
+            competitorReactions:     competitorMoves.length,
             predictedWeeklyProfit:   totalProfit,
             predictedOrsAvg:         predictedOrsAvg
         }
@@ -350,6 +401,9 @@
             priceMoves:    priceMoves,
             serviceMoves:  serviceMoves,
             crewMoves:     crewMoves,
+            competitorMoves: competitorMoves,
+            // Phase 3 Lane C — preview-only rebalance proposals.
+            rebalanceMoves: rebalanceMoves,
             summary:       summary
         }
     }

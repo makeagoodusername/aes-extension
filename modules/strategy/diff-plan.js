@@ -30,8 +30,8 @@
  *               predictedWeeklyProfit, predictedOrsAvg},
  *     decisions: [{
  *       id:            "<unique-string>",
- *       kind:          "schedule"|"service"|"price"|"crew"|"routeCreation",
- *       domain:        "schedule"|"service"|"price"|"crew"|"routeCreation",
+ *       kind:          "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction",
+ *       domain:        "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction",
  *       title:         "JFK → LAX × 7 legs"           // human label
  *       subtitle:      "tail N123AA · widebody · 65h" // optional 2nd line
  *       rationale:     [string],                      // bullet rationale
@@ -56,7 +56,8 @@
     const ns = window.AesStrategy || (window.AesStrategy = {})
     if (typeof ns.diffPlan === "function") return
 
-    function _num(v, f) { const n = Number(v); return isFinite(n) ? n : f }
+    const _num = (window.AesUtils && window.AesUtils._num)
+        || function (v, f) { const n = Number(v); return isFinite(n) ? n : f }
 
     /**
      * Map a strategy plan leg → the shape AesAfpScheduleDiff.compare()
@@ -198,7 +199,7 @@
                 payload:      {profileId: m.profileId, changes: m.changes || {}},
                 applicable:   !empty,
                 applicableNote: empty
-                    ? "Slice 4 ships v1 service-move proposer — per-category change set lands in Slice 7. Surfaced as advisory."
+                    ? "Profile lacks scraped per-category detail — refresh service profiles to make this applicable."
                     : ""
             }
             const imp = _impactService(m)
@@ -238,21 +239,32 @@
         const out = []
         for (const m of (plan && plan.crewMoves) || []) {
             if (!m || m.action === "none") continue
+            const isPay = m.action === "raisePay" || m.action === "cutPay"
             const id = "crew:" + (m.skillLabel || ("type-" + m.typeId)) + ":" + m.action
+            // Pay actions display the signed pp magnitude; hire/train show
+            // the headcount the way they did pre-Slice-8.
+            const titleAction = isPay
+                ? (m.action === "raisePay" ? "RAISE PAY" : "CUT PAY")
+                : m.action.toUpperCase()
+            const titleAmount = isPay
+                ? (m.amount > 0 ? "+" + m.amount + "pp" : m.amount + "pp")
+                : m.amount
             const dec = {
                 id:           id,
                 kind:         "crew",
                 domain:       "crew",
-                title:        m.action.toUpperCase() + " " + m.amount + " · "
+                title:        titleAction + " " + titleAmount + " · "
                                   + (m.skillLabel || ("type " + m.typeId)),
                 subtitle:     "Need " + m.flightsNeeded + " · active "
                                   + (m.activeNow != null ? m.activeNow : "?"),
                 rationale:    Array.isArray(m.rationale) ? m.rationale.slice() : [],
                 payload:      m,
-                applicable:   m.skillId != null,
-                applicableNote: m.skillId == null
-                    ? "Skill ID missing — open the staff page (/app/enterprise/staffPilots) to seed CrewMgmtStaffPilotsScraper."
-                    : ""
+                applicable:   !isPay && m.skillId != null,
+                applicableNote: isPay
+                    ? "Pay-tier actuator not yet implemented — surface as a testable hypothesis; apply manually on /app/enterprise/staffPilots."
+                    : (m.skillId == null
+                        ? "Skill ID missing — open the staff page (/app/enterprise/staffPilots) to seed CrewMgmtStaffPilotsScraper."
+                        : "")
             }
             const imp = _impactCrew(m)
             if (imp) dec._impact = imp
@@ -291,6 +303,33 @@
             }
             const imp = _impactRouteCreation(r)
             if (imp) dec._impact = imp
+            out.push(dec)
+        }
+        return out
+    }
+
+    function _competitorReactionDecisions(plan) {
+        const out = []
+        for (const m of (plan && plan.competitorMoves) || []) {
+            if (!m || !m.hub || !m.dest || !m.event) continue
+            const id = "competitorReaction:" + m.hub + "-" + m.dest + ":" + m.event
+            const sign = (m.magnitude > 0 ? "+" : "")
+            const subtitle = (m.action === "hold")
+                ? "hold (" + m.event + ")"
+                : (m.action + " · " + sign + m.magnitude
+                    + (m.unit === "pp" ? "pp on " + (m.target || "?")
+                                       : "/wk " + (m.target || "?")))
+            const dec = {
+                id:           id,
+                kind:         "competitorReaction",
+                domain:       "competitorReaction",
+                title:        m.hub + " → " + m.dest + " · " + m.event.toUpperCase(),
+                subtitle:     subtitle,
+                rationale:    Array.isArray(m.rationale) ? m.rationale.slice() : [],
+                payload:      m,
+                applicable:   false,
+                applicableNote: "Competitor-reaction routing not yet wired — surfaced as advisory; apply the recommended price/freq move via the price-moves or schedule slice."
+            }
             out.push(dec)
         }
         return out
@@ -358,9 +397,12 @@
             .concat(_priceDecisions(plan))
             .concat(_crewDecisions(plan))
             .concat(_routeCreationDecisions(plan))
+            .concat(_competitorReactionDecisions(plan))
         // Stable order — domains in apply-pipeline order, then by id within
-        // domain (already deterministic from the producers above).
-        const domainOrder = {schedule: 0, service: 1, price: 2, crew: 3, routeCreation: 4}
+        // domain (already deterministic from the producers above). Competitor
+        // reactions are advisory-only and sort last.
+        const domainOrder = {schedule: 0, service: 1, price: 2, crew: 3,
+                              routeCreation: 4, competitorReaction: 5}
         decisions.sort((a, b) => {
             const da = domainOrder[a.domain] ?? 99
             const db = domainOrder[b.domain] ?? 99
