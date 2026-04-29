@@ -71,6 +71,7 @@
                 "modules/_shared/surface-stamp.js",
                 "modules/_shared/vision.js",
                 "modules/_shared/tools.js",
+                "modules/_shared/read.js",
                 "modules/_shared/view-engine.js",
                 "modules/_shared/views-registry.js",
                 "modules/_shared/views/routes-fuel-context.js",
