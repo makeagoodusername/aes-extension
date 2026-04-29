@@ -819,6 +819,130 @@
         return wrap
     }
 
+    /**
+     * Per-row pin control. When clicked, prompts for a price pct, writes
+     * `pricePin` to RouteAssistantRouteOverridesStore, and refreshes — the
+     * route then drops out of price decisions until the user clears it.
+     */
+    function _buildPinControl(decision, refresh) {
+        const wrap = _el("span", "display:inline-flex;align-items:center;gap:6px;margin-left:8px;")
+        const hub  = String(decision.payload.hub).toUpperCase()
+        const dest = String(decision.payload.dest).toUpperCase()
+        const proposedPct = Number(decision.payload.toPct)
+        const btn = _el("button", [
+            "background:" + COLOR.chipBg, "color:" + COLOR.accent,
+            "border:1px solid " + COLOR.rule, "border-radius:3px",
+            "padding:2px 8px", "font:600 11px sans-serif", "cursor:pointer"
+        ].join(";"), "Pin @ " + (isFinite(proposedPct) ? proposedPct : "?") + "%")
+        btn.title = "Pin this route's price; auto-driver will not touch it until cleared."
+        btn.addEventListener("click", async (ev) => {
+            ev.preventDefault()
+            ev.stopPropagation()
+            if (typeof window.RouteAssistantRouteOverridesStore !== "function"
+                && typeof RouteAssistantRouteOverridesStore === "undefined") {
+                alert("Route override store unavailable.")
+                return
+            }
+            const Store = window.RouteAssistantRouteOverridesStore
+                       || (typeof RouteAssistantRouteOverridesStore !== "undefined"
+                           ? RouteAssistantRouteOverridesStore : null)
+            if (!Store) return
+            const seed = isFinite(proposedPct) ? proposedPct : 100
+            const raw = window.prompt(
+                "Pin " + hub + "-" + dest + " price at what %? (50–200, blank to cancel)",
+                String(seed))
+            if (raw == null || raw === "") return
+            const v = Number(raw)
+            if (!isFinite(v) || v < 50 || v > 200) {
+                alert("Pin must be a number between 50 and 200.")
+                return
+            }
+            try {
+                await Store.save(hub, dest, {pricePin: v})
+            } catch (e) {
+                console.warn("[AES strategy panel] pricePin save failed", e)
+                return
+            }
+            await refresh()
+        })
+        wrap.appendChild(btn)
+        return wrap
+    }
+
+    /**
+     * Active price pins strip — one row summarising routes the user has
+     * pinned, with a Clear button per pin. Reads from the snapshot's
+     * per-route `override.pricePin` (wired via context.js _attachOverrides).
+     */
+    function _buildActivePinsStrip(refresh) {
+        const snap = _state.snapshot
+        if (!snap || !Array.isArray(snap.hubs)) return null
+        const pins = []
+        for (const h of snap.hubs) {
+            if (!h || !Array.isArray(h.byRoute)) continue
+            for (const r of h.byRoute) {
+                const pct = r && r.override && r.override.pricePin
+                if (pct != null && isFinite(pct)) {
+                    pins.push({hub: h.iata, dest: r.dest, pct: pct})
+                }
+            }
+        }
+        if (!pins.length) return null
+        const Store = window.RouteAssistantRouteOverridesStore
+                   || (typeof RouteAssistantRouteOverridesStore !== "undefined"
+                       ? RouteAssistantRouteOverridesStore : null)
+        const wrap = _el("div", [
+            "display:flex","align-items:center","flex-wrap:wrap","gap:6px",
+            "padding:8px 12px","border:1px solid " + COLOR.rule,
+            "border-radius:4px","margin-bottom:8px",
+            "background:rgba(255,255,255,0.02)",
+            "color:" + COLOR.muted, "font:11px sans-serif"
+        ].join(";"))
+        wrap.appendChild(_el("span", "color:" + COLOR.accent + ";font-weight:600;letter-spacing:0.04em;text-transform:uppercase;",
+            "Pinned (" + pins.length + ")"))
+        for (const p of pins) {
+            const chip = _el("span", [
+                "display:inline-flex","align-items:center","gap:4px",
+                "padding:2px 6px","border:1px solid " + COLOR.rule,
+                "border-radius:3px","background:" + COLOR.chipBg,
+                "color:" + COLOR.text
+            ].join(";"))
+            chip.appendChild(_el("span", "", p.hub + "-" + p.dest + " @ " + Math.round(p.pct) + "%"))
+            const x = _el("button", [
+                "background:transparent","color:" + COLOR.warn,
+                "border:none","padding:0 2px","cursor:pointer",
+                "font:600 11px sans-serif"
+            ].join(";"), "✕")
+            x.title = "Clear pin (auto-driver resumes)"
+            x.addEventListener("click", async (ev) => {
+                ev.preventDefault()
+                ev.stopPropagation()
+                if (!Store) return
+                try {
+                    const cur = await Store.get(p.hub, p.dest)
+                    const next = Object.assign({}, cur || {})
+                    delete next.pricePin
+                    delete next.createdAt
+                    delete next.updatedAt
+                    delete next.hub
+                    delete next.dest
+                    if (Object.keys(next).length === 0) {
+                        await Store.remove(p.hub, p.dest)
+                    } else {
+                        await Store.save(p.hub, p.dest, next)
+                    }
+                } catch (e) {
+                    console.warn("[AES strategy panel] pricePin clear failed", e)
+                    return
+                }
+                await refresh()
+            })
+            chip.appendChild(x)
+            wrap.appendChild(chip)
+        }
+        return wrap
+    }
+
     function _renderDecisions(host, diff) {
         host.textContent = ""
         const decisions = (diff && diff.decisions) || []
@@ -914,6 +1038,8 @@
         host.appendChild(tools)
 
         const list = _el("div", "padding:0 16px 16px;")
+        const pinsStrip = _buildActivePinsStrip(_refresh)
+        if (pinsStrip) list.appendChild(pinsStrip)
         // Domain-grouped only when sort = "order"; impact/hub sorts go
         // flat so the user can read the global ranking without domain
         // headings breaking the visual order.
@@ -967,7 +1093,9 @@
             // route-objective store: price + routeCreation.
             if (d.domain === "price" && d.payload && d.payload.hub && d.payload.dest
                     && window.AesStrategyRouteObjectiveStore) {
-                text.appendChild(_buildOverrideStrip(d, _refresh))
+                const strip = _buildOverrideStrip(d, _refresh)
+                strip.appendChild(_buildPinControl(d, _refresh))
+                text.appendChild(strip)
             }
             row.appendChild(text)
             // Per-decision impact chip — sits to the right of the

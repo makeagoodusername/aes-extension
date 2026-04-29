@@ -301,6 +301,7 @@
                         paxLF:      rec.paxLF      != null ? rec.paxLF      : null,
                         cargoLF:    rec.cargoLF    != null ? rec.cargoLF    : null,
                         yieldPerKm: rec.yieldPerKm != null ? rec.yieldPerKm : null,
+                        pricePin:   rec.pricePin   != null ? rec.pricePin   : null,
                         note:       rec.note       || null,
                         expiresAt:  rec.expiresAt  || null
                     }

@@ -199,6 +199,7 @@ class RouteAssistantRouteOverridesStore {
         numField("cargoLF",           0, 1)
         numField("yieldPerKm",        0, 100)
         numField("cargoYieldPerKgKm", 0, 100)
+        numField("pricePin",          50, 200)
         if (typeof fields.note === "string" && fields.note.trim() !== "") {
             out.note = fields.note.trim().substring(0, 200)
         }
@@ -218,6 +219,7 @@ class RouteAssistantRouteOverridesStore {
             || cleaned.cargoLF !== undefined
             || cleaned.yieldPerKm !== undefined
             || cleaned.cargoYieldPerKgKm !== undefined
+            || cleaned.pricePin !== undefined
             || cleaned.note !== undefined
             || cleaned.expiresAt !== undefined
     }
