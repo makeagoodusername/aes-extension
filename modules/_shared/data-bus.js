@@ -21,6 +21,22 @@
  *   AesDataBus.history({topic?, limit?}) → recent emit records (newest first)
  *   AesDataBus.stats() → [{topic, count, lastAt, hasSubscribers}]
  *   AesDataBus.clearHistory()
+ *   AesDataBus.register(topic, descriptor?) → records the topic as a known
+ *     contract; idempotent. Called by data-bus-topics.js for each documented
+ *     entry. Runtime emits of unknown topics are still allowed but get
+ *     marked as "discovered" so the data-flow inspector + audit tooling
+ *     can surface the drift back into data-bus-topics.js.
+ *   AesDataBus.isRegistered(topic) → boolean
+ *   AesDataBus.auditTopics() → {registered, discovered, both}
+ *     Each entry: {topic, descriptor?, count, lastAt, lastSource, hasSubscribers}
+ *     `discovered` is the set of topics ever emitted that were never
+ *     registered — that's the drift list for "topics emitted but not in
+ *     data-bus-topics.js". Read by the data-flow inspector tile.
+ *   AesDataBus.setStrict(bool) — when true, the first emit of an unregistered
+ *     topic also console.warns once (per-topic) so a developer notices.
+ *     Default off because the registry is incomplete; flip to true while
+ *     hunting drift. Persists via window.__aesBusStrict only — no storage
+ *     dependency so the bus stays self-contained.
  *
  * **Topic grammar.** `data:<module>:<slice>:<verb>` — three colon-segments.
  * Verbs: `saved`, `updated`, `appended`, `cleared`, `migrated`. The
@@ -76,6 +92,9 @@
     const counts          = new Map()  // topic → emit count (lifetime of this tab)
     const historyGlobal   = []         // [record, …]  newest at end
     const historyByTopic  = new Map()  // topic → [record, …]  newest at end
+    const registered      = new Map()  // topic → descriptor (set by register())
+    const discovered      = new Set()  // topics emitted but never registered
+    const warnedDrift     = new Set()  // per-topic dedup for the strict-mode warn
 
     function on(topic, cb) {
         if (typeof topic !== "string" || !topic) return () => {}
@@ -91,7 +110,18 @@
         if (set) set.delete(cb)
     }
 
+    function _noteTopicUse(topic) {
+        if (registered.has(topic)) return
+        if (discovered.has(topic)) return
+        discovered.add(topic)
+        if (window.__aesBusStrict && !warnedDrift.has(topic)) {
+            warnedDrift.add(topic)
+            console.warn("[AES data-bus] topic '" + topic + "' emitted but not registered — add it to modules/_shared/data-bus-topics.js")
+        }
+    }
+
     function dispatch(topic, record) {
+        _noteTopicUse(topic)
         lastEmit.set(topic, record)
         counts.set(topic, (counts.get(topic) || 0) + 1)
         // Append to history ringbuffers — feeds the data-flow inspector tile.
@@ -284,6 +314,57 @@
         // Don't clear counts or lastEmit — those are useful even after a reset.
     }
 
+    function register(topic, descriptor) {
+        if (typeof topic !== "string" || !topic) return
+        // First registration wins; subsequent calls merge fields rather than
+        // replace, so a partial late-register (e.g. an adapter sweetening the
+        // descriptor) doesn't clobber data-bus-topics.js.
+        const prev = registered.get(topic)
+        if (prev && descriptor && typeof descriptor === "object") {
+            registered.set(topic, Object.assign({}, prev, descriptor))
+        } else if (!prev) {
+            registered.set(topic, (descriptor && typeof descriptor === "object") ? Object.assign({}, descriptor) : {})
+        }
+        // If we'd already noted this topic as discovered (emit-before-register),
+        // graduate it now so audit() reflects the formalised state.
+        discovered.delete(topic)
+    }
+
+    function isRegistered(topic) {
+        return registered.has(topic)
+    }
+
+    function setStrict(on) {
+        window.__aesBusStrict = !!on
+    }
+
+    function _statsFor(topic) {
+        const last = lastEmit.get(topic)
+        return {
+            topic:          topic,
+            count:          counts.get(topic) || 0,
+            lastAt:         last ? last.at : null,
+            lastSource:     last ? last.source : null,
+            hasSubscribers: !!(subs.get(topic) && subs.get(topic).size)
+        }
+    }
+
+    function auditTopics() {
+        const reg = []
+        for (const [topic, descriptor] of registered) {
+            reg.push(Object.assign({descriptor: descriptor || null}, _statsFor(topic)))
+        }
+        const dis = []
+        for (const topic of discovered) {
+            dis.push(_statsFor(topic))
+        }
+        const both = reg.concat(dis)
+        reg.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+        dis.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+        both.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+        return {registered: reg, discovered: dis, both: both}
+    }
+
     window.AesDataBus = {
         on:            on,
         off:           off,
@@ -296,6 +377,10 @@
         bridgeStorage: bridgeStorage,
         history:       history,
         stats:         stats,
-        clearHistory:  clearHistory
+        clearHistory:  clearHistory,
+        register:      register,
+        isRegistered:  isRegistered,
+        setStrict:     setStrict,
+        auditTopics:   auditTopics
     }
 })()

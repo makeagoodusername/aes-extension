@@ -216,3 +216,19 @@ window.AES_DATA_BUS_TOPICS = [
     // Slices 2 + 3 will add: data:schedule-management:store:saved,
     // data:schedule-management:presets:saved, data:scanner:scan:finished, etc.
 ]
+
+// Self-register every documented topic with the bus on load. This is what
+// turns the array above from documentation-only into a queryable contract:
+// `AesDataBus.auditTopics()` now distinguishes registered (in this file) from
+// discovered (emitted somewhere but not in this file — the drift list).
+// Loaded after data-bus.js per manifest order; defensive if the bus didn't
+// initialise (Service worker context, alternative load orders, etc.).
+;(function () {
+    if (typeof window === "undefined") return
+    if (!window.AesDataBus || typeof window.AesDataBus.register !== "function") return
+    for (const entry of window.AES_DATA_BUS_TOPICS) {
+        if (!entry || typeof entry.topic !== "string") continue
+        try { window.AesDataBus.register(entry.topic, entry) }
+        catch (_) { /* noop — never break load on a bad entry */ }
+    }
+})()
