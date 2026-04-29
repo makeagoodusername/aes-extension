@@ -120,13 +120,25 @@ class CentralHubTile {
         root.dataset.tileId = this.id
         root.dataset.section = this.section
         root.dataset.aesSurface = "tile"
+        // CH-W2 — cardKind hint for layout engines (cascade pane reads).
+        // Defaults to "regular"; subclasses can override via this.cardKind.
+        // Known table-bearing tiles are heuristically promoted to "wide"
+        // by CentralHubTile.tableTileIds — registration-time concern.
+        root.dataset.cardKind = this.cardKind
+            || (CentralHubTile._tableTileIds.has(this.id) ? "wide" : "regular")
+        // Topic color stripe — pulled from the section→accent map. Applied
+        // as a left border on the root so the bleed strip is the most
+        // identifying chrome the user reads when scanning.
+        const bleedColor = CentralHubTile._sectionAccent(this.section, T)
         root.style.cssText = [
             "display:block",
             "background:" + T.color.bone,
-            "border:" + T.geom.bw2 + " solid " + T.color.oxide,
+            "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+            "border-left:var(--aes-tile-bleed," + T.geom.bw3 + ") solid " + bleedColor,
             "border-radius:" + T.geom.radius,
             "margin-bottom:" + T.sp[3],
-            "box-sizing:border-box"
+            "box-sizing:border-box",
+            "transition:border-color " + (T.tr && T.tr.fast ? T.tr.fast : "80ms linear")
         ].join(";")
 
         const header = document.createElement("div")
@@ -136,8 +148,7 @@ class CentralHubTile {
             "align-items:center",
             "gap:" + T.sp[3],
             "padding:" + T.sp[2] + " " + T.sp[3],
-            "background:" + T.color.bone2,
-            "border-bottom:" + T.geom.bw1 + " solid " + T.color.paperRule,
+            "background:transparent",
             "cursor:pointer",
             "user-select:none"
         ].join(";")
@@ -181,12 +192,36 @@ class CentralHubTile {
 
         const actions = document.createElement("div")
         actions.className = "aes-central-hub-tile__actions"
+        // CH-W2 — chrome diet. Action cluster (Open/Pin/Toggle) fades to
+        // var(--aes-tile-chrome-opacity-rest) at rest; lights up to
+        // var(--aes-tile-chrome-opacity-hover) on header hover/focus.
+        // The transition uses the existing fast token. Pointer-events
+        // stay on so hover-reveal is interactive without explicit reveal.
         actions.style.cssText = [
             "display:flex",
             "align-items:center",
             "gap:" + T.sp[2],
-            "flex:0 0 auto"
+            "flex:0 0 auto",
+            "opacity:var(--aes-tile-chrome-opacity-rest, 0.55)",
+            "transition:opacity " + (T.tr && T.tr.fast ? T.tr.fast : "80ms linear")
         ].join(";")
+        const _showActions = () => {
+            actions.style.opacity = "var(--aes-tile-chrome-opacity-hover, 1.0)"
+        }
+        const _hideActions = () => {
+            // When tile is expanded, leave actions fully visible — the user
+            // is actively interacting and the chrome should stay legible.
+            actions.style.opacity = this.expanded
+                ? "var(--aes-tile-chrome-opacity-hover, 1.0)"
+                : "var(--aes-tile-chrome-opacity-rest, 0.55)"
+        }
+        root.addEventListener("mouseenter", _showActions)
+        root.addEventListener("mouseleave", _hideActions)
+        root.addEventListener("focusin", _showActions)
+        root.addEventListener("focusout", (e) => {
+            if (!root.contains(e.relatedTarget)) _hideActions()
+        })
+        this._actionFadeOut = _hideActions
 
         const openBtn = this._buildOpenButton()
         if (openBtn) actions.appendChild(openBtn)
@@ -296,6 +331,9 @@ class CentralHubTile {
             this.toggleBtn.textContent = this.expanded ? "▾" : "▸"
             this.toggleBtn.setAttribute("aria-label", this.expanded ? "Collapse" : "Expand")
         }
+        // CH-W2 — when tile expands, lock action cluster at full opacity;
+        // when collapses, drop back to the rest opacity.
+        if (typeof this._actionFadeOut === "function") this._actionFadeOut()
         if (this.expanded) this._renderBodySafe()
         if (typeof this._onToggleChange === "function") {
             try { this._onToggleChange(this.id, this.expanded) }
@@ -480,6 +518,45 @@ class CentralHubTile {
         }
         this.root = null
     }
+}
+
+/**
+ * CH-W2 — known table-bearing tiles that auto-default to cardKind="wide"
+ * in the cascade layout. Matches the inventory from the Cascade plan
+ * exploration (11 tiles). Subclasses can override by setting
+ * this.cardKind directly in the constructor; the registry list is just
+ * a default for tiles that didn't opt in.
+ */
+CentralHubTile._tableTileIds = new Set([
+    "accounting",
+    "alliance",
+    "competitor-monitoring",
+    "aircraft-profitability",
+    "crew-management",
+    "flightsfrom",
+    "fleet-hub",
+    "general",
+    "inventory",
+    "service-profile",
+    "strategy"
+])
+
+/**
+ * CH-W2 — section→accent color resolver for the bleed strip on the left
+ * edge of every tile. The strip is the most identifying chrome the user
+ * reads when scanning the cascade; the color reinforces topic identity
+ * without a heavy header band. Falls back to oxide (the default tile
+ * border color) for unknown sections.
+ */
+CentralHubTile._sectionAccent = function (sectionId, T) {
+    const palette = {
+        fleet:      T.color.moss,      // green — operational fleet health
+        routes:     T.color.cobalt,    // blue — routes / network info
+        operations: T.color.amber,     // amber — active operations / warns
+        finance:    T.color.rust,      // rust — money / signal accent
+        tools:      T.color.slate      // grey — neutral tools section
+    }
+    return palette[sectionId] || T.color.oxide
 }
 
 if (typeof window !== "undefined") {

@@ -40,7 +40,31 @@ class CentralHubSettings {
             // and reflected to body[data-aes-motion] +
             // body[data-aes-cb-patterns] on every page.
             cubistMotion:      "on",   // "on" | "off"
-            cubistColorBlind:  false
+            cubistColorBlind:  false,
+            // CH-W1+ — Cascade overhaul. layoutMode flips between the
+            // legacy section flow ("classic") and the salience-ranked
+            // waterfall ("cascade"). Defaults to classic; cascadePromptedAt
+            // gates the first-boot prompt (§4.18 — no silent default flips).
+            layoutMode:           "classic",      // "classic" | "cascade"
+            cascadePromptedAt:    0,
+            // CH-W1 — per-input weights for the salience scorer. Empty
+            // map → CentralHubSalience.DEFAULT_WEIGHTS used. The
+            // Customization → Dashboard section exposes sliders.
+            salienceWeights:      {},
+            // CH-W4 — full-width pinning (long-press cycle on the pin
+            // button). Layered above pinnedTiles[] — a tile can be in
+            // both lists; full-width implies pinned-to-top.
+            pinnedFullWidthTiles: [],
+            // CH-W5 — projection of tileSectionOverrides{} into multi-topic
+            // overrides for cascade. Populated on first cascade boot;
+            // tileSectionOverrides{} stays unchanged for backwards-compat.
+            tileTopicOverrides:   {},
+            // CH-W3 — multi-select topic chip filter for cascade.
+            // Empty array = ALL (no filter).
+            activeTopicFilter:    [],
+            // CH-W5 — schema bumps record one-shot migrations.
+            //   1 → 2: tileSectionOverrides → tileTopicOverrides projection
+            schemaVersion:        1
         }
     }
 
@@ -69,6 +93,19 @@ class CentralHubSettings {
         if (typeof merged.cubistModeAcked !== "boolean") merged.cubistModeAcked = false
         if (merged.cubistMotion !== "off")               merged.cubistMotion    = "on"
         if (typeof merged.cubistColorBlind !== "boolean") merged.cubistColorBlind = false
+        if (merged.layoutMode !== "cascade")             merged.layoutMode      = "classic"
+        if (typeof merged.cascadePromptedAt !== "number") merged.cascadePromptedAt = 0
+        if (!merged.salienceWeights || typeof merged.salienceWeights !== "object") {
+            merged.salienceWeights = {}
+        }
+        if (!Array.isArray(merged.pinnedFullWidthTiles)) merged.pinnedFullWidthTiles = []
+        if (!merged.tileTopicOverrides || typeof merged.tileTopicOverrides !== "object") {
+            merged.tileTopicOverrides = {}
+        }
+        if (typeof merged.schemaVersion !== "number" || merged.schemaVersion < 1) {
+            merged.schemaVersion = 1
+        }
+        if (!Array.isArray(merged.activeTopicFilter)) merged.activeTopicFilter = []
         return merged
     }
 

@@ -65,6 +65,84 @@ class CentralHubShell {
                 window.CentralHubBus.emit("open-tile", pending)
             }
         }
+
+        // CH-W3 — first-boot Cascade prompt. Non-blocking; the user
+        // either dismisses or tries it. Re-prompt allowed after 60d
+        // (cascadePromptedAt is bumped on either action).
+        this._maybePromptCascade()
+    }
+
+    _maybePromptCascade() {
+        if (!this.settings) return
+        if (this.settings.layoutMode === "cascade") return
+        const stamped = Number(this.settings.cascadePromptedAt) || 0
+        const sixtyDays = 60 * 24 * 3600 * 1000
+        if (stamped > 0 && Date.now() - stamped < sixtyDays) return
+        if (!this.mainEl) return
+
+        const T = window.AESTokens
+        const banner = document.createElement("div")
+        banner.className = "aes-central-hub__cascade-prompt"
+        banner.style.cssText = [
+            "display:flex",
+            "align-items:center",
+            "gap:" + T.sp[3],
+            "padding:" + T.sp[3] + " " + T.sp[4],
+            "background:" + T.color.bone2,
+            "border:" + T.geom.bw1 + " solid " + T.color.cobalt,
+            "border-radius:" + T.geom.radius,
+            "margin-bottom:" + T.sp[4],
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body,
+            "color:" + T.color.oxide
+        ].join(";")
+        const msg = document.createElement("span")
+        msg.style.cssText = "flex:1 1 auto"
+        msg.innerHTML = "<strong>Try Cascade.</strong> "
+            + "Salience-ranked waterfall masonry — your highest-signal "
+            + "tiles float to the top, chrome fades behind content. "
+            + "Switch back any time via the topbar selector."
+        const tryBtn = document.createElement("button")
+        tryBtn.type = "button"
+        tryBtn.textContent = "Show me"
+        tryBtn.style.cssText = [
+            "background:" + T.color.cobalt,
+            "color:" + T.color.bone,
+            "border:" + T.geom.bw1 + " solid " + T.color.cobalt,
+            "border-radius:" + T.geom.radius,
+            "padding:" + T.sp[1] + " " + T.sp[3],
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body,
+            "font-weight:" + T.fw.display,
+            "text-transform:uppercase",
+            "letter-spacing:" + T.track.caps,
+            "cursor:pointer"
+        ].join(";")
+        const dismissBtn = document.createElement("button")
+        dismissBtn.type = "button"
+        dismissBtn.textContent = "Not now"
+        dismissBtn.style.cssText = [
+            "background:transparent",
+            "color:" + T.color.slate,
+            "border:" + T.geom.bw1 + " solid " + T.color.slate,
+            "border-radius:" + T.geom.radius,
+            "padding:" + T.sp[1] + " " + T.sp[3],
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body,
+            "cursor:pointer"
+        ].join(";")
+        const dismiss = async () => {
+            this.settings.cascadePromptedAt = Date.now()
+            await window.CentralHubSettings.save(this.settings).catch(() => {})
+            if (banner.parentNode) banner.parentNode.removeChild(banner)
+        }
+        tryBtn.addEventListener("click", async () => {
+            await dismiss()
+            await this._setLayoutMode("cascade")
+        })
+        dismissBtn.addEventListener("click", dismiss)
+        banner.append(msg, tryBtn, dismissBtn)
+        this.mainEl.insertBefore(banner, this.mainEl.firstChild)
     }
 
     /**
@@ -338,7 +416,107 @@ class CentralHubShell {
         ].join(";")
 
         bar.append(title, subtitle, filter, scrapeBtn, lastScrapeStamp, autoDriveStrip, ctxStamp, stamp)
+
+        // CH-W3 — layout selector. Segmented control between Classic
+        // (legacy section flow) and Cascade (salience-ranked masonry).
+        // Persisted to settings.layoutMode; classic remains the default.
+        const layoutWrap = document.createElement("div")
+        layoutWrap.className = "aes-central-hub__layout-selector"
+        layoutWrap.style.cssText = [
+            "display:inline-flex",
+            "align-items:center",
+            "gap:0",
+            "border:" + T.geom.bw1 + " solid " + T.color.oxide,
+            "border-radius:" + T.geom.radius,
+            "overflow:hidden",
+            "flex:0 0 auto"
+        ].join(";")
+        const _mkLayoutBtn = (id, label, hint) => {
+            const b = document.createElement("button")
+            b.type = "button"
+            b.dataset.layoutMode = id
+            b.textContent = label
+            b.title = hint
+            const isActive = (this.settings && this.settings.layoutMode === id)
+                || (id === "classic" && (!this.settings || this.settings.layoutMode !== "cascade"))
+            b.style.cssText = [
+                "background:" + (isActive ? T.color.oxide : "transparent"),
+                "color:" + (isActive ? T.color.bone : T.color.oxide),
+                "border:0",
+                "padding:" + T.sp[1] + " " + T.sp[3],
+                "font-family:" + T.font.display,
+                "font-size:" + T.fs.body,
+                "font-weight:" + T.fw.display,
+                "text-transform:uppercase",
+                "letter-spacing:" + T.track.caps,
+                "cursor:pointer"
+            ].join(";")
+            b.addEventListener("click", () => this._setLayoutMode(id))
+            return b
+        }
+        layoutWrap.append(
+            _mkLayoutBtn("classic", "Classic", "Section flow — tiles ordered by priority within each named section."),
+            _mkLayoutBtn("cascade", "Cascade", "Waterfall masonry — salience-ranked across topics. Higher signal density floats to the top.")
+        )
+        this._layoutSelector = layoutWrap
+        bar.append(layoutWrap)
+
         return bar
+    }
+
+    /**
+     * CH-W3 — switch layout mode. Persists, refreshes the layout
+     * selector visual state, and re-runs `_mountTiles` so the new
+     * layout takes effect without a page reload. Tiles are NOT
+     * unmounted — `cascade-pane.mount()` reparents existing tile.root
+     * nodes between columns, so refreshing tile state is preserved.
+     */
+    async _setLayoutMode(mode) {
+        if (mode !== "classic" && mode !== "cascade") return
+        if (!this.settings) return
+        if (this.settings.layoutMode === mode) return
+        this.settings.layoutMode = mode
+        // CH-W5 — first cascade boot triggers the topic-override
+        // projection migration (handled in _maybeProjectTopicOverrides
+        // when the corresponding code lands).
+        await window.CentralHubSettings.save(this.settings).catch(() => {})
+        this._rebuildLayoutSelector()
+        await this._reflowTilesForLayout()
+    }
+
+    _rebuildLayoutSelector() {
+        const sel = this._layoutSelector
+        if (!sel) return
+        const T = window.AESTokens
+        const buttons = sel.querySelectorAll("button[data-layout-mode]")
+        for (const b of buttons) {
+            const isActive = b.dataset.layoutMode === this.settings.layoutMode
+            b.style.background = isActive ? T.color.oxide : "transparent"
+            b.style.color = isActive ? T.color.bone : T.color.oxide
+        }
+    }
+
+    /**
+     * CH-W3 — re-render tiles into the layout corresponding to the
+     * current `layoutMode`. Detaches existing tile roots, blanks the
+     * main pane, then re-runs `_mountTiles`. Tile instances are
+     * disposed and re-created so subscriptions stay clean.
+     */
+    async _reflowTilesForLayout() {
+        if (!this.mainEl) return
+        // Dispose existing tiles cleanly before re-mounting.
+        for (const tile of this.tilesById.values()) {
+            try { if (typeof tile.dispose === "function") tile.dispose() }
+            catch (_) { /* noop */ }
+        }
+        this.tilesById.clear()
+        this._tilesBySection = new Map()
+        if (this._cascadeController && typeof this._cascadeController.dispose === "function") {
+            try { this._cascadeController.dispose() } catch (_) {}
+            this._cascadeController = null
+        }
+        this.mainEl.innerHTML = ""
+        await this._mountTiles()
     }
 
     async _refreshLastScrapeStamp() {
@@ -445,6 +623,74 @@ class CentralHubShell {
         return "last scrape: " + ageText + aborted + (parts.length ? " · " + parts.join(" · ") : "")
     }
 
+    /**
+     * CH-W1 — gather every salience input once per render pass and shape
+     * them for the pure `CentralHubSalience.rankTiles` call. No tile
+     * subscribes new stores; everything here is read-once-on-render.
+     */
+    async _buildSalienceContext() {
+        const settings = this.settings || {}
+        const pinned = Array.isArray(settings.pinnedTiles) ? settings.pinnedTiles : []
+        const recents = Array.isArray(settings.recentTiles) ? settings.recentTiles : []
+        const tileOrderRaw = (settings.tileOrder && typeof settings.tileOrder === "object")
+            ? settings.tileOrder : {}
+
+        // tileOrder may be either {tileId: rank} (CH-W1 shape) or the
+        // legacy {sectionId: [tileId,...]} reservation. Flatten the
+        // legacy shape into per-tile ranks so both work.
+        const tileOrder = {}
+        for (const k of Object.keys(tileOrderRaw)) {
+            const v = tileOrderRaw[k]
+            if (typeof v === "number" && isFinite(v)) {
+                tileOrder[k] = v
+            } else if (Array.isArray(v)) {
+                for (let i = 0; i < v.length; i++) {
+                    if (typeof v[i] === "string") tileOrder[v[i]] = i
+                }
+            }
+        }
+
+        // HubFeed unread — many slices are not tile-keyed today, so v1
+        // reads only slices whose name matches `hub:tile:<tileId>:unread`.
+        // Tiles that don't emit such a slice contribute 0.
+        const hubFeedUnread = new Map()
+        if (window.HubFeed && typeof window.HubFeed.list === "function") {
+            try {
+                const slices = window.HubFeed.list() || []
+                for (const s of slices) {
+                    const m = /^hub:tile:([^:]+):unread$/.exec(s.name || "")
+                    if (!m) continue
+                    const v = (s.value && typeof s.value.count === "number") ? s.value.count : Number(s.value)
+                    if (typeof v === "number" && isFinite(v) && v > 0) {
+                        hubFeedUnread.set(m[1], v)
+                    }
+                }
+            } catch (_) { /* ignore */ }
+        }
+
+        // Conductor signal-domain density — read the recent ring and
+        // bucket by first-token domain. Window: last hour.
+        let signalsByDomain = new Map()
+        if (window.AesConductorSignalStore && window.CentralHubSalience) {
+            try {
+                const host = {server: this.server, airline: this.airline}
+                const recent = await window.AesConductorSignalStore.recent(host, 200)
+                signalsByDomain = window.CentralHubSalience.signalsByDomainFromRing(recent, 3600000)
+            } catch (_) { /* ignore */ }
+        }
+
+        return {
+            pinnedSet:        new Set(pinned),
+            recentList:       recents,
+            hubFeedUnread:    hubFeedUnread,
+            signalsByDomain:  signalsByDomain,
+            pulseByTileId:    this._tilePulseMap || new Map(),
+            tileOrder:        tileOrder,
+            weights:          settings.salienceWeights || null,
+            priorityFloor:    100
+        }
+    }
+
     async _mountTiles() {
         const ctx = {server: this.server, airline: this.airline}
         let all = window.CentralHubTileRegistry.all()
@@ -459,14 +705,35 @@ class CentralHubShell {
 
         const expandedSet = new Set(this.settings.expandedTiles || [])
 
+        // CH-W1 — pre-load salience inputs once per render. Pure scorer
+        // reads pin set, recents ring, HubFeed unread, Conductor signal
+        // ring; these are observable at render time without subscribing
+        // new stores. The scorer stays pure so the same inputs produce
+        // a deterministic order.
+        const salienceCtx = await this._buildSalienceContext()
+
         // C-2 — recents rail above the first section.
         if (window.CentralHubRecentsRail && this.mainEl) {
             try { await window.CentralHubRecentsRail.mount(this.mainEl) }
             catch (_) { /* mount is best-effort */ }
         }
 
+        // CH-W3 — cascade layout branch. Section partitioning vanishes;
+        // every tile flows into a single salience-ranked waterfall.
+        // Topic chips narrow the visible set without re-grouping.
+        if (this.settings.layoutMode === "cascade" && window.CentralHubCascade) {
+            await this._mountTilesCascade(all, expandedSet, ctx, salienceCtx)
+            return
+        }
+
         for (const section of window.CentralHubNav.SECTIONS) {
-            const sectionTiles = all.filter(t => t.section === section.id)
+            let sectionTiles = all.filter(t => t.section === section.id)
+            // CH-W1 — sort by salience desc instead of priority asc.
+            // Falls back to alphabetical id on tie. tileOrder beats
+            // signal-driven scoring when set.
+            if (window.CentralHubSalience) {
+                sectionTiles = window.CentralHubSalience.rankTiles(sectionTiles, salienceCtx)
+            }
             const sectionContainer = this._buildSectionContainer(section)
             this.mainEl.appendChild(sectionContainer)
 
@@ -508,6 +775,197 @@ class CentralHubShell {
                 empty.textContent = "No tiles registered for this section yet."
                 sectionContainer.appendChild(empty)
             }
+        }
+    }
+
+    /**
+     * CH-W5 — one-shot migration on first cascade boot. Projects the
+     * legacy `tileSectionOverrides{tileId: section}` map into the
+     * cascade-era `tileTopicOverrides{tileId: [topics]}` map. Original
+     * map is preserved for backwards-compat with classic mode. Bumps
+     * schemaVersion 1 → 2 so the projection runs exactly once.
+     *
+     * Idempotent — safe to call from multiple entry points; the
+     * schemaVersion gate short-circuits subsequent calls.
+     */
+    async _maybeProjectTopicOverrides() {
+        if (!this.settings) return
+        if (Number(this.settings.schemaVersion) >= 2) return
+        const src = this.settings.tileSectionOverrides || {}
+        const dst = Object.assign({}, this.settings.tileTopicOverrides || {})
+        let dirty = false
+        for (const tid in src) {
+            if (Object.prototype.hasOwnProperty.call(src, tid)) {
+                const sec = src[tid]
+                if (typeof sec === "string" && sec.length > 0) {
+                    if (!Array.isArray(dst[tid]) || dst[tid].indexOf(sec) < 0) {
+                        dst[tid] = [sec]
+                        dirty = true
+                    }
+                }
+            }
+        }
+        this.settings.tileTopicOverrides = dst
+        this.settings.schemaVersion = 2
+        await window.CentralHubSettings.save(this.settings).catch(() => {})
+        if (dirty) {
+            console.info("[AES Hub] CH-W5 projected " + Object.keys(dst).length
+                + " tileSectionOverrides into tileTopicOverrides")
+        }
+    }
+
+    /**
+     * CH-W3 — Cascade-mode tile mount. Mounts every tile into an
+     * off-DOM staging container so each tile has a `_root` we can
+     * reparent into the cascade columns. The cascade controller owns
+     * column count + reflow; the shell owns lifecycle.
+     *
+     * Topic chips render above the cascade pane.
+     */
+    async _mountTilesCascade(all, expandedSet, ctx, salienceCtx) {
+        // CH-W5 — run the one-shot projection before tiles mount so
+        // the cascade reads the new topic map immediately.
+        await this._maybeProjectTopicOverrides()
+        // Topic-chip strip above the cascade.
+        const chipStrip = this._buildTopicChipStrip(all)
+        this.mainEl.appendChild(chipStrip)
+
+        // Cascade host — the pane mounts directly into mainEl.
+        const cascadeHost = document.createElement("div")
+        cascadeHost.className = "aes-central-hub__cascade-host"
+        this.mainEl.appendChild(cascadeHost)
+        this._cascadeHost = cascadeHost
+
+        const ranked = window.CentralHubSalience
+            ? window.CentralHubSalience.rankTiles(all, salienceCtx)
+            : all
+
+        // Mount each tile into a hidden staging container; the cascade
+        // controller reparents `tile.root` into a column. Tiles never
+        // get unmounted on layout reflow.
+        const stage = document.createElement("div")
+        stage.style.cssText = "display:none"
+        document.body.appendChild(stage)
+        const liveTiles = []
+        for (const spec of ranked) {
+            let tile
+            try { tile = spec.factory() }
+            catch (err) { console.warn("[AES Hub] cascade factory threw", spec.id, err); continue }
+            if (!tile) continue
+            const expanded = expandedSet.has(tile.id)
+            try {
+                await tile.mount(stage, ctx, {
+                    expanded,
+                    onToggleChange: (id, isExpanded) => this._onTileToggle(id, isExpanded)
+                })
+            } catch (err) {
+                console.warn("[AES Hub] cascade tile mount failed", tile.id, err)
+                continue
+            }
+            this.tilesById.set(tile.id, tile)
+            // Pass cardKind + topics + _root through to the cascade.
+            const sliced = {
+                id:        tile.id,
+                _root:     tile.root,
+                cardKind:  (tile.root && tile.root.dataset.cardKind) || spec.cardKind || "regular",
+                topics:    Array.isArray(spec.topics) ? spec.topics
+                            : (spec.section ? [spec.section] : []),
+                section:   spec.section
+            }
+            liveTiles.push(sliced)
+        }
+        if (stage.parentNode) stage.parentNode.removeChild(stage)
+
+        // Mount the cascade controller.
+        const controller = window.CentralHubCascade.mount(cascadeHost)
+        if (!controller) return
+        const fullSet = new Set(this.settings.pinnedFullWidthTiles || [])
+        controller.setTiles(liveTiles, new Map(), fullSet)
+        // Defer a second pass so post-paint heights propagate into the
+        // packer (re-balances columns once real heights are known).
+        if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => {
+                if (!this._disposed) controller.refreshLayout()
+            })
+        }
+        this._cascadeController = controller
+        this._cascadeLiveTiles = liveTiles
+    }
+
+    /**
+     * CH-W3 — topic chip strip. Multi-select; an empty selection means
+     * ALL. Active chips persist on `settings.activeTopicFilter` (string[]).
+     */
+    _buildTopicChipStrip(allSpecs) {
+        const T = window.AESTokens
+        const strip = document.createElement("div")
+        strip.className = "aes-central-hub__topic-chips"
+        strip.style.cssText = [
+            "display:flex",
+            "gap:" + T.sp[2],
+            "flex-wrap:wrap",
+            "padding:" + T.sp[2] + " 0",
+            "margin-bottom:" + T.sp[3]
+        ].join(";")
+
+        // Discover topic universe — union of every tile's topics +
+        // legacy section ids (every tile has at least its section).
+        const universe = new Set()
+        for (const spec of allSpecs) {
+            if (Array.isArray(spec.topics)) for (const t of spec.topics) universe.add(t)
+            if (spec.section) universe.add(spec.section)
+        }
+        const topicList = ["__all__"].concat(Array.from(universe).sort())
+
+        const active = new Set(Array.isArray(this.settings.activeTopicFilter)
+            ? this.settings.activeTopicFilter : [])
+
+        for (const id of topicList) {
+            const isAll = id === "__all__"
+            const chip = document.createElement("button")
+            chip.type = "button"
+            chip.dataset.topic = id
+            const isActive = isAll ? active.size === 0 : active.has(id)
+            chip.textContent = isAll ? "ALL" : id.toUpperCase()
+            chip.style.cssText = [
+                "padding:" + T.sp[1] + " " + T.sp[3],
+                "background:" + (isActive ? T.color.oxide : "transparent"),
+                "color:" + (isActive ? T.color.bone : T.color.oxide),
+                "border:" + T.geom.bw1 + " solid " + T.color.oxide,
+                "border-radius:" + T.geom.radius,
+                "font-family:" + T.font.display,
+                "font-size:" + T.fs.body,
+                "font-weight:" + T.fw.display,
+                "letter-spacing:" + T.track.caps,
+                "cursor:pointer"
+            ].join(";")
+            chip.addEventListener("click", () => this._onTopicChipClick(id))
+            strip.appendChild(chip)
+        }
+        return strip
+    }
+
+    async _onTopicChipClick(topicId) {
+        const cur = new Set(Array.isArray(this.settings.activeTopicFilter)
+            ? this.settings.activeTopicFilter : [])
+        if (topicId === "__all__") {
+            cur.clear()
+        } else if (cur.has(topicId)) {
+            cur.delete(topicId)
+        } else {
+            cur.add(topicId)
+        }
+        this.settings.activeTopicFilter = Array.from(cur)
+        await window.CentralHubSettings.save(this.settings).catch(() => {})
+        // Re-render chip strip + apply filter to cascade controller.
+        const oldStrip = this.mainEl.querySelector(".aes-central-hub__topic-chips")
+        if (oldStrip) {
+            const all = window.CentralHubTileRegistry.all()
+            const fresh = this._buildTopicChipStrip(all)
+            oldStrip.replaceWith(fresh)
+        }
+        if (this._cascadeController && typeof this._cascadeController.setTopicFilter === "function") {
+            this._cascadeController.setTopicFilter(cur.size ? cur : null)
         }
     }
 

@@ -74,7 +74,17 @@
         { var: "--aes-deco-fluting-density",   label: "Fluting density", default: "8px",       format: "length",  group: "ornament" }
     ];
 
-    const ALL = COLORS.concat(SPACING).concat(TYPE).concat(ORNAMENT);
+    /* Cascade dashboard tokens (CH-W2) — consumed by tile.js + cascade-pane.js.
+       Surface "tile" density tightens the bleed strip; chrome-opacity
+       tokens fade the action cluster on rest vs hover. */
+    const CASCADE = [
+        { var: "--aes-tile-bleed",                label: "Tile bleed strip",   default: "4px",   format: "length",  group: "cascade" },
+        { var: "--aes-tile-chrome-opacity-rest",  label: "Chrome opacity (rest)",  default: "0.55", format: "number",  group: "cascade" },
+        { var: "--aes-tile-chrome-opacity-hover", label: "Chrome opacity (hover)", default: "1.0",  format: "number",  group: "cascade" },
+        { var: "--aes-tile-min-col",              label: "Cascade min column",     default: "280px", format: "length", group: "cascade" }
+    ];
+
+    const ALL = COLORS.concat(SPACING).concat(TYPE).concat(ORNAMENT).concat(CASCADE);
     const BY_VAR = Object.create(null);
     for (const t of ALL) BY_VAR[t.var] = t;
 

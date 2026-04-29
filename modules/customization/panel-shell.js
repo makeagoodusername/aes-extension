@@ -39,7 +39,7 @@
         { id: "motion",      num: "06",  label: "Motion",       active: true },
         { id: "ornament",    num: "06b", label: "Ornament",     active: true },
         { id: "keybindings", num: "07",  label: "Keybindings",  active: true },
-        { id: "layout",      num: "08",  label: "Layout",       active: false },
+        { id: "dashboard",   num: "08",  label: "Dashboard",    active: true  },
         { id: "scopes",      num: "09",  label: "Scopes",       active: false },
         { id: "backup",      num: "10",  label: "Backup",       active: false },
         { id: "numerals",    num: "11",  label: "Numerals",     active: true }
@@ -311,7 +311,8 @@
             motion:      window.AESStudioMotionSection,
             ornament:    window.AESStudioOrnamentSection,
             keybindings: window.AESStudioKeybindingsSection,
-            numerals:    window.AESStudioNumeralsSection
+            numerals:    window.AESStudioNumeralsSection,
+            dashboard:   window.AESStudioDashboardSection
         };
         const r = renderers[activeSectionId];
         if (r && typeof r.render === "function") {

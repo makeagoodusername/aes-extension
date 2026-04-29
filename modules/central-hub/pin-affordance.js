@@ -47,17 +47,54 @@ class AesTilePin {
         ].join(";");
 
         async function paint() {
-            const pinned = await AesTilePin.isPinned(tileId);
-            btn.textContent = pinned ? "★" : "☆";
-            btn.title = pinned ? "Unpin tile" : "Pin tile";
-            btn.style.color = pinned ? T.color.rust : T.color.slate;
-            btn.style.borderColor = pinned ? T.color.rust : T.color.paperRule;
+            const state = await AesTilePin.stateFor(tileId);
+            // Glyphs: ☆ none / ★ pinned / ⮞ pinned-full-width.
+            // The full-width glyph deliberately reads as "expand" so the
+            // user understands long-press is *more* than a normal pin.
+            if (state === "full") {
+                btn.textContent = "⮞";
+                btn.title = "Pinned full-width — long-press / shift-click to clear";
+                btn.style.color = T.color.cobalt;
+                btn.style.borderColor = T.color.cobalt;
+            } else if (state === "pinned") {
+                btn.textContent = "★";
+                btn.title = "Pinned — click to unpin · long-press / shift-click to pin full-width";
+                btn.style.color = T.color.rust;
+                btn.style.borderColor = T.color.rust;
+            } else {
+                btn.textContent = "☆";
+                btn.title = "Pin tile · long-press / shift-click to cycle to full-width";
+                btn.style.color = T.color.slate;
+                btn.style.borderColor = T.color.paperRule;
+            }
         }
 
+        // CH-W4 — cycle: none → pinned → pinned-full-width → none.
+        // Click advances by one step; long-press (>500ms) advances by
+        // two steps (jumps to full-width / clears full-width directly).
+        // Shift+click also advances by two steps as a keyboard alternative.
+        let pressTimer = null;
+        let suppressClick = false;
+        const advance = (jumpTwo) => {
+            AesTilePin.cycle(tileId, jumpTwo).then(paint);
+        };
+        btn.addEventListener("mousedown", function (e) {
+            if (e.button !== 0) return; // only left-click
+            pressTimer = setTimeout(function () {
+                suppressClick = true;
+                advance(true);
+            }, 500);
+        });
+        const cancelLongPress = () => {
+            if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+        };
+        btn.addEventListener("mouseup", cancelLongPress);
+        btn.addEventListener("mouseleave", cancelLongPress);
         btn.addEventListener("click", function (e) {
             e.preventDefault();
             e.stopPropagation();   // do not let the header click-to-toggle catch this
-            AesTilePin.toggle(tileId).then(paint);
+            if (suppressClick) { suppressClick = false; return; }
+            advance(!!e.shiftKey);
         });
 
         paint();
@@ -71,6 +108,74 @@ class AesTilePin {
         }
 
         return btn;
+    }
+
+    /**
+     * CH-W4 — return the user's current pin state for the tile:
+     *   "full"   → present in pinnedFullWidthTiles
+     *   "pinned" → present only in pinnedTiles
+     *   "none"   → in neither
+     *
+     * pinnedFullWidthTiles is layered above pinnedTiles. A tile in the
+     * full set is implicitly considered pinned even if pinnedTiles[]
+     * doesn't carry it (defensive — cycle() keeps both lists consistent
+     * but legacy data may diverge).
+     */
+    static async stateFor(tileId) {
+        if (!window.CentralHubSettings) return "none";
+        const settings = await window.CentralHubSettings.load();
+        const full = Array.isArray(settings.pinnedFullWidthTiles)
+            ? settings.pinnedFullWidthTiles : [];
+        if (full.indexOf(tileId) >= 0) return "full";
+        const pinned = Array.isArray(settings.pinnedTiles) ? settings.pinnedTiles : [];
+        if (pinned.indexOf(tileId) >= 0) return "pinned";
+        return "none";
+    }
+
+    /**
+     * CH-W4 — advance the cycle by 1 (default) or 2 steps. Both
+     * pinnedTiles[] and pinnedFullWidthTiles[] are updated in a single
+     * patch so observers fire once.
+     */
+    static async cycle(tileId, jumpTwo) {
+        if (!window.CentralHubSettings) return;
+        const cur = await AesTilePin.stateFor(tileId);
+        const next = AesTilePin._nextState(cur, jumpTwo === true);
+        const settings = await window.CentralHubSettings.load();
+        const pinned = Array.isArray(settings.pinnedTiles) ? settings.pinnedTiles.slice() : [];
+        const full   = Array.isArray(settings.pinnedFullWidthTiles)
+            ? settings.pinnedFullWidthTiles.slice() : [];
+        const dropFrom = (arr) => {
+            const i = arr.indexOf(tileId);
+            if (i >= 0) arr.splice(i, 1);
+        };
+        const ensureIn = (arr) => {
+            if (arr.indexOf(tileId) < 0) arr.unshift(tileId);
+        };
+        if (next === "none") {
+            dropFrom(pinned);
+            dropFrom(full);
+        } else if (next === "pinned") {
+            ensureIn(pinned);
+            dropFrom(full);
+        } else {
+            ensureIn(pinned);
+            ensureIn(full);
+        }
+        await window.CentralHubSettings.patch({
+            pinnedTiles:          pinned,
+            pinnedFullWidthTiles: full
+        });
+        if (window.CentralHubBus && typeof window.CentralHubBus.emit === "function") {
+            window.CentralHubBus.emit("tile-pin-changed", {tileId: tileId, state: next});
+        }
+    }
+
+    static _nextState(cur, jumpTwo) {
+        const order = ["none", "pinned", "full"];
+        const i = order.indexOf(cur);
+        const step = jumpTwo ? 2 : 1;
+        return order[((i < 0 ? 0 : i) + step) % order.length];
     }
 
     static async isPinned(tileId) {

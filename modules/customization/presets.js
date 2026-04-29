@@ -146,8 +146,45 @@
         }
     };
 
+    /* Cascade Deco — CH-W5. Cascade layout + Art Deco skin at moderate
+       ornament. Combines the deco-ivory palette with denser bleed strip
+       so the cascade reads as elegant + content-forward. */
+    const cascadeDeco = {
+        id: "cascade-deco",
+        name: "Cascade Deco",
+        description: "Cascade layout + Art Deco skin. Moderate ornament, refined typography, content-first.",
+        builtIn: true,
+        skin: "art-deco",
+        layoutMode: "cascade",
+        ornament: "moderate",
+        tokens: Object.assign({}, decoIvory.tokens, {
+            "--aes-tile-bleed":                "6px",
+            "--aes-tile-chrome-opacity-rest":  "0.45",
+            "--aes-tile-chrome-opacity-hover": "1.0",
+            "--aes-tile-min-col":              "300px"
+        })
+    };
+
+    /* Cascade Quiet — CH-W5. Cascade layout + minimal chrome. Aggressively
+       reduced bleed strip + low chrome opacity for users who want the
+       data to dominate. Pairs well with tabular numerals. */
+    const cascadeQuiet = {
+        id: "cascade-quiet",
+        name: "Cascade Quiet",
+        description: "Cascade layout + minimal chrome. Bleed strip thin, chrome fades into the background.",
+        builtIn: true,
+        layoutMode: "cascade",
+        numerals: {style: "tabular"},
+        tokens: {
+            "--aes-tile-bleed":                "2px",
+            "--aes-tile-chrome-opacity-rest":  "0.35",
+            "--aes-tile-chrome-opacity-hover": "1.0",
+            "--aes-tile-min-col":              "260px"
+        }
+    };
+
     function listBuiltIn() {
-        return [defaultPreset(), editorialBrutalism, oxideDark, decoIvory, decoNoir];
+        return [defaultPreset(), editorialBrutalism, oxideDark, decoIvory, decoNoir, cascadeDeco, cascadeQuiet];
     }
 
     function getById(id) {
@@ -156,6 +193,8 @@
         if (id === "oxide-dark") return oxideDark;
         if (id === "deco-ivory") return decoIvory;
         if (id === "deco-noir") return decoNoir;
+        if (id === "cascade-deco") return cascadeDeco;
+        if (id === "cascade-quiet") return cascadeQuiet;
         return null;
     }
 

@@ -107,6 +107,19 @@
     --aes-cubist-seam-angle:    12deg;
     --aes-cubist-pivot:         8deg;
     --aes-cubist-ghost-offset:  6px;
+
+    /* ---- Cascade dashboard tokens (CH-W2) -------------------- */
+    /* Bleed strip on the left edge of every dashboard tile —     */
+    /* replaces the heavy header chrome when collapsed.           */
+    --aes-tile-bleed:                  4px;
+    /* Header chrome opacity at rest vs hover/focus. The action    */
+    /* cluster (open/pin/toggle) fades in on interaction so data   */
+    /* dominates the visual weight.                                */
+    --aes-tile-chrome-opacity-rest:    0.55;
+    --aes-tile-chrome-opacity-hover:   1.0;
+    /* Minimum cascade column width. Used by cascade-pane to      */
+    /* derive column count from main-pane width.                   */
+    --aes-tile-min-col:                280px;
     --aes-cubist-ghost-alpha:   0.20;
 }
 
