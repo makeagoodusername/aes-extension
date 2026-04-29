@@ -75,6 +75,7 @@
     const AFP_AUDIT_KEY      = "aircraftFlightPlan:auditLog"
     const COMPETITOR_KEY     = "competitorIntel:snapshots:"  // prefix, not a single key
     const SERVICE_EXP_KEY    = "aesStrategy:serviceExperiments"  // also matches :acct:* via prefix scan
+    const DISPATCH_KEY       = "aesStrategy:dispatchPending"     // Phase D3 — virtual section
 
     /**
      * Storage keys watched by the modal's live-update listener. Exported so
@@ -91,7 +92,9 @@
         // Bare key + per-account scope both share this prefix; the modal's
         // prefix matcher handles `aesStrategy:serviceExperiments` and
         // `aesStrategy:serviceExperiments:acct:<id>` alike.
-        SERVICE_EXP_KEY
+        SERVICE_EXP_KEY,
+        // Phase D3 — pending-dispatch virtual section reacts to writes/clears.
+        DISPATCH_KEY
     ]
 
     const DEFAULT_LIMIT = 1000
