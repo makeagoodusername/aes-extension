@@ -54,16 +54,38 @@ class MarketScanDealClassifier {
         return MarketScanDealClassifier.CLASSES.find(c => c.key === key) || null
     }
 
-    static DEFAULT_WEIGHTS = {
-        pricePerSeat:   35,
-        seatKmYearCost: 15,
-        fuelEfficiency: 20,
-        condition:      10,
-        age:            10,
-        expiry:          5,
-        fleetSynergy:    5,
-        routeFit:       10
+    /**
+     * Mode-specific default weight bundles. The two bundles share the same
+     * keys, but the lease bundle pushes more weight onto operational signals
+     * (fuel, route fit) since the lease-vs-buy decision flattens out the
+     * upfront-cost dimension. Both bundles are normalised by the classifier
+     * (weights are relative shares) so absolute numbers don't have to match.
+     */
+    static MODE_WEIGHTS = {
+        buy: {
+            pricePerSeat:   35,
+            seatKmYearCost: 15,
+            fuelEfficiency: 20,
+            condition:      10,
+            age:            10,
+            expiry:          5,
+            fleetSynergy:    5,
+            routeFit:       10
+        },
+        lease: {
+            pricePerSeat:   30,
+            seatKmYearCost: 10,
+            fuelEfficiency: 25,
+            condition:      10,
+            age:             5,
+            expiry:          5,
+            fleetSynergy:    5,
+            routeFit:       20
+        }
     }
+    // Back-compat: existing callers reading DEFAULT_WEIGHTS get the buy
+    // bundle (which is the pre-rework set).
+    static DEFAULT_WEIGHTS = MarketScanDealClassifier.MODE_WEIGHTS.buy
 
     static DEFAULT_ENABLED = {
         pricePerSeat: true, seatKmYearCost: true, fuelEfficiency: true,
@@ -74,12 +96,36 @@ class MarketScanDealClassifier {
     static EXPIRY_HARD_HOURS = 6
     static EXPIRY_SOFT_DAYS = 7
 
+    /** Valid scoring modes. */
+    static MODES = {LEASE: "lease", BUY: "buy"}
+
+    /**
+     * Coerce a raw mode value to a known mode. Unknown / undefined values
+     * collapse to `fallback` (default "lease" — the scanner's primary use
+     * case is finding planes to lease).
+     */
+    static normalizeMode(m, fallback) {
+        if (m === "lease" || m === "buy") return m
+        return fallback === "buy" ? "buy" : "lease"
+    }
+
+    /**
+     * Resolve the active mode from constructor opts. Explicit `opts.mode`
+     * wins; otherwise read `leaseConfig.mode`. Anything else collapses to
+     * "buy" — back-compat for pre-rework callers that don't pass a mode.
+     */
+    static _resolveMode(opts) {
+        const m = opts && (opts.mode || (opts.leaseConfig && opts.leaseConfig.mode))
+        return MarketScanDealClassifier.normalizeMode(m, "buy")
+    }
+
     constructor(opts) {
         opts = opts || {}
         this.histories       = opts.histories || new Map()
         this.withinScanByType = opts.withinScanByType || new Map()
-        this.weights         = Object.assign({},
-            MarketScanDealClassifier.DEFAULT_WEIGHTS, opts.weights || {})
+        this.mode            = MarketScanDealClassifier._resolveMode(opts)
+        const baseWeights    = MarketScanDealClassifier.MODE_WEIGHTS[this.mode]
+        this.weights         = Object.assign({}, baseWeights, opts.weights || {})
         this.enabled         = Object.assign({},
             MarketScanDealClassifier.DEFAULT_ENABLED, opts.enabled || {})
         this.leaseConfig     = opts.leaseConfig || null
@@ -113,6 +159,7 @@ class MarketScanDealClassifier {
         return new MarketScanDealClassifier({
             histories:        histories,
             withinScanByType: withinScanByType,
+            mode:             opts.mode,
             weights:          opts.weights,
             enabled:          opts.enabled,
             leaseConfig:      opts.leaseConfig

@@ -84,6 +84,16 @@ class MarketPanelBestCases {
         title.style.cssText = "font-size:13px;color:var(--aes-oxide);"
         top.append(title)
 
+        if (row.aircraftType
+                && typeof window !== "undefined"
+                && window.AesCanopyDnaFit
+                && window.AesCanopyDnaStore) {
+            const dnaPillHost = document.createElement("span")
+            dnaPillHost.style.cssText = "display:inline-flex;align-items:center;"
+            top.append(dnaPillHost)
+            MarketPanelBestCases._attachDnaFitPill(dnaPillHost, row.aircraftType)
+        }
+
         if (row.registration) {
             const reg = document.createElement("span")
             reg.textContent = row.registration
@@ -117,10 +127,18 @@ class MarketPanelBestCases {
             "letter-spacing:var(--aes-tracking-mono)"
         ].join(";")
         const bits = []
-        const price = MarketScanDealMetrics.acquisitionPrice(row)
-        if (price !== null) bits.push("AS$ " + Math.round(price).toLocaleString())
+        // Render the cost using the basis the row was scored on, so a
+        // lease-only offer doesn't get hidden behind an em-dash and a
+        // purchase row still reads as a one-time AS$ figure.
+        if (row.priceBasis === "lease" && typeof row.monthlyLease === "number") {
+            bits.push("AS$ " + Math.round(row.monthlyLease).toLocaleString() + "/mo lease")
+        } else {
+            const price = MarketScanDealMetrics.acquisitionPrice(row)
+            if (price !== null) bits.push("AS$ " + Math.round(price).toLocaleString())
+        }
         if (typeof row.pricePerSeat === "number") {
-            bits.push(Math.round(row.pricePerSeat).toLocaleString() + "/seat")
+            const perSeatSuffix = row.priceBasis === "lease" ? "/seat/mo" : "/seat"
+            bits.push(Math.round(row.pricePerSeat).toLocaleString() + perSeatSuffix)
         }
         if (row.ageYears !== null && row.ageYears !== undefined) {
             bits.push(MarketPanelBestCases._fmtAge(row.ageYears))
@@ -149,6 +167,24 @@ class MarketPanelBestCases {
                 chipRow.append(chip)
             }
             el.append(chipRow)
+        }
+
+        // Auto-generated narrative — woven from the same decorated metrics
+        // that drive the chips, but in trader prose so the user reads "why
+        // this is good" at a glance instead of decoding chips + numbers.
+        if (typeof MarketScanDealNarrative !== "undefined") {
+            const summary = MarketScanDealNarrative.summarize(row)
+            if (summary) {
+                const narrative = document.createElement("div")
+                narrative.textContent = summary
+                narrative.style.cssText = [
+                    "font:11px var(--aes-font-body)",
+                    "color:var(--aes-oxide-2)",
+                    "line-height:1.4",
+                    "padding-top:2px"
+                ].join(";")
+                el.append(narrative)
+            }
         }
 
         const actions = document.createElement("div")
@@ -190,6 +226,32 @@ class MarketPanelBestCases {
         if (y === 0) return m + "mo"
         if (m === 0) return y + "y"
         return y + "y " + m + "mo"
+    }
+
+    static async _attachDnaFitPill(host, aircraftType) {
+        try {
+            if (!MarketPanelBestCases._dnaTemplatePromise) {
+                MarketPanelBestCases._dnaTemplatePromise = window.AesCanopyDnaStore.loadTemplate()
+            }
+            const dna = await MarketPanelBestCases._dnaTemplatePromise
+            if (!dna) return
+            const candidate = MarketPanelBestCases._typeToDnaCandidate(aircraftType)
+            const result = window.AesCanopyDnaFit.dnaFitScoreAircraft(dna, candidate)
+            if (!result || !result.breakdown || !Object.keys(result.breakdown).length) return
+            window.AesCanopyDnaFit.renderInto(host, result,
+                {label: aircraftType + " — fit vs DNA template"})
+        } catch (_) { /* graceful — best-cases card still renders */ }
+    }
+
+    static _typeToDnaCandidate(aircraftType) {
+        const family = (typeof TypeFamilyMap !== "undefined")
+            ? TypeFamilyMap.resolve(aircraftType) : null
+        const category = (family && typeof TypeFamilyMap !== "undefined")
+            ? TypeFamilyMap.category(family) : null
+        const sizeClass = (category === "widebody" || category === "narrowbody")
+            ? category : "regional"
+        const isCargo = /\b(freighter|cargo|p2f)\b/i.test(aircraftType)
+        return {manufacturer: aircraftType, sizeClass: sizeClass, isCargo: isCargo}
     }
 
     /**

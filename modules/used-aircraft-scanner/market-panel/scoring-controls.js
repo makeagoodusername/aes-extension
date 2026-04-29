@@ -1,15 +1,18 @@
 /**
  * Collapsible "Scoring" section for the in-page market panel.
  *
- * Lets the user tune the deal-classifier blend live: per-component sliders
- * (with on/off checkboxes), a master "use lease economics" toggle, the lease
- * amortisation term, and a fuel-efficiency master toggle.
+ * Lets the user tune the deal-classifier blend live: a strategic-intent
+ * preset dropdown + Lease/Buy mode badge across the top, then per-component
+ * sliders, a lease term input, and a fuel-efficiency master toggle.
  *
  * Pure rendering against the supplied `data` object — the panel owns state
- * and persists changes via the `cb.onChange(partial)` callback.
+ * and persists changes via callbacks.
  *
- *   data = {weights, enabled, leaseConfig, fuelConfig, open}
- *   cb   = {onChange(partial), onReset(), onToggleOpen()}
+ *   data = {weights, enabled, leaseConfig, fuelConfig, open,
+ *           presets: [{id, name, builtIn, mode, blurb}],
+ *           activePresetId}
+ *   cb   = {onChange(partial), onReset(), onToggleOpen(),
+ *           onPresetApply(presetId), onPresetSave()}
  *
  * Partials passed to onChange always carry only the changed top-level keys
  * (classifierWeights, leaseConfig, fuelConfig), letting the panel debounce
@@ -36,11 +39,13 @@ class MarketPanelScoringControls {
             "font-size:11px"
         ].join(";")
 
-        const weights     = (data && data.weights)     || {}
-        const enabled     = (data && data.enabled)     || {}
-        const leaseConfig = (data && data.leaseConfig) || {}
-        const fuelConfig  = (data && data.fuelConfig)  || {}
-        const open        = !!(data && data.open)
+        const weights        = (data && data.weights)     || {}
+        const enabled        = (data && data.enabled)     || {}
+        const leaseConfig    = (data && data.leaseConfig) || {}
+        const fuelConfig     = (data && data.fuelConfig)  || {}
+        const open           = !!(data && data.open)
+        const presets        = (data && Array.isArray(data.presets)) ? data.presets : []
+        const activePresetId = (data && data.activePresetId) || null
 
         host.append(MarketPanelScoringControls._renderHeader(weights, enabled, leaseConfig, open, cb))
         if (!open) return
@@ -48,11 +53,97 @@ class MarketPanelScoringControls {
         const body = document.createElement("div")
         body.style.cssText = "padding:8px 12px;display:flex;flex-direction:column;gap:8px;"
 
+        body.append(MarketPanelScoringControls._renderPresetBar(presets, activePresetId, leaseConfig, cb))
         body.append(MarketPanelScoringControls._renderGlobals(leaseConfig, fuelConfig, cb))
         body.append(MarketPanelScoringControls._renderSliders(weights, enabled, cb))
         body.append(MarketPanelScoringControls._renderFooter(cb))
 
         host.append(body)
+    }
+
+    static _renderPresetBar(presets, activeId, leaseConfig, cb) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;align-items:center;"
+
+        const label = document.createElement("span")
+        label.textContent = "Preset"
+        label.style.cssText = "color:var(--aes-slate);font-family:var(--aes-font-display);font-size:11px;"
+
+        const sel = document.createElement("select")
+        sel.className = "aes-input"
+        sel.style.cssText = "font-family:var(--aes-font-mono);font-size:11px;min-width:200px;"
+
+        const customOpt = document.createElement("option")
+        customOpt.value = ""
+        customOpt.textContent = "— Custom —"
+        sel.append(customOpt)
+
+        const groups = [
+            {label: "Built-in", items: presets.filter(p => p && p.builtIn)},
+            {label: "Saved",    items: presets.filter(p => p && !p.builtIn)}
+        ]
+        for (const g of groups) {
+            if (!g.items.length) continue
+            const og = document.createElement("optgroup")
+            og.label = g.label
+            for (const p of g.items) {
+                const opt = document.createElement("option")
+                opt.value = p.id
+                opt.textContent = p.name + (p.mode ? "  · " + p.mode : "")
+                if (p.id === activeId) opt.selected = true
+                og.append(opt)
+            }
+            sel.append(og)
+        }
+        if (!activeId) customOpt.selected = true
+
+        sel.addEventListener("change", () => {
+            const id = sel.value
+            if (!id) return  // "Custom" — no-op; user keeps current settings.
+            if (cb && typeof cb.onPresetApply === "function") cb.onPresetApply(id)
+        })
+        wrap.append(label, sel)
+
+        const mode = (typeof MarketScanDealClassifier !== "undefined")
+            ? MarketScanDealClassifier.normalizeMode(leaseConfig && leaseConfig.mode)
+            : (leaseConfig && leaseConfig.mode === "buy" ? "buy" : "lease")
+        const isLease = mode === "lease"
+        const badge = document.createElement("span")
+        badge.textContent = isLease ? "LEASE" : "BUY"
+        badge.title = isLease
+            ? "Lease mode: scoring by lease rate × term; LEASING RATE column shown. Rows without a lease offer drop out of price scoring."
+            : "Buy mode: scoring still anchored on lease rate (asset value); displayed price columns swap to NEXT BID + IMMEDIATE PURCHASE so you see what you'll actually pay."
+        badge.style.cssText = [
+            "font-family:var(--aes-font-mono)",
+            "font-size:10px",
+            "letter-spacing:var(--aes-tracking-caps)",
+            "padding:2px 8px",
+            "border-radius:3px",
+            "background:" + (isLease ? "#2F5F3F" : "#3656A8"),
+            "color:#fff",
+            "font-weight:bold"
+        ].join(";")
+
+        const modeBtn = document.createElement("button")
+        modeBtn.type = "button"
+        modeBtn.textContent = "Switch to " + (isLease ? "Buy" : "Lease")
+        modeBtn.className = "aes-btn aes-btn--sm"
+        modeBtn.style.cssText = "font-size:10px;"
+        modeBtn.addEventListener("click", () => {
+            cb.onChange({leaseConfig: {mode: isLease ? "buy" : "lease"}})
+        })
+
+        const save = document.createElement("button")
+        save.type = "button"
+        save.textContent = "Save as preset"
+        save.className = "aes-btn aes-btn--sm"
+        save.style.cssText = "font-size:10px;"
+        save.addEventListener("click", () => {
+            if (cb && typeof cb.onPresetSave === "function") cb.onPresetSave()
+        })
+
+        wrap.append(badge, modeBtn, save)
+        return wrap
     }
 
     static _renderHeader(weights, enabled, leaseConfig, open, cb) {
@@ -87,7 +178,7 @@ class MarketPanelScoringControls {
         const activeCount = MarketPanelScoringControls.COMPONENTS.filter(
             c => enabled[c.key] !== false && Number(weights[c.key]) > 0
         ).length
-        const basis = leaseConfig.leaseFirst === false ? "purchase-first" : "lease-first"
+        const basis = leaseConfig.mode === "buy" ? "buy mode" : "lease mode"
         summary.textContent = activeCount + " active · " + basis
         summary.style.cssText = "color:var(--aes-slate);font-family:var(--aes-font-mono);font-size:10px;flex:1 1 auto;"
 
@@ -99,12 +190,6 @@ class MarketPanelScoringControls {
     static _renderGlobals(leaseConfig, fuelConfig, cb) {
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;"
-
-        wrap.append(MarketPanelScoringControls._toggle(
-            "Use lease economics when available",
-            leaseConfig.leaseFirst !== false,
-            v => cb.onChange({leaseConfig: {leaseFirst: v}})
-        ))
 
         const termWrap = document.createElement("label")
         termWrap.style.cssText = "display:flex;align-items:center;gap:6px;color:var(--aes-slate);"

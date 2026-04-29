@@ -589,6 +589,12 @@ class MarketScanFamilyGrid {
         count.style.color = sel > 0 ? color : "#888"
         count.style.fontWeight = sel > 0 ? "600" : "normal"
 
+        const fitPillHost = document.createElement("span")
+        fitPillHost.style.cssText = "display:inline-flex;align-items:center"
+        if (window.AesCanopyDnaFit && window.AesCanopyDnaStore) {
+            this._attachFamilyDnaFitPill(fitPillHost, fam)
+        }
+
         const spacer = document.createElement("span")
         spacer.style.flex = "1"
 
@@ -614,7 +620,7 @@ class MarketScanFamilyGrid {
             this._fire()
         })
 
-        head.append(caret, title, count, spacer, allBtn, clrBtn)
+        head.append(caret, title, count, fitPillHost, spacer, allBtn, clrBtn)
         head.addEventListener("click", () => {
             if (this.expandedFamilies.has(fam.family)) {
                 this.expandedFamilies.delete(fam.family)
@@ -702,6 +708,33 @@ class MarketScanFamilyGrid {
         try { this.onChange(this.getSelectedTypes()) }
         catch (e) { console.error("MarketScanFamilyGrid onChange error:", e) }
     }
+
+    /**
+     * Score the family against the global DNA template (per-account picker
+     * deferred to L8) and append a fit pill to `host`. Best-effort — silent
+     * on missing DNA stack or if scoring throws.
+     */
+    async _attachFamilyDnaFitPill(host, fam) {
+        try {
+            if (!MarketScanFamilyGrid._dnaTemplatePromise) {
+                MarketScanFamilyGrid._dnaTemplatePromise = window.AesCanopyDnaStore.loadTemplate()
+            }
+            const dna = await MarketScanFamilyGrid._dnaTemplatePromise
+            const candidate = {
+                manufacturer: fam.family,
+                sizeClass:    _famCategoryToSize(fam.category),
+                isCargo:      false
+            }
+            const result = window.AesCanopyDnaFit.dnaFitScoreAircraft(dna, candidate)
+            window.AesCanopyDnaFit.renderInto(host, result, {label: "Family fit vs DNA template"})
+        } catch (_) {}
+    }
+}
+
+function _famCategoryToSize(cat) {
+    if (cat === "widebody") return "widebody"
+    if (cat === "narrowbody") return "narrowbody"
+    return "regional"
 }
 
 // CSS.escape isn't safe to assume in older Chromium; this fallback handles

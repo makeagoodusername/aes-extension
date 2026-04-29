@@ -71,25 +71,68 @@ class MarketScanDealMetrics {
     }
 
     /**
-     * Picks the cost basis for "$/seat"-style metrics. With leaseFirst on
-     * AND a lease offer present: returns {cost: monthly × termMonths,
-     * kind: "lease", monthly}. Else falls back to the purchase price (when
-     * fallbackPurchase is on; otherwise returns null so the row is scored
-     * without a price component).
+     * Picks the cost basis for "$/seat"-style metrics. Always lease-anchored:
+     * leasing rate × termMonths, regardless of `leaseConfig.mode`.
+     *
+     * Rationale (per project spec): on the used market, auction prices are
+     * noisy and don't reflect the asset's true ongoing value. The published
+     * leasing rate does — it's the market's price for the asset's monthly
+     * service. Scoring on lease rate in both lease AND buy mode keeps the
+     * "$/seat" column comparable across the result set and across modes.
+     *
+     * A row without a lease offer drops out of price-based scoring entirely
+     * (the classifier renormalises around the remaining components). Buy
+     * mode still uses NEXT BID + IMMEDIATE PURCHASE for the *displayed*
+     * price columns — that swap lives in results-table._activeColumns().
+     *
+     * `leaseConfig.mode` is preserved on the return so callers (table
+     * tooltips, classifier display copy) can show the user which mode they're
+     * in even though the cost basis is uniform.
      */
     static effectiveAcquisitionCost(row, leaseConfig) {
         const cfg = leaseConfig || {}
-        if (cfg.leaseFirst !== false) {
-            const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
-            const term    = numOrDefault(cfg.termMonths, 60)
-            if (monthly !== null && term > 0) {
-                return {cost: monthly * term, kind: "lease", monthly: monthly, termMonths: term}
-            }
+        const mode = cfg.mode === "buy" ? "buy" : "lease"
+        const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
+        const term    = numOrDefault(cfg.termMonths, 60)
+        if (monthly === null || term <= 0) return null
+        return {
+            cost:       monthly * term,
+            kind:       "lease",
+            monthly:    monthly,
+            termMonths: term,
+            mode:       mode
         }
-        if (cfg.fallbackPurchase === false) return null
-        const purchase = MarketScanDealMetrics.acquisitionPrice(row)
-        if (purchase === null) return null
-        return {cost: purchase, kind: "purchase"}
+    }
+
+    /**
+     * Actual upfront cash outlay for *this offer*, used for the affordability
+     * chip (cash vs cost). Mode-aware so the chip reflects the cash that
+     * actually leaves the bank account on day one:
+     *   lease mode → leasingDepot (one-time deposit; monthly rent is
+     *                paid out of operating revenue, not cash on hand)
+     *   buy mode   → cheapest of nextBid / immediatePurchase
+     *
+     * Falls back to monthly × term in lease mode when the deposit is
+     * missing — that older path approximates total commitment, not the
+     * upfront cash, but keeps offers with broken/blank deposit fields
+     * comparable to others instead of dropping out of the chip entirely.
+     *
+     * Distinct from `effectiveAcquisitionCost` which is uniformly
+     * lease-anchored (monthly × term) for *scoring* purposes.
+     *
+     * Returns null when the relevant figure is missing.
+     */
+    static affordabilityCost(row, leaseConfig) {
+        const cfg = leaseConfig || {}
+        if (cfg.mode === "buy") {
+            return MarketScanDealMetrics.acquisitionPrice(row)
+        }
+        const depot = numOrNull(row && row.leasingDepot)
+        if (depot !== null && depot > 0) return depot
+        const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
+        const term    = numOrDefault(cfg.termMonths, 60)
+        if (monthly === null || term <= 0) return null
+        return monthly * term
     }
 
     /**
@@ -481,7 +524,7 @@ class MarketScanDealMetrics {
      *   fleetByType     — Map | object keyed by typeId
      *   topRoutes       — array for route-fit
      *   routeFitConfig  — {paxSeatsPerScorePoint, weeklyDemandPerScorePoint}
-     *   leaseConfig     — {leaseFirst, termMonths, fallbackPurchase}
+     *   leaseConfig     — {mode: "lease"|"buy", termMonths}
      *   fuelCtx         — {fuelPriceASc, fuelAgePenaltyPerYear}
      */
     static decorate(row, ctx) {
@@ -492,33 +535,36 @@ class MarketScanDealMetrics {
         // coherently — no half-lease half-purchase rows.
         const basis = MarketScanDealMetrics.effectiveAcquisitionCost(row, leaseConfig)
         row.priceBasis  = basis ? basis.kind : null
+        // Stamp the user's mode so narrative + tooltips can distinguish
+        // "scoring on lease, paying on lease" from "scoring on lease,
+        // paying on purchase". priceBasis stays uniformly "lease" for
+        // classifier-cohort purposes; userMode is the display switch.
+        row.userMode    = (leaseConfig && leaseConfig.mode === "buy") ? "buy" : "lease"
         row.leasePerSeat = MarketScanDealMetrics.leasePerSeat(row)
         row.monthlyLease = MarketScanDealMetrics.monthlyLeasePayment(row)
 
-        if (basis && basis.kind === "lease") {
-            row.pricePerSeat = row.leasePerSeat
-            const seatKm = MarketScanDealMetrics.leaseSeatKmYearCostBreakdown(row)
-            row.seatKmYearCost      = seatKm ? seatKm.value : null
-            row.seatKmYearBreakdown = seatKm
-            // Lease-mode payback: how many days to recoup the SIGNED lease
-            // term (monthly × termMonths). Reuses the existing daily-profit
-            // model via a synthetic price input.
-            const synth = Object.assign({}, row, {
-                nextBid:           basis.cost,
-                immediatePurchase: null
-            })
-            const be = MarketScanDealMetrics.daysToBreakEvenBreakdown(synth, ctx.economics)
-            row.breakEvenDays      = be ? be.value : null
-            row.breakEvenBreakdown = be
-        } else {
-            row.pricePerSeat = MarketScanDealMetrics.pricePerSeat(row)
-            const seatKm = MarketScanDealMetrics.seatKmYearCostBreakdown(row)
-            row.seatKmYearCost      = seatKm ? seatKm.value : null
-            row.seatKmYearBreakdown = seatKm
-            const be = MarketScanDealMetrics.daysToBreakEvenBreakdown(row, ctx.economics)
-            row.breakEvenDays      = be ? be.value : null
-            row.breakEvenBreakdown = be
-        }
+        // No usable basis (typically lease-mode + no lease offer): leave
+        // price/lifecycle/payback unset so the classifier renormalises
+        // around the remaining components instead of silently scoring
+        // against a basis the user opted out of.
+        const isLease = basis && basis.kind === "lease"
+        // Lease-mode payback recoups the signed lease term (monthly × term);
+        // reuse the daily-profit model via a synthetic price input.
+        const beRow = isLease
+            ? Object.assign({}, row, {nextBid: basis.cost, immediatePurchase: null})
+            : row
+        const seatKm = !basis ? null
+            : isLease ? MarketScanDealMetrics.leaseSeatKmYearCostBreakdown(row)
+                      : MarketScanDealMetrics.seatKmYearCostBreakdown(row)
+        const be = !basis ? null
+            : MarketScanDealMetrics.daysToBreakEvenBreakdown(beRow, ctx.economics)
+        row.pricePerSeat        = !basis ? null
+            : isLease ? row.leasePerSeat
+                      : MarketScanDealMetrics.pricePerSeat(row)
+        row.seatKmYearCost      = seatKm ? seatKm.value : null
+        row.seatKmYearBreakdown = seatKm
+        row.breakEvenDays       = be ? be.value : null
+        row.breakEvenBreakdown  = be
 
         const fuel = MarketScanDealMetrics.fuelCostPerSeatKm(row, ctx.fuelCtx)
         row.fuelPerSeatKm    = fuel ? fuel.value : null

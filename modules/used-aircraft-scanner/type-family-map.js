@@ -413,6 +413,33 @@ const AS_FAMILY_CATEGORY = {
 // Visual order in the family grid: small → large, left-to-right.
 const AS_CATEGORY_ORDER = ["commuter", "turboprop", "regional", "narrowbody", "widebody"]
 
+// Manufacturer keyword patterns, longest/most-specific first. Tested by
+// TypeFamilyMap.manufacturer() against the AS type label (e.g.
+// "Bombardier CRJ-700"). Misses fall back to the type's leading word.
+const MANUFACTURER_PATTERNS = [
+    [/\bAirbus\b/i,                              "Airbus"],
+    [/\bBoeing\b/i,                              "Boeing"],
+    [/\bATR\b/i,                                 "ATR"],
+    [/\bDash 8\b|\bDe Havilland\b|\bDHC-/i,      "De Havilland / Bombardier"],
+    [/\bBombardier\b|\bCRJ\b/i,                  "De Havilland / Bombardier"],
+    [/\bEmbraer\b|\bEMB\b|\bERJ\b/i,             "Embraer"],
+    [/\bCessna\b/i,                              "Cessna (Textron)"],
+    [/\bBeechcraft\b|\bBeech\b|\bRaytheon\b/i,   "Beechcraft (Textron)"],
+    [/\bLET\b|\bL-?410\b/i,                      "LET"],
+    [/\bPilatus\b|\bPC-/i,                       "Pilatus"],
+    [/\bSaab\b/i,                                "Saab"],
+    [/\bBritten-Norman\b|Islander|Trislander/i,  "Britten-Norman"],
+    [/\bAntonov\b|\bAN-?\d/i,                    "Antonov"],
+    [/\bTupolev\b|\bTu-?\d/i,                    "Tupolev"],
+    [/\bIlyushin\b|\bIl-?\d/i,                   "Ilyushin"],
+    [/\bSukhoi\b|Superjet/i,                     "Sukhoi"],
+    [/\bMcDonnell Douglas\b|\bMD-?\d|\bDC-?\d/i, "McDonnell Douglas"],
+    [/\bCOMAC\b|\bARJ\d|\bC91\d/i,               "COMAC"],
+    [/\bFokker\b|\bF\d{2,3}\b/i,                 "Fokker"],
+    [/\bDornier\b|\bDO ?228/i,                   "Dornier"],
+    [/\bXian\b|\bY-7\b|\bAVIC\b|\bMA-?\d{2,3}/i, "AVIC / Xian"]
+]
+
 // Single source of truth for category color (used by family-grid cards AND
 // the results-table row rail). Hex values match the existing scanner palette
 // (status badges in content_dashboard.js use the same 3b82f6 / 16a34a base).
@@ -491,11 +518,76 @@ class TypeFamilyMap {
     }
 
     /**
+     * Best-effort manufacturer label for an AS type name. Matches a
+     * curated keyword list first (covers historical brand renames and
+     * manufacturer letter prefixes like "An-", "Tu-", "Il-"), falls back
+     * to the leading word if nothing matches. Used by the scanner panel's
+     * manufacturer filter chip row.
+     */
+    static manufacturer(typeName) {
+        if (!typeName) return ""
+        const s = String(typeName).trim()
+        for (const [re, label] of MANUFACTURER_PATTERNS) {
+            if (re.test(s)) return label
+        }
+        const first = s.split(/\s+/)[0] || ""
+        return first.replace(/[^A-Za-z0-9-]/g, "")
+    }
+
+    /**
      * Color hex for a category. Falls back to the "other" grey for unknown
      * inputs so callers don't need to special-case nulls.
      */
     static categoryColor(category) {
         return AS_CATEGORY_COLOR[category] || AS_CATEGORY_COLOR.other
+    }
+
+    /**
+     * Visual order of the five real categories (small → large). Excludes
+     * "other" — that's a fallback bucket for unrecognised families, not a
+     * dimension users would deliberately pick.
+     */
+    static allCategories() {
+        return AS_CATEGORY_ORDER.slice()
+    }
+
+    /**
+     * Every distinct manufacturer label exposed by `manufacturer()`. Pulled
+     * from MANUFACTURER_PATTERNS so the scanner filter can offer the full
+     * roster up front, not just whatever is present in the current scan.
+     */
+    static allManufacturers() {
+        const seen = new Set()
+        for (const [, label] of MANUFACTURER_PATTERNS) seen.add(label)
+        return Array.from(seen).sort()
+    }
+
+    /**
+     * Family list as `[{family, category}, ...]` in the same category-then-
+     * alpha order as `familyList()` — but without the type arrays, since the
+     * scanner filter only needs the name + category for grouped display.
+     */
+    static allFamilies(overrides) {
+        return TypeFamilyMap.familyList(overrides).map(e => ({
+            family:   e.family,
+            category: e.category
+        }))
+    }
+
+    /**
+     * Every distinct AS Type label as `[{type, family, category}, ...]`,
+     * sorted by family-category then alpha within family. Honors the
+     * user's typeFamilyOverrides via `familyList()` so custom mappings
+     * surface in the picker.
+     */
+    static allTypes(overrides) {
+        const out = []
+        for (const entry of TypeFamilyMap.familyList(overrides)) {
+            for (const t of entry.types) {
+                out.push({type: t, family: entry.family, category: entry.category})
+            }
+        }
+        return out
     }
 
     /**

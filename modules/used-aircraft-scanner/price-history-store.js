@@ -51,6 +51,16 @@ class MarketScanPriceHistory {
     }
 
     static _trim(entries) {
+        // Slice-1 foundation: delegate to shared trimEntries when loaded
+        // (modules/_shared/ttl-cache.js); fall back to inline math otherwise
+        // so this file stays usable in isolation. Behaviour identical.
+        if (typeof trimEntries !== "undefined") {
+            return trimEntries(entries, {
+                maxEntries:     MarketScanPriceHistory.MAX_ENTRIES_PER_TYPE,
+                ttlMs:          MarketScanPriceHistory.MAX_AGE_MS,
+                freshnessField: "observedAt"
+            })
+        }
         const cutoff = Date.now() - MarketScanPriceHistory.MAX_AGE_MS
         const fresh = entries.filter(e => e && e.observedAt >= cutoff)
         if (fresh.length <= MarketScanPriceHistory.MAX_ENTRIES_PER_TYPE) return fresh
@@ -104,6 +114,12 @@ class MarketScanPriceHistory {
             writes[key] = {typeId: typeId, entries: merged, lastUpdatedAt: observedAt}
         }
         await chrome.storage.local.set(writes)
+        if (typeof AesDataBus !== "undefined") {
+            AesDataBus.emit("data:scanner:price-history:appended", {
+                server:  server,
+                typeIds: Array.from(byType.keys())
+            })
+        }
     }
 
     /**
@@ -160,32 +176,56 @@ class MarketScanPriceHistory {
      * Falls back to the legacy full-read on older Chromes.
      */
     static async cleanup(server) {
-        const prefix = server + MarketScanPriceHistory.KEY_PREFIX_SUFFIX
+        // When called without a server arg (e.g. from AesCleanup.runAll), match
+        // every history key across every server. The substring is unique
+        // enough that we won't collide with other modules' storage.
+        const matchPrefix = server
+            ? (server + MarketScanPriceHistory.KEY_PREFIX_SUFFIX)
+            : null
+        const matches = (k) => matchPrefix
+            ? k.indexOf(matchPrefix) === 0
+            : k.indexOf(MarketScanPriceHistory.KEY_PREFIX_SUFFIX) >= 0
         let ours = []
         if (chrome.storage.local.getKeys) {
             const allKeys = await chrome.storage.local.getKeys()
-            ours = allKeys.filter(k => k.indexOf(prefix) === 0)
-            if (!ours.length) return
+            ours = allKeys.filter(matches)
+            if (!ours.length) return {removed: 0, kept: 0}
         }
         const all = ours.length
             ? await chrome.storage.local.get(ours)
             : await chrome.storage.local.get(null)
         const toRemove = []
         const toUpdate = {}
+        let kept = 0
         for (const k in all) {
-            if (k.indexOf(prefix) !== 0) continue
+            if (!matches(k)) continue
             const rec = all[k]
             if (!rec || !Array.isArray(rec.entries)) { toRemove.push(k); continue }
             const trimmed = MarketScanPriceHistory._trim(rec.entries)
             if (!trimmed.length) toRemove.push(k)
-            else if (trimmed.length !== rec.entries.length) {
-                toUpdate[k] = {typeId: rec.typeId, entries: trimmed,
-                               lastUpdatedAt: rec.lastUpdatedAt || Date.now()}
+            else {
+                kept++
+                if (trimmed.length !== rec.entries.length) {
+                    toUpdate[k] = {typeId: rec.typeId, entries: trimmed,
+                                   lastUpdatedAt: rec.lastUpdatedAt || Date.now()}
+                }
             }
         }
         if (toRemove.length) await chrome.storage.local.remove(toRemove)
         if (Object.keys(toUpdate).length) await chrome.storage.local.set(toUpdate)
+        return {removed: toRemove.length, kept: kept}
     }
 }
+
+// Slice-1 foundation: register the cross-server sweep with the shared
+// cleanup registry. Inline `cleanup(server)` calls (e.g. from the scanner
+// panel/controller) keep working unchanged — they pass the server explicitly
+// when they want a server-scoped pass.
+;(function () {
+    if (typeof AesCleanup === "undefined") return
+    AesCleanup.register("scanner:price-history",
+        () => MarketScanPriceHistory.cleanup(),
+        {everyMs: 24 * 3600e3})
+})()
 
 if (typeof module !== "undefined" && module.exports) module.exports = MarketScanPriceHistory

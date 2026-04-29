@@ -27,6 +27,10 @@ class MarketScanResultsTable {
         // one in; the dashboard tile leaves it null and uses the legacy
         // relative scorer so existing behaviour is preserved verbatim.
         this.classifier = null
+        // Drives mode-aware price-column visibility: lease mode shows
+        // leasingRate, buy mode shows nextBid + immediatePurchase. Default
+        // null = legacy behaviour (all three columns shown in wide mode).
+        this.leaseConfig = null
         // Narrow mode hides low-priority columns and tightens padding so
         // the table fits inside a sidebar without horizontal scroll.
         this.narrowMode = false
@@ -98,8 +102,20 @@ class MarketScanResultsTable {
     }
 
     /**
+     * Provide the active lease/buy config so the table can swap which
+     * price columns are visible: lease shows LEASING RATE, buy shows
+     * NEXT BID + IMMEDIATE PURCHASE. Pass null to restore the legacy
+     * "show everything" behaviour.
+     */
+    setLeaseConfig(leaseConfig) {
+        this.leaseConfig = leaseConfig || null
+        this._draw()
+    }
+
+    /**
      * Toggles narrow mode for embedding inside a sidebar:
-     *   - hides cargoCapacity, paxSatisfaction, leasingRate columns
+     *   - hides cargoCapacity, paxSatisfaction, lease pair columns when
+     *     no leaseConfig is active (mode-aware visibility wins otherwise)
      *   - tightens td/th padding via a one-shot stylesheet
      * Re-renders. Pass false to restore the full column set.
      */
@@ -286,11 +302,25 @@ class MarketScanResultsTable {
         if (this.narrowMode) {
             const hide = new Set([
                 "cargoCapacity", "paxSatisfaction",
-                "leasingRate", "speed",
+                "speed",
                 "seatKmYearCost", "breakEvenDays",
                 "currentBid"
             ])
             cols = cols.filter(c => !hide.has(c.field))
+        }
+        // Mode-aware price columns: lease mode hides the full-purchase pair
+        // and surfaces leasingRate + leasingDepot (the only money the user
+        // actually pays — recurring rent + the one-time upfront deposit).
+        // Buy mode hides the lease pair and shows nextBid + immediatePurchase
+        // (the auction prices that matter for outright purchase).
+        const mode = this.leaseConfig && this.leaseConfig.mode === "buy" ? "buy" : "lease"
+        if (this.leaseConfig) {
+            const hideByMode = mode === "lease"
+                ? new Set(["nextBid", "immediatePurchase"])
+                : new Set(["leasingRate", "leasingDepot"])
+            cols = cols.filter(c => !hideByMode.has(c.field))
+        } else if (this.narrowMode) {
+            cols = cols.filter(c => c.field !== "leasingRate" && c.field !== "leasingDepot")
         }
         return cols
     }
@@ -573,14 +603,29 @@ class MarketScanResultsTable {
     }
 
     /**
-     * Tooltip for the $/seat cell — names which acquisition source was used
-     * (next bid vs. immediate purchase, whichever was cheaper) and reminds
-     * the user that leasing is excluded.
+     * Tooltip for the $/seat cell. Branches on the row's resolved
+     * `priceBasis` ("lease" | "purchase") so the formula and units match
+     * what's actually being displayed:
+     *   lease    → AS$/seat/mo (monthly lease ÷ seats)
+     *   purchase → AS$/seat    (next-bid or immediate-purchase ÷ seats)
      */
     static _formatPricePerSeatTooltip(row) {
         if (!row || row.pricePerSeat === null || row.pricePerSeat === undefined) return ""
+        if (!row.seats) return ""
+        if (row.priceBasis === "lease") {
+            const monthly = isFiniteNumber(row.monthlyLease) ? row.monthlyLease : null
+            if (monthly === null) return ""
+            return [
+                "$/seat/mo = monthly lease ÷ seats",
+                "          = AS$" + Math.round(monthly).toLocaleString() + " ÷ " + row.seats,
+                "          = AS$" + row.pricePerSeat.toLocaleString() + "/mo",
+                "",
+                "Cost basis: monthly lease — purchase price is ignored when",
+                "lease-first is on (Used Aircraft Scanner → scoring controls)."
+            ].join("\n")
+        }
         const price = MarketScanDealMetrics.acquisitionPrice(row)
-        if (price === null || !row.seats) return ""
+        if (price === null) return ""
         const hasBid = isFiniteNumber(row.nextBid) && row.nextBid > 0
         const hasIp  = isFiniteNumber(row.immediatePurchase) && row.immediatePurchase > 0
         let source
@@ -598,8 +643,8 @@ class MarketScanResultsTable {
             "       = AS$" + Math.round(price).toLocaleString() + " ÷ " + row.seats,
             "       = AS$" + row.pricePerSeat.toLocaleString(),
             "",
-            "Acquisition source: " + source + ".",
-            "Leasing rate is excluded — it's a recurring cost, not an upfront price."
+            "Cost basis: " + source + ".",
+            "Lease rate is unavailable for this offer, so the purchase price was used."
         ].join("\n")
     }
 
@@ -691,9 +736,18 @@ class MarketScanResultsTable {
             + "color:#fff;font-size:85%;font-weight:700;"
             + "text-transform:uppercase;letter-spacing:0.04em;"
         td.append(pill)
-        if (row.dealReasons && row.dealReasons.length) {
-            td.title = row.dealReasons.join(" · ")
+        // Prefer the woven narrative when it's available — full prose
+        // beats the chip dump for "why is this a Great deal?". Fall back
+        // to the rationale chip list when narrative module is absent
+        // (dashboard context doesn't load it).
+        let tip = null
+        if (typeof MarketScanDealNarrative !== "undefined") {
+            tip = MarketScanDealNarrative.summarize(row)
         }
+        if (!tip && row.dealReasons && row.dealReasons.length) {
+            tip = row.dealReasons.join(" · ")
+        }
+        if (tip) td.title = tip
     }
 
     /**
@@ -754,6 +808,7 @@ class MarketScanResultsTable {
             {field: "nextBid",           label: "Next Bid",           align: "right", currency: true},
             {field: "immediatePurchase", label: "Immediate Purchase", align: "right", currency: true},
             {field: "leasingRate",       label: "Leasing Rate",       align: "right", currency: true},
+            {field: "leasingDepot",      label: "Lease Deposit",      align: "right", currency: true},
             {field: "location",          label: "Location"},
             {field: "registration",      label: "Registration"},
             {field: "owner",             label: "Owner"},
