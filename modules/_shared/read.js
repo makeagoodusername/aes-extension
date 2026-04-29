@@ -287,6 +287,86 @@
         return {ok: true, count: out.length, windowMs, signals: out}
     }
 
+    /**
+     * Compact text digest of the airline's current state. Designed for
+     * cheap LLM context priming — typically 200-500 tokens vs. tens of
+     * thousands for the full snapshot. Includes airline ID, fleet count,
+     * hub count, route counts, cash + runway, top 3 active signals,
+     * crew-pressure summary, and the `missing` diagnostic. Returns text;
+     * the JSON envelope wraps it for tool-use uniformity.
+     */
+    async function summary() {
+        try {
+            const snap = await _loadSnapshot({})
+            const lines = []
+            lines.push("Airline: " + (snap.airlineCode || "(unknown)") + " on server " + (snap.server || "(unknown)"))
+
+            const fleetCount = (snap.fleet || []).length
+            const fleetByType = {}
+            for (const a of (snap.fleet || [])) {
+                const k = a.equipment || a.typeId || "?"
+                fleetByType[k] = (fleetByType[k] || 0) + 1
+            }
+            const fleetSummary = Object.entries(fleetByType)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5)
+                .map(([k, n]) => n + "× " + k)
+                .join(", ")
+            lines.push("Fleet: " + fleetCount + " aircraft" + (fleetSummary ? " (" + fleetSummary + ")" : ""))
+
+            const hubsList = snap.hubs || []
+            const totalRoutes = hubsList.reduce((s, h) => s + (h.byRoute || []).length, 0)
+            const totalScheduled = hubsList.reduce((s, h) => s + (h.byRoute || []).filter(r => r.alreadyScheduled).length, 0)
+            lines.push("Hubs: " + hubsList.length + " (" + hubsList.map(h => h.iata).join(", ")
+                + "), routes: " + totalRoutes + " (" + totalScheduled + " scheduled)")
+
+            if (snap.cash) {
+                const c = snap.cash
+                const wk = Number.isFinite(c.weeklyResult)
+                    ? (c.weeklyResult >= 0 ? "+" : "") + Math.round(c.weeklyResult).toLocaleString()
+                    : "?"
+                const bank = Number.isFinite(c.bankBalance) ? Math.round(c.bankBalance).toLocaleString() : "?"
+                const runway = Number.isFinite(c.runwayWeeks) ? c.runwayWeeks.toFixed(1) + "wk" : "?"
+                lines.push("Cash: bank " + bank + ", weekly " + wk + ", runway " + runway)
+            } else {
+                lines.push("Cash: unavailable")
+            }
+
+            const sig = signals({windowMs: 60 * 60 * 1000})
+            if (sig.ok && sig.count > 0) {
+                lines.push("Active signals: " + sig.signals.slice(0, 3).map(s => {
+                    const kind = s.topic.split(":").slice(2).join(":")
+                    const ageMin = Math.round(s.ageMs / 60000)
+                    return kind + " (" + ageMin + "m ago)"
+                }).join("; "))
+            } else {
+                lines.push("Active signals: none in last hour")
+            }
+
+            if (snap.crew && snap.crew.pressure) {
+                const p = snap.crew.pressure
+                if (p.severity > 0) {
+                    lines.push("Crew pressure: severity " + p.severity.toFixed(2)
+                        + (p.shortPositions ? " (short: " + p.shortPositions.join(", ") + ")" : ""))
+                }
+            }
+
+            if (snap.alliance && snap.alliance.membership) {
+                lines.push("Alliance: " + snap.alliance.membership.name
+                    + " (" + (snap.alliance.partners || []).length + " IL partners)")
+            }
+
+            const missingCount = (snap.missing || []).length
+            if (missingCount > 0) {
+                lines.push("Missing: " + missingCount + " stores not loaded ("
+                    + snap.missing.slice(0, 4).join(", ")
+                    + (missingCount > 4 ? ", …" : "") + ")")
+            }
+
+            return {ok: true, text: lines.join("\n"), at: snap.ts}
+        } catch (e) { return _err((e && e.message) || e) }
+    }
+
     function refresh() {
         _cache = null
         return {ok: true}
@@ -316,7 +396,7 @@
 
     window.AesRead = {
         snapshot, routes, hubs, fleet, crew, cash,
-        competitors, alliance, settings, missing, signals, journal, refresh
+        competitors, alliance, settings, missing, signals, journal, summary, refresh
     }
 
     // ─── AesTools registration ───────────────────────────────────────
@@ -435,6 +515,15 @@
             sideEffects: "read",
             tags:        ["read", "journal"],
             run:         (a) => journal(a || {})
+        })
+        window.AesTools.register({
+            name:        "read.summary",
+            description: "Compact text digest of airline state — designed for cheap LLM context priming (200-500 tokens vs. tens of thousands for read.snapshot). Includes airline ID, fleet, hubs, routes, cash + runway, top signals, crew pressure, alliance, missing diagnostics.",
+            params:      null,
+            returns:     "{ok, text, at}",
+            sideEffects: "read-cached",
+            tags:        ["read", "digest"],
+            run:         () => summary()
         })
         window.AesTools.register({
             name:        "read.refresh",
