@@ -677,7 +677,7 @@ async function learn(opts) {
 
 ---
 
-### Slice 16 ⬜ Executive Briefing UI
+### Slice 16 ✅ Executive Briefing UI — shipped
 
 **Goal:** every game-week, present the user a one-page summary of:
 
@@ -689,10 +689,12 @@ async function learn(opts) {
 
 **Format:** a modal that opens automatically on first dashboard visit each game-week, dismissible, archivable. Long-form rationale per decision.
 
-**Files:**
+**Files (shipped):**
 
-- new `modules/strategy/briefing.js`
-- new `modules/central-hub/tiles/briefing-tile.js`
+- `modules/strategy/briefing.js` — `AesStrategyBriefing.buildBriefing(opts)` returns a `BriefingReport` (`applied[≤3]`, `drifted`, `opportunities[≤2]`, `risk`). Pure read-only synthesis over `AesChangeLogAggregator`, `AesStrategyOutcomes`, `AesStrategyJournal`, `AesStrategyLearn`, `AccountingProjector`, and a freshly composed `snapshot → diffPlan`. Returns `autoOpenBucketId` (real `accounting:weekId` or `"synth-<floor(ts/7d)>"` fallback) for the tile's once-per-week guard.
+- `modules/central-hub/tiles/strategy-briefing-tile.js` — `CentralHubStrategyBriefingTile` (`section: "operations"`, `priority: 0`). Renders the 4-card grid (Applied / Drifted / Opportunities / Risk), and a full modal with long-form rationale, structured-fields per applied decision, and source-envelope `<details>` JSON. Auto-opens once per `autoOpenBucketId`; "Mark as read" writes `aesStrategy:lastSeenAt[:acct:<id>]` to narrow the next briefing window. Settings kill switch `settings.strategy.briefing.briefingAutoOpen === false`.
+
+See `HANDOVER.md §1 "Strategy Slice 16 — Executive Briefing UI"` for full details.
 
 ---
 
