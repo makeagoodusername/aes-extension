@@ -17,7 +17,11 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
         this.requiresAirline = true
     }
 
-    watchedStorageKeys() { return ["crewMgmt:pilots"] }
+    watchedStorageKeys() {
+        const ak = window.AesAccountKey
+        const overviewLatest = ak ? ak.acctKey("crewMgmt", "staffOverview:latest") : "crewMgmt:staffOverview:latest"
+        return ["crewMgmt:pilots", overviewLatest]
+    }
 
     openHref() { return "/action/enterprise/staffPilots" }
 
@@ -55,11 +59,16 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
     async loadStatus() {
         const KIND = window.CentralHubStatusBadges.KIND
         const rec = await this._loadRecord()
+        const overview = window.CrewMgmtStaffOverviewStore
+            ? await window.CrewMgmtStaffOverviewStore.loadLatest()
+            : null
+        const costSummary = CentralHubCrewManagementTile._formatCostSummary(overview)
+
         if (!rec || !Array.isArray(rec.categories) || !rec.categories.length) {
             return {
                 badge:     "—",
                 badgeKind: KIND.MUTED,
-                summary:   "No crew data — visit /action/enterprise/staffPilots to seed."
+                summary:   "No crew data — visit /action/enterprise/staffPilots to seed." + costSummary
             }
         }
         const cats = rec.categories
@@ -70,14 +79,26 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
             return {
                 badge:     missing + " SHORT",
                 badgeKind: KIND.ALERT,
-                summary:   employed + "/" + required + " pilots employed · " + missing + " short across " + cats.length + " categor" + (cats.length === 1 ? "y" : "ies")
+                summary:   employed + "/" + required + " pilots employed · " + missing + " short across " + cats.length + " categor" + (cats.length === 1 ? "y" : "ies") + costSummary
             }
         }
         return {
             badge:     employed + "/" + required,
             badgeKind: KIND.OK,
-            summary:   cats.length + " categor" + (cats.length === 1 ? "y" : "ies") + " · all rated"
+            summary:   cats.length + " categor" + (cats.length === 1 ? "y" : "ies") + " · all rated" + costSummary
         }
+    }
+
+    static _formatCostSummary(overview) {
+        if (!overview || !overview.totals) return ""
+        const wk = overview.totals.weeklyTotal
+        const next = overview.totals.nextWeekTotal
+        if (!Number.isFinite(wk)) return ""
+        const fmt = n => Math.round(n).toLocaleString() + " AS$"
+        const tail = (Number.isFinite(next) && next !== wk)
+            ? ` → ${fmt(next)} next wk`
+            : ""
+        return ` · payroll ${fmt(wk)}/wk${tail}`
     }
 
     async renderBody(ctx, host, focusFilter) {
