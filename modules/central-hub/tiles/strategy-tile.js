@@ -43,7 +43,8 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         return [
             "aesStrategy:audit",
             "aesStrategy:learn:outcomes",
-            "aesStrategy:learn:weights:current"
+            "aesStrategy:learn:weights:current",
+            "aesStrategy:serviceExperiments"
         ]
     }
 
@@ -61,6 +62,13 @@ class CentralHubStrategyTile extends window.CentralHubTile {
             this.refresh().catch(err =>
                 console.warn("[AES strategy tile] bus refresh failed", err))
         })
+        const onExpt = () => {
+            this.refresh().catch(err =>
+                console.warn("[AES strategy tile] experiment bus refresh failed", err))
+        }
+        this.subscribeBus("strategy:service-experiment-started",      onExpt)
+        this.subscribeBus("strategy:service-experiment-concluded",    onExpt)
+        this.subscribeBus("strategy:service-experiment-consolidated", onExpt)
     }
 
     openHandler() {
@@ -114,6 +122,15 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         return null
     }
 
+    async _loadExperimentSummary() {
+        if (!window.AesStrategyServiceTuner
+                || typeof window.AesStrategyServiceTuner.summarise !== "function") return null
+        try {
+            const id = window.__aesAccountId || null
+            return await window.AesStrategyServiceTuner.summarise({accountId: id})
+        } catch (_) { return null }
+    }
+
     async loadStatus() {
         const T = window.AESTokens
         const KIND = window.CentralHubStatusBadges && window.CentralHubStatusBadges.KIND
@@ -126,6 +143,11 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         const settings = await this._loadSettings()
         const tier = settings ? settings.tier : "preview-only"
         const applied = await this._loadApplied()
+        const experiments = await this._loadExperimentSummary()
+        const expSuffix = (experiments && (experiments.active || experiments.concluded))
+            ? (" · S7 expts: " + (experiments.active || 0) + " active"
+                + ((experiments.concluded > 0) ? " / " + experiments.concluded + " concluded" : ""))
+            : ""
 
         const goalKind = (settings && settings.objective && settings.objective.kind) || "balanced"
         const GOAL_SHORT = {maxShare: "share", maxProfit: "profit", balanced: "balanced", custom: "custom"}
@@ -135,7 +157,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
                 badge:     "TIER " + (tier || "?").toUpperCase(),
                 badgeKind: tone,
                 summary:   "No plan applied yet. Goal · " + (GOAL_SHORT[goalKind] || goalKind)
-                            + ". Open the modal to compose, review, and (when tier permits) apply."
+                            + ". Open the modal to compose, review, and (when tier permits) apply." + expSuffix
             }
         }
 
@@ -147,7 +169,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
             badge:     totals.ok + " OK · " + totals.failed + " ERR",
             badgeKind: tone,
             summary:   "Last apply " + ts + " · tier " + (r.tier || tier) + " · "
-                          + totals.skipped + " skipped"
+                          + totals.skipped + " skipped" + expSuffix
         }
     }
 
@@ -198,7 +220,12 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         inlineTitle.style.cssText = "color:" + T.color.oxide + ";font-family:" + T.font.display + ";text-transform:uppercase;letter-spacing:" + T.track.caps + ";font-size:" + T.fs.body + ";"
         const composeBtn = this._smallBtn(T, "Compose")
         composeBtn.addEventListener("click", () => this._renderInlinePlan(T, inlineCard, composeBtn))
-        inlineHead.append(inlineTitle, composeBtn)
+        const layeredBtn = this._smallBtn(T, "Layered…")
+        layeredBtn.title = "Open layered strategy overrides (family / account / division / fleet / route)"
+        layeredBtn.addEventListener("click", () => {
+            if (window.AesStrategyLayeredPanel) window.AesStrategyLayeredPanel.open({scope: "family"})
+        })
+        inlineHead.append(inlineTitle, layeredBtn, composeBtn)
         inlineCard.appendChild(inlineHead)
         const inlineBody = document.createElement("div")
         inlineBody.dataset.role = "inline-plan"
@@ -225,7 +252,12 @@ class CentralHubStrategyTile extends window.CentralHubTile {
             }
             const scored = window.AesStrategy.scoreRoutes(snap, weights || undefined)
             const plan = await window.AesStrategy.allocateFleet(snap, scored, {})
-            const diff = window.AesStrategy.diffPlan(plan, snap)
+            let advisory = []
+            if (typeof window.AesStrategy.collectAdvisoryDecisions === "function") {
+                try { advisory = await window.AesStrategy.collectAdvisoryDecisions(snap, {}) }
+                catch (_) { /* tile must never throw */ }
+            }
+            const diff = window.AesStrategy.diffPlan(plan, snap, {advisoryDecisions: advisory})
             body.textContent = ""
             body.style.fontStyle = "normal"
             body.style.color = T.color.oxide2

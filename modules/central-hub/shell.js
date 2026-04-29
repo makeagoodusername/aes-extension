@@ -678,6 +678,17 @@ class CentralHubShell {
                 signalsByDomain = window.CentralHubSalience.signalsByDomainFromRing(recent, 3600000)
             } catch (_) { /* ignore */ }
         }
+        // Phase C2 — merge data-bus `signal:*` topics into the same map
+        // so tiles claiming crew-pressure / cash-low / etc. via
+        // salienceDomains pick up cross-feature reaction hints.
+        if (window.AesDataBus && window.CentralHubSalience
+                && typeof window.CentralHubSalience.signalsByDomainFromBus === "function") {
+            try {
+                const history = window.AesDataBus.history({limit: 200})
+                const busMap  = window.CentralHubSalience.signalsByDomainFromBus(history, 3600000)
+                signalsByDomain = window.CentralHubSalience.mergeSignalMaps(signalsByDomain, busMap)
+            } catch (_) { /* ignore */ }
+        }
 
         return {
             pinnedSet:        new Set(pinned),

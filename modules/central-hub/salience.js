@@ -221,10 +221,46 @@
         return out
     }
 
+    /**
+     * Phase C2 — bucket recent `signal:<module>:<kind>` events from the
+     * data-bus by their kind (last colon-segment). Tiles can declare a
+     * `salienceDomains: ["crew-pressure", "cash-low", ...]` array to
+     * pick up cross-feature reaction hints alongside the dotted
+     * conductor signals. Returns Map<kind, count>; merges into the
+     * same `signalsByDomain` map shell.js builds.
+     */
+    function signalsByDomainFromBus(busHistory, windowMs) {
+        const out = new Map()
+        if (!Array.isArray(busHistory) || !busHistory.length) return out
+        const cutoff = Date.now() - (windowMs || 3600000)
+        for (const ev of busHistory) {
+            if (!ev || !ev.topic || !ev.at) continue
+            if (ev.at < cutoff) continue
+            const t = String(ev.topic)
+            if (t.indexOf("signal:") !== 0) continue
+            const last = t.lastIndexOf(":")
+            if (last < 0 || last === t.length - 1) continue
+            const kind = t.slice(last + 1)
+            out.set(kind, (out.get(kind) || 0) + 1)
+        }
+        return out
+    }
+
+    function mergeSignalMaps(a, b) {
+        if (!b || !b.size) return a || new Map()
+        const out = new Map(a || [])
+        for (const [k, v] of b) {
+            out.set(k, (out.get(k) || 0) + v)
+        }
+        return out
+    }
+
     window.CentralHubSalience = {
         salienceFor,
         rankTiles,
         signalsByDomainFromRing,
+        signalsByDomainFromBus,
+        mergeSignalMaps,
         DEFAULT_WEIGHTS,
         _normalizeWeights,         // exposed for testability
         _signalMatchesDomain       // exposed for testability
