@@ -93,6 +93,16 @@ class AccountingPanel {
         const sisters = await AccountingSnapshotStore.loadAllSisters(server, airline)
         const ledger = await AccountingAggregator.loadUnifiedLedger(server, airline)
 
+        const staffSnapshot = (window.CrewMgmtStaffOverviewStore
+            ? await window.CrewMgmtStaffOverviewStore.loadLatest()
+            : null)
+        const staffHistory  = (window.CrewMgmtStaffOverviewStore
+            ? await window.CrewMgmtStaffOverviewStore.loadHistory()
+            : [])
+        const outcomes      = (window.AesStrategyOutcomes
+            ? await window.AesStrategyOutcomes.loadAll(window.__aesAccountId || null)
+            : [])
+
         let container = document.querySelector(".aes-accounting-panel")
         if (!container) {
             container = document.createElement("div")
@@ -103,7 +113,10 @@ class AccountingPanel {
         }
         container.innerHTML = ""
         container.append(this._buildHeading())
-        container.append(this._buildPanel({index, latest, sisters, ledger, activeTab, weekClosesAt}))
+        container.append(this._buildPanel({
+            index, latest, sisters, ledger, activeTab, weekClosesAt,
+            staffSnapshot, staffHistory, outcomes
+        }))
 
         this._container = container
     }

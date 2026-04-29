@@ -65,7 +65,10 @@
     function _competitorIncomeGuard(snapshot) {
         if (typeof RouteAssistantCompetitorIncome === "undefined") return {available: false}
         const econ = (snapshot && snapshot.settings && snapshot.settings.economics) || {}
-        const floor = _num(econ.competitorIncomeFloorWeekly, 5000)
+        const stratEcon = (snapshot && snapshot.settings && snapshot.settings.strategy
+                           && snapshot.settings.strategy.economics) || {}
+        const floor = _num(econ.competitorIncomeFloorWeekly,
+                           _num(stratEcon.competitorIncomeFloorWeekly, 5000))
         const hubs = (snapshot && snapshot.hubs) || []
         let sampleCount = 0
         let belowFloor  = 0
@@ -151,9 +154,35 @@
     // uses, so per-class demand weights line up across modules.
     const DEFAULT_CLASS_MIX = Object.freeze({Y: 0.85, C: 0.13, F: 0.02})
 
-    function _categoryCostFactor(catKey) {
+    function _categoryCostFactor(catKey, resolved) {
+        const tbl = resolved && resolved.categoryWeights
+        const def = resolved && isFinite(resolved.defaultCategoryCost)
+            ? resolved.defaultCategoryCost : DEFAULT_CATEGORY_COST
+        if (tbl && tbl[catKey] != null && isFinite(tbl[catKey])) return tbl[catKey]
         return CATEGORY_COST_WEIGHT[catKey] != null
-            ? CATEGORY_COST_WEIGHT[catKey] : DEFAULT_CATEGORY_COST
+            ? CATEGORY_COST_WEIGHT[catKey] : def
+    }
+
+    /**
+     * Resolve the active service-cost tables: prefer
+     * `snapshot.settings.strategy.serviceCosts.*`, fall back to the frozen
+     * literals above when the settings block is absent or partial. Engine
+     * stays pure — caller resolves once per propose() so no per-cell store
+     * read.
+     */
+    function _resolveServiceCosts(snapshot) {
+        const s = snapshot && snapshot.settings && snapshot.settings.strategy
+                  && snapshot.settings.strategy.serviceCosts
+        const cw = (s && s.categoryWeights && typeof s.categoryWeights === "object")
+            ? Object.assign({}, CATEGORY_COST_WEIGHT, s.categoryWeights)
+            : CATEGORY_COST_WEIGHT
+        const cm = (s && s.classMultipliers && typeof s.classMultipliers === "object")
+            ? Object.assign({}, CLASS_COST_MULTIPLIER, s.classMultipliers)
+            : CLASS_COST_MULTIPLIER
+        const dc = (s && isFinite(s.defaultCategoryCost))
+            ? s.defaultCategoryCost
+            : DEFAULT_CATEGORY_COST
+        return {categoryWeights: cw, classMultipliers: cm, defaultCategoryCost: dc}
     }
 
     /**
@@ -259,13 +288,16 @@
      * detail). Each cell is annotated with `demand` and `cost` so both
      * scorers + the post-pack objective comparison see the same numbers.
      */
-    function _buildAB(profile, targetLiftByClass, demandByClass, weights) {
+    function _buildAB(profile, targetLiftByClass, demandByClass, weights, costs) {
         const cells = _enumerateCells(profile)
         if (!cells.length) return null
+        const resolved = costs || {categoryWeights: CATEGORY_COST_WEIGHT,
+                                   classMultipliers: CLASS_COST_MULTIPLIER,
+                                   defaultCategoryCost: DEFAULT_CATEGORY_COST}
         for (const c of cells) {
             c.demand = _num(demandByClass[c.cls], 0)
-            c.cost   = _categoryCostFactor(c.catKey)
-                     * (CLASS_COST_MULTIPLIER[c.cls] || 1)
+            c.cost   = _categoryCostFactor(c.catKey, resolved)
+                     * (resolved.classMultipliers[c.cls] || 1)
         }
         const packA = _packPerturbation(cells, targetLiftByClass,
             c => c.marginalLift * c.demand / Math.max(1, c.cost))
@@ -332,6 +364,7 @@
 
         const resolved = _resolveWeights(snapshot, o)
         const w        = resolved.weights
+        const costs    = _resolveServiceCosts(snapshot)
 
         // rankWeight ≈ how aggressive about upgrades. profitWeight tempers.
         // upgradeAggression in [0, 1] — 1 = take full gap, 0 = ignore moves.
@@ -413,7 +446,7 @@
                 C: isFinite(cNow) ? Math.max(0, target.C - cNow) : 0,
                 F: isFinite(fNow) ? Math.max(0, target.F - fNow) : 0
             }
-            const ab = _buildAB(p, targetLiftByClass, demandByClass, w)
+            const ab = _buildAB(p, targetLiftByClass, demandByClass, w, costs)
             let changes        = {}
             let deliveredLift  = targetLift
             if (ab && ab.picks && ab.picks.length) {
