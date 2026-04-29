@@ -83,6 +83,49 @@ class CentralHubSettingsTile extends window.CentralHubTile {
         studio.append(studioLabel, studioBtn)
         host.appendChild(studio)
 
+        // Unified Settings CTA — preferred entry once the shell is loaded.
+        // Legacy inline grid stays behind the fallback below for installs
+        // that haven't booted unified-settings yet (§4.19 bridge).
+        if (window.AesUnifiedSettings) {
+            const usWrap = document.createElement("div")
+            usWrap.style.cssText = [
+                "display:flex",
+                "align-items:center",
+                "justify-content:space-between",
+                "gap:" + T.sp[3],
+                "padding:" + T.sp[3],
+                "background:" + T.color.bone2,
+                "border:" + T.geom.bw2 + " solid " + T.color.oxide,
+                "box-shadow:4px 4px 0 " + T.color.oxide
+            ].join(";")
+            const lbl = document.createElement("div")
+            const t = document.createElement("div")
+            t.textContent = "AES SETTINGS"
+            t.style.cssText = [
+                "font-family:" + T.font.display,
+                "font-size:" + T.fs.lead,
+                "font-weight:" + T.fw.display,
+                "letter-spacing:" + T.track.caps,
+                "color:" + T.color.oxide
+            ].join(";")
+            const sub = document.createElement("div")
+            sub.textContent = "Customisation · modules · account · data · about · hotkey g x"
+            sub.style.cssText = [
+                "font-family:" + T.font.mono,
+                "font-size:" + T.fs.small,
+                "color:" + T.color.oxide2,
+                "margin-top:2px"
+            ].join(";")
+            lbl.append(t, sub)
+            const openBtn = this._actionBtn(T, "Open Settings →", () => {
+                window.AesUnifiedSettings.open()
+            })
+            openBtn.style.cssText += ";background:" + T.color.oxide + ";color:" + T.color.bone + ";border-color:" + T.color.oxide
+            usWrap.append(lbl, openBtn)
+            host.appendChild(usWrap)
+            return
+        }
+
         const grid = document.createElement("div")
         grid.style.cssText = [
             "display:grid",
@@ -211,6 +254,42 @@ class CentralHubSettingsTile extends window.CentralHubTile {
             try { chrome.runtime.openOptionsPage() }
             catch (_) { window.open(chrome.runtime.getURL("options.html"), "_blank") }
         }))
+
+        // Lane B Phase 1 — Organisations sub-page
+        grid.appendChild(this._label(T, "Organisations"))
+        const orgsVal = document.createElement("span")
+        orgsVal.style.cssText = "color:" + T.color.slate + ";font-family:" + T.font.mono + ";"
+        orgsVal.textContent = "Manage canopy groups"
+        grid.appendChild(orgsVal)
+        const orgsBtn = this._actionBtn(T, "Open →", () => {
+            if (window.AesCanopyOrgsSettingsPage) window.AesCanopyOrgsSettingsPage.open()
+        })
+        orgsBtn.disabled = !window.AesCanopyOrgsSettingsPage
+        grid.appendChild(orgsBtn)
+
+        // Lane B Phase 1 — Geographic regions sub-page
+        grid.appendChild(this._label(T, "Geographic regions"))
+        const regsVal = document.createElement("span")
+        regsVal.style.cssText = "color:" + T.color.slate + ";font-family:" + T.font.mono + ";"
+        regsVal.textContent = "Country / region groupings"
+        grid.appendChild(regsVal)
+        const regsBtn = this._actionBtn(T, "Open →", () => {
+            if (window.AesCanopyRegionsSettingsPage) window.AesCanopyRegionsSettingsPage.open()
+        })
+        regsBtn.disabled = !window.AesCanopyRegionsSettingsPage
+        grid.appendChild(regsBtn)
+
+        // Letter M slice M0 — Kin roles sub-page
+        grid.appendChild(this._label(T, "Kin roles"))
+        const rolesVal = document.createElement("span")
+        rolesVal.style.cssText = "color:" + T.color.slate + ";font-family:" + T.font.mono + ";"
+        rolesVal.textContent = "Conglomerate role per airline"
+        grid.appendChild(rolesVal)
+        const rolesBtn = this._actionBtn(T, "Open →", () => {
+            if (window.AesCanopyRolesSettingsPage) window.AesCanopyRolesSettingsPage.open()
+        })
+        rolesBtn.disabled = !window.AesCanopyRolesSettingsPage
+        grid.appendChild(rolesBtn)
 
         host.appendChild(grid)
     }

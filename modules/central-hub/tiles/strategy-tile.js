@@ -21,13 +21,29 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         this.requiresAirline = false
     }
 
+    /**
+     * HubFeed slices. The base class auto-subscribes and triggers refresh()
+     * on update, with freshness metadata surfacing as a stale-dot in the
+     * header. The legacy `watchedStorageKeys()` reads collapse to two shared
+     * derivations that any future consumer (alerts digest, hero strip) gets
+     * for free without re-reading storage.
+     */
+    feedSlices() {
+        return ["hub:strategy:applied", "hub:strategy:settings"]
+    }
+
+    /**
+     * Audit + learning keys still need to drive a refresh — the strategy
+     * settings feed only updates when the `settings` blob is rewritten, but
+     * outcomes/weights are written separately. Bus topics for those will
+     * land in a follow-up slice (data:strategy:learn:appended). Until then
+     * keep the storage prefixes here so the inline learning card stays live.
+     */
     watchedStorageKeys() {
         return [
-            "aesStrategy:plan:applied",
             "aesStrategy:audit",
             "aesStrategy:learn:outcomes",
-            "aesStrategy:learn:weights:current",
-            "settings"
+            "aesStrategy:learn:weights:current"
         ]
     }
 
@@ -61,14 +77,21 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         }
     }
 
+    /**
+     * Read the most recent applied plan from HubFeed (cached) when available;
+     * fall back to direct storage when HubFeed isn't loaded (e.g. early in
+     * the boot, or in tests). The fallback path matches the original logic.
+     */
     async _loadApplied() {
-        // Multi-account: prefer the per-account scoped record (Slice 11
-        // scoping in apply-pipeline.js). Falls back to the legacy global
-        // key for installs that haven't applied since the rollout, or
-        // when the registry hasn't bootstrapped yet on this page.
+        if (window.HubFeed) {
+            const cached = window.HubFeed.read("hub:strategy:applied")
+            if (cached !== undefined) return cached
+            try { return await window.HubFeed.readAsync("hub:strategy:applied") }
+            catch (_) { /* fall through */ }
+        }
         try {
             if (window.AesStrategy && typeof window.AesStrategy.getApplied === "function") {
-                const id = (typeof window !== "undefined" && window.__aesAccountId) || null
+                const id = window.__aesAccountId || null
                 const rec = await window.AesStrategy.getApplied(id)
                 if (rec) return rec
             }
@@ -78,6 +101,12 @@ class CentralHubStrategyTile extends window.CentralHubTile {
     }
 
     async _loadSettings() {
+        if (window.HubFeed) {
+            const cached = window.HubFeed.read("hub:strategy:settings")
+            if (cached !== undefined) return cached
+            try { return await window.HubFeed.readAsync("hub:strategy:settings") }
+            catch (_) { /* fall through */ }
+        }
         if (window.AesStrategySettings && typeof window.AesStrategySettings.load === "function") {
             try { return await window.AesStrategySettings.load() }
             catch (_) { /* fall through */ }
@@ -138,6 +167,8 @@ class CentralHubStrategyTile extends window.CentralHubTile {
 
         host.appendChild(this._buildOpenCta(T))
         host.appendChild(this._buildSettingsStrip(T, settings, tier))
+        const autoCard = await this._buildAutoApplyDiagnosticCard(T, settings, tier)
+        if (autoCard) host.appendChild(autoCard)
         if (applied && applied.applyReport) {
             host.appendChild(this._buildLastApplyCard(T, applied))
         }
@@ -193,7 +224,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
                 try { weights = await window.AesStrategyLearn.getCurrentWeights() } catch (_) { weights = null }
             }
             const scored = window.AesStrategy.scoreRoutes(snap, weights || undefined)
-            const plan = window.AesStrategy.allocateFleet(snap, scored, {})
+            const plan = await window.AesStrategy.allocateFleet(snap, scored, {})
             const diff = window.AesStrategy.diffPlan(plan, snap)
             body.textContent = ""
             body.style.fontStyle = "normal"
@@ -294,7 +325,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         } else if (tier === "apply-on-confirm") {
             note.textContent = "Apply-on-confirm — modal applies only the decisions you select. Per-domain flags must be ON for that decision's actuator to fire."
         } else {
-            note.textContent = "APPLY-AUTO — silent loop will fire applicable decisions; S2 wires the loop. Today this tier behaves like apply-on-confirm."
+            note.textContent = "APPLY-AUTO — silent loop fires applicable decisions on the configured cadence (chrome.alarms heartbeat + per-domain gates + 24h cap). Per-domain flags must be ON for that decision's actuator to fire."
         }
         wrap.appendChild(note)
         if (settings) {
@@ -345,6 +376,481 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         if (r.aborted) li("⚠ Aborted: " + (r.abortReason || "unknown"))
         wrap.appendChild(list)
         return wrap
+    }
+
+    /**
+     * Auto-apply diagnostic card. Surfaces the four gates the user has
+     * to clear for game-day rollover auto-apply to actually fire:
+     *   1. tier === "apply-auto"
+     *   2. first-activation ack matches current settings hash
+     *   3. game-time watcher has observed a date in this session
+     *   4. driver is running on at least one open page
+     *
+     * Plus the last-tick telemetry — trigger, applied/failed/skipped,
+     * skipReason, freshenedRoutes — so the user can see the most recent
+     * automation outcome without opening DevTools.
+     *
+     * Returns null when AesStrategyAutoDriver isn't loaded — degrades
+     * gracefully on pages without the driver. (Won't happen on the
+     * dashboard tile context, but defensive against future tile reuse.)
+     */
+    async _buildAutoApplyDiagnosticCard(T, settings, tier) {
+        if (!window.AesStrategyAutoDriver) return null
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "border:" + T.geom.bw1 + " solid " + T.color.paperRule
+            + ";padding:" + T.sp[2] + " " + T.sp[3] + ";margin-top:" + T.sp[3]
+            + ";background:" + T.color.bone + ";"
+
+        const head = document.createElement("strong")
+        head.textContent = "Auto-apply (game-day)"
+        head.style.cssText = "color:" + T.color.oxide + ";font:600 11px " + T.font.display
+            + ";letter-spacing:" + T.track.caps + ";text-transform:uppercase;"
+        wrap.appendChild(head)
+
+        const list = document.createElement("ul")
+        list.style.cssText = "margin:" + T.sp[1] + " 0 0 0;padding-left:" + T.sp[4] + ";color:"
+            + T.color.oxide2 + ";font-size:" + T.fs.body + ";"
+        const li = (txt, ok) => {
+            const e = document.createElement("li")
+            const mark = (ok === true) ? "✓ " : (ok === false ? "✗ " : "· ")
+            e.textContent = mark + txt
+            if (ok === false) e.style.color = "#b91c1c"
+            else if (ok === true) e.style.color = T.color.oxide2
+            list.appendChild(e)
+        }
+
+        // Gate 1 — tier
+        const tierOk = tier === "apply-auto"
+        li("Tier · " + (tier || "?") + (tierOk ? "" : " (set to apply-auto)"), tierOk)
+
+        // Gate 2 — first-activation ack
+        let ackOk = false
+        try {
+            if (typeof window.AesStrategyAutoDriver.needsFirstActivationAck === "function") {
+                const needs = await window.AesStrategyAutoDriver.needsFirstActivationAck()
+                ackOk = !needs
+            } else {
+                ackOk = true   // never-needed older driver
+            }
+        } catch (_) { ackOk = false }
+        // Only meaningful when tier is apply-auto; on other tiers, ack is irrelevant.
+        if (tierOk) li("First-activation ack" + (ackOk ? " · confirmed" : " · pending"), ackOk)
+
+        // Gate 3 — game-time observation
+        let lastSeen = null
+        if (window.AesGameTimeWatcher && typeof window.AesGameTimeWatcher.getLastSeen === "function") {
+            try { lastSeen = await window.AesGameTimeWatcher.getLastSeen() }
+            catch (_) { lastSeen = null }
+        }
+        const seenOk = !!(lastSeen && lastSeen.gameDate)
+        li("Game-time observed · " + (seenOk
+            ? (lastSeen.gameDate + " " + (lastSeen.gameTime || "?") + " HT")
+            : "no observation yet (open any AS app page)"), seenOk)
+
+        // Gate 4 — driver running
+        const running = !!(window.AesStrategyAutoDriver.isRunning
+                           && window.AesStrategyAutoDriver.isRunning())
+        li("Driver running · " + (running ? "yes" : "no (will start on next page load)"), running)
+
+        // Game-day apply state
+        let lastAppliedDate = null
+        if (typeof window.AesStrategyAutoDriver.readLastAppliedGameDate === "function") {
+            try { lastAppliedDate = await window.AesStrategyAutoDriver.readLastAppliedGameDate() }
+            catch (_) { lastAppliedDate = null }
+        }
+        if (seenOk) {
+            const curDate = lastSeen.gameDate
+            if (!lastAppliedDate) {
+                li("Today's apply · pending (no prior auto-apply)", null)
+            } else if (lastAppliedDate >= curDate) {
+                li("Today's apply · already applied (" + lastAppliedDate + ")", true)
+            } else {
+                li("Today's apply · pending (last applied " + lastAppliedDate + " < today " + curDate + ")", false)
+            }
+        }
+
+        // Last tick telemetry
+        try {
+            const out = await chrome.storage.local.get([window.AesStrategyAutoDriver.ENVELOPE_KEY])
+            const env = out[window.AesStrategyAutoDriver.ENVELOPE_KEY] || null
+            if (env) {
+                const when = env.at ? new Date(env.at).toLocaleString() : "?"
+                const trigger = env.trigger || "interval"
+                const a = Number(env.applied) || 0
+                const f = Number(env.failed)  || 0
+                const s = Number(env.skipped) || 0
+                const fr = Number(env.freshenedRoutes) || 0
+                let line = "Last tick · " + when + " · " + trigger
+                if (a + f + s > 0) {
+                    line += " · " + a + " ok / " + f + " fail / " + s + " skip"
+                } else if (env.skippedReason) {
+                    line += " · skipped (" + env.skippedReason + ")"
+                } else if (env.error) {
+                    line += " · error"
+                }
+                if (fr > 0) line += " · freshened " + fr
+                li(line, null)
+                // Funnel line — surface where decisions are being filtered.
+                // Without this, "applied 0" looks like nothing happened, when
+                // really 12 were proposed and all 12 got dropped at a stage.
+                const fn = env.funnel
+                if (fn) {
+                    const proposed = Number(fn.proposed) || 0
+                    const eligible = Number(fn.eligible) || 0
+                    const dropParts = []
+                    if (Number(fn.nonPositiveImpact) > 0) dropParts.push(fn.nonPositiveImpact + " no-impact")
+                    if (Number(fn.notApplicable)     > 0) dropParts.push(fn.notApplicable     + " not-applicable")
+                    if (Number(fn.domainBlocked)     > 0) dropParts.push(fn.domainBlocked     + " tier-blocked")
+                    if (Number(fn.userDisabled)     > 0) dropParts.push(fn.userDisabled      + " domain-off")
+                    if (Number(fn.capDropped)       > 0) dropParts.push(fn.capDropped        + " 24h-cap")
+                    if (Number(fn.overTickCap)      > 0) dropParts.push(fn.overTickCap       + " tick-cap")
+                    let funnelLine = "Funnel · " + proposed + " proposed → "
+                                   + eligible + " eligible → " + a + " applied"
+                    if (dropParts.length) funnelLine += " · " + dropParts.join(", ")
+                    li(funnelLine, null)
+
+                    // Per-domain breakdown — only shown when the proposers
+                    // actually emitted at least one decision; otherwise the
+                    // line is just "0 / 0 / 0" noise.
+                    const bd = fn.byDomain || {}
+                    const bdParts = []
+                    for (const k of ["price", "schedule", "service", "crew", "routeCreation"]) {
+                        const n = Number(bd[k]) || 0
+                        if (n > 0) bdParts.push(n + " " + k)
+                    }
+                    if (bdParts.length) li("By domain · " + bdParts.join(" · "), null)
+
+                    // Snapshot health hint — when the proposer chain emitted
+                    // 0 decisions, surface why so the user doesn't think the
+                    // driver is broken. Common roots: empty fleet, no hubs,
+                    // or no routes opened on this airline.
+                    if (proposed === 0) {
+                        const ss = fn.snapshotStats || {}
+                        const reasons = []
+                        if (Number(ss.fleet) === 0)  reasons.push("0 fleet")
+                        if (Number(ss.hubs) === 0)   reasons.push("0 hubs")
+                        if (Number(ss.routes) === 0) reasons.push("0 routes")
+                        else if (Number(ss.routesWithOwnPrice) === 0) {
+                            reasons.push("no own-price cached (open /app/com/markets/HUBDEST)")
+                        }
+                        if (reasons.length) {
+                            li("Why no decisions · " + reasons.join(", "), false)
+                        } else if (Number(ss.routes) > 0) {
+                            li("Snapshot · " + ss.routes + " route(s), "
+                                + (Number(ss.routesWithBand) || 0) + " w/ competitor band, "
+                                + (Number(ss.routesWithProfit) || 0) + " profitable", null)
+                        }
+                    }
+                }
+            } else {
+                li("Last tick · never (driver hasn't fired yet)", null)
+            }
+        } catch (_) { /* envelope read is best-effort */ }
+
+        wrap.appendChild(list)
+
+        // Recent auto-applies — async sub-section that pulls the last 5
+        // successful auto-driver applies from the pricing-apply-log and
+        // shows a per-route summary plus an aggregate weekly-impact stat.
+        // Defensive: silently empties if the apply-log module isn't loaded
+        // on this page.
+        const recentSection = document.createElement("div")
+        recentSection.style.cssText = "margin-top:" + T.sp[2] + ";"
+        wrap.appendChild(recentSection)
+        this._fillRecentAutoApplies(recentSection, T)
+            .catch(e => console.warn("[AES strategy-tile] recent-applies fill failed", e))
+
+        // Action row — context-sensitive:
+        //   • Activation pending → "Enable game-day auto-apply" CTA.
+        //   • Activation complete → "Run a tick now" for on-demand fire.
+        const priceEnabled = !!(settings && settings.priceMovesEnabled)
+        const needsActivation = !tierOk || !ackOk || !priceEnabled
+        const actionsRow = document.createElement("div")
+        actionsRow.style.cssText = "display:flex;gap:" + T.sp[2] + ";margin-top:" + T.sp[2]
+            + ";align-items:center;"
+        const status = document.createElement("span")
+        status.style.cssText = "color:" + T.color.slate + ";font-size:" + T.fs.body + ";font-style:italic;"
+
+        if (needsActivation) {
+            const enableBtn = this._smallBtn(T, "Enable game-day auto-apply")
+            enableBtn.title = "One-click on-ramp: flips tier to apply-auto, enables price moves,"
+                            + " and confirms the first-activation ack. Safety knobs stay on (deadband,"
+                            + " 24h cap, freshen window). You can flip individual settings off later"
+                            + " via the strategy panel."
+            enableBtn.addEventListener("click", async () => {
+                enableBtn.disabled = true
+                const orig = enableBtn.textContent
+                enableBtn.textContent = "Enabling…"
+                status.textContent = ""
+                try {
+                    if (window.AesStrategySettings && typeof window.AesStrategySettings.save === "function") {
+                        await window.AesStrategySettings.save({
+                            tier:              "apply-auto",
+                            priceMovesEnabled: true
+                        })
+                    }
+                    if (typeof window.AesStrategyAutoDriver.ackFirstActivation === "function") {
+                        await window.AesStrategyAutoDriver.ackFirstActivation()
+                    }
+                    if (typeof this.refresh === "function") {
+                        await this.refresh()
+                    } else {
+                        const newSettings = await this._loadSettings()
+                        const newTier = newSettings ? newSettings.tier : "preview-only"
+                        const fresh = await this._buildAutoApplyDiagnosticCard(T, newSettings, newTier)
+                        if (fresh && wrap.parentNode) wrap.parentNode.replaceChild(fresh, wrap)
+                    }
+                } catch (e) {
+                    enableBtn.disabled = false
+                    enableBtn.textContent = orig
+                    status.textContent = "Activation failed: " + ((e && e.message) || String(e))
+                    status.style.color = "#b91c1c"
+                }
+            })
+            actionsRow.append(enableBtn, status)
+        } else {
+            const runBtn = this._smallBtn(T, "Run a tick now")
+            runBtn.title = "Fire AesStrategyAutoDriver.tickNow({trigger: \"manual\"}) on demand."
+                         + " Bypasses the wall-clock cooldown but still passes through tier/ack/cap"
+                         + " gates. Use to verify automation without waiting for the next game-day"
+                         + " rollover."
+            // Live stage log — populated by CentralHubBus("strategy:auto-tick-stage")
+            // events emitted by the auto-driver. Each pipeline seam appends one
+            // human-readable line so the click "goes through all the different
+            // informations" instead of falling silent until the final envelope.
+            const stageLog = document.createElement("div")
+            stageLog.style.cssText = "margin-top:" + T.sp[2]
+                + ";max-height:200px;overflow-y:auto;font-family:" + T.font.mono
+                + ";font-size:" + T.fs.body + ";color:" + T.color.slate
+                + ";border-left:" + T.geom.bw1 + " solid " + T.color.paperRule
+                + ";padding:" + T.sp[1] + " " + T.sp[2]
+                + ";display:none;"
+
+            const appendStageLine = (text, kind) => {
+                const line = document.createElement("div")
+                line.textContent = text
+                if (kind === "error") line.style.color = "#b91c1c"
+                else if (kind === "skip") line.style.color = T.color.oxide2 || T.color.slate
+                else if (kind === "ok") line.style.color = T.color.oxide || T.color.slate
+                stageLog.appendChild(line)
+                stageLog.scrollTop = stageLog.scrollHeight
+            }
+
+            const renderStage = (e) => {
+                if (!e || typeof e !== "object") return
+                const stage = String(e.stage || "?")
+                switch (stage) {
+                    case "start":
+                        appendStageLine("▶ tick started · trigger=" + (e.trigger || "?"))
+                        break
+                    case "tier-checked":
+                        appendStageLine("✓ tier · " + (e.tier || "?"), "ok")
+                        break
+                    case "gameday-checked":
+                        appendStageLine("✓ game-day budget · ok", "ok")
+                        break
+                    case "ack-checked":
+                        appendStageLine("✓ first-activation ack · ok", "ok")
+                        break
+                    case "snapshot-composed":
+                        appendStageLine("✓ snapshot · " + (Number(e.hubs) || 0)
+                            + " hub(s) / " + (Number(e.routes) || 0) + " route(s)", "ok")
+                        break
+                    case "freshening":
+                        appendStageLine("↻ freshening · " + (Number(e.staleBefore) || 0)
+                            + " stale route(s)…")
+                        break
+                    case "freshen-done":
+                        appendStageLine("✓ freshened · " + (Number(e.freshened) || 0)
+                            + " of " + (Number(e.staleBefore) || 0), "ok")
+                        break
+                    case "freshen-skipped":
+                        appendStageLine("⊘ freshen · skipped (per settings)")
+                        break
+                    case "planned":
+                        appendStageLine("✓ plan composed · " + (Number(e.proposed) || 0)
+                            + " decision(s) proposed", "ok")
+                        break
+                    case "filtered": {
+                        const fn = e.funnel || {}
+                        const drops = []
+                        if (Number(fn.userDisabled))      drops.push(fn.userDisabled + " domain-off")
+                        if (Number(fn.domainBlocked))     drops.push(fn.domainBlocked + " tier-blocked")
+                        if (Number(fn.nonPositiveImpact)) drops.push(fn.nonPositiveImpact + " no-impact")
+                        if (Number(fn.notApplicable))     drops.push(fn.notApplicable + " not-applicable")
+                        if (Number(fn.capDropped))        drops.push(fn.capDropped + " 24h-cap")
+                        if (Number(fn.overTickCap))       drops.push(fn.overTickCap + " tick-cap")
+                        appendStageLine("✓ filter · " + (Number(fn.proposed) || 0)
+                            + " → " + (Number(e.candidates) || 0)
+                            + (drops.length ? "  (" + drops.join(", ") + ")" : ""), "ok")
+                        break
+                    }
+                    case "applying":
+                        appendStageLine("↻ applying · " + (Number(e.candidates) || 0)
+                            + " decision(s)…")
+                        break
+                    case "done":
+                        if (e.error) {
+                            appendStageLine("✗ DONE · error · " + e.error, "error")
+                        } else if (e.skippedReason) {
+                            appendStageLine("⊘ DONE · skipped · " + e.skippedReason, "skip")
+                        } else {
+                            appendStageLine("✓ DONE · " + (Number(e.applied) || 0)
+                                + " ok / " + (Number(e.failed) || 0) + " fail / "
+                                + (Number(e.skipped) || 0) + " skip", "ok")
+                        }
+                        break
+                    default:
+                        appendStageLine("· " + stage)
+                }
+            }
+
+            runBtn.addEventListener("click", async () => {
+                runBtn.disabled = true
+                const orig = runBtn.textContent
+                runBtn.textContent = "Running…"
+                status.textContent = ""
+                stageLog.innerHTML = ""
+                stageLog.style.display = "block"
+
+                let unsubscribe = null
+                if (window.CentralHubBus && typeof window.CentralHubBus.on === "function") {
+                    unsubscribe = window.CentralHubBus.on("strategy:auto-tick-stage", renderStage)
+                }
+
+                try {
+                    const env = await window.AesStrategyAutoDriver.tickNow({trigger: "manual"})
+                    // Surface a brief summary next to the button. The stage
+                    // log already shows the per-seam breakdown; this status
+                    // is the at-a-glance result.
+                    if (env) {
+                        const a = Number(env.applied) || 0
+                        const f = Number(env.failed)  || 0
+                        const s = Number(env.skipped) || 0
+                        if (env.skippedReason) {
+                            status.textContent = "Skipped · " + env.skippedReason
+                        } else if (env.error) {
+                            status.textContent = "Error · " + env.error
+                            status.style.color = "#b91c1c"
+                        } else {
+                            status.textContent = a + " ok · " + f + " fail · " + s + " skip"
+                        }
+                        // Fallback for early-return paths that don't go
+                        // through the stage emitter (e.g. concurrent-skip
+                        // bails before _emitStage("start") fires).
+                        if (!stageLog.children.length) {
+                            if (env.skippedReason) {
+                                appendStageLine("⊘ DONE · skipped · " + env.skippedReason, "skip")
+                            } else if (env.error) {
+                                appendStageLine("✗ DONE · error · " + env.error, "error")
+                            }
+                        }
+                    }
+                    // Don't auto-refresh the card — the user just read the
+                    // live log; replacing it with a fresh card hides what
+                    // they were looking at. The "Last tick" line picks up
+                    // the new envelope on the next mount/refresh.
+                } catch (e) {
+                    status.textContent = "Tick failed · " + ((e && e.message) || String(e))
+                    status.style.color = "#b91c1c"
+                    appendStageLine("✗ ERROR · " + ((e && e.message) || String(e)), "error")
+                } finally {
+                    runBtn.disabled = false
+                    runBtn.textContent = orig
+                    if (typeof unsubscribe === "function") {
+                        try { unsubscribe() } catch (_) {}
+                    }
+                }
+            })
+            actionsRow.append(runBtn, status)
+            wrap.appendChild(actionsRow)
+            wrap.appendChild(stageLog)
+            return wrap
+        }
+        wrap.appendChild(actionsRow)
+
+        return wrap
+    }
+
+    /**
+     * Fill a recent auto-applies sub-section with the last 5 successful
+     * auto-driver applies from the pricing-apply-log. Renders one row
+     * per apply plus a footer with the aggregate projected weekly
+     * profit impact across the rendered slice.
+     *
+     * Filter: source === "auto-driver" AND status ∈ {verified, posted}.
+     * That excludes manual applies (source === "manual") and silent-auto
+     * applies (source === "silent-auto") — three populations live in the
+     * same log and the user expects this section to show only the
+     * automation path the diagnostic card describes.
+     *
+     * Defensive: empties if the apply-log module isn't loaded or the
+     * read throws. Never blocks the tile render.
+     */
+    async _fillRecentAutoApplies(host, T) {
+        host.innerHTML = ""
+        if (typeof window.RouteAssistantPricingApplyLog !== "function") return
+        let entries
+        try {
+            const log = new window.RouteAssistantPricingApplyLog()
+            const out = await log.getRecent(50)
+            entries = (out && out.entries) || []
+        } catch (_) { return }
+        const auto = entries
+            .filter(e => e && e.source === "auto-driver"
+                      && (e.status === "verified" || e.status === "posted"))
+            .slice(0, 5)
+        if (!auto.length) return    // hide the section entirely when empty
+
+        const head = document.createElement("strong")
+        head.textContent = "Recent auto-applies"
+        head.style.cssText = "color:" + T.color.oxide + ";font:600 11px " + T.font.display
+            + ";letter-spacing:" + T.track.caps + ";text-transform:uppercase;"
+        host.appendChild(head)
+
+        const list = document.createElement("ul")
+        list.style.cssText = "margin:" + T.sp[1] + " 0 0 0;padding-left:" + T.sp[4] + ";color:"
+            + T.color.oxide2 + ";font-size:" + T.fs.body + ";"
+        const now = Date.now()
+        let totalImpact = 0
+        let impactCount = 0
+        for (const e of auto) {
+            const li = document.createElement("li")
+            // Class — read first key from prevPrices/newPrices; the apply
+            // pipeline writes one class per entry. Fallback to "Y" so the
+            // line still reads cleanly if the field shape ever shifts.
+            const newP = e.newPrices  || {}
+            const prvP = e.prevPrices || {}
+            const cls = Object.keys(newP)[0] || Object.keys(prvP)[0] || "Y"
+            const prev = isFinite(prvP[cls]) ? prvP[cls] : "?"
+            const next = isFinite(newP[cls]) ? newP[cls] : "?"
+            const ago = isFinite(e.ts) ? Math.max(0, Math.round((now - e.ts) / 60000)) : null
+            const agoStr = ago == null ? "?" : (ago < 60 ? ago + "m ago"
+                                              : Math.round(ago / 60) + "h ago")
+            const projWk = e.projectedDelta && Number(e.projectedDelta.profitPerWeek)
+            const projStr = isFinite(projWk)
+                ? " · " + (projWk >= 0 ? "+" : "") + "$" + Math.round(projWk) + "/wk"
+                : ""
+            if (isFinite(projWk)) { totalImpact += projWk; impactCount++ }
+            li.textContent = e.hub + "→" + e.dest + " · " + cls + " "
+                           + prev + "→" + next + " · " + agoStr + projStr
+            list.appendChild(li)
+        }
+        host.appendChild(list)
+
+        // Aggregate impact footer — only render when at least one apply
+        // carried a projectedDelta. Older entries (pre this slice) won't,
+        // so the footer self-hides until the next ticks land with data.
+        if (impactCount > 0) {
+            const foot = document.createElement("div")
+            foot.style.cssText = "margin-top:" + T.sp[1] + ";color:" + T.color.oxide
+                + ";font-size:" + T.fs.body + ";font-weight:600;"
+            const sign = totalImpact >= 0 ? "+" : ""
+            foot.textContent = "Projected impact · " + sign + "$"
+                             + Math.round(totalImpact) + "/wk · last "
+                             + impactCount + " applies"
+            host.appendChild(foot)
+        }
     }
 
     /**

@@ -71,6 +71,15 @@ class CentralHubRouteLauncherTile extends window.CentralHubTile {
         return {badge: String(badgeText), badgeKind, summary: summaryBits.join(" · ")}
     }
 
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        this.subscribeBus("focus-aircraft", ({aircraftId}) => {
+            if (!aircraftId) return
+            if (!this.expanded) this.toggle()
+            if (this.root) this.root.scrollIntoView({behavior: "smooth", block: "start"})
+        })
+    }
+
     async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
         host.textContent = ""

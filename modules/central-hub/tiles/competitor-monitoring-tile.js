@@ -35,7 +35,9 @@ class CentralHubCompetitorMonitoringTile extends window.CentralHubTile {
         this.subscribeBus("focus-route", ({hub, dest}) => {
             if (!hub || !dest) return
             this._focusedRoute = {hub, dest}
-            if (this.expanded) this._renderBodySafe()
+            if (!this.expanded) this.toggle()
+            if (this.root) this.root.scrollIntoView({behavior: "smooth", block: "start"})
+            this._renderBodySafe()
         })
         this.subscribeBus("focus-enterprise", ({enterpriseId}) => {
             if (!enterpriseId) return
