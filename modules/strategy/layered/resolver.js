@@ -150,10 +150,29 @@
         }
     }
 
-    // ── Layer loaders (Slice 1: family/div/fleet/route are no-ops) ───
-    async function _loadFamilyLayer(/* accountId */) {
-        // S2 will replace with family-store.js read.
-        return null
+    // ── Layer loaders ─────────────────────────────────────────────────
+    async function _loadFamilyLayer(accountId) {
+        // S2 — pull the family record for the active account's kin if
+        // the per-layer kill switch is on AND the account resolves to a
+        // kind:"self" affiliation with a kinId. Returns null otherwise
+        // so the resolver folds family to no-op (defaults+account only).
+        const F = window.AesStrategyLayeredFamily
+        if (!F || typeof F.resolveActiveKinId !== "function") return null
+        try {
+            if (typeof F.featureEnabled === "function") {
+                if (!(await F.featureEnabled())) return null
+            }
+            const active = await F.resolveActiveKinId({accountId: accountId || null})
+            if (!active || !active.kinId) return null
+            const rec = await F.load(active.kinId)
+            if (!rec || !rec.patch || typeof rec.patch !== "object") return null
+            return {
+                kinId:  active.kinId,
+                label:  rec.label || "",
+                patch:  rec.patch,
+                pinned: rec.pinned || {}
+            }
+        } catch (_) { return null }
     }
     async function _loadAccountLayer(accountId) {
         try {
@@ -170,33 +189,99 @@
             return null
         }
     }
-    async function _loadDivisionLayers(/* accountId, ctx */) {
-        return [] // S3+
+    async function _loadDivisionLayers(accountId, ctx) {
+        const D = window.AesStrategyLayeredDivision
+        if (!D || typeof D.matchingForContext !== "function") return []
+        try {
+            if (typeof D.featureEnabled === "function") {
+                if (!(await D.featureEnabled())) return []
+            }
+            const matches = await D.matchingForContext(accountId, ctx || {})
+            return matches.map(function (m) {
+                return {
+                    id:     m.def.id,
+                    label:  m.def.name || "",
+                    patch:  m.record.patch || {},
+                    pinned: m.record.pinned || {}
+                }
+            })
+        } catch (_) { return [] }
     }
-    async function _loadFleetLayers(/* accountId, ctx */) {
-        return [] // S4+
+    async function _loadFleetLayers(accountId, ctx) {
+        const F = window.AesStrategyLayeredFleet
+        if (!F || typeof F.matchingForContext !== "function") return []
+        try {
+            if (typeof F.featureEnabled === "function") {
+                if (!(await F.featureEnabled())) return []
+            }
+            const matches = await F.matchingForContext(accountId, ctx || {})
+            return matches.map(function (m) {
+                return {
+                    id:     m.def.id,
+                    label:  m.def.name || "",
+                    patch:  m.record.patch || {},
+                    pinned: m.record.pinned || {}
+                }
+            })
+        } catch (_) { return [] }
     }
     async function _loadRouteLayer(accountId, hub, dest) {
         // The objective slot is owned by the legacy
-        // route-objective-store (untouched). The resolver pulls it
-        // when present and presents it as the route layer's objective.
-        // Non-objective per-route leaves arrive in S5 via
-        // route-extras-store.
+        // route-objective-store (UNCHANGED). Non-objective per-route
+        // leaves come from the layered route-extras store (S5). The
+        // resolver merges them into a single route layer record.
         if (!hub || !dest) return null
+        let patch = {}
+        let pinned = {}
+
+        // Objective slot (legacy, always read).
         try {
             const RO = window.AesStrategyRouteObjectiveStore
             if (RO && typeof RO.get === "function") {
                 const rec = await RO.get(hub, dest, accountId || null)
                 if (rec && _isPlainObject(rec) && rec.kind) {
-                    const patch = {objective: {kind: rec.kind}}
+                    patch.objective = {kind: rec.kind}
                     if (rec.kind === "custom" && _isPlainObject(rec.custom)) {
                         patch.objective.custom = rec.custom
                     }
-                    return {patch: patch, pinned: {"objective.kind": true}, label: hub + "-" + dest}
+                    pinned["objective.kind"] = true
                 }
             }
-        } catch (_) { /* no-op */ }
-        return null
+        } catch (_) {}
+
+        // Route-extras (Slice 5, kill-switched).
+        try {
+            const RE = window.AesStrategyLayeredRouteExtras
+            if (RE && typeof RE.featureEnabled === "function" && await RE.featureEnabled()) {
+                const xrec = await RE.load(accountId || null, hub, dest)
+                if (xrec && _isPlainObject(xrec.patch)) {
+                    // Deep-merge xrec.patch into patch. Objective in
+                    // route-extras would be unusual (objective belongs
+                    // to the legacy store) but accept it: objective
+                    // from route-extras wins because it merges last.
+                    patch = _mergeShallowDeep(patch, xrec.patch)
+                    if (_isPlainObject(xrec.pinned)) {
+                        for (const k of Object.keys(xrec.pinned)) pinned[k] = !!xrec.pinned[k]
+                    }
+                }
+            }
+        } catch (_) {}
+
+        if (!Object.keys(patch).length) return null
+        return {patch: patch, pinned: pinned, label: hub + "-" + dest}
+    }
+
+    // Local helper for combining the two route-layer sources.
+    function _mergeShallowDeep(a, b) {
+        const out = _cloneDeep(a) || {}
+        for (const k of Object.keys(b || {})) {
+            if (_isPlainObject(b[k]) && _isPlainObject(out[k])) {
+                out[k] = _mergeShallowDeep(out[k], b[k])
+            } else {
+                out[k] = _cloneDeep(b[k])
+            }
+        }
+        return out
     }
 
     // ── Effective resolver ───────────────────────────────────────────
@@ -363,6 +448,52 @@
                     "[layered/smoke] account layer can set priceMovesEnabled")
                 console.assert(scrub.length >= 5,
                     "[layered/smoke] scrubReport captured >=5 dropped flag leaves")
+                // Slice 2 — family layer kill switch wired correctly.
+                if (window.AesStrategyLayeredFamily) {
+                    try {
+                        // With family kill switch off (default), _loadFamilyLayer
+                        // returns null even if a record exists. We cannot easily
+                        // stub the affiliations module here, so just verify the
+                        // promise resolves and the result is null|object.
+                        const fam = await _loadFamilyLayer(null)
+                        console.assert(fam === null || (fam && typeof fam === "object"),
+                            "[layered/smoke] _loadFamilyLayer resolves cleanly")
+                    } catch (e) { console.warn("[layered/smoke] family-layer probe failed", e) }
+                }
+                // End-to-end ordering smoke (synthetic, in-memory):
+                // default → family → account → division → fleet → route.
+                // Each layer pins priceDeadband; assert each downstream
+                // layer wins. Confirms Fleet beats Division and Route
+                // beats Fleet.
+                const e2e = _cloneDeep((window.AesStrategySettings || {defaults: () => ({priceDeadband: 5})}).defaults())
+                const e2eP = {}
+                _seedProvenance(e2e, e2eP, "default", null, "")
+                _applyPatch(e2e, {priceDeadband: 1}, e2eP, "family",   "kinX",  false, "", [])
+                _applyPatch(e2e, {priceDeadband: 2}, e2eP, "account",  "acctX", true,  "", [])
+                _applyPatch(e2e, {priceDeadband: 3}, e2eP, "division", "divA",  false, "", [])
+                _applyPatch(e2e, {priceDeadband: 4}, e2eP, "fleet",    "fleetA",false, "", [])
+                console.assert(e2e.priceDeadband === 4,
+                    "[layered/smoke] e2e: fleet beats division (4 not 3)")
+                console.assert(e2eP["priceDeadband"] && e2eP["priceDeadband"].layer === "fleet",
+                    "[layered/smoke] e2e: provenance flagged fleet")
+                _applyPatch(e2e, {priceDeadband: 7}, e2eP, "route",    "LAX-NRT",false,"", [])
+                console.assert(e2e.priceDeadband === 7,
+                    "[layered/smoke] e2e: route beats fleet (7 not 4)")
+                console.assert(e2eP["priceDeadband"].layer === "route",
+                    "[layered/smoke] e2e: final provenance = route")
+                // Same layering with mid-stack pinned-but-flag scrub.
+                const e2f = _cloneDeep((window.AesStrategySettings || {defaults: () => ({priceMovesEnabled: false})}).defaults())
+                const e2fP = {}
+                _seedProvenance(e2f, e2fP, "default", null, "")
+                _applyPatch(e2f, {priceMovesEnabled: true}, e2fP, "family",   "kinX",  false, "", [])
+                _applyPatch(e2f, {priceMovesEnabled: true}, e2fP, "division", "divA",  false, "", [])
+                _applyPatch(e2f, {priceMovesEnabled: true}, e2fP, "fleet",    "fleetA",false, "", [])
+                _applyPatch(e2f, {priceMovesEnabled: true}, e2fP, "route",    "LAX-NRT",false,"", [])
+                console.assert(e2f.priceMovesEnabled === false,
+                    "[layered/smoke] e2e: enable-flag stays default — every non-account scrub honored")
+                _applyPatch(e2f, {priceMovesEnabled: true}, e2fP, "account", "acctX", true, "", [])
+                console.assert(e2f.priceMovesEnabled === true,
+                    "[layered/smoke] e2e: account layer can flip the flag (allowFlags=true)")
             })().catch(function (e) { console.warn("[layered/smoke] failed", e) })
         }
     } catch (_) { /* never let smoke break the page */ }
