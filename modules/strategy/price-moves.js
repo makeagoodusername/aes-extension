@@ -312,10 +312,32 @@
         if (guard.available && guard.damper < 1) move = move * guard.damper
         const elast = _elasticityHint(route, classKey, move)
         if (elast.available && elast.damper < 1) move = move * elast.damper
+        // Phase B1 — crew-aware gating. When crew is critically short,
+        // downward (demand-stimulating) price moves get dampened by
+        // (1 − severity). Upward moves pass through untouched: they
+        // reduce demand and so don't worsen the staffing crunch.
+        const crewGuard = _crewPressureGuard(snapshot, move)
+        if (crewGuard.available && crewGuard.damper < 1) move = move * crewGuard.damper
         if (Math.abs(move) < deadband) return null
         const toPct = _round(currentPct + move, 0)
         return {move: move, toPct: toPct, target: target, cong: cong, damper: damper,
-                guard: guard, elast: elast, maxMove: maxMove}
+                guard: guard, elast: elast, crewGuard: crewGuard, maxMove: maxMove}
+    }
+
+    /**
+     * Phase B1 — crew-pressure gate. Reads `snapshot.crew.pressure` (built
+     * by context.js#_deriveCrewPressure). When severity > 0.3 AND the
+     * proposed move is downward (price cut → demand stimulus), scale by
+     * (1 − severity) so we don't drive demand we can't staff. Upward
+     * moves pass through.
+     */
+    function _crewPressureGuard(snapshot, move) {
+        const pressure = snapshot && snapshot.crew && snapshot.crew.pressure
+        if (!pressure || !isFinite(pressure.severity)) return {available: false}
+        if (pressure.severity <= 0.3) return {available: true, damper: 1, severity: pressure.severity}
+        if (move >= 0) return {available: true, damper: 1, severity: pressure.severity, direction: "up"}
+        const damper = Math.max(0.2, 1 - pressure.severity)
+        return {available: true, damper, severity: pressure.severity, direction: "down"}
     }
 
     function proposePriceMoves(snapshot, opts) {
@@ -443,6 +465,12 @@
                     rationale.push("[elasticity] " + m.elast.samples
                         + " prior snapshots — no penalty (drift price "
                         + _round(m.elast.priceDrift, 1) + " / rank " + _round(m.elast.rankDrift, 1) + ")")
+                }
+                if (m.crewGuard && m.crewGuard.available && m.crewGuard.damper < 1) {
+                    rationale.push("[crew-pressure] severity "
+                        + _round(m.crewGuard.severity, 2)
+                        + " — downward move dampened ×" + _round(m.crewGuard.damper, 2)
+                        + " (avoid stimulating demand we can't staff)")
                 }
 
                 // Per-class impact weighting — Y carries most of the pax

@@ -57,7 +57,8 @@
         service:       "Service profiles",
         price:         "Pricing",
         crew:          "Crew",
-        routeCreation: "New routes"
+        routeCreation: "New routes",
+        alliance:      "Alliance & Interline"
     }
 
     let _state = {
@@ -249,6 +250,245 @@
         return _el("p", "color:" + COLOR.muted + ";font-style:italic;margin:6px 0;font-size:12px;", label)
     }
 
+    // ── Store readiness ──────────────────────────────────────────────────
+
+    /**
+     * Render the store-readiness diagnostic. Sits at the top of the body
+     * (right under the count chips) so the user sees "what's empty and
+     * why" before scrolling. Auto-expanded when any store reports empty
+     * or partial; collapsed once everything is filled. The "Seed all
+     * missing" button is the same code path as the auto-seed-on-open
+     * flow — running it twice is idempotent (the markets scraper short-
+     * circuits on cache hits, etc.).
+     */
+    async function _renderReadiness(host) {
+        host.textContent = ""
+        if (!window.AesStrategyStoreReadiness) return
+        const wrap = _el("div", [
+            "padding:8px 16px","border-bottom:1px solid " + COLOR.rule,
+            "background:#0b1220"
+        ].join(";"))
+        host.appendChild(wrap)
+
+        // Probe + cache the items so the seed button can re-use the
+        // same action callbacks without re-probing.
+        let items = []
+        try {
+            items = await window.AesStrategyStoreReadiness.probe({
+                snapshot:         _state.snapshot,
+                server:           _state.server,
+                airline:          _state.airline,
+                accountId:        (_state.snapshot && _state.snapshot.accountId) || null,
+                currentSchedules: _state.currentSchedules,
+                portfolio:        _state.portfolio,
+                fleetsDoc:        document
+            })
+        } catch (e) {
+            wrap.appendChild(_el("p", "color:" + COLOR.err + ";font:12px sans-serif;",
+                "Readiness probe threw: " + ((e && e.message) || String(e))))
+            return
+        }
+
+        const tallies = {filled: 0, partial: 0, empty: 0, missing: 0}
+        for (const it of items) {
+            if (it.status === "filled")        tallies.filled++
+            else if (it.status === "partial")  tallies.partial++
+            else if (it.status === "empty")    tallies.empty++
+            else if (it.status === "module-missing") tallies.missing++
+        }
+        const seedables = items.filter(it =>
+            it.action && it.action.kind === "seed" && it.status !== "filled")
+        const everythingFilled = (tallies.empty === 0 && tallies.partial === 0 && tallies.missing === 0)
+
+        const det = _el("details", "")
+        det.open = !everythingFilled
+
+        const sum = _el("summary", [
+            "cursor:pointer","list-style:none","display:flex","align-items:center","gap:8px","flex-wrap:wrap"
+        ].join(";"))
+        sum.appendChild(_el("strong",
+            "color:" + COLOR.accent + ";font:600 11px sans-serif;letter-spacing:0.06em;text-transform:uppercase;",
+            "Store readiness"))
+        const tallyBits = []
+        if (tallies.filled)  tallyBits.push(tallies.filled  + " filled")
+        if (tallies.partial) tallyBits.push(tallies.partial + " partial")
+        if (tallies.empty)   tallyBits.push(tallies.empty   + " empty")
+        if (tallies.missing) tallyBits.push(tallies.missing + " module missing")
+        const tone =
+            (tallies.empty + tallies.missing > 0) ? "warn" :
+            (tallies.partial > 0)                ? "muted" : "ok"
+        sum.appendChild(_badge(tallyBits.join(" · ") || "—",
+            tone === "ok" ? "ok" : tone === "warn" ? "warn" : null))
+        const hint = _el("span", "color:" + COLOR.muted + ";font:11px sans-serif;flex:1;min-width:200px;",
+            everythingFilled
+                ? "All inputs the proposers need are populated and fresh."
+                : "Some stores are empty — proposers will return zero decisions until they're seeded.")
+        sum.appendChild(hint)
+
+        // "Seed all" button right on the summary line so the user can
+        // act without expanding. Disabled while a seed is running.
+        if (seedables.length) {
+            const seedAllBtn = _btn("Seed all (" + seedables.length + ") →", true)
+            seedAllBtn.style.padding = "4px 10px"
+            seedAllBtn.style.fontSize = "11px"
+            seedAllBtn.addEventListener("click", async (ev) => {
+                ev.preventDefault()
+                ev.stopPropagation()
+                await _runSeedThenRefresh({forceFull: true})
+            })
+            sum.appendChild(seedAllBtn)
+        }
+        det.appendChild(sum)
+
+        // Per-row table
+        const list = _el("div", "margin-top:8px;display:flex;flex-direction:column;gap:4px;")
+        for (const it of items) list.appendChild(_renderReadinessRow(it))
+        det.appendChild(list)
+        wrap.appendChild(det)
+    }
+
+    function _renderReadinessRow(item) {
+        const row = _el("div", [
+            "display:flex","align-items:center","gap:8px","padding:4px 0",
+            "border-bottom:1px dotted " + COLOR.rule,
+            "color:" + COLOR.text,"font:12px sans-serif"
+        ].join(";"))
+        const tone =
+            item.status === "filled" ? "ok" :
+            item.status === "partial" ? "warn" :
+            item.status === "module-missing" ? "muted" : "err"
+        row.appendChild(_badge(item.status === "module-missing" ? "no module"
+                              : item.status === "filled" ? "filled"
+                              : item.status === "partial" ? "partial"
+                              : "empty", tone))
+        const labelCell = _el("span", "min-width:240px;color:" + COLOR.text + ";font-weight:600;", item.label)
+        row.appendChild(labelCell)
+        row.appendChild(_el("span", "color:" + COLOR.muted + ";flex:1;font-size:11px;", item.detail || ""))
+
+        const action = item.action
+        if (action) {
+            if (action.kind === "seed") {
+                const b = _btn(action.label, false)
+                b.style.padding = "3px 8px"
+                b.style.fontSize = "11px"
+                b.addEventListener("click", async () => {
+                    b.disabled = true
+                    const orig = b.textContent
+                    b.textContent = "Seeding…"
+                    try {
+                        await action.run({onProgress: (p) => {
+                            if (p && p.sub) b.textContent = "Seeding " + p.sub
+                        }})
+                        await _refresh({skipSeed: true})
+                    } catch (e) {
+                        _toast("Seed failed: " + ((e && e.message) || String(e)), "err")
+                        b.disabled = false
+                        b.textContent = orig
+                    }
+                })
+                row.appendChild(b)
+            } else if (action.kind === "nav") {
+                const a = _navLink(action.label, action.url)
+                row.appendChild(a)
+            } else if (action.kind === "nav-list") {
+                const wrap = _el("span", "display:flex;flex-wrap:wrap;gap:4px;align-items:center;")
+                if (action.label) {
+                    wrap.appendChild(_el("span", "color:" + COLOR.muted + ";font:11px sans-serif;", action.label))
+                }
+                for (const it of (action.items || [])) {
+                    wrap.appendChild(_navLink(it.label, it.url))
+                }
+                row.appendChild(wrap)
+            }
+        }
+        return row
+    }
+
+    /** Build a same-server in-app nav link. Anchor (not <button>) so the
+     *  user can middle-click into a new tab. */
+    function _navLink(label, url) {
+        const a = _el("a", [
+            "color:" + COLOR.accent,"text-decoration:underline dotted","cursor:pointer",
+            "font:11px sans-serif","padding:2px 6px","border:1px solid " + COLOR.rule,
+            "border-radius:3px","background:" + COLOR.chipBg
+        ].join(";"), label)
+        const server = _state.server || _currentPageServer()
+        const base = server ? ("https://" + server + ".airlinesim.aero") : ""
+        a.href = base + url
+        a.target = "_blank"
+        a.rel = "noopener"
+        return a
+    }
+
+    /**
+     * Run seedMissing then compose. Used by the Refresh button (when the
+     * user clicks it explicitly) and the first-open path. Other callers
+     * (settings change, tuning slider) bypass via _refresh({skipSeed:true})
+     * so a slider drag doesn't re-burn the network.
+     *
+     * On first-open the panel has no snapshot yet, so we do a quick
+     * pre-compose to give the readiness probe something to enumerate
+     * routes from — otherwise the markets seeder has no pairs to work
+     * with and silently no-ops.
+     */
+    async function _runSeedThenRefresh(opts) {
+        const o = opts || {}
+        if (!window.AesStrategyStoreReadiness) {
+            await _refresh({skipSeed: true})
+            return
+        }
+        if (!_state.bodyHost) return
+        _state.bodyHost.textContent = ""
+        const banner = _el("div", "padding:32px;color:" + COLOR.muted + ";text-align:center;font:13px sans-serif;",
+            "Composing initial snapshot…")
+        _state.bodyHost.appendChild(banner)
+
+        // Pre-compose if we don't have a snapshot — gives the route
+        // enumerator a chance to find pairs from snapshot.hubs[] before
+        // falling back to currentSchedules/portfolio/DOM.
+        if (!_state.snapshot) {
+            try {
+                const composed = await _composePlan()
+                _state.snapshot         = composed.snapshot
+                _state.plan             = composed.plan
+                _state.diff             = composed.diff
+                _state.currentSchedules = composed.currentSchedules
+            } catch (e) {
+                console.warn("[AES strategy panel] pre-seed compose failed", e)
+                // Fall through — seedMissing will still try whatever
+                // sources it can find (currentSchedules, portfolio, DOM).
+            }
+        }
+
+        try {
+            await window.AesStrategyStoreReadiness.seedMissing({
+                snapshot:         _state.snapshot,
+                server:           _state.server,
+                airline:          _state.airline,
+                accountId:        (_state.snapshot && _state.snapshot.accountId) || null,
+                currentSchedules: _state.currentSchedules,
+                portfolio:        _state.portfolio,
+                fleetsDoc:        document
+            }, (p) => {
+                if (!p) return
+                if (p.stage === "start") {
+                    banner.textContent = p.total
+                        ? "Seeding " + p.total + " store" + (p.total === 1 ? "" : "s") + "…"
+                        : "All stores already populated. Composing…"
+                } else if (p.stage === "seeding") {
+                    banner.textContent = "Seeding · " + (p.label || "?")
+                        + " · " + ((p.done || 0) + 1) + "/" + p.total
+                        + (p.sub ? " · " + p.sub : "")
+                } else if (p.stage === "done") {
+                    banner.textContent = "Composing snapshot + plan…"
+                }
+            })
+        } catch (e) {
+            console.warn("[AES strategy panel] seedMissing threw", e)
+        }
+        await _refresh({skipSeed: true})
+    }
+
     // ── Compose snapshot + plan ──────────────────────────────────────────
 
     /**
@@ -305,8 +545,27 @@
         const scored   = ns.scoreRoutes(snapshot, weights || undefined)
         const plan     = ns.allocateFleet(snapshot, scored, {})
         const currentSchedules = await _loadCurrentSchedules(plan, snapshot && snapshot.server)
-        const diff     = ns.diffPlan(plan, snapshot, {currentSchedules})
-        return {snapshot, scored, plan, diff, weights, currentSchedules}
+        // Slice 12 — alliance & IL codeshare proposer threads in here.
+        // Defensive (older installs without alliance.js degrade to []) and
+        // best-effort (a proposer throw must never break plan composition).
+        let allianceMoves = []
+        if (typeof ns.proposeAllianceMoves === "function") {
+            const allianceOpts = (snapshot && snapshot.strategySettings
+                && snapshot.strategySettings.alliance
+                && snapshot.strategySettings.alliance.proposers) || undefined
+            try { allianceMoves = await ns.proposeAllianceMoves(snapshot, allianceOpts) }
+            catch (e) {
+                console.warn("[AesStrategy panel] proposeAllianceMoves threw", e)
+                allianceMoves = []
+            }
+        }
+        let advisory = []
+        if (typeof ns.collectAdvisoryDecisions === "function") {
+            try { advisory = await ns.collectAdvisoryDecisions(snapshot, {server: snapshot && snapshot.server}) }
+            catch (e) { console.warn("[AesStrategy panel] collectAdvisoryDecisions threw", e) }
+        }
+        const diff     = ns.diffPlan(plan, snapshot, {currentSchedules, allianceMoves, advisoryDecisions: advisory})
+        return {snapshot, scored, plan, diff, weights, currentSchedules, allianceMoves, advisory}
     }
 
     // ── Render ───────────────────────────────────────────────────────────
@@ -437,7 +696,11 @@
             right.appendChild(tabBadge)
         }
         const refreshBtn = _btn("⟳ Refresh", false)
-        refreshBtn.addEventListener("click", _refresh)
+        // The Refresh button re-runs the auto-seed pump too — clicking it
+        // is the user's signal that they want the freshest possible data.
+        // Slider drags + lane-checkbox toggles bypass the seed step via
+        // _refresh({skipSeed: true}) so we don't re-fetch on every tweak.
+        refreshBtn.addEventListener("click", () => _runSeedThenRefresh())
         const closeBtn = _btn("Close", false)
         closeBtn.addEventListener("click", close)
         right.append(refreshBtn, closeBtn)
@@ -1721,8 +1984,9 @@
 
     // ── Lifecycle ────────────────────────────────────────────────────────
 
-    async function _refresh() {
+    async function _refresh(opts) {
         if (!_state.overlay) return
+        const skipSeed = !!(opts && opts.skipSeed)
         _state.bodyHost.textContent = ""
         _state.bodyHost.appendChild(_el("div", "padding:32px;color:" + COLOR.muted + ";text-align:center;font:13px sans-serif;", "Composing snapshot + plan…"))
         try {
@@ -1739,20 +2003,26 @@
 
             _state.bodyHost.textContent = ""
             _renderHeader(_state.headerHost, _state.plan, _state.settings)
-            _state.summaryHost  = _el("div", "")
-            _state.settingsHost = _el("div", "")
-            _state.tuningHost   = _el("div", "")
-            _state.overlapHost  = _el("div", "")
+            _state.summaryHost   = _el("div", "")
+            _state.readinessHost = _el("div", "")
+            _state.settingsHost  = _el("div", "")
+            _state.tuningHost    = _el("div", "")
+            _state.overlapHost   = _el("div", "")
             _state.decisionsHost = _el("div", "flex:1;overflow:auto;")
-            _state.aircraftHost = _el("div", "border-top:1px solid " + COLOR.rule + ";")
-            _state.learningHost = _el("div", "border-top:1px solid " + COLOR.rule + ";")
-            _state.journalHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
+            _state.aircraftHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
+            _state.learningHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
+            _state.journalHost   = _el("div", "border-top:1px solid " + COLOR.rule + ";")
             _renderSummaryStrip(_state.summaryHost, _state.diff)
+            _renderReadiness(_state.readinessHost)
             _renderSettingsStrip(_state.settingsHost, _state.settings)
             if (window.AesStrategyTuningPanel) {
                 window.AesStrategyTuningPanel.render(_state.tuningHost, {
                     settings: _state.settings,
-                    onChange: _refresh
+                    // Tuning slider drags re-score routes via _refresh, but
+                    // we don't want a slider drag to re-fire the network
+                    // seeders — those should only run on first open + the
+                    // explicit Refresh button.
+                    onChange: () => _refresh({skipSeed: true})
                 })
             }
             _renderOverlapCard(_state.overlapHost)
@@ -1760,10 +2030,17 @@
             _renderAircraftAccordion(_state.aircraftHost, _state.plan, _state.diff)
             _renderLearningSection(_state.learningHost)
             _renderJournalSection(_state.journalHost)
-            _state.bodyHost.append(_state.summaryHost, _state.settingsHost, _state.tuningHost, _state.overlapHost,
+            _state.bodyHost.append(_state.summaryHost, _state.readinessHost, _state.settingsHost,
+                                   _state.tuningHost, _state.overlapHost,
                                    _state.decisionsHost, _state.aircraftHost, _state.learningHost,
                                    _state.journalHost)
             _renderFooter(_state.footerHost)
+            // skipSeed signals "this is a re-render after a seed already
+            // ran, or a non-network-burn event like a slider drag". Only
+            // the explicit user-driven entry points (first open, Refresh
+            // button, settings change that wants fresh data) ever pass
+            // skipSeed=false to actually trigger a seed pump.
+            void skipSeed
         } catch (e) {
             _state.bodyHost.textContent = ""
             const err = _el("div", "padding:24px;color:" + COLOR.err + ";font:13px sans-serif;", "Failed to compose plan: " + ((e && e.message) || String(e)))
@@ -1849,20 +2126,22 @@
             _state.snapshot = opts.snapshot
             _state.diff     = opts.diff
             _renderHeader(_state.headerHost, _state.plan, _state.settings)
-            _state.summaryHost  = _el("div", "")
-            _state.settingsHost = _el("div", "")
-            _state.tuningHost   = _el("div", "")
-            _state.overlapHost  = _el("div", "")
+            _state.summaryHost   = _el("div", "")
+            _state.readinessHost = _el("div", "")
+            _state.settingsHost  = _el("div", "")
+            _state.tuningHost    = _el("div", "")
+            _state.overlapHost   = _el("div", "")
             _state.decisionsHost = _el("div", "flex:1;overflow:auto;")
-            _state.aircraftHost = _el("div", "border-top:1px solid " + COLOR.rule + ";")
-            _state.learningHost = _el("div", "border-top:1px solid " + COLOR.rule + ";")
-            _state.journalHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
+            _state.aircraftHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
+            _state.learningHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
+            _state.journalHost   = _el("div", "border-top:1px solid " + COLOR.rule + ";")
             _renderSummaryStrip(_state.summaryHost, _state.diff)
+            _renderReadiness(_state.readinessHost)
             _renderSettingsStrip(_state.settingsHost, _state.settings)
             if (window.AesStrategyTuningPanel) {
                 window.AesStrategyTuningPanel.render(_state.tuningHost, {
                     settings: _state.settings,
-                    onChange: _refresh
+                    onChange: () => _refresh({skipSeed: true})
                 })
             }
             _renderOverlapCard(_state.overlapHost)
@@ -1870,13 +2149,25 @@
             _renderAircraftAccordion(_state.aircraftHost, _state.plan, _state.diff)
             _renderLearningSection(_state.learningHost)
             _renderJournalSection(_state.journalHost)
-            _state.bodyHost.append(_state.summaryHost, _state.settingsHost, _state.tuningHost, _state.overlapHost,
+            _state.bodyHost.append(_state.summaryHost, _state.readinessHost, _state.settingsHost,
+                                   _state.tuningHost, _state.overlapHost,
                                    _state.decisionsHost, _state.aircraftHost, _state.learningHost,
                                    _state.journalHost)
             _renderFooter(_state.footerHost)
         } else {
             _renderHeader(_state.headerHost, null, _state.settings)
-            await _refresh()
+            // First open: probe + auto-seed any missing/stale stores
+            // before composing. Seeders are idempotent — if everything's
+            // already filled, _runSeedThenRefresh degrades to a plain
+            // _refresh after a single probe pass. The opt-out flag lives
+            // on AesStrategySettings (autoSeedDisabled) so power users who
+            // don't want surprise HTTP traffic on open can flip it off.
+            const skipAutoSeed = !!(_state.settings && _state.settings.autoSeedDisabled)
+            if (skipAutoSeed) {
+                await _refresh({skipSeed: true})
+            } else {
+                await _runSeedThenRefresh({firstOpen: true})
+            }
         }
     }
 

@@ -52,8 +52,15 @@
         undercutPp:             3,
         opportunisticRaisePp:   2,
         freqMatchCap:           3,
-        antiSpiralDamper:       0.5
+        antiSpiralDamper:       0.5,
+        // Spec: "max 1 frequency increase per route per 2 weeks"
+        // (NORTH-STAR §4.17 anti-spiral). Suppresses any freq-increase
+        // proposal (matchFreq, expand) when this module proposed a
+        // freq move on the same route within the window.
+        freqProposalCooldownDays: 14
     })
+
+    const FREQ_COOLDOWN_KEY_PREFIX = "aesStrategy:competitorFreqProposalTs:"
 
     function _num(v, f) { const n = Number(v); return isFinite(n) ? n : f }
 
@@ -287,6 +294,66 @@
         }
     }
 
+    /**
+     * Bulk-load the per-route last-proposal timestamps for the freq-doubling
+     * cooldown gate. Returns Map<"HUB-DEST", ts>. Best-effort: any storage
+     * read failure returns an empty map so the engine still proposes; the
+     * cooldown is a guard, not a correctness invariant.
+     */
+    async function _loadFreqCooldownMap(pairs) {
+        const out = new Map()
+        if (!pairs || !pairs.length) return out
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return out
+        const keys = pairs.map(([h, d]) =>
+            FREQ_COOLDOWN_KEY_PREFIX + String(h).toUpperCase() + "-" + String(d).toUpperCase())
+        let got
+        try { got = await chrome.storage.local.get(keys) }
+        catch (_) { return out }
+        for (const k of keys) {
+            const rec = got && got[k]
+            if (rec && isFinite(rec.ts)) {
+                out.set(k.slice(FREQ_COOLDOWN_KEY_PREFIX.length), Number(rec.ts))
+            }
+        }
+        return out
+    }
+
+    /**
+     * Persist a fresh freq-proposal timestamp. Fire-and-forget — the move
+     * has already been pushed to the output array; failure to record the
+     * cooldown only means we might re-propose the same move next call.
+     */
+    function _writeFreqCooldown(hub, dest, ts) {
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return
+        const k = FREQ_COOLDOWN_KEY_PREFIX + String(hub).toUpperCase()
+            + "-" + String(dest).toUpperCase()
+        try {
+            chrome.storage.local.set({[k]: {ts: ts, hub: hub, dest: dest}})
+                .catch && chrome.storage.local.set({[k]: {ts: ts, hub: hub, dest: dest}})
+                    .catch(() => {})
+        } catch (_) {}
+    }
+
+    /**
+     * Convert a freq-increase move into a "watch" no-op when the route is
+     * inside the cooldown window. Preserves the move shape so downstream
+     * diff-plan / panel renderers don't have to special-case suppression.
+     */
+    function _suppressedFreqMove(move, lastTs, cooldownDays) {
+        const ageDays = _round((Date.now() - lastTs) / 86_400_000, 1)
+        const remainingDays = _round(cooldownDays - ageDays, 1)
+        const supp = Object.assign({}, move, {
+            action:      "watch",
+            magnitude:   0,
+            rationale:   move.rationale.slice(),
+            suppressed:  {reason: "freqCooldown", lastTs, ageDays, cooldownDays, remainingDays}
+        })
+        supp.rationale.push("[cooldown] last freq proposal " + ageDays + "d ago"
+            + " — suppressing for " + remainingDays + "d more"
+            + " (max 1 increase per " + cooldownDays + "d, NORTH-STAR §4.17 anti-spiral)")
+        return supp
+    }
+
     async function proposeCompetitorMoves(snapshot, opts) {
         const o = _resolveOpts(opts)
         const out = []
@@ -301,7 +368,12 @@
         }
         if (!pairs.length) return out
 
-        const priorMap = await store.bulkLoadPrior(pairs, {minAgeDays: o.minAgeDays})
+        const [priorMap, cooldownMap] = await Promise.all([
+            store.bulkLoadPrior(pairs, {minAgeDays: o.minAgeDays}),
+            _loadFreqCooldownMap(pairs)
+        ])
+        const cooldownMs = Math.max(0, o.freqProposalCooldownDays * 86_400_000)
+        const now = Date.now()
 
         for (const h of snapshot.hubs) for (const r of (h && h.byRoute) || []) {
             if (!h.iata || !r || !r.dest) continue
@@ -314,9 +386,29 @@
             for (const ev of events) {
                 const counter = _counterMove(ev, ev.detail, r, o)
                 if (!counter) continue
-                const move = _buildMove(r, h.iata, ev, counter, guard)
+                let move = _buildMove(r, h.iata, ev, counter, guard)
+
+                // Frequency-doubling cooldown — suppress freq increases
+                // (matchFreq, expand) within the window. Price moves and
+                // freqDrop->expand are still suppressed if expand emits a
+                // weeklyFlights >0 magnitude. Watches stay informational.
+                const isFreqIncrease = move.unit === "weeklyFlights"
+                                       && Number(move.magnitude) > 0
+                if (isFreqIncrease) {
+                    const lastTs = cooldownMap.get(k)
+                    if (lastTs && (now - lastTs) < cooldownMs) {
+                        move = _suppressedFreqMove(move, lastTs, o.freqProposalCooldownDays)
+                    } else {
+                        // Roll the cooldown forward; same-session duplicate
+                        // events on the same route also self-suppress via
+                        // the in-memory map.
+                        cooldownMap.set(k, now)
+                        _writeFreqCooldown(h.iata, r.dest, now)
+                    }
+                }
+
                 // Surface the prior age so the user knows the diff window.
-                const ageDays = _round((Date.now() - priorEntry.ts) / 86_400_000, 1)
+                const ageDays = _round((now - priorEntry.ts) / 86_400_000, 1)
                 move.rationale.push("[diff window] prior captured "
                     + ageDays + "d ago (" + new Date(priorEntry.ts).toISOString().slice(0, 10) + ")")
                 out.push(move)

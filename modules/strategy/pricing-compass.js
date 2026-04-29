@@ -362,6 +362,11 @@
             }
         }
 
+        // Phase C3 — surface cross-feature gating reasons so the route view
+        // can render "gated by crew pressure" / "gated by cash runway"
+        // callouts inline next to suppressed moves.
+        const gates = _buildGates(snapshot)
+
         return {
             hub:         _upper(hub),
             dest:        _upper(dest),
@@ -371,11 +376,42 @@
             resolvedObjective: resolvedObjective,
             riskProfile: riskProfile,
             signals:     signals,
+            gates:       gates,
             perClass:    perClass,
             solver:      solverEnvelope,
             health:      health,
             composedAt:  _now()
         }
+    }
+
+    /**
+     * Phase C3 — assemble cross-feature gates from the snapshot. Returns
+     * an object with present-only entries; the renderer iterates entries
+     * and shows a callout per active gate. Empty when nothing is gating.
+     */
+    function _buildGates(snapshot) {
+        if (!snapshot) return {}
+        const out = {}
+        const pressure = snapshot.crew && snapshot.crew.pressure
+        if (pressure && isFinite(pressure.severity) && pressure.severity > 0.3) {
+            out.crewPressure = {
+                severity:           pressure.severity,
+                worstShortfallPct:  pressure.worstShortfallPct || null,
+                shortPositions:     Array.isArray(pressure.shortPositions)
+                    ? pressure.shortPositions.slice(0, 4) : [],
+                effect: "Downward (demand-stimulating) price moves dampened to avoid stimulating demand we can't staff."
+            }
+        }
+        const runway = snapshot.cash && snapshot.cash.runwayWeeks
+        if (Number.isFinite(runway) && runway < 8) {
+            out.cashLow = {
+                runwayWeeks:  runway,
+                bankBalance:  snapshot.cash.bankBalance || null,
+                weeklyResult: snapshot.cash.weeklyResult || null,
+                effect: "Route-creation candidates vetoed and aggressive moves de-prioritised until runway recovers."
+            }
+        }
+        return out
     }
 
     window.AesPricingCompass = {

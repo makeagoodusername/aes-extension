@@ -53,11 +53,13 @@
         demandWeight:           0.20,   // pax + cargo demand bars
         competitorWeight:       0.20,   // empty markets reward
         orsWeight:              0.10,   // service-profile leverage
+        connectivityWeight:     0.10,   // Slice 12 — alliance/IL onward-reach bonus
         maintenancePenalty:     0.30,   // global stress bias
         cashPenalty:            0.30,   // global stress bias
         cargoWeightInDemand:    0.50,   // cargoScore counts half of paxScore
         competitorSaturationCap: 28,    // > this many flights = saturated
         profitNormalizer:       2.0,    // dollars per seat-km, beyond which profit term saturates
+        connectivityNormalizer: 5,      // partner-hub coverage at which connectivity bonus saturates
         wearHeadroomTarget:     0.20    // <= 20% slack triggers stress
     }
 
@@ -176,6 +178,42 @@
         }
     }
 
+    /** Slice 12 — Connectivity / IL-codeshare bonus.
+     *
+     *  For route (hub, dest), reward routes whose dest is a hub for one or
+     *  more alliance / contractual partners — those partners can carry our
+     *  inbound pax onward into their network via codeshare, so the route
+     *  earns incremental feed traffic the rest of the demand term doesn't
+     *  capture.
+     *
+     *  Reads `snapshot.alliance.partnerOnwardByDest` (Map<destIata, Set<partnerId>>)
+     *  pre-computed once per snapshot in `_loadAllianceContext` (context.js).
+     *  When the map is missing or empty (no alliance scraped, or no partner
+     *  competitor-intel cached), the term contributes zero — no I/O happens
+     *  here so the pure-function invariant (§4.7) holds. */
+    function _connectivityTerm(route, snapshot, w) {
+        const alliance = snapshot && snapshot.alliance
+        const map = alliance && alliance.partnerOnwardByDest
+        if (!map || typeof map.get !== "function") {
+            return {value: null, contribution: 0, why: "no partner footprint cached"}
+        }
+        const dest = route && route.dest ? String(route.dest).toUpperCase() : null
+        if (!dest) return {value: null, contribution: 0, why: "no destination"}
+        const partners = map.get(dest)
+        const partnerCount = partners ? partners.size : 0
+        if (partnerCount <= 0) {
+            return {value: 0, contribution: 0, why: "no alliance partner hub at " + dest}
+        }
+        const norm = _clamp01(partnerCount / w.connectivityNormalizer)
+        return {
+            value:        partnerCount,
+            contribution: w.connectivityWeight * norm,
+            why:          partnerCount + " alliance partner"
+                          + (partnerCount === 1 ? "" : "s")
+                          + " hub at " + dest + " — codeshare onward reach"
+        }
+    }
+
     /** Fleet wear stress: 1 - (mean headroom across fleet). Higher stress →
      *  larger penalty, biasing the engine toward fewer / shorter legs. */
     function _wearStress(snapshot, w) {
@@ -252,11 +290,13 @@
                 const profit  = _profitTerm(r,        snapshot, w)
                 const demand  = _demandTerm(r,        w)
                 const compete = _competitorTerm(r,    w)
+                const connect = _connectivityTerm(r,  snapshot, w)
 
                 const score = profit.contribution
                             + demand.contribution
                             + compete.contribution
                             + ors.contribution
+                            + connect.contribution
                             + wearContribution
                             + cashContribution
 
@@ -265,6 +305,8 @@
                 if (demand.why)  rationale.push("[demand] "     + demand.why)
                 if (compete.why) rationale.push("[competition] "+ compete.why)
                 if (ors.why)     rationale.push("[ors] "        + ors.why)
+                if (connect.value != null && connect.value > 0)
+                    rationale.push("[connectivity] " + connect.why)
                 if (wear.stress > 0)  rationale.push("[fleet] " + wear.why + " (penalty " + _round(wearContribution, 3) + ")")
                 if (cash.stress > 0)  rationale.push("[cash] "  + cash.why + " (penalty " + _round(cashContribution, 3) + ")")
                 if (r.override)       rationale.push("[override] manual LF/yield set by user")
@@ -286,12 +328,13 @@
                     alreadyScheduled:  r.alreadyScheduled,
                     score:             _round(score, 4),
                     breakdown: {
-                        profit:    _round(profit.contribution,    4),
-                        demand:    _round(demand.contribution,    4),
-                        compete:   _round(compete.contribution,   4),
-                        ors:       _round(ors.contribution,       4),
-                        wear:      _round(wearContribution,       4),
-                        cash:      _round(cashContribution,       4)
+                        profit:       _round(profit.contribution,    4),
+                        demand:       _round(demand.contribution,    4),
+                        compete:      _round(compete.contribution,   4),
+                        ors:          _round(ors.contribution,       4),
+                        connectivity: _round(connect.contribution,   4),
+                        wear:         _round(wearContribution,       4),
+                        cash:         _round(cashContribution,       4)
                     },
                     rationale:         rationale
                 })

@@ -47,6 +47,13 @@
     let _lastFuelContextAt     = 0   // bumped on routes:fuel-context recompute
     let _fuelContextOff        = null
     let _gameDayOff            = null   // unsubscribe from AesGameTimeWatcher
+    // Phase B2/C1 — cross-feature signal subscriptions (data-bus).
+    let _competitorThreatOff   = null
+    let _competitorThreatTimer = null
+    let _payTierAppliedOff     = null
+    let _payTierAppliedTimer   = null
+    let _cashLowOff            = null
+    let _cashLowVeto           = false
 
     /**
      * Subscribe to the canonical `routes:fuel-context` view so the next tick
@@ -474,6 +481,20 @@
                     _emitStage("snapshot-composed", triggeredBy,
                         {hubs: hubsCount, routes: routesCount})
                 }
+                // Slice 7 — tick active service experiments. Concluded
+                // experiments transition to "concluded" with an outcome
+                // envelope so the panel can surface a consolidate prompt
+                // on next render. Best-effort — never block the tick.
+                if (window.AesStrategyServiceTuner
+                        && typeof window.AesStrategyServiceTuner.tickActiveExperiments === "function") {
+                    try {
+                        await window.AesStrategyServiceTuner.tickActiveExperiments({
+                            accountId: acctId, now: startedAt
+                        })
+                    } catch (e) {
+                        console.warn("[AES auto-driver] service-tuner tick failed", e)
+                    }
+                }
                 // Pre-tick freshen — scrape stale routes' markets pages so
                 // proposers run on fresh competitor + own-pricing data.
                 // Game-day rollover ticks always freshen; interval ticks
@@ -510,7 +531,12 @@
                 }
                 const scored = ns.scoreRoutes(snapshot, weights || undefined)
                 plan = await ns.allocateFleet(snapshot, scored, {})
-                diff = ns.diffPlan(plan, snapshot, {})
+                let advisory = []
+                if (typeof ns.collectAdvisoryDecisions === "function") {
+                    try { advisory = await ns.collectAdvisoryDecisions(snapshot, {server: snapshot && snapshot.server}) }
+                    catch (e) { console.warn("[AES auto-driver] advisory fetch failed", e) }
+                }
+                diff = ns.diffPlan(plan, snapshot, {advisoryDecisions: advisory})
                 _emitStage("planned", triggeredBy,
                     {proposed: (diff && diff.decisions && diff.decisions.length) || 0})
             } catch (e) {
@@ -538,7 +564,8 @@
             const eligible = _filterEligibleDecisions(diff, settings)
             let candidates = eligible.candidates
             const dropCounts = Object.assign(
-                {userDisabled: 0, capDropped: 0, overTickCap: 0},
+                {userDisabled: 0, capDropped: 0, overTickCap: 0,
+                 cashLowVeto: 0, maintenanceGated: 0},
                 eligible.drops
             )
             const domainGates = (auto.domains && typeof auto.domains === "object")
@@ -546,6 +573,34 @@
             const beforeUserDisabled = candidates.length
             candidates = candidates.filter(d => domainGates[d.domain] !== false)
             dropCounts.userDisabled = beforeUserDisabled - candidates.length
+
+            // Phase B3 — cash-low veto consumer. The veto is set by
+            // signal:strategy:cash-low; we clear it here when the current
+            // snapshot's runway is healthy (≥8 weeks or infinite). While
+            // the veto holds, routeCreation candidates are dropped.
+            const runway = snapshot && snapshot.cash && snapshot.cash.runwayWeeks
+            if (Number.isFinite(runway) && runway >= 8 || runway === Infinity) {
+                _cashLowVeto = false
+            }
+            if (_cashLowVeto) {
+                const before = candidates.length
+                candidates = candidates.filter(d => d.domain !== "routeCreation")
+                dropCounts.cashLowVeto = before - candidates.length
+            }
+
+            // Phase B3 — wear-pressure gating. When a critical fraction of
+            // fleet has bad maintenance ratio, drop schedule-domain
+            // candidates so we don't pile flying onto already-stressed
+            // tails. Threshold: >25% of fleet at ratioStatus === "bad".
+            const fleet = (snapshot && snapshot.fleet) || []
+            if (fleet.length) {
+                const bad = fleet.filter(a => a && a.wear && a.wear.ratioStatus === "bad").length
+                if (bad / fleet.length > 0.25) {
+                    const before = candidates.length
+                    candidates = candidates.filter(d => d.domain !== "schedule")
+                    dropCounts.maintenanceGated = before - candidates.length
+                }
+            }
             // PR 3 — drop domains that have hit the silent-auto 24h cap.
             const droppedByCap = []
             const beforeCap = candidates.length
@@ -771,10 +826,67 @@
         })
     }
 
+    /**
+     * Phase B2 — react to competitor-threat signals with an ad-hoc tick.
+     * Coalesces every signal arriving within COALESCE_MS into one tick so a
+     * bulk competitor-intel scrape can't storm the proposer. Respects
+     * cooldown (`bypassCooldown` stays false), so a recent successful tick
+     * absorbs the threat naturally.
+     */
+    function _attachCompetitorThreat() {
+        if (_competitorThreatOff) return
+        if (typeof window === "undefined" || !window.AesDataBus) return
+        const COALESCE_MS = 30_000
+        _competitorThreatOff = window.AesDataBus.on("signal:strategy:competitor-threat", () => {
+            if (_competitorThreatTimer) return
+            _competitorThreatTimer = setTimeout(() => {
+                _competitorThreatTimer = null
+                _tickOnce({trigger: "competitor-threat"})
+                    .catch(err => console.warn("[AES auto-driver] competitor-threat tick error", err))
+            }, COALESCE_MS)
+        })
+    }
+
+    /**
+     * Phase C1 — re-tick after pay-tier application so other domains can
+     * react to fresh crew-cost data. Debounced so a bulk pay-tier sweep
+     * collapses into one re-tick.
+     */
+    function _attachPayTierApplied() {
+        if (_payTierAppliedOff) return
+        if (typeof window === "undefined" || !window.AesDataBus) return
+        const DEBOUNCE_MS = 5_000
+        _payTierAppliedOff = window.AesDataBus.on("data:crewMgmt:payTier:applied", () => {
+            if (_payTierAppliedTimer) clearTimeout(_payTierAppliedTimer)
+            _payTierAppliedTimer = setTimeout(() => {
+                _payTierAppliedTimer = null
+                _tickOnce({trigger: "pay-tier-applied"})
+                    .catch(err => console.warn("[AES auto-driver] pay-tier re-tick error", err))
+            }, DEBOUNCE_MS)
+        })
+    }
+
+    /**
+     * Phase B3/C1 — cash-low signal flips an in-memory veto for
+     * routeCreation candidates until the next tick proves runway recovered.
+     * The veto is consumed by `_tickOnce` via `_cashLowVeto` and is reset
+     * inside the tick when the snapshot's runway is healthy.
+     */
+    function _attachCashLow() {
+        if (_cashLowOff) return
+        if (typeof window === "undefined" || !window.AesDataBus) return
+        _cashLowOff = window.AesDataBus.on("signal:strategy:cash-low", () => {
+            _cashLowVeto = true
+        })
+    }
+
     async function start() {
         if (_intervalHandle !== null) return
         _attachFuelContext()
         _attachGameDayTrigger()
+        _attachCompetitorThreat()
+        _attachPayTierApplied()
+        _attachCashLow()
         const ms = await _readIntervalMs()
         _intervalHandle = setInterval(() => {
             _tickOnce().catch(err => console.warn("[AES auto-driver] tick error", err))
@@ -788,8 +900,13 @@
         if (_intervalHandle === null) return
         clearInterval(_intervalHandle)
         _intervalHandle = null
-        if (_fuelContextOff) { try { _fuelContextOff() } catch (_) {} _fuelContextOff = null }
-        if (_gameDayOff)     { try { _gameDayOff()     } catch (_) {} _gameDayOff     = null }
+        if (_fuelContextOff)      { try { _fuelContextOff()      } catch (_) {} _fuelContextOff      = null }
+        if (_gameDayOff)          { try { _gameDayOff()          } catch (_) {} _gameDayOff          = null }
+        if (_competitorThreatOff) { try { _competitorThreatOff() } catch (_) {} _competitorThreatOff = null }
+        if (_payTierAppliedOff)   { try { _payTierAppliedOff()   } catch (_) {} _payTierAppliedOff   = null }
+        if (_cashLowOff)          { try { _cashLowOff()          } catch (_) {} _cashLowOff          = null }
+        if (_competitorThreatTimer) { clearTimeout(_competitorThreatTimer); _competitorThreatTimer = null }
+        if (_payTierAppliedTimer)   { clearTimeout(_payTierAppliedTimer);   _payTierAppliedTimer   = null }
     }
 
     async function tickNow(opts) {

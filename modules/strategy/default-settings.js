@@ -39,7 +39,8 @@
         service:       "serviceMovesEnabled",
         price:         "priceMovesEnabled",
         crew:          "crewMovesEnabled",
-        routeCreation: "routeCreationEnabled"
+        routeCreation: "routeCreationEnabled",
+        alliance:      "allianceMovesEnabled"
     }
 
     function _defaults() {
@@ -53,6 +54,7 @@
             priceMovesEnabled:      false,
             serviceMovesEnabled:    false,
             crewMovesEnabled:       false,
+            allianceMovesEnabled:   false,
             minOrsTarget:           0.7,
             routeCreationThreshold: 0.6,
             priceDeadband:          5,
@@ -127,6 +129,34 @@
             economics: {
                 competitorIncomeFloorWeekly: 5000
             },
+            // Slice 11 — sister coordination. crossAirlineEnabled is the
+            // gate (declared above); coordinatedHubs is an opt-in roster
+            // of "sister A owns FRA, sister B owns MUC" declarations
+            // (entries shape: ["accountId:HUB"]). Empty list = let the
+            // proposers infer specialization from observed fleet mixes.
+            // sisterCoordination block tunes the three proposers.
+            coordinatedHubs:        [],
+            sisterCoordination: {
+                maxPriceSpreadPct:         8,
+                widebodyFractionThreshold: 0.55,
+                regionalFractionThreshold: 0.45,
+                leaseMinScore:             0.20,
+                topNPerKind:               5
+            },
+            // Slice 7 — service-profile A/B tuner. The tuner clones a
+            // candidate profile, partitions its routes ~50/50, lets a
+            // game-week elapse, and reads outcomes to declare a winner.
+            // Default `enabled: false` per §4.18 — explicit opt-in only.
+            serviceTuner: {
+                enabled:                 false,
+                minPredictedLift:        0.06,
+                assignmentRatio:         0.5,
+                minRoutesPerExperiment:  2,
+                maxRoutesPerExperiment:  10,
+                durationDays:            7,
+                autoConsolidate:         false,
+                maxConcurrentPerAirline: 3
+            },
             // Service-cost weights promoted out of service-moves.js
             // Object.freeze literals (was lines 131/141/147). Defaults are
             // byte-for-byte identical to the prior frozen tables — the engine
@@ -145,6 +175,35 @@
                 },
                 classMultipliers:    {Y: 1, C: 3.6, F: 9},
                 defaultCategoryCost: 2.0
+            },
+            // Slice 12 — alliance & IL codeshare optimisation. `apply` is
+            // the two-gate model for `AllianceIlRequestApplier`:
+            //   enabled    — user kill switch (defaults true so the per-card
+            //                "Send IL request" affordance lights up; the
+            //                surrounding `allianceMovesEnabled` flag still
+            //                defaults FALSE per the bulk apply pattern)
+            //   dryRunOnly — codebase-readiness gate (§4.18). Defaults
+            //                TRUE because the AS form structure for IL
+            //                requests has not been calibrated against a
+            //                live AS instance. First flip prompts a confirm
+            //                modal; the applier runs the full GET → parse
+            //                → body build → audit-log path either way and
+            //                returns a `bodyPreview` so the user sees what
+            //                would post.
+            // `proposers` mirrors `proposeAllianceMoves` opts; defaults
+            // verbatim from `modules/strategy/alliance.js` DEFAULTS.
+            alliance: {
+                apply: {
+                    enabled:    true,
+                    dryRunOnly: true
+                },
+                proposers: {
+                    minNewReach:          4,
+                    maxOverlapFraction:   0.35,
+                    maxProposalsPerCall:  8,
+                    minAllianceMembers:   2,
+                    maxAllianceProposals: 3
+                }
             }
         }
     }
@@ -265,6 +324,68 @@
         }
     }
 
+    function _normCoordinatedHubs(block) {
+        if (!Array.isArray(block)) return []
+        const out = []
+        for (const entry of block) {
+            if (typeof entry !== "string") continue
+            const trimmed = entry.trim()
+            if (!trimmed || !/^[A-Za-z0-9_-]+:[A-Z]{3}$/i.test(trimmed)) continue
+            const upper = trimmed.split(":")
+            out.push(upper[0] + ":" + upper[1].toUpperCase())
+        }
+        return out
+    }
+
+    function _normSisterCoordination(block, fallback) {
+        const f = fallback || _defaults().sisterCoordination
+        if (!block || typeof block !== "object") return Object.assign({}, f)
+        return {
+            maxPriceSpreadPct:         _normNum(block.maxPriceSpreadPct,         0,    100, f.maxPriceSpreadPct),
+            widebodyFractionThreshold: _normNum(block.widebodyFractionThreshold, 0,    1,   f.widebodyFractionThreshold),
+            regionalFractionThreshold: _normNum(block.regionalFractionThreshold, 0,    1,   f.regionalFractionThreshold),
+            leaseMinScore:             _normNum(block.leaseMinScore,             0,    10,  f.leaseMinScore),
+            topNPerKind:               _normNum(block.topNPerKind,               1,    50,  f.topNPerKind)
+        }
+    }
+
+    function _normServiceTuner(block, fallback) {
+        const f = fallback || _defaults().serviceTuner
+        if (!block || typeof block !== "object") return Object.assign({}, f)
+        const minR = _normNum(block.minRoutesPerExperiment, 1, 100, f.minRoutesPerExperiment)
+        const maxR = _normNum(block.maxRoutesPerExperiment, 1, 200, f.maxRoutesPerExperiment)
+        return {
+            enabled:                 !!block.enabled,
+            minPredictedLift:        _normNum(block.minPredictedLift,        0,    1,   f.minPredictedLift),
+            assignmentRatio:         _normNum(block.assignmentRatio,         0.2,  0.8, f.assignmentRatio),
+            minRoutesPerExperiment:  Math.min(minR, maxR),
+            maxRoutesPerExperiment:  Math.max(minR, maxR),
+            durationDays:            _normNum(block.durationDays,            1,    60,  f.durationDays),
+            autoConsolidate:         !!block.autoConsolidate,
+            maxConcurrentPerAirline: _normNum(block.maxConcurrentPerAirline, 1,    20,  f.maxConcurrentPerAirline)
+        }
+    }
+
+    function _normAlliance(block, fallback) {
+        const f = fallback || _defaults().alliance
+        if (!block || typeof block !== "object") return JSON.parse(JSON.stringify(f))
+        const apply = (block.apply && typeof block.apply === "object") ? block.apply : {}
+        const props = (block.proposers && typeof block.proposers === "object") ? block.proposers : {}
+        return {
+            apply: {
+                enabled:    apply.enabled    !== false,
+                dryRunOnly: apply.dryRunOnly !== false
+            },
+            proposers: {
+                minNewReach:          _normNum(props.minNewReach,          0,    50,  f.proposers.minNewReach),
+                maxOverlapFraction:   _normNum(props.maxOverlapFraction,   0,    1,   f.proposers.maxOverlapFraction),
+                maxProposalsPerCall:  _normNum(props.maxProposalsPerCall,  1,    50,  f.proposers.maxProposalsPerCall),
+                minAllianceMembers:   _normNum(props.minAllianceMembers,   1,    50,  f.proposers.minAllianceMembers),
+                maxAllianceProposals: _normNum(props.maxAllianceProposals, 0,    20,  f.proposers.maxAllianceProposals)
+            }
+        }
+    }
+
     function _normServiceCosts(block, fallback) {
         const f = fallback || _defaults().serviceCosts
         if (!block || typeof block !== "object") return JSON.parse(JSON.stringify(f))
@@ -302,6 +423,7 @@
             priceMovesEnabled:      !!block.priceMovesEnabled,
             serviceMovesEnabled:    !!block.serviceMovesEnabled,
             crewMovesEnabled:       !!block.crewMovesEnabled,
+            allianceMovesEnabled:   !!block.allianceMovesEnabled,
             minOrsTarget:           _normNum(block.minOrsTarget, 0, 1, d.minOrsTarget),
             routeCreationThreshold: _normNum(block.routeCreationThreshold, 0, 1, d.routeCreationThreshold),
             priceDeadband:          _normNum(block.priceDeadband, 0, 50, d.priceDeadband),
@@ -316,7 +438,11 @@
             fleetOptimizer:         _normFleetOptimizer(block.fleetOptimizer, d.fleetOptimizer),
             routeCreation:          _normRouteCreation(block.routeCreation, d.routeCreation),
             economics:              _normEconomics(block.economics,         d.economics),
-            serviceCosts:           _normServiceCosts(block.serviceCosts,   d.serviceCosts)
+            coordinatedHubs:        _normCoordinatedHubs(block.coordinatedHubs),
+            sisterCoordination:     _normSisterCoordination(block.sisterCoordination, d.sisterCoordination),
+            serviceTuner:           _normServiceTuner(block.serviceTuner,   d.serviceTuner),
+            serviceCosts:           _normServiceCosts(block.serviceCosts,   d.serviceCosts),
+            alliance:               _normAlliance(block.alliance,           d.alliance)
         }
     }
 
@@ -467,6 +593,18 @@
                 "[smoke] serviceCosts class multipliers mirror frozen CLASS_COST_MULTIPLIER")
             console.assert(d.serviceCosts.defaultCategoryCost === 2.0,
                 "[smoke] serviceCosts defaultCategoryCost mirrors prior literal")
+            // Slice 12 — alliance defaults (apply.dryRunOnly TRUE per §4.18,
+            // allianceMovesEnabled FALSE matching other bulk-apply domains).
+            console.assert(d.alliance && d.alliance.apply.enabled === true
+                && d.alliance.apply.dryRunOnly === true,
+                "[smoke] alliance apply gates default enabled+dryRun")
+            console.assert(d.allianceMovesEnabled === false,
+                "[smoke] allianceMovesEnabled defaults FALSE")
+            console.assert(d.alliance.proposers.minNewReach === 4
+                && d.alliance.proposers.maxOverlapFraction === 0.35,
+                "[smoke] alliance proposer defaults match alliance.js DEFAULTS")
+            console.assert(canApply({tier: "apply-on-confirm", allianceMovesEnabled: true}, "alliance") === true,
+                "[smoke] alliance domain gate honored when both flags clear")
             // Clamping smoke — out-of-range inputs fall back rather than throw.
             const clamped = _merge({
                 routeCreation: {minFrequency: 30, maxFrequency: 0, defaultPricePct: 5},

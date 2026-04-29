@@ -604,6 +604,106 @@
     }
 
     /**
+     * Slice 12 — alliance & IL request sub-pipeline.
+     *
+     * IL requests are bilateral; the engine sends a request and the
+     * partner has to accept on their side. This sub-pipeline drives only
+     * the *send* path via `AllianceIlRequestApplier`, which has its own
+     * two-gate model (applyEnabled + dryRunOnly, default dryRunOnly=true).
+     * Strategy's tier + domain gates have already cleared by the time we
+     * get here; we still re-apply the per-applier kill switches because
+     * the user can have, for instance, `allianceMovesEnabled:true` on the
+     * pipeline while keeping dryRunOnly:true on the applier itself.
+     *
+     * `alliance-join` decisions never reach this sub-pipeline because they
+     * carry `applicable:false` — diff-plan filters them into the advisory
+     * skip path upstream. Defensive filter here too.
+     */
+    async function _applyAllianceMoves(decisions, ctx, applied, skipped, opts) {
+        if (!decisions.length) return {ok: true}
+        if (typeof window.AllianceIlRequestApplier !== "function") {
+            for (const d of decisions) {
+                skipped.push({decisionId: d.id, domain: "alliance", reason: "actuator-missing"})
+                _emit(opts, {kind: "skipped", decisionId: d.id, domain: "alliance", reason: "actuator-missing"})
+            }
+            return {ok: true, missingActuator: true}
+        }
+        const server = ctx && ctx.server
+        if (!server) {
+            for (const d of decisions) {
+                applied.push({decisionId: d.id, domain: "alliance", ok: false, error: "missing server context"})
+                _emit(opts, {kind: "result", decisionId: d.id, domain: "alliance", ok: false, error: "missing server"})
+                _busEmit("alliance", {decisionId: d.id, hub: null, dest: null, ok: false})
+            }
+            return {ok: false, error: "missing server"}
+        }
+
+        const settingsLoader = _settings()
+        const settings = settingsLoader ? await settingsLoader.load() : null
+        const allianceCfg = (settings && settings.alliance && settings.alliance.apply) || {}
+        const applyLog = (typeof window.AllianceIlRequestApplyLog === "function")
+            ? new window.AllianceIlRequestApplyLog()
+            : null
+        const applier = new window.AllianceIlRequestApplier(server, {
+            applyLog:     applyLog,
+            applyEnabled: allianceCfg.enabled    !== false,
+            dryRunOnly:   allianceCfg.dryRunOnly !== false
+        })
+
+        let allOk = true
+        for (const d of decisions) {
+            const p = d.payload || {}
+            // Defensive: alliance-join leaks here only via a malformed
+            // decision (diff-plan marks them advisory). Skip explicitly.
+            if (p.kind && p.kind !== "il-request") {
+                skipped.push({decisionId: d.id, domain: "alliance", reason: "advisory",
+                              note: "alliance-join is advisory-only — no AS join API"})
+                _emit(opts, {kind: "skipped", decisionId: d.id, domain: "alliance", reason: "advisory"})
+                continue
+            }
+            if (!p.partnerEnterpriseId) {
+                applied.push({decisionId: d.id, domain: "alliance", ok: false,
+                              error: "missing partnerEnterpriseId"})
+                _emit(opts, {kind: "result", decisionId: d.id, domain: "alliance", ok: false,
+                             error: "missing partnerEnterpriseId"})
+                _busEmit("alliance", {decisionId: d.id, hub: p.hub || null, dest: null, ok: false})
+                allOk = false
+                continue
+            }
+            try {
+                const env = await applier.apply(p.partnerEnterpriseId, {
+                    source:      opts && opts.source ? opts.source : "strategy",
+                    partnerName: p.partnerName || null,
+                    requestType: p.requestType || "INTERLINING"
+                })
+                // Treat dry-run as success — the user opted into preview-mode
+                // explicitly and a "what'd post" envelope is the value here.
+                const ok = env && (env.status === "verified"
+                                || env.status === "posted"
+                                || env.status === "dry-run")
+                if (!ok) allOk = false
+                applied.push({
+                    decisionId: d.id,
+                    domain:     "alliance",
+                    ok:         ok,
+                    result:     env,
+                    error:      ok ? null : (env && env.error && env.error.message) || (env && env.warning) || "unknown",
+                    logId:      env && env.logId || null
+                })
+                _emit(opts, {kind: "result", decisionId: d.id, domain: "alliance", ok: ok})
+                _busEmit("alliance", {decisionId: d.id, hub: p.hub || null, dest: null, ok: ok})
+            } catch (e) {
+                allOk = false
+                const err = (e && e.message) || String(e)
+                applied.push({decisionId: d.id, domain: "alliance", ok: false, error: err})
+                _emit(opts, {kind: "result", decisionId: d.id, domain: "alliance", ok: false, error: err})
+                _busEmit("alliance", {decisionId: d.id, hub: p.hub || null, dest: null, ok: false})
+            }
+        }
+        return {ok: allOk}
+    }
+
+    /**
      * Crew sub-pipeline. Plain form-encoded POST per call.
      */
     async function _applyCrewMoves(decisions, ctx, applied, skipped, opts) {
@@ -705,7 +805,7 @@
         }
 
         // ── Pre-bucket selected, applicable decisions per domain ─────────
-        const buckets = {schedule: [], service: [], price: [], crew: [], routeCreation: []}
+        const buckets = {schedule: [], service: [], price: [], crew: [], routeCreation: [], alliance: []}
         for (const d of allDecisions) {
             if (sel && !sel.has(d.id)) {
                 skipped.push({decisionId: d.id, domain: d.domain, reason: "deselected"})
@@ -714,6 +814,13 @@
             if (!d.applicable) {
                 skipped.push({decisionId: d.id, domain: d.domain, reason: "advisory",
                               note: d.applicableNote})
+                continue
+            }
+            // Defensive: a domain that lands in the diff but doesn't yet
+            // have an actuator wired here. Surface as actuator-missing
+            // rather than crashing on `buckets[d.domain].push`.
+            if (!buckets[d.domain]) {
+                skipped.push({decisionId: d.id, domain: d.domain, reason: "actuator-missing"})
                 continue
             }
             // Per-domain enable flag.
@@ -785,9 +892,17 @@
             await _applyRouteCreations(buckets.routeCreation, ctx, snapshotForCreations, applied, skipped, o)
         }
 
+        // 6. Alliance & IL requests (Slice 12) — last because they're
+        //    bilateral and slow-moving; failure here doesn't compromise
+        //    upstream applies.
+        if (!aborted && buckets.alliance.length) {
+            _emit(o, {kind: "domain-start", domain: "alliance", count: buckets.alliance.length})
+            await _applyAllianceMoves(buckets.alliance, ctx, applied, skipped, o)
+        }
+
         // ── Aborted — anything still in a bucket counts as not-attempted ──
         if (aborted) {
-            for (const dom of ["service", "price", "crew", "routeCreation"]) {
+            for (const dom of ["service", "price", "crew", "routeCreation", "alliance"]) {
                 for (const d of buckets[dom]) {
                     if (!applied.find(a => a.decisionId === d.id)
                         && !skipped.find(s => s.decisionId === d.id)) {
@@ -909,7 +1024,92 @@
         return report
     }
 
+    /**
+     * Slice 12 — single-decision dispatch for the per-card UX.
+     *
+     * The Strategy panel renders alliance proposals one row per partner;
+     * each row has a "Send IL request" button that drives only that one
+     * decision through the apply pipeline. Shares every gate the bulk
+     * `apply()` enforces (tier → applicable → per-domain flag → applier's
+     * own two gates) and writes one audit envelope with `planId: null`.
+     *
+     * v1 dispatches `domain === "alliance"` only; other domains continue
+     * to flow through bulk `apply()`. Adding a domain here is one switch
+     * arm + matching sub-pipeline.
+     */
+    async function applyDecision(decision, opts) {
+        const o = opts || {}
+        if (!decision || !decision.id) {
+            return {applied: [], skipped: [], totals: {ok: 0, failed: 0, skipped: 0},
+                    aborted: true, abortReason: "decision required"}
+        }
+        const ctx = {
+            server:      (o.ctx && o.ctx.server)      || o.server      || null,
+            airlineCode: (o.ctx && o.ctx.airlineCode) || o.airlineCode || null
+        }
+        const accountId = await _accountIdFor(ctx.server, ctx.airlineCode)
+        const settingsLoader = _settings()
+        if (!settingsLoader) {
+            return {applied: [], skipped: [], totals: {ok: 0, failed: 0, skipped: 0},
+                    aborted: true, abortReason: "AesStrategySettings not loaded"}
+        }
+        const settings = await settingsLoader.load()
+        const tier = settingsLoader.resolveTier(settings)
+        const applied = []
+        const skipped = []
+
+        if (tier === "preview-only") {
+            skipped.push({decisionId: decision.id, domain: decision.domain, reason: "tier-gate"})
+            const report = {ts: _now(), source: o.source || "strategy-card", tier,
+                            applied, skipped, totals: {ok: 0, failed: 0, skipped: 1},
+                            aborted: true,
+                            abortReason: "tier === preview-only — flip to apply-on-confirm in settings"}
+            await _persistAudit({planId: null, ts: report.ts, source: report.source, report,
+                                  server: ctx.server, airlineCode: ctx.airlineCode, accountId}, accountId)
+            return report
+        }
+        if (!decision.applicable) {
+            skipped.push({decisionId: decision.id, domain: decision.domain,
+                          reason: "advisory", note: decision.applicableNote})
+            return {ts: _now(), source: o.source || "strategy-card", tier,
+                    applied, skipped, totals: {ok: 0, failed: 0, skipped: 1}}
+        }
+        if (!settingsLoader.canApply(settings, decision.domain)) {
+            skipped.push({decisionId: decision.id, domain: decision.domain, reason: "domain-gate"})
+            return {ts: _now(), source: o.source || "strategy-card", tier,
+                    applied, skipped, totals: {ok: 0, failed: 0, skipped: 1}}
+        }
+
+        const subOpts = Object.assign({}, o, {source: o.source || "strategy-card"})
+        if (decision.domain === "alliance") {
+            await _applyAllianceMoves([decision], ctx, applied, skipped, subOpts)
+        } else {
+            return {applied: [], skipped: [], totals: {ok: 0, failed: 0, skipped: 0},
+                    aborted: true,
+                    abortReason: "applyDecision: domain '" + decision.domain
+                        + "' not supported — use AesStrategy.apply(plan) for bulk apply"}
+        }
+
+        const ts        = _now()
+        const okCount   = applied.filter(a => a.ok).length
+        const failCount = applied.filter(a => !a.ok).length
+        const report = {
+            planId:  null,
+            ts:      ts,
+            source:  subOpts.source,
+            tier:    tier,
+            applied: applied,
+            skipped: skipped,
+            totals:  {ok: okCount, failed: failCount, skipped: skipped.length},
+            aborted: false
+        }
+        await _persistAudit({planId: null, ts, source: report.source, report,
+                              server: ctx.server, airlineCode: ctx.airlineCode, accountId}, accountId)
+        return report
+    }
+
     ns.apply       = apply
+    ns.applyDecision = applyDecision
     ns.getApplied  = getApplied
     ns.getAudit    = getAudit
     ns.computeAccountId = _accountIdFor

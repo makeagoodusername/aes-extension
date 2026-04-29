@@ -378,6 +378,16 @@
         if (incomeGuard.available && incomeGuard.damper < 1) {
             upgradeAggression = upgradeAggression * incomeGuard.damper
         }
+        // Phase B1 — crew-pressure gate. Service upgrades drive cleaning/
+        // catering/cabin-crew workload, so when staff are critically short
+        // we shouldn't push more service ops onto the network. severity 1.0
+        // dampens to ×0.3, 0.5 to ×0.65; below 0.3 passes through.
+        const crewPressure = snapshot && snapshot.crew && snapshot.crew.pressure
+        let crewDamper = 1
+        if (crewPressure && isFinite(crewPressure.severity) && crewPressure.severity > 0.3) {
+            crewDamper = Math.max(0.3, 1 - 0.7 * crewPressure.severity)
+            upgradeAggression = upgradeAggression * crewDamper
+        }
 
         // Compute "upper-half" baseline for each class (top-quartile median).
         const ys = profiles.map(p => _classScore(p, "Y")).filter(isFinite).sort((a, b) => b - a)
@@ -435,6 +445,12 @@
                 }
             } else {
                 rationale.push("[anti-spiral] competitor-income data unavailable — using legacy weights")
+            }
+            if (crewDamper < 1) {
+                rationale.push("[crew-pressure] severity "
+                    + _round(crewPressure.severity, 2)
+                    + " — service-upgrade aggression dampened ×" + _round(crewDamper, 2)
+                    + " (avoid piling cabin/catering load on short crew)")
             }
             if (p.scrapedAt) {
                 const ageDays = (Date.now() - p.scrapedAt) / (24 * 3600 * 1000)

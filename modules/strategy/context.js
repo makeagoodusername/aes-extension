@@ -45,11 +45,23 @@
  *                                  watchlisted, alreadyScheduled,
  *                                  snapshotAt}]}],
  *    serviceProfiles: [{id, name, classScore: {Y, C, F}, scrapedAt}],
- *    crew:            {byTypeId | bySkillLabel: {employed, active, required,
- *                                                  reserve, marketAvailable}},
+ *    crew:            {bySkillLabel: {employed, active, required,
+ *                                       reserve, marketAvailable},
+ *                       byPosition:   {[positionId]: {label, group, employed,
+ *                                       active, required, redundant,
+ *                                       salaryPerEmployee, nextWeekSalaryPerEmployee,
+ *                                       countryAverage, payTierPctVsCountry,
+ *                                       nextPayTierPctVsCountry, pendingChange,
+ *                                       moodDigit, moodTrend}},
+ *                       formContext:  {actionUrl, hidden, perRow, capturedAt} | null},
  *    cash:            {bankBalance, weeklyResult, runwayWeeks},
  *    sisters:         {leasing, capital, assets, cashflow},
  *    rivals:          [{enterpriseId, name, hubs, alliance, sharedRoutes}],
+ *    alliance:        {membership: {name, members[], scrapedAt} | null,
+ *                       partners:   [{partnerId, partnerName, partnerIata, relations[]}],
+ *                       partnerIds: Set<string>,
+ *                       allianceMemberIds: Set<string>,
+ *                       ourEnterpriseId: string | null},
  *    settings:        {scoring, economics, ors, autoScheduler, serviceProfiles},
  *    missing:         [string]   ← which stores were unavailable, for diagnostics}
  */
@@ -340,6 +352,21 @@
             const summary = _summarizeCompetitorRecord(rec)
             r.competitor = summary
         }
+
+        // Slice 10 — capture priors so competitor-response.js has a
+        // week-old reference next call. The store's capture() is itself
+        // same-session safe (it only writes when the new record differs
+        // from the most-recent entry, and its rolling backup preserves
+        // the only week-old prior). Best-effort: missing store or single
+        // route capture failure never fails the snapshot.
+        const priorStore = window.AesStrategyCompetitorPriorStore
+        if (priorStore && typeof priorStore.capture === "function") {
+            for (const h of hubs) for (const r of h.byRoute) {
+                if (!r.competitor) continue
+                try { await priorStore.capture(h.iata, r.dest, r.competitor) }
+                catch (_) {}
+            }
+        }
     }
 
     function _summarizeCompetitorRecord(rec) {
@@ -414,37 +441,72 @@
         if (!blob || typeof blob.get !== "function") return
         for (const h of hubs) for (const r of (h && h.byRoute) || []) {
             const fam = blob.get(_routeKey(h.iata, r.dest))
-            if (!fam || !fam.ownPricing || !fam.ownPricing.prices) continue
-            r.ownPricing = {prices: Object.assign({}, fam.ownPricing.prices),
-                            scrapedAt: fam.ownPricing.scrapedAt || null}
+            if (!fam) continue
+            if (fam.ownPricing && fam.ownPricing.prices) {
+                r.ownPricing = {prices: Object.assign({}, fam.ownPricing.prices),
+                                scrapedAt: fam.ownPricing.scrapedAt || null}
+            }
+            // Phase A5 — surface per-family scrapedAt so _attachCacheAges
+            // can build a byKey staleness map. Lets the auto-driver
+            // freshener pick the worst key, not be masked by one fresh one.
+            if (fam.marketShare && isFinite(fam.marketShare.scrapedAt)) {
+                r.marketShareScrapedAt = fam.marketShare.scrapedAt
+            }
+            if (fam.historic && isFinite(fam.historic.scrapedAt)) {
+                r.historicScrapedAt = fam.historic.scrapedAt
+            }
         }
     }
 
     /**
      * Surface per-route cache age — the staleness signal proposers and
      * the apply pipeline need to gate on. Reads existing `scrapedAt`
-     * fields on competitor / ORS / ownPricing records and projects them
-     * into milliseconds since now, plus a `maxMs` worst-of for one-shot
-     * gating. All optional — missing sources just don't populate that
-     * sub-field. Pure / synchronous; runs after the parallel attaches.
+     * fields on competitor / ORS / ownPricing / marketShare / historic
+     * records and projects them into milliseconds since now, plus a
+     * `maxMs` worst-of for one-shot gating and a `byKey` map so the
+     * freshener can pick the worst-stale family by name. All optional —
+     * missing sources just don't populate that sub-field. Pure /
+     * synchronous; runs after the parallel attaches.
      */
     function _attachCacheAges(hubs, ts) {
         const now = isFinite(ts) ? ts : Date.now()
         for (const h of hubs) for (const r of (h && h.byRoute) || []) {
             if (!r) continue
-            const ages = {}
+            const ages = {byKey: {}}
             if (r.competitor && isFinite(r.competitor.scrapedAt)) {
-                ages.competitorMs = Math.max(0, now - r.competitor.scrapedAt)
+                ages.competitorMs   = Math.max(0, now - r.competitor.scrapedAt)
+                ages.byKey.competitors = ages.competitorMs
             }
             if (isFinite(r.orsScrapedAt)) {
-                ages.orsMs = Math.max(0, now - r.orsScrapedAt)
+                ages.orsMs       = Math.max(0, now - r.orsScrapedAt)
+                ages.byKey.ors   = ages.orsMs
             }
             if (r.ownPricing && isFinite(r.ownPricing.scrapedAt)) {
-                ages.ownPriceMs = Math.max(0, now - r.ownPricing.scrapedAt)
+                ages.ownPriceMs        = Math.max(0, now - r.ownPricing.scrapedAt)
+                ages.byKey.ownPricing  = ages.ownPriceMs
+            }
+            if (isFinite(r.marketShareScrapedAt)) {
+                ages.byKey.marketShare = Math.max(0, now - r.marketShareScrapedAt)
+            }
+            if (isFinite(r.historicScrapedAt)) {
+                ages.byKey.historic    = Math.max(0, now - r.historicScrapedAt)
             }
             const finite = []
-            for (const k of Object.keys(ages)) if (isFinite(ages[k])) finite.push(ages[k])
+            for (const k of Object.keys(ages)) {
+                if (k === "byKey") continue
+                if (isFinite(ages[k])) finite.push(ages[k])
+            }
+            for (const k of Object.keys(ages.byKey)) {
+                if (isFinite(ages.byKey[k])) finite.push(ages.byKey[k])
+            }
             ages.maxMs = finite.length ? Math.max.apply(null, finite) : null
+            // worstKey: the family name driving maxMs — surfaced so the
+            // auto-driver freshener can re-fetch only what's stale.
+            if (ages.maxMs != null) {
+                for (const k of Object.keys(ages.byKey)) {
+                    if (ages.byKey[k] === ages.maxMs) { ages.worstKey = k; break }
+                }
+            }
             r.cacheAge = ages
         }
     }
@@ -603,6 +665,93 @@
         } catch (_) { return null }
     }
 
+    /**
+     * Slice 8 — load the staffOverview snapshot to expose pay-tier inputs
+     * to the crew-tuner. Backwards-compatible with the existing crew shape:
+     * callers that already read crew.bySkillLabel keep working; new readers
+     * use crew.byPosition (keyed by AS positionId, the pay-tier applier's
+     * unit). Returns null when the staffOverview store is empty so the
+     * tuner can short-circuit gracefully (§4.8).
+     */
+    async function _loadStaffOverview() {
+        if (!_has("CrewMgmtStaffOverviewScraper")) return null
+        try {
+            const key = window.CrewMgmtStaffOverviewScraper.STORAGE_KEY_LATEST
+            if (!key) return null
+            const out = await chrome.storage.local.get([key])
+            const rec = out[key]
+            if (!rec || !Array.isArray(rec.sections)) return null
+            const byPosition = {}
+            for (const section of rec.sections) {
+                if (!section || !Array.isArray(section.roles)) continue
+                for (const role of section.roles) {
+                    if (!role || !role.positionId) continue
+                    byPosition[role.positionId] = {
+                        label:                     role.label                     || null,
+                        group:                     section.group                  || null,
+                        employed:                  role.employed                  != null ? role.employed                  : null,
+                        active:                    role.active                    != null ? role.active                    : null,
+                        required:                  role.required                  != null ? role.required                  : null,
+                        redundant:                 role.redundant                 != null ? role.redundant                 : null,
+                        salaryPerEmployee:         role.salaryPerEmployee         != null ? role.salaryPerEmployee         : null,
+                        nextWeekSalaryPerEmployee: role.nextWeekSalaryPerEmployee != null ? role.nextWeekSalaryPerEmployee : null,
+                        countryAverage:            role.countryAverage            != null ? role.countryAverage            : null,
+                        payTierPctVsCountry:       role.payTierPctVsCountry       != null ? role.payTierPctVsCountry       : null,
+                        nextPayTierPctVsCountry:   role.nextPayTierPctVsCountry   != null ? role.nextPayTierPctVsCountry   : null,
+                        pendingChange:             !!role.pendingChange,
+                        moodDigit:                 role.moodDigit                 != null ? role.moodDigit                 : null,
+                        moodTrend:                 role.moodTrend                 != null ? role.moodTrend                 : null
+                    }
+                }
+            }
+            return {
+                byPosition,
+                pressure:    _deriveCrewPressure(byPosition),
+                formContext: rec.formContext || null,
+                scrapedAt:   rec.scrapedAt || null,
+                weekId:      rec.weekId    || null
+            }
+        } catch (_) { return null }
+    }
+
+    /**
+     * Phase B1 — derive a per-snapshot crew-pressure block from byPosition.
+     * Pure function; consumed by price-moves / service-moves to dampen
+     * aggressive moves when staff are critically short. Severity scales
+     * linearly to 1.0 at 50% shortfall (matches the same heuristic used by
+     * `signal:strategy:crew-pressure` in content-staff-overview.js so panel
+     * reasons line up with what subscribers see on the bus).
+     *
+     * Returns null when no role has a meaningful shortfall — proposers
+     * short-circuit to "no gating" without a defensive null check.
+     */
+    function _deriveCrewPressure(byPosition) {
+        if (!byPosition || typeof byPosition !== "object") return null
+        let worst = 0
+        const shortPositions = []
+        const perPosition = {}
+        for (const positionId of Object.keys(byPosition)) {
+            const role = byPosition[positionId]
+            const required = Number(role && role.required)
+            const employed = Number(role && role.employed)
+            if (!Number.isFinite(required) || required <= 0) continue
+            if (!Number.isFinite(employed)) continue
+            if (employed >= required) continue
+            const shortfallPct = (required - employed) / required
+            if (shortfallPct > worst) worst = shortfallPct
+            const sev = Math.min(1, shortfallPct / 0.5)
+            perPosition[positionId] = {shortfallPct, severity: sev, label: role.label || null}
+            shortPositions.push(positionId)
+        }
+        if (worst <= 0) return null
+        return {
+            severity:           Math.min(1, worst / 0.5),
+            worstShortfallPct:  worst,
+            shortPositions,
+            byPosition:         perPosition
+        }
+    }
+
     async function _loadLedger(server, airlineCode) {
         if (!_has("AccountingAggregator") || !server || !airlineCode) return null
         try { return await window.AccountingAggregator.loadUnifiedLedger(server, airlineCode) }
@@ -610,6 +759,106 @@
             console.warn("[AesStrategy] ledger load failed", e)
             return null
         }
+    }
+
+    /**
+     * Slice 12 — load alliance roster + our contractual partners so the
+     * alliance proposer (`AesStrategy.proposeAllianceMoves`) can read
+     * everything from the snapshot without reaching back into stores.
+     *
+     * Output shape:
+     *   {membership: {name, members[], scrapedAt} | null,
+     *    partners:   [{partnerId, partnerName, partnerIata, relations[]}],
+     *    partnerIds: Set<string>,             // we already have *some* relation
+     *    allianceMemberIds: Set<string>,      // every alliance peer's id
+     *    ourEnterpriseId: string | null}
+     *
+     * Best-effort: any store read failure leaves the corresponding field
+     * empty/null and adds a "alliance.*" diagnostic to snapshot.missing.
+     */
+    async function _loadAllianceContext(server, airlineIdentity) {
+        const out = {
+            membership:        null,
+            partners:          [],
+            partnerIds:        new Set(),
+            allianceMemberIds: new Set(),
+            ourEnterpriseId:   null
+        }
+        const ourId = airlineIdentity && (airlineIdentity.enterpriseId
+            || airlineIdentity.id || airlineIdentity.airlineId)
+        if (ourId != null) out.ourEnterpriseId = String(ourId)
+
+        if (_has("AllianceOverviewScraper")) {
+            try {
+                const rec = await window.AllianceOverviewScraper.loadRecord()
+                if (rec && (rec.allianceName || (rec.members && rec.members.length))) {
+                    out.membership = {
+                        name:      rec.allianceName || null,
+                        members:   Array.isArray(rec.members) ? rec.members : [],
+                        scrapedAt: rec.scrapedAt || null
+                    }
+                    for (const m of out.membership.members) {
+                        const id = m && (m.enterpriseId || m.id)
+                        if (id != null) out.allianceMemberIds.add(String(id))
+                    }
+                }
+            } catch (_) {}
+        }
+
+        if (out.ourEnterpriseId && _has("RouteAssistantContractualPartnersScraper")) {
+            try {
+                const rec = await window.RouteAssistantContractualPartnersScraper.loadRecord(
+                    server, out.ourEnterpriseId)
+                if (rec && Array.isArray(rec.partners)) {
+                    out.partners = rec.partners.map(p => ({
+                        partnerId:    p && p.partnerId    != null ? String(p.partnerId) : null,
+                        partnerName:  p && p.partnerName  || null,
+                        partnerIata:  p && p.partnerIata  || null,
+                        relations:    Array.isArray(p && p.relations) ? p.relations.slice() : []
+                    })).filter(p => p.partnerId)
+                    for (const p of out.partners) out.partnerIds.add(p.partnerId)
+                }
+            } catch (_) {}
+        }
+
+        // Slice 12 — pre-compute partnerOnwardByDest for the connectivity
+        // term in scoreRoutes(). Walks the union of contractual-partner IDs
+        // and alliance-member IDs against the competitor-intel cache; for
+        // each cached partner record, every hub IATA contributes the
+        // partner to that dest's set. One batched chrome.storage.local.get;
+        // missing partners contribute zero (the term degrades gracefully).
+        out.partnerOnwardByDest = new Map()
+        const partnerLookupIds = new Set()
+        for (const id of out.partnerIds)        partnerLookupIds.add(id)
+        for (const id of out.allianceMemberIds) partnerLookupIds.add(id)
+        if (out.ourEnterpriseId) partnerLookupIds.delete(out.ourEnterpriseId)
+        if (server && partnerLookupIds.size
+                && typeof chrome !== "undefined"
+                && chrome.storage && chrome.storage.local) {
+            const keys = []
+            for (const id of partnerLookupIds) {
+                keys.push("competitorIntel:enterprise:" + server + ":" + id)
+            }
+            try {
+                const all = await chrome.storage.local.get(keys)
+                for (const id of partnerLookupIds) {
+                    const rec = all["competitorIntel:enterprise:" + server + ":" + id]
+                    if (!rec || !Array.isArray(rec.hubs)) continue
+                    for (const hub of rec.hubs) {
+                        const raw = hub && (hub.iata || hub)
+                        if (typeof raw !== "string") continue
+                        const upper = raw.toUpperCase().trim()
+                        if (!upper) continue
+                        if (!out.partnerOnwardByDest.has(upper)) {
+                            out.partnerOnwardByDest.set(upper, new Set())
+                        }
+                        out.partnerOnwardByDest.get(upper).add(id)
+                    }
+                }
+            } catch (_) { /* best-effort; empty map signals "no footprint cache" */ }
+        }
+
+        return out
     }
 
     function _summarizeCash(ledger) {
@@ -626,6 +875,14 @@
             out.runwayWeeks = Math.max(0, Math.floor(out.bankBalance / Math.abs(out.weeklyResult)))
         } else if (out.weeklyResult != null && out.weeklyResult >= 0) {
             out.runwayWeeks = Infinity
+        }
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function"
+                && Number.isFinite(out.runwayWeeks) && out.runwayWeeks < 8) {
+            window.AesDataBus.emit("signal:strategy:cash-low", {
+                runwayWeeks:  out.runwayWeeks,
+                bankBalance:  out.bankBalance,
+                weeklyResult: out.weeklyResult
+            })
         }
         return out
     }
@@ -721,16 +978,54 @@
         const [
             ledger,
             serviceProfiles,
-            crew,
+            crewBySkill,
+            staffOverview,
             settings,
-            strategySettings
+            strategySettings,
+            alliance
         ] = await Promise.all([
             _loadLedger(server, airlineCode),
             _safe(_loadServiceProfiles(),  null),
             _safe(_loadCrew(),             null),
+            _safe(_loadStaffOverview(),    null),
             _safe(_loadSettings(),         null),
-            _safe(_loadStrategySettings(), null)
+            _safe(_loadStrategySettings(), null),
+            _safe(_loadAllianceContext(server, airlineCode), null)
         ])
+        if (!_has("AllianceOverviewScraper")) missing.push("AllianceOverviewScraper")
+        if (!_has("RouteAssistantContractualPartnersScraper")) missing.push("RouteAssistantContractualPartnersScraper")
+        if (!alliance || !alliance.membership) missing.push("alliance.membership")
+        if (!alliance || !alliance.partners.length) missing.push("alliance.partners")
+        // Slice 12 — only flag the partner-footprint cache missing when we
+        // *expect* footprints (≥1 partner or alliance peer known) but the
+        // pre-compute couldn't find any cached record. A no-alliance airline
+        // doesn't get a spurious diagnostic.
+        if (alliance
+                && (alliance.partners.length > 0 || alliance.allianceMemberIds.size > 0)
+                && (!alliance.partnerOnwardByDest || alliance.partnerOnwardByDest.size === 0)) {
+            missing.push("alliance.partnerOnwardByDest")
+        }
+
+        // Slice 8 — merge the per-skill (pilots) view with the per-position
+        // (staffOverview) view into one `crew` envelope. crew.byPosition +
+        // crew.formContext are the new readers; crew.bySkillLabel stays
+        // exactly as Slice 3 wrote it. crew is null only when both stores
+        // are empty so the existing _has() / missing.push() invariants stay
+        // truthful.
+        let crew = null
+        if (crewBySkill || staffOverview) {
+            crew = Object.assign({},
+                crewBySkill || {},
+                staffOverview ? {
+                    byPosition:  staffOverview.byPosition,
+                    pressure:    staffOverview.pressure,
+                    formContext: staffOverview.formContext,
+                    staffOverviewScrapedAt: staffOverview.scrapedAt,
+                    staffOverviewWeekId:    staffOverview.weekId
+                } : {})
+        }
+        if (!_has("CrewMgmtStaffOverviewScraper")) missing.push("CrewMgmtStaffOverviewScraper")
+        if (!staffOverview) missing.push("crew.byPosition")
 
         const fleet = await _enrichFleet(server, fleetRaw, typesByTypeId, ledger)
         const hubs  = _buildHubs(ledger)
@@ -768,6 +1063,7 @@
             cash:             cash,
             sisters:          sisters,
             rivals:           [],   // populated in Slice 5 (cross-airline / enterprise scraper)
+            alliance:         alliance,
             settings:         _trimSettings(settings),
             strategySettings: strategySettings,
             routeObjectives:  routeObjectives,

@@ -30,8 +30,8 @@
  *               predictedWeeklyProfit, predictedOrsAvg},
  *     decisions: [{
  *       id:            "<unique-string>",
- *       kind:          "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction",
- *       domain:        "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction",
+ *       kind:          "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction"|"alliance",
+ *       domain:        "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction"|"alliance",
  *       title:         "JFK → LAX × 7 legs"           // human label
  *       subtitle:      "tail N123AA · widebody · 65h" // optional 2nd line
  *       rationale:     [string],                      // bullet rationale
@@ -138,6 +138,31 @@
         const tone = move.action === "hire" ? "ok" : "warn"
         return {value: move.amount, unit: "ppl", tone: tone,
                 label: move.action + " " + move.amount + " · " + (move.flightsNeeded || "?") + " flt/wk needed"}
+    }
+    function _impactAlliance(move) {
+        const v = _num(move && move.score, NaN)
+        if (!isFinite(v) || v === 0) return null
+        return {value: v, unit: "score", tone: "muted",
+                label: "score " + (Math.round(v * 100) / 100)}
+    }
+    function _impactSister(payload) {
+        const v = _num(payload && payload.estProfitDeltaWeekly, NaN)
+        if (!isFinite(v) || v === 0) return null
+        return {value: v, unit: "$/wk", tone: v > 0 ? "ok" : "muted",
+                label: "~$" + Math.abs(Math.round(v)).toLocaleString() + "/wk advisory"}
+    }
+    function _impactFleetRenewal(payload) {
+        if (!payload) return null
+        const score = _num(payload.score, NaN)
+        if (!isFinite(score)) return null
+        return {value: score, unit: "score", tone: "muted",
+                label: "score " + score.toFixed(2)}
+    }
+    function _impactMarketing(payload) {
+        const v = _num(payload && payload.deltaPct, NaN)
+        if (!isFinite(v) || v === 0) return null
+        return {value: v, unit: "pct", tone: v > 0 ? "ok" : "warn",
+                label: (v > 0 ? "+" : "") + v + "% budget"}
     }
 
     function _scheduleDecisions(plan, currentSchedules) {
@@ -335,6 +360,89 @@
         return out
     }
 
+    /**
+     * Slice 12 — alliance & IL codeshare decisions.
+     *
+     * Sourced from the proposer (`AesStrategy.proposeAllianceMoves`) and
+     * threaded into diffPlan via `opts.allianceMoves`. Two move kinds:
+     *   il-request    — `applicable: true`. The IL applier
+     *                   (`AllianceIlRequestApplier`) handles the optional
+     *                   POST under its own two-gate model. Still gated by
+     *                   the apply-pipeline tier + per-domain flag.
+     *   alliance-join — `applicable: false`. AS lacks a one-click alliance-
+     *                   join API; surfaced as advisory only with a deep-link
+     *                   to /app/alliance.
+     */
+    function _allianceDecisions(allianceMoves) {
+        const out = []
+        const moves = Array.isArray(allianceMoves) ? allianceMoves : []
+        for (const m of moves) {
+            if (!m || !m.kind) continue
+            const isIl = m.kind === "il-request"
+            const isJoin = m.kind === "alliance-join"
+            if (!isIl && !isJoin) continue
+
+            const partnerId = m.partnerEnterpriseId
+            const allianceId = m.allianceId
+            const id = isIl
+                ? "alliance:il-request:" + (partnerId || "?")
+                : "alliance:alliance-join:" + (allianceId || m.allianceName || "?")
+            const partnerLabel = m.partnerName
+                || (m.partnerIata ? "[" + m.partnerIata + "]" : null)
+                || (partnerId ? "#" + partnerId : "partner")
+            const allianceLabel = m.allianceName
+                || (allianceId ? "alliance #" + allianceId : "alliance")
+            const title = isIl
+                ? "Send IL request · " + partnerLabel
+                : "Join " + allianceLabel
+            const subtitle = (m.hub ? "feeds " + m.hub + " · " : "")
+                + "newReach " + _num(m.newReach, 0)
+                + " · overlap " + _num(m.overlapDom, 0)
+            const dec = {
+                id:           id,
+                kind:         "alliance",
+                domain:       "alliance",
+                title:        title,
+                subtitle:     subtitle,
+                rationale:    Array.isArray(m.rationale) ? m.rationale.slice() : [],
+                payload:      m,
+                applicable:   isIl,
+                applicableNote: isJoin
+                    ? "AS lacks a one-click alliance-join API — open /app/alliance to apply manually."
+                    : ""
+            }
+            const imp = _impactAlliance(m)
+            if (imp) dec._impact = imp
+            out.push(dec)
+        }
+        return out
+    }
+
+    /**
+     * Pass-through builder for advisory decisions emitted by async
+     * proposers (sister-coordination, fleet-renewal, marketing-tuner).
+     * Producers already shape id/domain/title/rationale/payload — we only
+     * decorate `_impact` so the chip slot matches the existing rows. All
+     * three domains arrive `applicable: false` from their producers, which
+     * routes them through diff-plan's `advisoryTotal` counter and apply-
+     * pipeline's `skipped: "advisory"` short-circuit.
+     */
+    function _advisoryDecisions(advisoryArray) {
+        if (!Array.isArray(advisoryArray) || !advisoryArray.length) return []
+        const out = []
+        for (const d of advisoryArray) {
+            if (!d || !d.id || !d.domain) continue
+            const dec = Object.assign({}, d)
+            let imp = null
+            if      (d.domain === "sister")        imp = _impactSister(d.payload)
+            else if (d.domain === "fleet-renewal") imp = _impactFleetRenewal(d.payload)
+            else if (d.domain === "marketing")     imp = _impactMarketing(d.payload)
+            if (imp) dec._impact = imp
+            out.push(dec)
+        }
+        return out
+    }
+
     function _summary(plan, decisions, currentSchedules) {
         const summary = (plan && plan.summary) ? Object.assign({}, plan.summary) : {}
         if (typeof summary.repricedRoutes      !== "number") summary.repricedRoutes      = 0
@@ -390,7 +498,11 @@
 
     function diffPlan(plan, _snapshot, opts) {
         const currentSchedules = opts && opts.currentSchedules ? opts.currentSchedules : null
-        if (!plan) return {summary: _summary(null, [], currentSchedules), decisions: []}
+        const allianceMoves    = opts && opts.allianceMoves    ? opts.allianceMoves    : null
+        const advisory         = (opts && opts.advisoryDecisions) || []
+        if (!plan && !advisory.length && !(allianceMoves && allianceMoves.length)) {
+            return {summary: _summary(null, [], currentSchedules), decisions: []}
+        }
         const decisions = []
             .concat(_scheduleDecisions(plan, currentSchedules))
             .concat(_serviceDecisions(plan))
@@ -398,11 +510,17 @@
             .concat(_crewDecisions(plan))
             .concat(_routeCreationDecisions(plan))
             .concat(_competitorReactionDecisions(plan))
-        // Stable order — domains in apply-pipeline order, then by id within
-        // domain (already deterministic from the producers above). Competitor
-        // reactions are advisory-only and sort last.
-        const domainOrder = {schedule: 0, service: 1, price: 2, crew: 3,
-                              routeCreation: 4, competitorReaction: 5}
+            .concat(_allianceDecisions(allianceMoves))
+            .concat(_advisoryDecisions(advisory))
+        // Stable order — apply-pipeline order, then by id within domain.
+        // Competitor reactions / alliance / sister-coordination / fleet-
+        // renewal / marketing are advisory-only and sort to the end so
+        // applicable rows lead the list.
+        const domainOrder = {
+            schedule: 0, service: 1, price: 2, crew: 3, routeCreation: 4,
+            competitorReaction: 5, alliance: 6,
+            sister: 7, "fleet-renewal": 8, marketing: 9
+        }
         decisions.sort((a, b) => {
             const da = domainOrder[a.domain] ?? 99
             const db = domainOrder[b.domain] ?? 99
@@ -412,7 +530,42 @@
         return {summary: _summary(plan, decisions, currentSchedules), decisions: decisions}
     }
 
+    /**
+     * Async fan-out across the advisory proposers. Each branch is wrapped
+     * in its own try/catch so a single bad proposer never breaks the diff.
+     * Callers (panel, auto-driver, strategy-tile) pre-fetch via this and
+     * thread the result into `diffPlan(..., {advisoryDecisions})`.
+     */
+    async function collectAdvisoryDecisions(snapshot, ctx) {
+        if (!snapshot) return []
+        const out = []
+        const server = (ctx && ctx.server) || (snapshot && snapshot.server) || null
+        if (window.AesStrategySisterCoordination
+                && typeof window.AesStrategySisterCoordination.proposeAll === "function") {
+            try {
+                const r = await window.AesStrategySisterCoordination.proposeAll(server, {})
+                if (Array.isArray(r)) for (const d of r) if (d) out.push(d)
+            } catch (e) { console.warn("[AES diff-plan] sister proposer threw", e) }
+        }
+        if (window.AesStrategyFleetRenewal
+                && typeof window.AesStrategyFleetRenewal.proposeAll === "function") {
+            try {
+                const r = await window.AesStrategyFleetRenewal.proposeAll(snapshot, {})
+                if (Array.isArray(r)) for (const d of r) if (d) out.push(d)
+            } catch (e) { console.warn("[AES diff-plan] fleet-renewal proposer threw", e) }
+        }
+        if (window.AesStrategyMarketingTuner
+                && typeof window.AesStrategyMarketingTuner.computeProposals === "function") {
+            try {
+                const r = await window.AesStrategyMarketingTuner.computeProposals({snapshot: snapshot})
+                if (Array.isArray(r)) for (const d of r) if (d) out.push(d)
+            } catch (e) { console.warn("[AES diff-plan] marketing tuner threw", e) }
+        }
+        return out
+    }
+
     ns.diffPlan = diffPlan
+    ns.collectAdvisoryDecisions = collectAdvisoryDecisions
 
     // ── ?aes-debug smoke ──────────────────────────────────────────────
     try {
