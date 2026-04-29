@@ -28,9 +28,52 @@ class AccountingSisterScraper {
             }
         }
 
-        if (!tables.length) return null
+        if (!tables.length) {
+            // Pages like /app/finance/assets render an empty-state message
+            // instead of an empty table when the user has nothing to show
+            // (e.g. all aircraft leased → no owned assets). Treat that as a
+            // valid scrape so the orchestrator records the visit and the job
+            // doesn't time out.
+            const empty = AccountingSisterScraper._emptyStateRecord(pane, type)
+            if (empty) return empty
+            return null
+        }
 
         return {type, tables, scrapedAt: Date.now()}
+    }
+
+    static _emptyStateRecord(pane, type) {
+        const explicit = pane.querySelector(
+            ".assets-none, .leasing-none, .capital-none, .cashflow-none, .empty-state"
+        )
+        if (explicit) {
+            return {
+                type,
+                tables: [],
+                empty: true,
+                emptyMessage: (explicit.textContent || "").trim(),
+                scrapedAt: Date.now()
+            }
+        }
+        // Generic fallback: a short paragraph or div whose visible text
+        // signals nothing-to-show. Conservative — only matches obvious
+        // phrasings to avoid false positives on transitional loaders.
+        const candidates = pane.querySelectorAll("p, div")
+        for (const el of candidates) {
+            if (el.querySelector("table")) continue
+            const t = (el.textContent || "").trim().toLowerCase()
+            if (!t || t.length > 200) continue
+            if (/does not possess|no entries|no records|nothing to show/.test(t)) {
+                return {
+                    type,
+                    tables: [],
+                    empty: true,
+                    emptyMessage: t,
+                    scrapedAt: Date.now()
+                }
+            }
+        }
+        return null
     }
 
     static _activePane(root) {

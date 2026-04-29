@@ -27,6 +27,7 @@ class CentralHubHeroStrip {
         this._refreshTimer = null
         this._dirty = new Set()
         this._cards = CentralHubHeroStrip._cardSpecs()
+        this._feedDisposers = []
     }
 
     static _cardSpecs() {
@@ -34,8 +35,13 @@ class CentralHubHeroStrip {
             {
                 id:          "cash",
                 label:       "Cash",
-                prefixes:    ["accounting:"],
-                resolver:    "_resolveCash",
+                // Cash card now reads via HubFeed (`hub:cash:weekly`) instead
+                // of attaching its own chrome.storage.onChanged listener.
+                // The prefixes array is left empty so the legacy storage path
+                // is a no-op for this card; the feed subscription handles it.
+                prefixes:    [],
+                feedSlice:   "hub:cash:weekly",
+                feedRender:  "_renderCashFromFeed",
                 focusEvent:  "open-tile",
                 focusPayload:{tileId: "accounting", expand: true, scrollIntoView: true, source: "hero-cash"}
             },
@@ -121,6 +127,7 @@ class CentralHubHeroStrip {
 
         this.root = root
         this._attachStorageListener()
+        this._attachFeedSubscriptions()
         this._refreshAll()
         return root
     }
@@ -134,6 +141,12 @@ class CentralHubHeroStrip {
         if (this._refreshTimer) {
             clearTimeout(this._refreshTimer)
             this._refreshTimer = null
+        }
+        if (this._feedDisposers && this._feedDisposers.length) {
+            for (const off of this._feedDisposers) {
+                try { off() } catch (_) { /* noop */ }
+            }
+            this._feedDisposers = []
         }
         if (this.root && this.root.parentNode) {
             this.root.parentNode.removeChild(this.root)
@@ -236,6 +249,11 @@ class CentralHubHeroStrip {
 
     async _refreshAll() {
         for (const spec of this._cards) {
+            // Feed-driven cards paint via HubFeed subscriptions; the cold
+            // value (if any) is set in _attachFeedSubscriptions, and updates
+            // arrive through the bus. Skip the legacy resolver to avoid the
+            // momentary "no data" flicker before the subscription fires.
+            if (spec.feedSlice) continue
             this._refreshCard(spec).catch(() => { /* never throw at strip level */ })
         }
     }
@@ -247,6 +265,55 @@ class CentralHubHeroStrip {
         } catch (err) {
             console.warn("[AES Hub hero] resolver failed", spec.id, err)
             this._setCard(spec.id, {value: "—", sub: "no data", kind: "muted"})
+        }
+    }
+
+    /**
+     * Cards declaring `feedSlice` subscribe to HubFeed instead of joining the
+     * shared storage listener. The feed compute owns the data shape; the
+     * mapper (`feedRender`) translates it into the {value, sub, kind} card
+     * triple. Keeps fallback resolvers untouched for cards still on the
+     * legacy storage path.
+     */
+    _attachFeedSubscriptions() {
+        if (typeof window.HubFeed === "undefined") return
+        for (const spec of this._cards) {
+            if (!spec.feedSlice) continue
+            const off = window.HubFeed.subscribe(spec.feedSlice, (e) => {
+                this._refreshFeedCard(spec, e)
+            })
+            if (typeof off === "function") this._feedDisposers.push(off)
+            // Cold-paint: HubFeed views are eager by default but the first
+            // value may not be cached yet when mount runs. Read what's there;
+            // when undefined, leave the placeholder until the subscription fires.
+            const cached = window.HubFeed.read(spec.feedSlice)
+            if (cached !== undefined) {
+                this._refreshFeedCard(spec, {value: cached, hasValue: true})
+            }
+        }
+    }
+
+    _refreshFeedCard(spec, e) {
+        if (!e || !e.hasValue) return
+        const fn = this[spec.feedRender]
+        if (typeof fn !== "function") return
+        try {
+            const card = fn.call(this, e.value)
+            if (card) this._setCard(spec.id, card)
+        } catch (err) {
+            console.warn("[AES Hub hero] feed-render failed", spec.id, err)
+            this._setCard(spec.id, {value: "—", sub: "no data", kind: "muted"})
+        }
+    }
+
+    _renderCashFromFeed(value) {
+        if (!value || !value.hasSnapshot || !Number.isFinite(value.value)) {
+            return {value: "—", sub: value ? value.label : "no data", kind: "muted"}
+        }
+        return {
+            value: CentralHubHeroStrip._formatCompactAS(value.value),
+            sub:   value.label || "",
+            kind:  value.kind  || "ok"
         }
     }
 

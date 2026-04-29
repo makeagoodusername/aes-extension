@@ -32,16 +32,24 @@
 
         const firedAt = Date.now()
         const fire = {
-            id:         _fireId(firedAt),
-            scenarioId: scenario.id,
-            label:      scenario.label || scenario.id,
-            severity:   scenario.severity || "info",
-            server:     signal.server,
-            airline:    signal.airline,
-            firedAt:    firedAt,
-            rationale:  String(result.rationale || ""),
-            payload:    result.payload || {},
-            signalIds:  [signal.id]
+            id:              _fireId(firedAt),
+            scenarioId:      scenario.id,
+            label:           scenario.label || scenario.id,
+            severity:        scenario.severity || "info",
+            server:          signal.server,
+            airline:         signal.airline,
+            firedAt:         firedAt,
+            rationale:       String(result.rationale || ""),
+            payload:         result.payload || {},
+            signalIds:       [signal.id],
+            // K10 — every fire ships in the open state with no outcome yet.
+            // The outcome-driver fills `outcome` when the KPI window allows
+            // a verdict; the user's Open / Dismiss buttons drive
+            // acceptanceState forward.
+            acceptanceState: "open",
+            acceptedAt:      null,
+            outcome:         null,
+            outcomeAt:       null
         }
 
         const host = {server: signal.server, airline: signal.airline}

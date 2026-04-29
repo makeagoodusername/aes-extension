@@ -62,6 +62,14 @@ window.AES_DATA_BUS_TOPICS = [
         emittedBy: "modules/used-aircraft-scanner/price-history-store.js",
         hint:     "{server, typeIds: string[]}",
         notes:    "fired after recordRows; typeIds are the types whose history grew this batch"
+    },
+
+    // -- crew-management --
+    {
+        topic:    "data:crewMgmt:staffOverview:saved",
+        emittedBy: "modules/crew-management/content-staff-overview.js",
+        hint:     "{weekId, weeklyTotal, nextWeekTotal}",
+        notes:    "fired after staffOverview scrape + store; subscribers refetch via CrewMgmtStaffOverviewStore.loadLatest() / loadHistory()"
     }
 
     // Slices 2 + 3 will add: data:schedule-management:store:saved,

@@ -38,6 +38,10 @@ function fltmng_getData(){
       seatsF:fltmng_getInt($('td:eq(5) > span:eq(2)',this).text()),
       aircraftId:fltmng_getAircraftId($('td:eq(6) > div > div:eq(1) > a:eq(0)',this).attr('href')),
       note:fltmng_getNickname($('td:eq(7) > span > span',this).text()),
+      // Home-base IATA from any /app/info/airports/<IATA> link in the row.
+      // Source for ScrapeOrchestratorEnumerators.enumerateHubs — without it
+      // the per-hub and per-route phases skip on a fresh install.
+      location:fltmng_getLocation($('a[href*="/app/info/airports/"]:eq(0)',this).attr('href')),
       fleet:fleet,
       date:date.date,
       time:date.time
@@ -84,6 +88,11 @@ function fltmng_getAircraftId(value){
         value = value.split('/');
         return parseInt(value[value.length-2],10);
     }
+}
+function fltmng_getLocation(href){
+    if (!href) return "";
+    const m = /\/app\/info\/airports\/([A-Za-z]{3,4})/.exec(href);
+    return m ? m[1].toUpperCase() : "";
 }
 function fltmng_getStorageData(){
   let keys = [];
@@ -141,6 +150,7 @@ function fltmng_updateAircraftFleetStorageData(data){
         equipment:newvalue.equipment,
         typeId:newvalue.typeId,
         fleet:newvalue.fleet,
+        location:newvalue.location,
         maintanance:newvalue.maintanance,
         nickname:newvalue.nickname,
         note:newvalue.note,
@@ -165,6 +175,7 @@ function fltmng_updateAircraftFleetStorageData(data){
           if(newValue.seatsY == null && value.seatsY != null) newValue.seatsY = value.seatsY;
           if(newValue.seatsC == null && value.seatsC != null) newValue.seatsC = value.seatsC;
           if(newValue.seatsF == null && value.seatsF != null) newValue.seatsF = value.seatsF;
+          if(!newValue.location && value.location) newValue.location = value.location;
           found = 1;
         }
       });

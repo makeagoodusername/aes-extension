@@ -33,6 +33,9 @@ class ScrapeOrchestrator {
             "per-competitor": !!opts.includePerCompetitor,
             "flightsfrom":    !!opts.includeFlightsFrom
         }
+        const phaseFilter = Array.isArray(opts.phaseFilter) && opts.phaseFilter.length
+            ? new Set(opts.phaseFilter.map(String))
+            : null
 
         const host = await this._buildHost()
         if (!host) {
@@ -40,9 +43,10 @@ class ScrapeOrchestrator {
             return
         }
 
-        const phases = window.ScrapeOrchestratorPhases.all().filter(p =>
-            !p.optional || include[p.id]
-        )
+        const phases = window.ScrapeOrchestratorPhases.all().filter(p => {
+            if (phaseFilter && !phaseFilter.has(p.id)) return false
+            return !p.optional || include[p.id]
+        })
         this._phasePlanCache = phases
 
         this._attachProgressListener()
@@ -50,6 +54,7 @@ class ScrapeOrchestrator {
         for (const phase of phases) {
             if (this._aborted) break
 
+            const phaseStartedAt = Date.now()
             this.onPhaseStart({phaseId: phase.id, label: phase.label})
             let jobs
             try {
@@ -61,11 +66,13 @@ class ScrapeOrchestrator {
 
             if (!jobs.length) {
                 this.onPhaseDone({phaseId: phase.id, total: 0, succeeded: 0, failed: 0, skipped: true})
+                this._recordCadence(host, phase.id, {startedAt: phaseStartedAt, total: 0, succeeded: 0, failed: 0})
                 continue
             }
 
             const result = await this._runPhaseJobs(phase, jobs)
             this.onPhaseDone({phaseId: phase.id, ...result})
+            this._recordCadence(host, phase.id, {...result, startedAt: phaseStartedAt})
 
             if (result.haltReason) {
                 this.onError({message: "halted: " + result.haltReason, phase: phase.id})
@@ -84,6 +91,11 @@ class ScrapeOrchestrator {
 
         this._detachProgressListener()
         this.onDone({aborted: this._aborted})
+    }
+
+    _recordCadence(host, phaseId, result) {
+        if (typeof window.AesPhaseCadenceStore === "undefined") return
+        try { window.AesPhaseCadenceStore.record(host, phaseId, result) } catch (_) { /* noop */ }
     }
 
     abort() {

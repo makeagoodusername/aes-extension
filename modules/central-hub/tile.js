@@ -18,6 +18,11 @@
  *   openHandler(ctx)                 callback alternative to openHref
  *   watchedStorageKeys(ctx)          string[] of prefixes; touching any
  *                                    triggers refresh()
+ *   feedSlices(ctx)                  string[] of HubFeed slice names; any
+ *                                    update triggers refresh(). Slices must
+ *                                    be declared elsewhere via HubFeed.declare.
+ *                                    Co-exists with watchedStorageKeys() —
+ *                                    tiles can use both during migration.
  *
  * Lifecycle:
  *   await tile.mount(container, ctx, {expanded, onToggleChange})
@@ -46,9 +51,12 @@ class CentralHubTile {
         this.ctx = null
         this._lastStatus = null
         this._storageListener = null
+        this._storageBusDisposers = null
         this._refreshing = false
         this._onToggleChange = null
         this._busDisposers = []
+        this._feedDisposers = []
+        this._feedFreshness = null  // last seen {stale, ageMs} from feed slices
     }
 
     /**
@@ -64,6 +72,14 @@ class CentralHubTile {
     }
 
     watchedStorageKeys(ctx) { return [] }
+
+    /**
+     * Opt-in HubFeed slices. Each name must be a previously-declared
+     * `hub:*` slice (see modules/_shared/hub-feed.js + central-hub/feed/).
+     * On mount, the tile subscribes to each slice and triggers `refresh()`
+     * on update; freshness metadata is captured and surfaced as a header dot.
+     */
+    feedSlices(ctx) { return [] }
 
     async loadStatus(ctx) {
         return {badge: "—", badgeKind: "muted", summary: ""}
@@ -91,6 +107,7 @@ class CentralHubTile {
         this._buildRoot()
         container.appendChild(this.root)
         this._attachStorageListener()
+        this._attachFeedSubscriptions()
         await this.refresh()
     }
 
@@ -102,6 +119,7 @@ class CentralHubTile {
         root.id = "aes-central-hub-tile-" + this.id
         root.dataset.tileId = this.id
         root.dataset.section = this.section
+        root.dataset.aesSurface = "tile"
         root.style.cssText = [
             "display:block",
             "background:" + T.color.bone,
@@ -126,6 +144,7 @@ class CentralHubTile {
         header.addEventListener("click", (e) => {
             if (e.target.closest(".aes-central-hub-tile__open")) return
             if (e.target.closest(".aes-central-hub-tile__toggle")) return
+            if (e.target.closest(".aes-central-hub-tile__pin")) return
             this.toggle()
         })
 
@@ -171,6 +190,13 @@ class CentralHubTile {
 
         const openBtn = this._buildOpenButton()
         if (openBtn) actions.appendChild(openBtn)
+
+        // C-2 — pin glyph (★/☆) precedes the toggle. Click bypasses
+        // the header toggle handler via class match + stopPropagation.
+        if (window.AesTilePin && typeof window.AesTilePin.build === "function") {
+            const pinBtn = window.AesTilePin.build(this.id)
+            if (pinBtn) actions.appendChild(pinBtn)
+        }
 
         const toggleBtn = document.createElement("button")
         toggleBtn.type = "button"
@@ -313,6 +339,24 @@ class CentralHubTile {
                 )
                 this.badgeEl.appendChild(el)
             }
+            const freshness = this._feedFreshness
+            if (freshness && freshness.stale) {
+                const T = window.AESTokens
+                const dot = document.createElement("span")
+                dot.className = "aes-central-hub-tile__freshness"
+                dot.title = "Cached value is stale"
+                                + (freshness.ageMs ? " (" + Math.round(freshness.ageMs / 1000) + "s old)" : "")
+                dot.style.cssText = [
+                    "display:inline-block",
+                    "width:6px",
+                    "height:6px",
+                    "border-radius:50%",
+                    "background:" + (T && T.color ? T.color.slate : "#888"),
+                    "margin-left:" + (T && T.sp ? T.sp[1] : "4px"),
+                    "vertical-align:middle"
+                ].join(";")
+                this.badgeEl.appendChild(dot)
+            }
         }
     }
 
@@ -329,7 +373,19 @@ class CentralHubTile {
     _attachStorageListener() {
         const prefixes = this.watchedStorageKeys(this.ctx)
         if (!prefixes || !prefixes.length) return
-        if (this._storageListener) return
+        if (this._storageBusDisposers || this._storageListener) return
+
+        if (typeof window.AesDataBus !== "undefined" && typeof window.AesDataBus.bridgeStorage === "function") {
+            const disposers = []
+            for (const prefix of prefixes) {
+                const topic = "data:storage:hub-tile:" + this.id + ":" + prefix
+                disposers.push(window.AesDataBus.bridgeStorage({prefix, topic}))
+                disposers.push(window.AesDataBus.on(topic, () => this.refresh()))
+            }
+            this._storageBusDisposers = disposers
+            return
+        }
+
         this._storageListener = (changes, area) => {
             if (area !== "local") return
             for (const k in changes) {
@@ -339,6 +395,19 @@ class CentralHubTile {
             }
         }
         chrome.storage.onChanged.addListener(this._storageListener)
+    }
+
+    _attachFeedSubscriptions() {
+        if (typeof window.HubFeed === "undefined") return
+        const slices = this.feedSlices(this.ctx)
+        if (!slices || !slices.length) return
+        for (const slice of slices) {
+            const off = window.HubFeed.subscribe(slice, (e) => {
+                this._feedFreshness = {stale: !!e.stale, ageMs: e.ageMs, error: e.error || null}
+                this.refresh()
+            })
+            if (typeof off === "function") this._feedDisposers.push(off)
+        }
     }
 
     /**
@@ -383,6 +452,12 @@ class CentralHubTile {
     }
 
     dispose() {
+        if (this._storageBusDisposers) {
+            for (const off of this._storageBusDisposers) {
+                try { off() } catch (_) { /* noop */ }
+            }
+            this._storageBusDisposers = null
+        }
         if (this._storageListener) {
             try { chrome.storage.onChanged.removeListener(this._storageListener) }
             catch (_) { /* noop */ }
@@ -393,6 +468,12 @@ class CentralHubTile {
                 try { dispose() } catch (_) { /* noop */ }
             }
             this._busDisposers = []
+        }
+        if (this._feedDisposers && this._feedDisposers.length) {
+            for (const dispose of this._feedDisposers) {
+                try { dispose() } catch (_) { /* noop */ }
+            }
+            this._feedDisposers = []
         }
         if (this.root && this.root.parentNode) {
             this.root.parentNode.removeChild(this.root)

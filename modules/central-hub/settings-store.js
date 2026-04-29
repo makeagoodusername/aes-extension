@@ -24,6 +24,14 @@ class CentralHubSettings {
             expandedTiles: [],
             tileOrder:     {},
             pinnedTiles:   [],
+            // C-2 — recents rail ring buffer (cap 5). Pushed by shell
+            // when a tile is expanded; rendered by recents-rail.js.
+            recentTiles:   [],
+            // C-3 — per-tile section overrides. Behind kill switch
+            // (default OFF) — even when enabled, the override map
+            // starts empty so the default IA is preserved.
+            tileSectionOverrides:        {},
+            tileSectionOverridesEnabled: false,
             // CB0 — opt-in Cubist visual mode. Defaults OFF; first
             // activation prompts a confirm (§4.18 invariant).
             cubistMode:        false,
@@ -51,6 +59,11 @@ class CentralHubSettings {
         }
         if (!Array.isArray(merged.expandedTiles)) merged.expandedTiles = []
         if (!Array.isArray(merged.pinnedTiles))   merged.pinnedTiles   = []
+        if (!Array.isArray(merged.recentTiles))   merged.recentTiles   = []
+        if (!merged.tileSectionOverrides || typeof merged.tileSectionOverrides !== "object") {
+            merged.tileSectionOverrides = {}
+        }
+        if (typeof merged.tileSectionOverridesEnabled !== "boolean") merged.tileSectionOverridesEnabled = false
         if (!merged.tileOrder || typeof merged.tileOrder !== "object") merged.tileOrder = {}
         if (typeof merged.cubistMode !== "boolean")      merged.cubistMode      = false
         if (typeof merged.cubistModeAcked !== "boolean") merged.cubistModeAcked = false

@@ -95,7 +95,8 @@ class ScrapeOrchestratorPhases {
                     {url: o + "/app/finance/capital",              key: "accounting:capital"},
                     {url: o + "/app/finance/assets",               key: "accounting:assets"},
                     {url: o + "/app/alliance",                     key: "alliance:overview"},
-                    {url: o + "/action/enterprise/staffPilots",    key: "crewMgmt:pilots"}
+                    {url: o + "/action/enterprise/staffPilots",    key: "crewMgmt:pilots"},
+                    {url: o + "/action/enterprise/staffOverview",  key: "crewMgmt:staffOverview:latest"}
                 ]
                 return targets.map((t, i) => ({
                     jobId:                  "foundation-" + i,

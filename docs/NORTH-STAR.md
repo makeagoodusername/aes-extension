@@ -22,6 +22,7 @@ This is the **single source of truth** for *what AES is becoming and why*. It do
 | What we have explicitly NOT decided | this doc, §10 |
 | The strategy slice catalog (Slices 1–32, S/F/L/Q/U numbering) | `docs/STRATEGY-ROADMAP.md` |
 | The Flight Studio expansion (F1 → F3) | `docs/FLIGHT-STUDIO-ROADMAP.md` |
+| The Conductor (Pillar VIII) — scenarios, routines, learning | `docs/CONDUCTOR-ROADMAP.md` |
 | Per-feature design docs | `docs/PLAN-*.md` |
 | What shipped this/last session, invariants list | `HANDOVER.md` |
 
@@ -239,7 +240,7 @@ This is the **only** mental model. New features are either a sense, a decide, an
 
 ## 6 · Strategic Pillars — the macro-themes every slice belongs to
 
-Every slice in this project (every Strategy slice 1–32, every F slice, every Q/U QoL item, every Letter L slice, every auto-pricing tier, every ORS sandbox slice, every pricing/service applier extension) maps to **exactly one** of these pillars. If you can't pick one, the slice is mis-shaped.
+Every slice in this project (every Strategy slice 1–32, every F slice, every Q/U QoL item, every Letter L slice, every auto-pricing tier, every ORS sandbox slice, every Conductor K slice, every pricing/service applier extension) maps to **exactly one** of these pillars. If you can't pick one, the slice is mis-shaped.
 
 ### Pillar I — SENSE
 Read AS reliably. Normalise. Cache. Fail gracefully.
@@ -249,12 +250,12 @@ Examples: scrapers, demand-derivator, ORS lazy migration, contractual-partners, 
 ### Pillar II — DECIDE
 Score, rank, allocate, propose. Pure functions over `Snapshot`.
 Examples: `decide-routes.js`, `allocate-fleet.js`, `route-creation.js`, `price-moves.js`, `service-moves.js`, `crew-moves.js`, `wave-route-fitter`, `wave-slot-scorer`, `optimizeAssignment`, ORS sandbox `project()`.
-**Maturity:** ~60% (Slices 1–6 shipped; Slices 7–10, 13, 14 still open).
+**Maturity:** ~80% (Slices 1–10 shipped; Slices 13 and 14 still open).
 
 ### Pillar III — APPLY
 Two-gated, atomic, undoable, audited. Reuses existing actuators.
 Examples: `apply-pipeline.js`, `pricing-applier.js`, `service-profile-applier.js`, `staff-pilots-applier.js`, `route-creation-applier.js`, `fleet-apply-orchestrator.js`, future pay-tier-applier, future IL-request-applier.
-**Maturity:** ~50% (apply pipeline + 4 domains shipped; service-tuner / pricing engine / crew pay / IL request / marketing / slot bidder still open).
+**Maturity:** ~60% (apply pipeline + 4 domains + service-tuner + pricing engine elaborations shipped; crew pay-tier actuator (HTML inspection pending) / IL request / marketing / slot bidder still open).
 
 ### Pillar IV — LEARN
 Close the loop. Outcomes, finite-difference learning, backtesting, drift detection.
@@ -276,12 +277,19 @@ Daily-driver UX. Toasts, undo, hover, search, keyboard, theming, accessibility.
 Examples: Q1–Q16, U1–U16 (most shipped — see HANDOVER); remaining: Q7 (settings presets), Q9 (bulk frequency), Q14 (fleet age heatmap), U2 (frozen leading columns), U3 (column groups collapse), U4 (right-click consolidation), U7 (column visibility), U9 (color-blind palette), U10 (keyboard nav), U13 (mini-map scroll), U16 (drawer pin).
 **Maturity:** ~75% (most QoL shipped this past quarter; remaining items are accessibility + power-user affordances).
 
+### Pillar VIII — ORCHESTRATE
+Multi-scenario, multi-horizon coordination across the other seven pillars. Watch the whole airline, derive typed signals from every store write, match those signals against declarative scenarios, schedule routines (multi-step playbooks) against KPIs, and learn from outcomes which scenarios deserve more weight, which thresholds should move, which scrapes are worth refreshing more often.
+The Conductor is the "what should the system pay attention to right now?" layer. It does not invent new actuators; it composes existing SENSE / DECIDE / APPLY primitives into goal-driven routines and surfaces a single attention queue to the user.
+Examples: scrape-orchestrator auto-driver (shipped — adaptive cadence foundation), per-phase cadence store (shipped), Conductor signal layer (Slice K1), scenario engine (K2), routine state machines (K3), Conductor priority queue + dashboard tile (K9), trust quotient store (K11), outcome-weighted threshold learning (K13–K15), latent scenario discovery (K20). Strategy Slices 24 (standing orders), 27 (gossip feed), 23 (goal-seeker), 26 (lessons mining) and the Flight Schedule Grid maintenance overlay all fold under this pillar once the Conductor lands.
+**Maturity:** ~5% (only the auto-drive cadence layer is shipped under SENSE; the scenario / routine / Conductor / learning surfaces are the Epoch H frontier — see `docs/CONDUCTOR-ROADMAP.md`).
+
 ### How pillars compose
 
 A typical slice touches **2–3 pillars**, with a primary one. Examples:
 - **F1 sidebar** (shipped): primary COMPOSE, secondary SENSE (reads demand/operators), tertiary DECIDE (profit estimate).
 - **Slice 7 service tuner**: primary DECIDE, secondary APPLY (extends service-profile-applier), tertiary LEARN (closed-loop ORS validation).
 - **Letter L Slice L7 combined-supply view**: primary FEDERATE, secondary COMPOSE (RA panel canopy toggle), tertiary SENSE (kin aggregation).
+- **Conductor Slice K9 attention queue**: primary ORCHESTRATE, secondary COMPOSE (dashboard tile + briefing surface), tertiary LEARN (per-scenario trust quotient).
 
 When proposing a slice, name its primary pillar in the title. It anchors review against drift.
 
@@ -291,16 +299,16 @@ When proposing a slice, name its primary pillar in the title. It anchors review 
 
 The next ~50 sessions cluster into seven epochs. Each is shippable on its own; each unlocks the next. **Within an epoch the order is flexible**; **across epochs, prerequisites must respect the dependency chain.**
 
-### Epoch A · Close the strategy loop (sessions 1–10, primary: DECIDE + APPLY)
+### Epoch A · Close the strategy loop (sessions 1–10, primary: DECIDE + APPLY) — ✅ shipped
 **Why first:** Slices 1–6 ship the spine. Slices 7–10 are the obvious continuation. Without them the engine has gaps where the user notices ("why doesn't it propose service changes?"). With them, the engine becomes a complete advisory voice across all five major decision domains (route / price / service / crew / schedule).
 
 | Slice | Pillar | Notes |
 | --- | --- | --- |
-| Strategy Slice 7 — Service Profile Auto-Tuner | DECIDE + APPLY | Marginal-ORS-lift × demand × cost rank; A/B perturbation profiles. |
-| Strategy Slice 9 — Inventory Pricing Auto-Tuner | DECIDE + APPLY | Per-class price decisions, time-decay competitor history, yield-curve elasticity fit. Cargo asymmetric. |
-| Strategy Slice 8 — Crew Pay & Hiring Auto-Tuner | DECIDE + APPLY | Pay-tier scraper + applier; perception model as testable hypothesis. |
-| Strategy Slice 10 — Competitor Response Engine | DECIDE | Diff weekly snapshots; defensive/opportunistic moves; anti-spiral guardrails (§4.17). |
-| Auto-Pricing Tier 3.3b — Silent-auto loop | APPLY + POLISH | `chrome.alarms` periodic check; hard caps; first-activation confirm. |
+| Strategy Slice 7 — Service Profile Auto-Tuner | DECIDE + APPLY | ✅ Marginal-ORS-lift × demand × cost rank; A/B perturbation profiles in `service-moves.js`. |
+| Strategy Slice 9 — Inventory Pricing Auto-Tuner | DECIDE + APPLY | ✅ Per-class S1 fallback (Y/C/F) + cargo asymmetric + orsHistory elasticity hint in `price-moves.js`. (Time-decay competitor band still pending a competitor-price history store.) |
+| Strategy Slice 8 — Crew Pay & Hiring Auto-Tuner | DECIDE + APPLY | ✅ Perception model `pay-perception.js` + advisory pay decisions in `crew-moves.js`. Pay-tier scraper + applier deferred until live AS HTML inspection. |
+| Strategy Slice 10 — Competitor Response Engine | DECIDE | ✅ `competitor-prior-store.js` + `competitor-response.js` with entry/exit/priceCut/freqAdd events; defensive/opportunistic counters; §4.17 anti-spiral guard. |
+| Auto-Pricing Tier 3.3b — Silent-auto loop | APPLY + POLISH | ✅ `chrome.alarms` heartbeat in `background.js`, panel-side dedup + setInterval safety net, first-activation confirm modal, `silentAutoCap24h` + per-route/global cooldowns. |
 
 **Acceptance:** the Strategy modal's decision list is non-empty across all five domains for any populated airline. Apply on a single test aircraft round-trips to AS. The decision count per session climbs as scrapers warm caches.
 
@@ -311,7 +319,7 @@ The next ~50 sessions cluster into seven epochs. Each is shippable on its own; e
 
 | Slice | Pillar | Notes |
 | --- | --- | --- |
-| Strategy Slice 15 — Backtesting Harness | LEARN | Replay historical `AccountingSnapshotStore` weeks; compare hypothetical decisions vs reality. UI: "Backtest" button → cumulative delta chart. |
+| Strategy Slice 15 — Backtesting Harness | LEARN | ✅ `backtest.js` replays last N weekly accounting snapshots, attributes outcome deltas to applied decisions, optional cosine-weighted counterfactual for `alternativeWeights`. Strategy panel "Backtest" section: 4/8/12/26-week selector, summary line, inline SVG sparkline of cumulative profit (hypothetical dashed when alt weights set). Bonus: `recommend()` sensitivity sweep — K weight candidates (baseline + per-key ±15%/±30%) share one loaded bundle, ranks which perturbation directions erode attributed profit the least, and emits per-weight gradient hints (↑/↓ + magnitude). Panel CTA "Probe sensitivity" surfaces top-3 / bottom-3 candidates and the hint table. |
 | Strategy Slice 16 — Executive Briefing UI | COMPOSE | One-page weekly summary modal that auto-opens once per game-week. Long-form rationale per applied decision. |
 | Strategy Slice 17 — Risk Profiles + User Tuning | LEARN + POLISH | Conservative / Balanced / Aggressive presets; advanced sliders; live re-score preview. |
 | ORS Sandbox Slice 4 — Workflow ergonomics (4a sweet-spot, 4b A/B, 4c saved scenarios, 4d batch) | COMPOSE | High-leverage workflow polish over an already-precise model. Slice 2c (per-route rating elasticity) lands before 4a. |
@@ -399,6 +407,25 @@ The next ~50 sessions cluster into seven epochs. Each is shippable on its own; e
 | Strategy Slice 18 — Multi-Game-World Federation | FEDERATE | Portfolio view across servers (already partially enabled by Letter L's account-registry; this completes the cross-world UI). |
 
 **Acceptance:** the LLM co-pilot can answer "explain why JFK-EZE dropped to UNDER" with rationale grounded in cached snapshot + journal. Cmd-K feels native. Localhost API serves clean JSON. Reality overlay surfaces 5+ real-world flags per session for an active hub.
+
+---
+
+### Epoch H · The Conductor (sessions ~50–60, primary: ORCHESTRATE)
+**Why now:** with the engine mature (A), trustworthy (B), federated (C), capital-aware (D), Flight-Studio-fluent (E), able to fork and goal-seek (F), and extended with the LLM co-pilot and Cmd-K (G), the Conductor is the layer that *runs the airline as a coherent whole*. It composes scenarios, routines, standing orders, and the goal-seeker into a single attention queue the user sees on the dashboard. It also runs the system's adaptive cadence — phase scrape frequencies, anomaly thresholds, and trust quotients — closing the loop on the auto-drive layer that Epoch A's Auto-Pricing Tier 3.3b started, the Slice 24 standing-order rule engine continued, and Slice 27 gossip feed almost completed. Full slice catalog lives in `docs/CONDUCTOR-ROADMAP.md`; below is the high-level shape.
+
+| Slice | Pillar | Notes |
+| --- | --- | --- |
+| K1 — Signals layer foundation | ORCHESTRATE + SENSE | Typed events derived from every store write (`route.profit.delta`, `aircraft.maintenance.ratio.dropped`, `competitor.entered`, …). Ring-buffered to `aesConductor:signals`. |
+| K2 — Scenario engine | ORCHESTRATE + DECIDE | Declarative match-pattern matchers over signal streams. Each scenario carries triggers, conditions, window, action, KPI. |
+| K3 — Routine state machines | ORCHESTRATE + DECIDE | Multi-step playbooks: a `MaintenanceRebalance` routine waits on signals, runs sub-scenarios, applies actuators, tracks progress, self-suspends if losing. |
+| K5 — Adaptive cadence | ORCHESTRATE + LEARN | Auto-tune scrape phase intervals based on observed change rate; downweight phases that produce empty deltas. |
+| K9 — The Conductor (attention queue + tile) | ORCHESTRATE + COMPOSE | Dashboard tile: priority-sorted list of "what the system is paying attention to right now"; one-click drill into rationale; manual nudge / dismiss. |
+| K11 — Trust quotient store | ORCHESTRATE + LEARN | Per-scenario score: (accepted / proposed) × (favourable outcomes / observed). Gates auto-apply tier per scenario, never global. |
+| K13 — Outcome-weighted threshold learning | ORCHESTRATE + LEARN | EWMA / rolling z-score baselines per metric per tail/route/hub. Anomaly detection without hand-tuned thresholds. |
+| K17 — Cross-pillar conflict resolution | ORCHESTRATE | When two scenarios want to act on the same resource (same tail's schedule, same route's price), the Conductor's priority queue + reservation lock arbitrates. |
+| K20 — Latent scenario discovery | ORCHESTRATE + LEARN | Nightly batch finds signal-pair correlations; surfaces "when X fires, Y often follows within 3 days" as candidate scenarios for user review. |
+
+**Acceptance:** the dashboard's Conductor tile lists 5–15 active scenarios across the user's airline(s) with one-line rationale each. Each item is one click from full input snapshot + projected outcome + Undo. The `auto · F 1m · H 28m · A 4h · R 18h` strip from the auto-drive layer evolves into per-phase trust ribbons that visibly tighten or relax as the system observes change-rate. A typical week sees 30+ scenarios fire, 10+ user-confirmed actions, and at least 3 scenarios whose trust quotient crosses a gate (either earning auto-apply for that user, or losing it).
 
 ---
 
@@ -494,7 +521,8 @@ Standing rules of engagement that compound across the next 50 sessions.
 - **QoL slices** are Q1–Q16 (functional) and U1–U16 (UI/interaction) per HANDOVER §9.
 - **ORS Sandbox slices** are I.1 through I.6, sub-numbered (2a, 2b, …).
 - **Auto-Pricing tiers** are 1, 2a, 2b, 3.1, 3.2, 3.3a, 3.3b, 4.
-- A new slice category (G, H, J, K, …) gets its own letter; document the letter assignment in HANDOVER.
+- **Conductor slices** are K1–K20+ in `CONDUCTOR-ROADMAP.md` (Pillar VIII / Epoch H). Letter K reserved for the Conductor; sub-numbered (K3a, K3b, …) when sub-slicing is needed.
+- A new slice category (J, M, N, …) gets its own letter; document the letter assignment in HANDOVER.
 
 ### 11.2 · Doc updates per slice
 Every slice that ships in a session updates these in the same PR / commit:
@@ -587,6 +615,7 @@ When this document changes, log the change here in one line. Anyone reading the 
 | Date | Change | By |
 | --- | --- | --- |
 | 2026-04-28 | Initial draft. Synthesises STRATEGY-ROADMAP, FLIGHT-STUDIO-ROADMAP, PLAN-drag-to-schedule, HANDOVER §1/§9/§10/§11 into one constitutional doc. Seven pillars, seven epochs, 20 first principles, one mantra. | session 2026-04-28 |
+| 2026-04-29 | Added Pillar VIII (ORCHESTRATE) and Epoch H (The Conductor). Reserved letter K for Conductor slices. New companion doc `docs/CONDUCTOR-ROADMAP.md` covering signal layer, scenario engine, routine state machines, adaptive cadence, trust quotient, and the Conductor attention queue. Folds Strategy Slices 23/24/26/27 + the just-shipped scrape auto-drive cadence layer under the new pillar. | session 2026-04-29 |
 
 ---
 

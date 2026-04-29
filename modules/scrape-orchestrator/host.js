@@ -66,6 +66,15 @@
             || (p.id === "flightsfrom"    && opts.includeFlightsFrom)
         )
 
+        const summary = {
+            startedAt:   Date.now(),
+            completedAt: null,
+            durationMs:  0,
+            aborted:     false,
+            perPhase:    {},
+            failedJobs:  []
+        }
+
         _modal = new window.ScrapeProgressModal()
         _modal.mount()
         _modal.setPhases(phases.map(p => ({id: p.id, label: p.label})))
@@ -74,12 +83,37 @@
 
         _orchestrator = new window.ScrapeOrchestrator({
             onPhaseStart: (e) => _modal && _modal.onPhaseStart(e),
-            onPhaseDone:  (e) => _modal && _modal.onPhaseDone(e),
-            onProgress:   (e) => _modal && _modal.onProgress(e),
+            onPhaseDone:  (e) => {
+                summary.perPhase[e.phaseId] = {
+                    label:     (phases.find(p => p.id === e.phaseId) || {}).label || e.phaseId,
+                    total:     e.total     || 0,
+                    succeeded: e.succeeded || 0,
+                    failed:    e.failed    || 0,
+                    skipped:   !!e.skipped
+                }
+                if (_modal) _modal.onPhaseDone(e)
+            },
+            onProgress:   (e) => {
+                if (e && e.type === "job-fail") {
+                    summary.failedJobs.push({
+                        phaseId: e.phaseId,
+                        jobId:   e.jobId,
+                        url:     e.url || "",
+                        error:   e.error || ""
+                    })
+                }
+                if (_modal) _modal.onProgress(e)
+            },
             onError:      (e) => _modal && _modal.onError(e),
             onDone:       (e) => {
+                summary.completedAt = Date.now()
+                summary.durationMs  = summary.completedAt - summary.startedAt
+                summary.aborted     = !!(e && e.aborted)
+                try {
+                    chrome.storage.local.set({"scrapeOrchestrator:lastRun": summary})
+                } catch (_) { /* noop */ }
                 if (_modal) _modal.onDone(e)
-                if (!e.aborted) _toast("Scrape complete.", "ok")
+                if (!summary.aborted) _toast("Scrape complete.", "ok")
             }
         })
 
@@ -149,9 +183,16 @@
     // to click the button again.
     function _autoResumeIfActive() {
         if (typeof window.ScrapeOrchestrator !== "function") return
-        window.ScrapeOrchestrator.isRunning().then((running) => {
-            if (running && !_modal) _runResume().catch(() => {})
-        }).catch(() => {})
+        // Skip auto-resume when the active run was started silently by the
+        // background auto-driver — surfacing a progress modal for a scrape
+        // the user didn't initiate is jarring.
+        chrome.storage.local.get(["aesAutoDrive:silentRunActive"], (blob) => {
+            void chrome.runtime.lastError
+            if (blob && blob["aesAutoDrive:silentRunActive"]) return
+            window.ScrapeOrchestrator.isRunning().then((running) => {
+                if (running && !_modal) _runResume().catch(() => {})
+            }).catch(() => {})
+        })
     }
 
     if (document.readyState === "loading") {

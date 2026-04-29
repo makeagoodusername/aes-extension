@@ -8,6 +8,52 @@
 try { importScripts('modules/scrape-orchestrator/background-tab-pool.js'); }
 catch (e) { console.warn('[bg] failed to import scrape-orchestrator tab pool', e); }
 
+// Slice-1 Foundation — cache cleanup registry. Tab content_scripts also load
+// this file (for tab-idle sweeps); the SW gets it for the chrome.alarms
+// periodic sweep registered below.
+try { importScripts('modules/_shared/cleanup-registry.js'); }
+catch (e) { console.warn('[bg] failed to import cleanup-registry', e); }
+
+const _AES_CLEANUP_ALARM = 'aes-cleanup';
+const _AES_AUTO_DRIVE_ALARM = 'aes-auto-drive';
+if (chrome.alarms) {
+  // Idempotent — chrome.alarms.create overwrites by name. 6h cadence matches
+  // the ~6h fuel-price freshness window (the most aggressively-pruned slice).
+  // Stores with longer TTLs (30d demand, 90d price-history) tolerate this fine.
+  chrome.alarms.create(_AES_CLEANUP_ALARM, {periodInMinutes: 360});
+  // Auto-drive ticker — every 5 minutes. The content-side driver does the
+  // staleness math + min-gap throttle; this alarm just nudges any open AS
+  // tab to consider running its most-overdue phase.
+  chrome.alarms.create(_AES_AUTO_DRIVE_ALARM, {periodInMinutes: 5});
+}
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (!alarm) return;
+    if (alarm.name === _AES_CLEANUP_ALARM) {
+      if (typeof AesCleanup === 'undefined' || !AesCleanup.runAll) return;
+      AesCleanup.runAll({reason: 'alarm'}).catch((err) =>
+        console.warn('[AES cleanup] alarm runAll failed', err));
+      return;
+    }
+    if (alarm.name === _AES_AUTO_DRIVE_ALARM) {
+      try {
+        chrome.tabs.query({url: 'https://*.airlinesim.aero/*'}, (tabs) => {
+          if (chrome.runtime.lastError || !tabs || !tabs.length) return;
+          const target = tabs.find(t => /\/app\/enterprise\/dashboard/.test(t.url || ''))
+            || tabs[0];
+          if (!target || target.id == null) return;
+          try {
+            chrome.tabs.sendMessage(target.id, {type: 'aes:auto-drive:tick'}, () => {
+              void chrome.runtime.lastError;
+            });
+          } catch (_) { /* noop */ }
+        });
+      } catch (_) { /* noop */ }
+      return;
+    }
+  });
+}
+
 //Functions
 function setDefaultSettings(){
   //Add default settings

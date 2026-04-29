@@ -10,13 +10,19 @@
  *
  * A Fire record:
  *   {
- *     id:         "<firedAt>-<counter>",
- *     scenarioId: "MaintenanceWatch",
+ *     id:               "<firedAt>-<counter>",
+ *     scenarioId:       "MaintenanceWatch",
  *     server, airline, firedAt,
- *     severity:   "info" | "warn" | "alert",
- *     rationale:  "<one-line user-readable reason>",
- *     payload:    {...},               // arbitrary scenario-specific data
- *     signalIds:  ["<id1>", ...]       // signals that triggered this fire
+ *     severity:         "info" | "warn" | "alert",
+ *     rationale:        "<one-line user-readable reason>",
+ *     payload:          {...},               // arbitrary scenario-specific data
+ *     signalIds:        ["<id1>", ...],      // signals that triggered this fire
+ *     dismissedAt:      number|null,         // K6 — user dismissed
+ *     // K10 outcome attribution:
+ *     acceptanceState:  "open" | "accepted" | "dismissed",
+ *     acceptedAt:       number|null,
+ *     outcome:          {observedDelta, expectedDelta, favourable, terminal, reason} | null,
+ *     outcomeAt:        number|null
  *   }
  *
  * 200 cap matches CONDUCTOR-ROADMAP §V's per-scenario fire cap; we share
@@ -67,6 +73,7 @@
         for (const f of arr) {
             if (f && f.id === fireId && !f.dismissedAt) {
                 f.dismissedAt = Date.now()
+                f.acceptanceState = "dismissed"
                 mutated = true
                 break
             }
@@ -76,11 +83,66 @@
         }
     }
 
+    /** K10 — record that the user opened the fire's recommended surface.
+     *  Sets acceptanceState=accepted + acceptedAt. Idempotent on a fire
+     *  that's already accepted; will not overwrite a prior dismissal. */
+    async function accept(host, fireId) {
+        const key = _key(host)
+        if (!key || !fireId) return
+        const arr = await _read(key)
+        let mutated = false
+        for (const f of arr) {
+            if (!f || f.id !== fireId) continue
+            if (f.acceptanceState === "dismissed" || f.dismissedAt) break
+            if (f.acceptanceState === "accepted")  break
+            f.acceptanceState = "accepted"
+            f.acceptedAt      = Date.now()
+            mutated = true
+            break
+        }
+        if (mutated) {
+            try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
+        }
+    }
+
+    /** K10 — write an evaluator outcome onto a fire. Called from the
+     *  outcome-driver. No-op when the fire is missing or its outcome is
+     *  already terminal (so a steady-state fire isn't re-scored once a
+     *  scenario decides). */
+    async function applyOutcome(host, fireId, outcome) {
+        const key = _key(host)
+        if (!key || !fireId || !outcome) return
+        const arr = await _read(key)
+        let mutated = false
+        for (const f of arr) {
+            if (!f || f.id !== fireId) continue
+            if (f.outcome && f.outcome.terminal) break
+            f.outcome   = outcome
+            f.outcomeAt = Date.now()
+            mutated = true
+            break
+        }
+        if (mutated) {
+            try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
+        }
+    }
+
+    /** Snapshot every fire across the ring, regardless of dismissal state.
+     *  The outcome-driver iterates this directly to avoid the recent()
+     *  filter — even dismissed fires are still attributable for K11 trust. */
+    async function all(host) {
+        const arr = await _read(_key(host))
+        return arr.slice()
+    }
+
     async function clear(host) {
         const key = _key(host)
         if (!key) return
         try { await chrome.storage.local.set({[key]: []}) } catch (_) { /* noop */ }
     }
 
-    window.AesConductorScenarioStore = {append, recent, dismiss, clear, PREFIX, CAP}
+    window.AesConductorScenarioStore = {
+        append, recent, dismiss, accept, applyOutcome, all, clear,
+        PREFIX, CAP
+    }
 })()

@@ -23,6 +23,7 @@ class CentralHubShell {
         this._filterText = ""
         this._filterEl   = null
         this.heroStrip   = null
+        this.activityStrip = null
         this._busDispose = null
     }
 
@@ -44,6 +45,26 @@ class CentralHubShell {
 
         this.nav.setActive(this.settings.activeSection || "fleet")
         this._scrollToActiveSection()
+
+        // HubFeed: tiles attached their feedSlices subscriptions in mount().
+        // The account bootstrap signal lets account-scoped slices recompute
+        // now that __aesAccountId has resolved (or remains null on legacy).
+        if (typeof window.AesDataBus !== "undefined") {
+            window.AesDataBus.emit("data:account:bootstrapped", {
+                accountId: window.__aesAccountId || null,
+                server:    this.server || null,
+                airline:   this.airline || null
+            })
+        }
+
+        // Replay any open-tile intent emitted before tiles were live so a
+        // hero-strip click during the mount window isn't dropped.
+        if (window.CentralHubBus && typeof window.CentralHubBus.replay === "function") {
+            const pending = window.CentralHubBus.replay("open-tile")
+            if (pending && pending.tileId && this.tilesById.has(pending.tileId)) {
+                window.CentralHubBus.emit("open-tile", pending)
+            }
+        }
     }
 
     /**
@@ -105,6 +126,14 @@ class CentralHubShell {
         ].join(";")
 
         root.appendChild(this._buildTopBar())
+
+        if (typeof window.CentralHubActivityStrip === "function") {
+            this.activityStrip = new window.CentralHubActivityStrip({
+                server:  this.server,
+                airline: this.airline
+            })
+            root.appendChild(this.activityStrip.mount())
+        }
 
         const cubistOn = !!(this.settings && this.settings.cubistMode)
         if (cubistOn && typeof window.CentralHubHeroPolyhedron === "function") {
@@ -240,6 +269,49 @@ class CentralHubShell {
             }
         })
 
+        const lastScrapeStamp = document.createElement("span")
+        lastScrapeStamp.className = "aes-central-hub__last-scrape"
+        lastScrapeStamp.style.cssText = [
+            "color:" + T.color.slate,
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.micro,
+            "letter-spacing:" + T.track.mono,
+            "flex:0 0 auto"
+        ].join(";")
+        lastScrapeStamp.textContent = ""
+        this._lastScrapeStamp = lastScrapeStamp
+        this._refreshLastScrapeStamp()
+
+        const autoDriveStrip = document.createElement("span")
+        autoDriveStrip.className = "aes-central-hub__auto-drive"
+        autoDriveStrip.style.cssText = [
+            "display:inline-flex",
+            "align-items:center",
+            "gap:" + T.sp[1],
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.micro,
+            "letter-spacing:" + T.track.mono,
+            "color:" + T.color.oxide2,
+            "flex:0 0 auto"
+        ].join(";")
+        this._autoDriveStripEl = autoDriveStrip
+        this._refreshAutoDriveStrip()
+
+        if (!this._lastScrapeListener) {
+            const cadencePrefix = "scrapeOrchestrator:phase:"
+            this._lastScrapeListener = (changes, area) => {
+                if (area !== "local" || !changes) return
+                if (changes["scrapeOrchestrator:lastRun"]) this._refreshLastScrapeStamp()
+                for (const k in changes) {
+                    if (k.indexOf(cadencePrefix) === 0) {
+                        this._refreshAutoDriveStrip(k)
+                        break
+                    }
+                }
+            }
+            try { chrome.storage.onChanged.addListener(this._lastScrapeListener) } catch (_) { /* noop */ }
+        }
+
         const ctxStamp = document.createElement("span")
         ctxStamp.style.cssText = [
             "color:" + T.color.oxide2,
@@ -265,14 +337,133 @@ class CentralHubShell {
             "flex:0 0 auto"
         ].join(";")
 
-        bar.append(title, subtitle, filter, scrapeBtn, ctxStamp, stamp)
+        bar.append(title, subtitle, filter, scrapeBtn, lastScrapeStamp, autoDriveStrip, ctxStamp, stamp)
         return bar
+    }
+
+    async _refreshLastScrapeStamp() {
+        if (!this._lastScrapeStamp) return
+        try {
+            const blob = await chrome.storage.local.get(["scrapeOrchestrator:lastRun"])
+            const run = blob && blob["scrapeOrchestrator:lastRun"]
+            this._lastScrapeStamp.textContent = CentralHubShell._formatLastRun(run)
+        } catch (_) {
+            this._lastScrapeStamp.textContent = ""
+        }
+    }
+
+    /**
+     * Per-phase auto-drive freshness strip. Reads the cadence-store records
+     * for the four mandatory phases and renders one tiny chip each
+     * (foundation/per-hub/per-aircraft/per-route) coloured by how recently
+     * the phase ran versus its target cadence. When `changedKey` is passed
+     * (storage.onChanged callback), the corresponding chip pulses briefly so
+     * the user perceives the dashboard updating live.
+     */
+    async _refreshAutoDriveStrip(changedKey) {
+        const el = this._autoDriveStripEl
+        if (!el) return
+        if (typeof window.AesPhaseCadenceStore === "undefined") {
+            el.textContent = ""
+            return
+        }
+        const T = window.AESTokens
+        const host = {server: this.server || "", airline: this.airline || ""}
+        if (!host.server) { el.textContent = ""; return }
+
+        const phases = [
+            {id: "foundation",   short: "F"},
+            {id: "per-hub",      short: "H"},
+            {id: "per-aircraft", short: "A"},
+            {id: "per-route",    short: "R"}
+        ]
+        const cadence = window.AesPhaseCadenceStore.DEFAULT_CADENCE_MS
+        const records = await window.AesPhaseCadenceStore.loadAll(host, phases.map(p => p.id))
+
+        el.innerHTML = ""
+        const label = document.createElement("span")
+        label.textContent = "auto"
+        label.style.cssText = "color:" + T.color.oxide2 + ";text-transform:uppercase;letter-spacing:" + T.track.caps + ";"
+        el.appendChild(label)
+
+        for (const p of phases) {
+            const r = records[p.id]
+            const cad = cadence[p.id] || 0
+            const age = window.AesPhaseCadenceStore.ageMs(r)
+            const fresh = isFinite(age) && age < cad * 0.5
+            const stale = isFinite(age) && age >= cad
+            const color = fresh ? "#34d399" : stale ? "#f59e0b" : T.color.slate
+            const chip = document.createElement("span")
+            chip.style.cssText = "color:" + color + ";"
+            chip.textContent = "· " + p.short + " " + CentralHubShell._fmtAge(age)
+            chip.title = (r && r.completedAt)
+                ? p.id + " — last run " + new Date(r.completedAt).toLocaleString()
+                  + " · " + (r.succeeded || 0) + "/" + (r.total || 0) + " ok"
+                : p.id + " — never run"
+            el.appendChild(chip)
+
+            if (changedKey && changedKey.endsWith(":" + p.id)) {
+                chip.style.transition = "background 80ms linear, color 80ms linear"
+                chip.style.background = T.color.bone3
+                chip.style.borderRadius = "2px"
+                chip.style.padding = "0 3px"
+                setTimeout(() => {
+                    chip.style.background = "transparent"
+                    chip.style.padding = "0"
+                }, 700)
+            }
+        }
+    }
+
+    static _fmtAge(ms) {
+        if (!isFinite(ms)) return "—"
+        if (ms < 60_000)         return Math.max(1, Math.floor(ms / 1000)) + "s"
+        if (ms < 3_600_000)      return Math.floor(ms / 60_000) + "m"
+        if (ms < 86_400_000)     return Math.floor(ms / 3_600_000) + "h"
+        return Math.floor(ms / 86_400_000) + "d"
+    }
+
+    static _formatLastRun(run) {
+        if (!run || !run.completedAt) return "no full scrape yet"
+        const ageMs = Date.now() - run.completedAt
+        const min = Math.floor(ageMs / 60000)
+        const hr  = Math.floor(min / 60)
+        const ageText = ageMs < 60000 ? "just now"
+                      : hr >= 24 ? Math.floor(hr / 24) + "d ago"
+                      : hr >= 1  ? hr + "h ago"
+                                 : min + "m ago"
+        const phases = run.perPhase || {}
+        const parts = []
+        for (const id of Object.keys(phases)) {
+            const p = phases[id]
+            if (p.skipped) { parts.push(id + ":skip"); continue }
+            const ok = (p.succeeded || 0)
+            const tot = (p.total || 0)
+            parts.push(id + " " + ok + "/" + tot + (p.failed ? "·" + p.failed + "f" : ""))
+        }
+        const aborted = run.aborted ? " (aborted)" : ""
+        return "last scrape: " + ageText + aborted + (parts.length ? " · " + parts.join(" · ") : "")
     }
 
     async _mountTiles() {
         const ctx = {server: this.server, airline: this.airline}
-        const all = window.CentralHubTileRegistry.all()
+        let all = window.CentralHubTileRegistry.all()
+
+        // C-3 — apply tile-section overrides if enabled. Pure remap; the
+        // section field on each spec is rewritten before the section loop
+        // groups them.
+        if (window.CentralHubTileSectionOverrider) {
+            const validSections = window.CentralHubNav.SECTIONS.map(function (s) { return s.id })
+            all = window.CentralHubTileSectionOverrider.apply(all, this.settings, validSections)
+        }
+
         const expandedSet = new Set(this.settings.expandedTiles || [])
+
+        // C-2 — recents rail above the first section.
+        if (window.CentralHubRecentsRail && this.mainEl) {
+            try { await window.CentralHubRecentsRail.mount(this.mainEl) }
+            catch (_) { /* mount is best-effort */ }
+        }
 
         for (const section of window.CentralHubNav.SECTIONS) {
             const sectionTiles = all.filter(t => t.section === section.id)
@@ -324,6 +515,7 @@ class CentralHubShell {
         const T = window.AESTokens
         const wrap = document.createElement("div")
         wrap.dataset.section = section.id
+        wrap.dataset.aesSurface = "panel"
         wrap.id = "aes-central-hub-section-" + section.id
         wrap.className = "aes-central-hub__section"
         wrap.style.cssText = "margin-bottom:" + T.sp[5] + ";"
@@ -362,6 +554,10 @@ class CentralHubShell {
         const expanded = new Set(this.settings.expandedTiles || [])
         if (isExpanded) expanded.add(id); else expanded.delete(id)
         this.settings.expandedTiles = Array.from(expanded)
+        // C-2 — push to recents ring on expand (not on collapse).
+        if (isExpanded && window.CentralHubRecentsRail) {
+            window.CentralHubRecentsRail.pushRecent(this.settings, id)
+        }
         window.CentralHubSettings.save(this.settings).catch(() => { /* noop */ })
     }
 

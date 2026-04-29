@@ -65,6 +65,42 @@
         })
     }
 
+    /** K10 — render the outcome chip glyph + tooltip. Returns null when the
+     *  scenario isn't instrumented (no `kpiWindowMs` declared) so the row
+     *  can omit the chip entirely rather than show a confusing "—". */
+    function _outcomeChip(T, fire) {
+        if (!fire) return null
+        const scenarios = (window.AesConductorScenarios && window.AesConductorScenarios.all)
+            ? window.AesConductorScenarios.all() : []
+        const scenario = scenarios.find(s => s && s.id === fire.scenarioId) || null
+        if (!scenario || !scenario.kpiWindowMs) return null
+        const o = fire.outcome
+        let glyph, color, tip
+        if (!o) {
+            glyph = "?"; color = T.color.slate
+            tip = "Awaiting outcome — KPI window " + Math.round(scenario.kpiWindowMs / 86_400_000) + "d"
+        } else if (o.favourable === true) {
+            glyph = "✓"; color = "#34d399"
+            tip = o.reason || "Favourable outcome"
+        } else if (o.favourable === false) {
+            glyph = "✗"; color = "#f87171"
+            tip = o.reason || "Unfavourable outcome"
+        } else {
+            glyph = "?"; color = T.color.slate
+            tip = o.reason || "No verdict yet"
+        }
+        if (o && (o.observedDelta != null || o.expectedDelta != null)) {
+            tip += "\nobs=" + (o.observedDelta != null ? Math.round(o.observedDelta * 100) / 100 : "—")
+                + " exp=" + (o.expectedDelta != null ? Math.round(o.expectedDelta * 100) / 100 : "—")
+        }
+        const span = document.createElement("span")
+        span.textContent = glyph
+        span.title = tip
+        span.style.cssText = "flex:0 0 auto;color:" + color + ";font-weight:700;"
+            + "font-family:" + T.font.mono + ";min-width:10px;text-align:center;"
+        return span
+    }
+
     function _payloadSummary(s) {
         const p = s.payload || {}
         switch (s.type) {
@@ -326,6 +362,40 @@
             rationale.title = fire.rationale || ""
 
             row.append(dot, time, age, id, rationale)
+
+            const chip = _outcomeChip(T, fire)
+            if (chip) row.appendChild(chip)
+
+            // K10 — Open CTA: deep-links to the scenario's recommended
+            // surface (per scenario.openUrl) and writes acceptanceState.
+            // Hidden when the scenario doesn't define openUrl (alert-tier
+            // info scenarios where there's no canonical destination yet).
+            const scenarios = (window.AesConductorScenarios && window.AesConductorScenarios.all)
+                ? window.AesConductorScenarios.all() : []
+            const scenario = scenarios.find(s => s && s.id === fire.scenarioId) || null
+            if (ctx && fire.id && scenario && typeof scenario.openUrl === "function"
+                    && fire.acceptanceState !== "dismissed" && !fire.dismissedAt
+                    && window.AesConductorScenarioStore
+                    && typeof window.AesConductorScenarioStore.accept === "function") {
+                const url = scenario.openUrl(fire)
+                if (url) {
+                    const open = document.createElement("button")
+                    open.type = "button"
+                    open.textContent = (fire.acceptanceState === "accepted") ? "✓ Open" : "Open"
+                    open.title = "Open " + url + " (records as accepted for K11 trust)"
+                    open.style.cssText = "flex:0 0 auto;border:1px solid " + T.color.paperRule + ";"
+                        + "background:transparent;color:" + T.color.oxide + ";cursor:pointer;"
+                        + "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";"
+                        + "padding:1px 6px;letter-spacing:" + T.track.mono + ";"
+                    open.addEventListener("click", async (e) => {
+                        e.stopPropagation()
+                        try { await window.AesConductorScenarioStore.accept(ctx, fire.id) } catch (_) {}
+                        try { window.open(url, "_blank") } catch (_) { /* noop */ }
+                        this.refresh().catch(() => {})
+                    })
+                    row.appendChild(open)
+                }
+            }
 
             if (ctx && fire.id && window.AesConductorScenarioStore && typeof window.AesConductorScenarioStore.dismiss === "function") {
                 const dismiss = document.createElement("button")

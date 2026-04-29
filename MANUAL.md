@@ -988,7 +988,7 @@ From `HANDOVER.md §12` plus Phase 2 additions:
 
 ---
 
-## 18 · Auto-Pricing (Tier 1 + 2a + 2b + 3.1 + 3.2 + 3.3a shipped, 3.3b open)
+## 18 · Auto-Pricing (Tier 1 + 2a + 2b + 3.1 + 3.2 + 3.3a + 3.3b shipped)
 
 End-to-end roadmap for the per-route pricing surface. Four-tier rollout, user-confirmed:
 
@@ -998,7 +998,7 @@ End-to-end roadmap for the per-route pricing surface. Four-tier rollout, user-co
 - **Tier 3.1 — dry-run apply (shipped).** `RouteAssistantPricingApplier` + `RouteAssistantPricingApplyLog` plus the per-route apply modal, sandbox-bridge, row context menu, and bulk-listing modal. Full pipeline (GET → preflight → form-body construction → audit log) runs but no POST hits AS. Two-gate model: `apply.enabled === true` + `apply.dryRunOnly === false`; both blocked in 3.1.
 - **Tier 3.2 — live single-route writes (shipped).** `apply.dryRunOnly` default flipped to `false` (`enabled` stays opt-in); the per-route modal's Apply button POSTs to the markets-page form, awaits `getLastSuccessAt(hub, dest)` to enforce per-route cooldown, runs receipt-verify by re-fetching + comparing prices, fires a 6-second Undo toast on `verified` / `posted` that re-runs the applier with `prevPrices`. Circuit breaker mirrors `ors-scraper.js`: three consecutive 429 / 503 trips persist `circuitBreakerTrippedAt` to settings, render a red banner with Reset in the expander, and short-circuit subsequent applies until the 10-min cooldown expires. First successful write resets the breaker counter and clears trippedAt. New panel checkbox lets users re-arm dry-run after the default flip.
 - **Tier 3.3a — bulk apply selection table (shipped).** The Auto-Pricing expander's "Open bulk apply…" CTA opens a selection table with per-class Δ% inputs (Y / C / F / Cargo), checkbox column, in-table `current → proposed` preview, per-row cooldown badge, confirmation sub-modal listing every change with required ack, serial Promise loop. The same `RouteAssistantPricingApplier` instance is reused across the batch so the circuit breaker spans rows (a 429 storm trips the breaker mid-batch and short-circuits subsequent rows until Reset). Per-row status badges surface every error code (`HTTP 429`, `breaker · 8m`, `cooldown`, `applierThrew`); final outcome toast reports ok/fail counts. Apply log entries carry `source: "bulk"`.
-- **Tier 3.3b — silent-auto loop (OPEN).** `chrome.alarms` periodic check behind `silentAutoEnabled` with hard caps (`silentAutoMaxPerDay`, `silentAutoMaxPerHour`, `silentAutoMinDeltaPct`); confirmation modal on first activation. Settings pre-staged in 3.1. Likely calls the same `_runBulkPricingApply` helper with auto-derived deltas (sandbox-driven or rule-based).
+- **Tier 3.3b — silent-auto loop (shipped).** Two cooperating cadence drivers — `chrome.alarms` heartbeat (`aes:silent-auto:tick`, period = `silentAutoTickMin` clamped 5-240 min) registered in `background.js` with re-sync on any settings change, plus an in-tab `setInterval` safety net. Background fires the alarm and broadcasts to the most-recently-active scheduling tab; cross-tab dedup via `silentAutoLastTickAt` re-read on each tick. First-activation confirmation modal gates `silentAutoEnabled` (records `silentAutoConfirmedAt`). Hard caps via `silentAutoCap24h` + per-route/global cooldowns + the shared circuit breaker. Per-tick path uses serial `applier.apply()` calls (NOT `_runBulkPricingApply`) so the breaker stays monotonic. Strategy proposer pluggable via `RouteAssistantSilentAutoProposers` registry.
 - **Tier 4 — yield feedback.** Subsumed by Roadmap G; see §20 (Yield Feedback).
 
 **Order is fixed.** No skip-ahead between tiers — a write-back that ships before T2 visibility would be flying blind.
@@ -1350,6 +1350,113 @@ Reads the cached pilot pool from `crewManagement:staffPilots` (seeded by visitin
 ### Alliance (priority 40)
 
 Read-only roster of current alliance members from `alliance:overviewSnapshot` (captured by `modules/alliance/content-alliance.js` on `/app/alliance*` via `alliance-overview-scraper.js`). Each row shows the member's airline name, IATA, headquarters, and joined date; the airline name is a link that opens the enterprise overview page in a new tab. No mutations — alliance state is managed entirely on AS and the tile only reflects what was last scraped.
+
+---
+
+## 28 · Schedule Canvas & Wave System
+
+A modal surface launched from `/app/fleets*` that folds wave editing, route candidates, demand + ORS overlays, pricing apply, and the auto-scheduler into one view. The wave is the spine: rows are aircraft (filtered to the active hub), columns are waves from the active preset, cells are summarised flights inside that wave's window.
+
+### 28.1 · How to open it
+
+- **Direct.** On `/app/fleets/...`, click the `▦ Open Schedule Canvas` button next to `✈ Open Fleet Schedule Grid`.
+- **Deep-link from Fleet Hub.** When a hub on the Fleet Hub Command Center has fewer drafted plans than aircraft AND a wave preset, a "Build wave schedule ▸" CTA appears on the hub card. Click → canvas opens to that hub with the rail in **Builder** mode.
+- **Bus emit.** Other surfaces can fire `CentralHubBus.emit("open-tile", {tileId: "fleet-schedule-canvas", filter: {hub, aircraftId?, railMode?}, source})` and `fleet-schedule-grid/host.js` will route the open. Late mounts pick up the most recent emit via `replay()`.
+
+The canvas is a single-instance modal — a second open closes the first. ESC, backdrop click, and the explicit Close button all dismiss.
+
+### 28.2 · Anatomy
+
+Three regions:
+
+- **Header.** Hub picker · view toggle (`Waves` | `Timeline`) · `Show/Hide assistant` rail toggle · `Advanced` pill · status caption.
+- **Main pane.**
+  - *Waves* view: wave-spine renderer + telemetry strip (when Advanced is on) + destinations dock at the bottom (the existing `FleetScheduleGridDndSourcePanel`). Drag a destination card from the dock onto a cell to schedule it.
+  - *Timeline* view: hands off to the legacy Fleet Schedule Grid via close-and-reopen. View choice persists, so reopening the canvas lands back on Waves.
+- **Assistant rail (320 px, right side).** Mode toggle [Builder | Advisor] · hub badge · close × · body (mode-specific) · footer (`N staged · [Discard] [Commit]`).
+
+### 28.3 · Storage shape
+
+Two new keys; everything else (presets, schedules, demand, top-routes, fleet, maintenance) is read through existing stores.
+
+| Key | Writer | Shape |
+|---|---|---|
+| `<acctKey("canvas","state")>` | `AesCanvasStateStore` | `{activeHub, view: "waves"\|"timeline", railMode: "builder"\|"advisor", railOpen, focusedAircraftId, focusedWaveId, advisorPrefs: {firstRunSeen, advancedOn, debouncedSuggestions: {[suggestionKey]: epochMs}}}` |
+| `_shared:handoff:wave-designer` (source `dnd-grid`) | `AesHandoffStore` (canvas commit-bar, on single `addRoute`) | `{aircraftId, destIata, hub?, dropMin?, source: "dnd-grid", writtenAt}` — TTL 60 s; consumed by the AFP page's wave-applier on next mount. |
+
+`debouncedSuggestions` keys take the form `<kind>:<signature>` (e.g. `auto-proposer:competitor-median:JFK-LAX`). Dismissed suggestions stay debounced for 1 hour.
+
+### 28.4 · Edit lifecycle
+
+Every staging path (Builder Adopt, drop-bridge, context-menu, demand-overlay badge, advisor-card action, auto-proposer surface) ends at the same bus event: `canvas:edit-staged` carrying `{kind, payload, batchId?}`. Edit kinds:
+
+- `applyPricing` — payload `{hub, dest, prices: {Y?, C?, F?, Cargo?}, scope?, source, reason?, rationale?, proposerStrategy?, projectedDelta?}`.
+- `addRoute` — payload `{aircraftId, waveId, destIata, destName, fares?, hub, dayMask?, paxScore?, profitPerWeek?}`.
+- `moveRoute` — payload `{aircraftId, waveId, destIata, destName, hub}`.
+- `removeRoute` — payload `{aircraftId, hub, destIata, source}`.
+
+The rail-controller picks up emits (with a `batchId` prefix guard against re-staging its own emits) and pushes to the in-memory staged list. The footer shows the running count and enables [Commit] / [Discard].
+
+**Builder Adopt vs. Advisor auto-flip.** The first non-fragment Adopt while the rail is in Builder mode auto-flips the rail to Advisor — the user has taken over driving and the engine becomes a reaction feed.
+
+### 28.5 · Commit dispositions (by kind)
+
+| Kind | Disposition |
+|---|---|
+| `applyPricing` | Real apply via `RouteAssistantPricingApplier.apply()`. Dry-run vs. real POST follows `RouteAssistantSettings.pricing.apply.{enabled, dryRunOnly}` — both gates have to be open for an actual POST. Pricing apply log writes through the same store the standalone RA panel uses. |
+| `addRoute` (single leg) | Written to `AesHandoffStore` with `source: "dnd-grid"`. Open the AFP page for that aircraft and the wave-applier consumes the record on mount, pre-selecting the candidate row. |
+| `addRoute` (multi-leg) | Deferred. The handoff store holds at most one record; the toast counts the queued legs. Sequential handoff queue is a planned follow-up. |
+| `moveRoute` | Deferred. AS's per-flight Wicket edit-page is fragile; the canvas surfaces the intent and routes the user to the AFP page for a delete + add via the existing pipeline. |
+| `removeRoute` | Deferred. AS's per-flight delete needs the markets/flight page; surfacing only. |
+
+After a commit the bus emits `canvas:edit-committed {batchId, edits, summary}`. The summary toast reads "Commit: N applied · M dry-run · K staged for AFP · L deferred · J failed."
+
+### 28.6 · Cell affordances
+
+- **Empty cell** — muted "+ open" hint; demand badge from `routeAssistant:topRoutes:<HUB>` if a route exists; ORS tooltip on hover. Drag a destination → fares modal → `addRoute` stages.
+- **Filled cell** — top destination + day-pill mask + leg count + total block hours, coloured by the existing `FleetScheduleGridColoring` mapping. Right-click → menu (Apply pricing / Remove flight / Open in RA).
+- **Builder preview tint** — cells targeted by an Adopted-but-not-committed proposal carry a dotted preview outline.
+
+### 28.7 · Keyboard shortcuts
+
+Modal-scoped (only fire while the canvas is open AND the user isn't typing in an input/textarea/select):
+
+| Key | Action |
+|---|---|
+| `B` | Toggle rail mode Builder ↔ Advisor |
+| `T` | Toggle main view Waves ↔ Timeline |
+| `R` | Toggle rail open/closed |
+| `Cmd/Ctrl + Enter` | Commit staged edits |
+| `Esc` | Close the canvas modal |
+
+### 28.8 · Bus events
+
+Constants live in `modules/canvas/canvas-events.js` as `window.AesCanvasEvents`. Always subscribe via the constants — the bus accepts arbitrary strings, so a typo silently fails to subscribe.
+
+| Event | Payload | Emitted by |
+|---|---|---|
+| `canvas:hub-changed` | `{hub}` | hub picker |
+| `canvas:view-changed` | `{view: "waves"\|"timeline"}` | view toggle |
+| `canvas:rail-mode-changed` | `{mode: "builder"\|"advisor"}` | mode toggle / Adopt auto-flip |
+| `canvas:rail-open-changed` | `{open}` | rail toggle |
+| `canvas:focus-aircraft` | `{aircraftId}` | row click |
+| `canvas:focus-wave` | `{presetId, waveId}` | wave-column click |
+| `canvas:builder-proposal` | `{proposalId, plan, rationale, scoreDelta}` | builder engine |
+| `canvas:advisor-suggestion` | `{id, kind, severity, message, signature, dedupeKey?, action?}` | advisor engine, demand overlay, auto-proposer surface |
+| `canvas:advisor-suggestion-resolved` | `{id, accepted}` | advisor card |
+| `canvas:edit-staged` | `{kind, payload, batchId?}` | every staging path |
+| `canvas:edit-committed` | `{batchId, edits, summary}` | commit-bar |
+| `canvas:edit-discarded` | `{batchId, count}` | commit-bar discard |
+
+The existing canonical events `open-tile`, `focus-route`, `focus-aircraft`, `focus-enterprise`, `focus-preset` (declared in `modules/central-hub/bus.js`) are the cross-surface contract — the canvas emits `focus-route` from the cell context-menu's Open in RA item and listens for `open-tile` with `tileId: "fleet-schedule-canvas"`.
+
+### 28.9 · Limitations and caveats
+
+- Single-leg `addRoute` only. Multi-add and `moveRoute` / `removeRoute` toast-and-defer to the AFP page.
+- Cell context-menu's "Add destination…" item currently toasts "drag instead" because the menu can't yet collect an IATA inline.
+- Suggestion history (Last 5 dismissed/accepted) is not yet rendered. Debouncing keeps dismissals quiet for 1 h but doesn't store the message body.
+- Auto-proposer surfacing is manual via the rail's "Run proposers now" CTA. The existing silent-auto loop in `panel.js` continues to apply silently — the canvas surface is opt-in.
+- Telemetry strip (Advanced toggle) is a freshness-indicator only. The standalone Route Assistant panel remains the canonical dense table view.
 
 ---
 
