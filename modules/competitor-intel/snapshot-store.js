@@ -130,6 +130,40 @@ class AesCompetitorSnapshotStore {
         await chrome.storage.local.set({[key]: {
             server, enterpriseId: String(enterpriseId), snapshots: existing
         }})
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+            window.AesDataBus.emit("data:competitor-intel:enterprise:updated", {
+                server, eid: String(enterpriseId)
+            })
+            if (prior && window.AesCompetitorDiff
+                    && typeof window.AesCompetitorDiff.compare === "function") {
+                try {
+                    const events = window.AesCompetitorDiff.compare(prior, projected)
+                    if (events && events.length) {
+                        window.AesDataBus.emit("data:competitor-intel:enterprise:diff", {
+                            server,
+                            eid:        String(enterpriseId),
+                            eventCount: events.length,
+                            types:      events.map(e => e.type)
+                        })
+                        const newRoutes = []
+                        for (const e of events) {
+                            if (e.type === "route.entered" && e.payload && Array.isArray(e.payload.routes)) {
+                                newRoutes.push(...e.payload.routes)
+                            }
+                        }
+                        const fleetUp = events.some(e => e.type === "fleet.gained" || e.type === "fleet.type.added")
+                        if (newRoutes.length || fleetUp) {
+                            window.AesDataBus.emit("signal:strategy:competitor-threat", {
+                                server,
+                                eid:    String(enterpriseId),
+                                kind:   newRoutes.length ? "newRoute" : "capacityHike",
+                                routes: newRoutes
+                            })
+                        }
+                    }
+                } catch (_) { /* never block save on diff failures */ }
+            }
+        }
         return projected
     }
 
