@@ -22,6 +22,7 @@
         // Coarse page-family classification used by per-page CSS files
         // and the breadcrumb module. Keep keys lowercase, no slashes.
         if (/^\/app\/finance\//.test(pathname))                return "finance";
+        if (/^\/action\/enterprise\/schedule/.test(pathname))  return "finance";
         if (/^\/app\/fleets/.test(pathname))                   return "fleet";
         if (/^\/app\/com\/scheduling/.test(pathname))          return "scheduling";
         if (/^\/app\/com\/inventory/.test(pathname))           return "inventory";

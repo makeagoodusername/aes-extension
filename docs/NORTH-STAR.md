@@ -99,7 +99,7 @@ Every install is 100% advisory until the user opts in. Every apply path has **tw
 
 ### 4.2 · The form-driver invariant
 
-`modules/aircraft-flight-plan/form-driver.js` NEVER POSTs and NEVER calls `submitBtn.click()`. It mutates inputs and dispatches `input`/`change` events; the user submits AS's own button. Reverse O/D click is allowed because that's a same-page UI toggle, not a form submission. New write affordances need separate review and a fresh invariant entry.
+`modules/aircraft-flight-plan/form-driver.js`'s user-facing surfaces (`fill`, `dryRun`, `reverse`, `clear`) NEVER POST and NEVER call `submitBtn.click()`. They mutate inputs and dispatch `input`/`change` events; the user submits AS's own button. Reverse O/D click is allowed because that's a same-page UI toggle, not a form submission. The single exception is `fillAndSubmit()` — invoked exclusively by `background.js`'s `_afpRunSubmit` / `_afpRunBatchSubmit` orchestrators in response to the `aes:afp:fill-and-submit` chrome.runtime message, which itself only fires from the gated apply pipeline (`AesAfpFleetApplyOrchestrator` two-gate `tier === "apply-on-confirm"` + `autoScheduler.enabled`). New write affordances need separate review and a fresh invariant entry.
 
 ### 4.3 · Reuse existing actuators; never re-implement them
 
@@ -617,6 +617,7 @@ When this document changes, log the change here in one line. Anyone reading the 
 | 2026-04-28 | Initial draft. Synthesises STRATEGY-ROADMAP, FLIGHT-STUDIO-ROADMAP, PLAN-drag-to-schedule, HANDOVER §1/§9/§10/§11 into one constitutional doc. Seven pillars, seven epochs, 20 first principles, one mantra. | session 2026-04-28 |
 | 2026-04-29 | Added Pillar VIII (ORCHESTRATE) and Epoch H (The Conductor). Reserved letter K for Conductor slices. New companion doc `docs/CONDUCTOR-ROADMAP.md` covering signal layer, scenario engine, routine state machines, adaptive cadence, trust quotient, and the Conductor attention queue. Folds Strategy Slices 23/24/26/27 + the just-shipped scrape auto-drive cadence layer under the new pillar. | session 2026-04-29 |
 | 2026-04-29 | Strategy Slice 12 (Alliance & IL Codeshare Optimisation) shipped — first FEDERATE + DECIDE slice in Epoch C to fully integrate. Pillar III maturity bumped 60% → 65% with IL-request actuator now in the example list (`dryRunOnly:true` until live AS form calibration). New first-principle bound by `dryRunOnly` two-gate model — see HANDOVER §10 invariant. | session 2026-04-29 |
+| 2026-04-29 | §4.2 form-driver invariant tightened — explicitly carves out `fillAndSubmit()` as the single exception (gated background pipeline only via `aes:afp:fill-and-submit` chrome.runtime message). The previous "NEVER POSTs and NEVER calls submitBtn.click()" wording was strictly tighter than reality; the deliberate exception was buried in HANDOVER §10. Wording change only — no code or behaviour change. | session 2026-04-29 wiring-pass |
 
 ---
 

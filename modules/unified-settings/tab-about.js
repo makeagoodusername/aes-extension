@@ -43,7 +43,7 @@
 
         const note = document.createElement("div");
         note.style.cssText = "font-size:11px;color:#7A6F66;line-height:1.5;border-top:1px solid #C9C0B0;padding-top:10px;margin-top:6px";
-        note.textContent = "All settings persist to chrome.storage.local. No telemetry, no remote calls, no dependencies.";
+        note.textContent = "Settings persist to chrome.storage.local; the site-skin enabled/density toggles persist to chrome.storage.sync so they follow you across devices. No telemetry, no remote calls, no dependencies.";
         wrap.appendChild(note);
 
         host.appendChild(wrap);

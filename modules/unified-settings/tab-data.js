@@ -53,20 +53,20 @@
         const row = document.createElement("div");
         row.style.cssText = "display:flex;gap:8px";
         row.appendChild(actionBtn("Export bundle", function () {
-            const codec = window.AESCustomizationPresetCodec;
+            const codec = window.AESPresetCodec;
             if (codec && typeof codec.exportBundle === "function") {
                 try { codec.exportBundle(); }
                 catch (e) { console && console.warn && console.warn("[unified-settings export]", e); }
             }
-        }, !window.AESCustomizationPresetCodec));
+        }, !window.AESPresetCodec));
         row.appendChild(actionBtn("Import bundle", function () {
-            const codec = window.AESCustomizationPresetCodec;
+            const codec = window.AESPresetCodec;
             if (codec && typeof codec.importBundlePrompt === "function") {
                 try { codec.importBundlePrompt(); }
                 catch (e) { console && console.warn && console.warn("[unified-settings import]", e); }
             }
-        }, !(window.AESCustomizationPresetCodec
-            && typeof window.AESCustomizationPresetCodec.importBundlePrompt === "function")));
+        }, !(window.AESPresetCodec
+            && typeof window.AESPresetCodec.importBundlePrompt === "function")));
         ioCard.appendChild(row);
         wrap.appendChild(ioCard);
 

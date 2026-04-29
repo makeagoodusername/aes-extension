@@ -23,7 +23,7 @@
         if (m(/^\/app\/finance\/leasing/))      return ["FINANCE", "LEASING"];
         if (m(/^\/app\/finance\/capital/))      return ["FINANCE", "CAPITAL"];
         if (m(/^\/app\/finance\/assets/))       return ["FINANCE", "ASSETS"];
-        if (m(/^\/app\/finance\/cashflow/))     return ["FINANCE", "CASHFLOW"];
+        if (m(/^\/action\/enterprise\/schedule/)) return ["FINANCE", "CASHFLOW"];
         if (m(/^\/app\/fleets\/aircraft\//))    {
             const reg = (document.title || "").trim().split("—")[0].trim()
                      || tail(path.replace(/\/[01]\??.*/, ""));
