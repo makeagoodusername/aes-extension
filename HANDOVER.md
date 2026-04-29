@@ -13,6 +13,32 @@ This is the live current-state doc for the **AirlineSim Enhancement Suite (AES)*
 
 ## 1 · Current state
 
+### Strategy Slice 17 — Risk Profiles + User Tuning — shipped this session
+**Pillars:** primary LEARN (gives the user a place to inspect, name, and tune the weights that `learn.js` nudges in the background), secondary POLISH (Conservative/Balanced/Aggressive presets are an obvious every-session control). **Surfaces in:** Strategy modal (`AesStrategyPanel`), inserted between the existing Settings strip and the Overlap card. **Files:** new `modules/strategy/risk-profiles.js` (~140 LOC), new `modules/strategy/tuning-panel.js` (~210 LOC), `modules/strategy/panel.js` (3 small wiring edits), manifest dashboard + fleets blocks. **No POSTs added** — the panel is a write surface for `settings.strategy` only; gates and apply paths are unchanged.
+
+**Closes the half-feature** opened by Slice 16. The briefing's Drifted card surfaces "weights nudged: K +0.04, M −0.02" but until now there was no surface where the user could see the current weights, name a preset, or tune individual sliders. Slice 17 is that surface.
+
+**`AesStrategyRiskProfiles` (new — `modules/strategy/risk-profiles.js`).** Three named bundles:
+- **Conservative** — capital-preserving. Higher cashPenalty (0.50) + maintenancePenalty (0.40) + profitWeight (0.50); `maxPriceMovePerWindow: 5`, `priceDeadband: 7`, `routeCreationThreshold: 0.75`, `learningStepSize: 0.02`.
+- **Balanced** — DEFAULT_WEIGHTS values restored explicitly + default thresholds. The shipping default; `apply()` here resets the user back to a known good baseline.
+- **Aggressive** — yield-seeking. Lower cashPenalty (0.15) + maintenancePenalty (0.20); higher demandWeight (0.30) + competitorWeight (0.30); `maxPriceMovePerWindow: 15`, `priceDeadband: 3`, `routeCreationThreshold: 0.45`, `learningStepSize: 0.10`.
+
+API: `PROFILES`, `names()`, `apply(name, currentSettings) → patch`, `detect(settings) → name|"custom"`, `describe(name) → {label, blurb}`. `apply` deep-merges only the profile's *blend* weights into existing weights so non-profile knobs survive a profile switch. `detect` reads `settings.riskProfile` rather than reverse-checking weights — the source of truth is the explicit field, and any manual slider drag flips it to `"custom"`.
+
+**Profiles never silently flip apply paths.** Per §4.1 (two-gate) and §4.18 (no silent default flips), profiles ONLY touch scoring weights and threshold numerics. They never modify `settings.tier`, never flip a per-domain enable flag, never pre-arm a real write.
+
+**`AesStrategyTuningPanel` (new — `modules/strategy/tuning-panel.js`).** `render(host, opts) → teardown`. `opts = {settings, onChange?: (newSettings) => void}`. Mounts the Risk row (label + 3 (or 4 when "custom") radio buttons + one-line blurb) and an Advanced expander (`<details>`, collapsed by default) with 10 `DEFAULT_WEIGHTS` sliders + 4 top-level threshold sliders + "Reset to balanced" button. Slider behaviour: `input` updates the displayed numeric output for snappy drag feedback; `change` (drag-end) triggers save + onChange so storage isn't thrashed. Manual drag flips `riskProfile` to `"custom"`.
+
+**Strategy panel wiring (`modules/strategy/panel.js`).** Added `_state.tuningHost` next to `_state.settingsHost`, rendered via `window.AesStrategyTuningPanel.render(_state.tuningHost, {settings: _state.settings, onChange: _refresh})` after `_renderSettingsStrip(...)`. `_refresh()` is the panel's own re-compose path so any weight change immediately re-scores the decision list. Two render call-sites updated (refresh body + open() test path).
+
+**Manifest wiring.** `modules/strategy/risk-profiles.js` + `modules/strategy/tuning-panel.js` registered in both the dashboard and fleets blocks, after `journal-panel.js` and before `panel.js`.
+
+**No new invariants.** §4.1 two-gate (no apply path; profiles never flip a domain enable flag); §4.7 pure cores (`risk-profiles.js` is pure); §4.8 graceful-null (panel renders a muted hint when stores are missing); §4.18 no-silent-flips (profiles never touch tier or domain flags).
+
+**Verification.** `node --check` clean. `python3 -c "import json; json.load(open('manifest.json'))"` clean. Reload extension; open Strategy modal → "Risk" row visible above the Overlap card. Click "Aggressive" → settings persist; decision list re-scores. Drag any slider → profile flips to "Custom"; decision list re-scores. "Reset to balanced" → confirm → defaults restored.
+
+**v1 deferrals.** Per-airline (canopy) DNA — Slice 17 stores one profile per `settings.strategy` slot (already account-scoped); a future Slice L6 (Strategy DNA) will layer template + per-account override. Live re-score-on-input vs. on-change. Sensitivity heatmap that overlaps Slice 15's backtest sensitivity probe.
+
 ### Strategy Slice 16 — Executive Briefing UI — shipped this session
 **Pillars:** primary COMPOSE (Central Hub briefing tile + full-detail modal "since your last visit"), secondary LEARN (joins applied decisions to outcome-ring predicted-vs-observed deltas, surfaces the largest drifted outcome with the weight nudge that followed). **Surfaces in:** dashboard `operations` section, priority 0 (above World View; first card the user sees each session). **Files:** new `modules/strategy/briefing.js` (~675 LOC), new `modules/central-hub/tiles/strategy-briefing-tile.js` (~990 LOC), manifest dashboard block additions. **No POSTs added** — the briefing is read-only synthesis over already-shipped rings.
 

@@ -1613,6 +1613,7 @@
             _renderHeader(_state.headerHost, _state.plan, _state.settings)
             _state.summaryHost  = _el("div", "")
             _state.settingsHost = _el("div", "")
+            _state.tuningHost   = _el("div", "")
             _state.overlapHost  = _el("div", "")
             _state.decisionsHost = _el("div", "flex:1;overflow:auto;")
             _state.aircraftHost = _el("div", "border-top:1px solid " + COLOR.rule + ";")
@@ -1620,12 +1621,18 @@
             _state.journalHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
             _renderSummaryStrip(_state.summaryHost, _state.diff)
             _renderSettingsStrip(_state.settingsHost, _state.settings)
+            if (window.AesStrategyTuningPanel) {
+                window.AesStrategyTuningPanel.render(_state.tuningHost, {
+                    settings: _state.settings,
+                    onChange: _refresh
+                })
+            }
             _renderOverlapCard(_state.overlapHost)
             _renderDecisions(_state.decisionsHost, _state.diff)
             _renderAircraftAccordion(_state.aircraftHost, _state.plan, _state.diff)
             _renderLearningSection(_state.learningHost)
             _renderJournalSection(_state.journalHost)
-            _state.bodyHost.append(_state.summaryHost, _state.settingsHost, _state.overlapHost,
+            _state.bodyHost.append(_state.summaryHost, _state.settingsHost, _state.tuningHost, _state.overlapHost,
                                    _state.decisionsHost, _state.aircraftHost, _state.learningHost,
                                    _state.journalHost)
             _renderFooter(_state.footerHost)
@@ -1716,6 +1723,7 @@
             _renderHeader(_state.headerHost, _state.plan, _state.settings)
             _state.summaryHost  = _el("div", "")
             _state.settingsHost = _el("div", "")
+            _state.tuningHost   = _el("div", "")
             _state.overlapHost  = _el("div", "")
             _state.decisionsHost = _el("div", "flex:1;overflow:auto;")
             _state.aircraftHost = _el("div", "border-top:1px solid " + COLOR.rule + ";")
@@ -1723,12 +1731,18 @@
             _state.journalHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
             _renderSummaryStrip(_state.summaryHost, _state.diff)
             _renderSettingsStrip(_state.settingsHost, _state.settings)
+            if (window.AesStrategyTuningPanel) {
+                window.AesStrategyTuningPanel.render(_state.tuningHost, {
+                    settings: _state.settings,
+                    onChange: _refresh
+                })
+            }
             _renderOverlapCard(_state.overlapHost)
             _renderDecisions(_state.decisionsHost, _state.diff)
             _renderAircraftAccordion(_state.aircraftHost, _state.plan, _state.diff)
             _renderLearningSection(_state.learningHost)
             _renderJournalSection(_state.journalHost)
-            _state.bodyHost.append(_state.summaryHost, _state.settingsHost, _state.overlapHost,
+            _state.bodyHost.append(_state.summaryHost, _state.settingsHost, _state.tuningHost, _state.overlapHost,
                                    _state.decisionsHost, _state.aircraftHost, _state.learningHost,
                                    _state.journalHost)
             _renderFooter(_state.footerHost)

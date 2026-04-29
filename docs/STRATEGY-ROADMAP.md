@@ -698,23 +698,27 @@ See `HANDOVER.md §1 "Strategy Slice 16 — Executive Briefing UI"` for full det
 
 ---
 
-### Slice 17 ⬜ Risk Profiles + User Tuning
+### Slice 17 ✅ Risk Profiles + User Tuning — shipped
 
 **Goal:** preset weight bundles plus a tuning UI.
 
-**Profiles:**
+**Profiles (shipped):**
 
-- **Conservative** — high cashPenalty, low routeCreationEnabled, low maxPriceMovePerWindow, learning step 0.02.
-- **Balanced** — defaults from `DEFAULT_WEIGHTS`.
-- **Aggressive** — low cashPenalty, all auto-flags on, learning step 0.10, route-creation threshold low.
+- **Conservative** — `cashPenalty: 0.50`, `maintenancePenalty: 0.40`, `profitWeight: 0.50`; `maxPriceMovePerWindow: 5`, `priceDeadband: 7`, `routeCreationThreshold: 0.75`, `learningStepSize: 0.02`.
+- **Balanced** — `DEFAULT_WEIGHTS` values + default thresholds.
+- **Aggressive** — `cashPenalty: 0.15`, `maintenancePenalty: 0.20`, `demandWeight: 0.30`, `competitorWeight: 0.30`; `maxPriceMovePerWindow: 15`, `priceDeadband: 3`, `routeCreationThreshold: 0.45`, `learningStepSize: 0.10`.
 
-UI surfaces three preset radio buttons and an "Advanced…" expander showing every individual weight as a slider with live re-score preview.
+**Safety contract:** profiles ONLY touch scoring weights + threshold numerics. They never flip `settings.tier` or any per-domain enable flag — picking "Aggressive" tunes the *recommendations* aggressively but the user still opts in to applies via the existing two-gate model (§4.1 / §4.18).
 
-**Files:**
+UI: three radio buttons (with a fourth "Custom" appearing when the user diverges from a profile) above the existing Strategy modal Overlap card; an "Advanced — individual weights & thresholds" expander (collapsed by default) surfacing all 10 `DEFAULT_WEIGHTS` keys + 4 top-level thresholds as sliders. Manual slider drag flips the active profile to "Custom"; "Reset to balanced" returns to defaults.
 
-- new `modules/strategy/risk-profiles.js`
-- new `modules/strategy/tuning-panel.js`
-- extends `modules/route-assistant/settings-store.js`
+**Files (shipped):**
+
+- `modules/strategy/risk-profiles.js` — pure `AesStrategyRiskProfiles` with `PROFILES` / `names()` / `apply(name, settings) → patch` / `detect(settings) → name|"custom"` / `describe(name) → {label, blurb}`.
+- `modules/strategy/tuning-panel.js` — `AesStrategyTuningPanel.render(host, {settings, onChange}) → teardown`. Persists through `AesStrategySettings.save(patch)`; fires `onChange(newSettings)` so the caller can re-score.
+- `modules/strategy/panel.js` — wires the tuning host between Settings strip and Overlap card; passes the panel's `_refresh` as onChange so weight changes immediately re-score.
+
+See `HANDOVER.md §1 "Strategy Slice 17 — Risk Profiles + User Tuning"` for full details.
 
 ---
 
