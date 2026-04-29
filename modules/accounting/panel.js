@@ -127,7 +127,8 @@ class AccountingPanel {
         return h
     }
 
-    _buildPanel({index, latest, sisters, ledger, activeTab, weekClosesAt}) {
+    _buildPanel({index, latest, sisters, ledger, activeTab, weekClosesAt,
+                 staffSnapshot, staffHistory, outcomes}) {
         const panel = document.createElement("div")
         panel.className = "as-panel"
 
@@ -137,6 +138,7 @@ class AccountingPanel {
         panel.append(this._buildUnitEconomicsCard(ledger))
         panel.append(this._buildReconciliationCard(ledger))
         panel.append(this._buildProjectionCard(ledger))
+        panel.append(this._buildPersonnelLeverageCard(ledger, staffSnapshot, staffHistory, outcomes))
         panel.append(this._buildByHubCard(ledger))
         panel.append(this._buildByAircraftTypeCard(ledger))
         panel.append(this._buildByTailCard(ledger))
@@ -144,6 +146,280 @@ class AccountingPanel {
         panel.append(this._buildHistoryCard(index))
 
         return panel
+    }
+
+    _buildPersonnelLeverageCard(ledger, staffSnapshot, staffHistory, outcomes) {
+        const wrap = AccountingPanel._fieldset("Personnel & operating leverage")
+
+        const Lev = window.AccountingOperatingLeverage
+        const PCM = window.CrewMgmtPersonnelCostModel
+        if (!Lev || !PCM) {
+            wrap.append(AccountingPanel._noDataParagraph(
+                "Operating-leverage module not loaded — refresh the extension."
+            ))
+            return wrap
+        }
+
+        const leverage = Lev.compute({ledger, staffSnapshot, outcomes})
+        const personnel = PCM.analyze(staffSnapshot, staffHistory)
+
+        if (!leverage.available) {
+            wrap.append(AccountingPanel._noDataParagraph(leverage.reason))
+            return wrap
+        }
+
+        // Significance + info badges along the top.
+        for (const b of leverage.badges || []) {
+            wrap.append(AccountingPanel._buildPersonnelBadge(b))
+        }
+
+        // Section 1 — Weekly salary by group.
+        const groupHeading = document.createElement("h5")
+        groupHeading.innerText = "Weekly salary by group"
+        groupHeading.style.margin = "12px 0 6px 0"
+        wrap.append(groupHeading)
+
+        if (!staffSnapshot) {
+            wrap.append(AccountingPanel._noDataParagraph(
+                "No staff overview captured yet. Visit /action/enterprise/staffOverview."
+            ))
+        } else {
+            const grid = document.createElement("div")
+            grid.style.display = "grid"
+            grid.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))"
+            grid.style.gap = "8px"
+            for (const key of ["flight", "cabin", "ground"]) {
+                const g = personnel.byGroup[key]
+                grid.append(AccountingPanel._buildGroupCell(key, g))
+            }
+            wrap.append(grid)
+        }
+
+        // Section 2 — Operating leverage KPIs.
+        const kpiHeading = document.createElement("h5")
+        kpiHeading.innerText = "Operating leverage"
+        kpiHeading.style.margin = "16px 0 6px 0"
+        wrap.append(kpiHeading)
+
+        const kpiGrid = document.createElement("div")
+        kpiGrid.style.display = "grid"
+        kpiGrid.style.gridTemplateColumns = "repeat(auto-fit, minmax(180px, 1fr))"
+        kpiGrid.style.gap = "8px"
+        kpiGrid.append(
+            AccountingPanel._buildKpiTile("Degree of operating leverage",
+                AccountingPanel._fmtDol(leverage.dol),
+                leverage.dolCI
+                    ? `90% CI [${AccountingPanel._fmtDol(leverage.dolCI.p05)} … ${AccountingPanel._fmtDol(leverage.dolCI.p95)}]`
+                    : `Need ≥6 outcomes (have ${leverage.significance.sampleCount})`),
+            AccountingPanel._buildKpiTile("Break-even revenue",
+                AccountingPanel._fmtCurrency(leverage.breakEvenRevenue),
+                leverage.marginOfSafetyPct != null
+                    ? `Margin of safety: ${(leverage.marginOfSafetyPct * 100).toFixed(1)}%`
+                    : "—"),
+            AccountingPanel._buildKpiTile("Cash runway",
+                AccountingPanel._fmtRunway(leverage.runwayWeeks),
+                leverage.weeklyDeficit > 0
+                    ? `Weekly deficit ${AccountingPanel._fmtCurrency(leverage.weeklyDeficit)}`
+                    : "EBIT positive"),
+            AccountingPanel._buildKpiTile("Salaries source",
+                leverage.fixed.salariesSource === "staffOverview" ? "Forward commitment" : "Actual run-rate",
+                AccountingPanel._fmtCurrency(leverage.fixed.salaries) + " / wk")
+        )
+        wrap.append(kpiGrid)
+
+        // Fixed-cost breakdown — small ledger so the user sees what feeds DOL.
+        const fxList = document.createElement("ul")
+        fxList.style.margin = "8px 0 0 0"
+        fxList.style.paddingLeft = "20px"
+        fxList.style.fontSize = "0.85em"
+        const fx = leverage.fixed
+        const items = [
+            ["Salaries",      fx.salaries],
+            ["Maintenance",   fx.maintenance],
+            ["Depreciation",  fx.depreciation],
+            ["Interest",      fx.interest],
+            ["Leasing",       fx.leasing],
+            ["Total fixed",   fx.total]
+        ]
+        for (const [label, value] of items) {
+            const li = document.createElement("li")
+            li.innerText = `${label}: ${AccountingPanel._fmtCurrency(value)}`
+            if (label === "Total fixed") li.style.fontWeight = "bold"
+            fxList.append(li)
+        }
+        wrap.append(fxList)
+
+        // Section 3 — Waste & gaps.
+        const wasteHeading = document.createElement("h5")
+        wasteHeading.innerText = "Waste & hiring gaps"
+        wasteHeading.style.margin = "16px 0 6px 0"
+        wrap.append(wasteHeading)
+
+        const wasteRows = []
+        if (personnel.redundancyTotalWaste > 0) {
+            wasteRows.push({
+                color: "#a94442",
+                text:  `Redundancy waste: ${AccountingPanel._fmtCurrency(personnel.redundancyTotalWaste)} / wk on overstaffed roles.`
+            })
+        }
+        if (personnel.countryAvgWeightedDeviationPct != null) {
+            const sign = personnel.countryAvgWeightedDeviationPct > 0 ? "over" : "under"
+            wasteRows.push({
+                color: "",
+                text:  `Country average: paying ${Math.abs(personnel.countryAvgWeightedDeviationPct).toFixed(1)}% ${sign} (headcount-weighted).`
+            })
+        }
+        if (personnel.hiringGapTotalWeeklyCost > 0) {
+            wasteRows.push({
+                color: "",
+                text:  `Hiring gap if filled: +${AccountingPanel._fmtCurrency(personnel.hiringGapTotalWeeklyCost)} / wk.`
+            })
+        }
+        if (wasteRows.length === 0) {
+            wrap.append(AccountingPanel._noteParagraph(
+                "No redundancy waste, hiring gap, or country-average deviation detected."
+            ))
+        } else {
+            for (const row of wasteRows) {
+                const p = document.createElement("p")
+                p.style.margin = "4px 0"
+                if (row.color) p.style.color = row.color
+                p.innerText = row.text
+                wrap.append(p)
+            }
+        }
+
+        wrap.append(AccountingPanel._noteParagraph(
+            "DOL = Contribution / EBIT. CI from bootstrap on weeklyResult outcomes ring (n=" +
+            leverage.significance.sampleCount + ")."
+        ))
+
+        return wrap
+    }
+
+    static _buildGroupCell(key, g) {
+        const cell = document.createElement("div")
+        cell.style.padding = "8px"
+        cell.style.border = "1px solid rgba(127,127,127,0.2)"
+        cell.style.borderRadius = "4px"
+
+        const label = document.createElement("div")
+        label.style.fontSize = "0.8em"
+        label.style.opacity = "0.7"
+        label.style.textTransform = "uppercase"
+        label.innerText = key
+        cell.append(label)
+
+        if (!g) {
+            const v = document.createElement("div")
+            v.innerText = "—"
+            cell.append(v)
+            return cell
+        }
+
+        const row = document.createElement("div")
+        row.style.fontSize = "1.05em"
+        row.style.marginTop = "2px"
+        row.innerText = AccountingPanel._fmtCurrency(g.currentWeekly) + " → " + AccountingPanel._fmtCurrency(g.nextWeekly)
+        cell.append(row)
+
+        const meta = document.createElement("div")
+        meta.style.fontSize = "0.85em"
+        meta.style.opacity = "0.8"
+        meta.style.marginTop = "2px"
+        const dPct = (g.deltaPct != null) ? g.deltaPct : 0
+        const sign = dPct > 0 ? "+" : ""
+        meta.innerText = `${sign}${dPct.toFixed(1)}% next week · ${g.headcount} employed`
+        cell.append(meta)
+
+        if (g.series && g.series.length >= 2) {
+            cell.append(AccountingPanel._sparkline(g.series, 80, 18))
+        }
+        return cell
+    }
+
+    static _buildKpiTile(title, valueText, footerText) {
+        const tile = document.createElement("div")
+        tile.style.padding = "8px"
+        tile.style.border = "1px solid rgba(127,127,127,0.2)"
+        tile.style.borderRadius = "4px"
+
+        const t = document.createElement("div")
+        t.style.fontSize = "0.8em"
+        t.style.opacity = "0.7"
+        t.innerText = title
+        tile.append(t)
+
+        const v = document.createElement("div")
+        v.style.fontSize = "1.2em"
+        v.style.fontWeight = "bold"
+        v.style.marginTop = "2px"
+        v.innerText = valueText
+        tile.append(v)
+
+        if (footerText) {
+            const f = document.createElement("div")
+            f.style.fontSize = "0.78em"
+            f.style.opacity = "0.7"
+            f.style.marginTop = "2px"
+            f.innerText = footerText
+            tile.append(f)
+        }
+        return tile
+    }
+
+    static _buildPersonnelBadge(badge) {
+        const div = document.createElement("div")
+        div.style.padding = "6px 10px"
+        div.style.margin = "4px 0"
+        div.style.borderRadius = "3px"
+        div.style.fontSize = "0.9em"
+        if (badge.kind === "warning") {
+            div.style.background = "rgba(217, 164, 6, 0.15)"
+            div.style.borderLeft = "3px solid #d9a406"
+        } else {
+            div.style.background = "rgba(54, 86, 168, 0.12)"
+            div.style.borderLeft = "3px solid #3656a8"
+        }
+        div.innerText = badge.text
+        return div
+    }
+
+    static _sparkline(series, w, h) {
+        const svgNs = "http://www.w3.org/2000/svg"
+        const svg = document.createElementNS(svgNs, "svg")
+        svg.setAttribute("width", String(w))
+        svg.setAttribute("height", String(h))
+        svg.style.marginTop = "4px"
+        svg.style.display = "block"
+        const min = Math.min.apply(null, series)
+        const max = Math.max.apply(null, series)
+        const range = max - min || 1
+        const step = series.length > 1 ? w / (series.length - 1) : 0
+        let d = ""
+        for (let i = 0; i < series.length; i++) {
+            const x = i * step
+            const y = h - ((series[i] - min) / range) * (h - 2) - 1
+            d += (i === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1) + " "
+        }
+        const path = document.createElementNS(svgNs, "path")
+        path.setAttribute("d", d.trim())
+        path.setAttribute("fill", "none")
+        path.setAttribute("stroke", "#3656a8")
+        path.setAttribute("stroke-width", "1.5")
+        svg.append(path)
+        return svg
+    }
+
+    static _fmtDol(value) {
+        if (value == null || !Number.isFinite(value)) return "—"
+        return value.toFixed(2) + "×"
+    }
+
+    static _fmtRunway(weeks) {
+        if (weeks == null) return "—"
+        if (!Number.isFinite(weeks)) return "∞"
+        return weeks.toFixed(1) + " wk"
     }
 
     _buildUnitEconomicsCard(ledger) {
