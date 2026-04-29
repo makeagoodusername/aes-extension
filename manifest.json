@@ -346,6 +346,7 @@
                 "modules/central-hub/tiles/conductor-tile.js",
                 "modules/central-hub/tiles/family-tile.js",
                 "modules/central-hub/tiles/dna-drift-tile.js",
+                "modules/central-hub/tiles/weekly-review-tile.js",
                 "modules/command-palette/registry.js",
                 "modules/command-palette/seed-navigation.js",
                 "modules/command-palette/seed-actions.js",
