@@ -70,6 +70,30 @@
         return lines.join("\n");
     }
 
+    /* B-1 density token table — compact/spacious shift the spacing scale
+       inside a stamped surface. Comfortable is the inherited default
+       and emits no rule. */
+    const DENSITY_TOKENS = {
+        compact: {
+            "--aes-sp-2": "6px",
+            "--aes-sp-3": "10px",
+            "--aes-sp-4": "13px",
+            "--aes-sp-5": "18px",
+            "--aes-sp-6": "24px"
+        },
+        spacious: {
+            "--aes-sp-2": "10px",
+            "--aes-sp-3": "16px",
+            "--aes-sp-4": "20px",
+            "--aes-sp-5": "32px",
+            "--aes-sp-6": "44px"
+        }
+    };
+
+    /* Numeric scalar mapping for --aes-ornament-intensity, mirrored to
+       the body attribute so skin CSS can gate via attribute selectors. */
+    const INTENSITY_SCALAR = { none: "0", subtle: "1", moderate: "2", full: "3" };
+
     function build(snapshot) {
         const blocks = [];
 
@@ -106,6 +130,42 @@
             }
         }
 
+        /* B-1 ornament intensity — drives skin CSS gating and any
+           module that wants to read the numeric scalar. */
+        const intensity = (snapshot && snapshot.ornament && snapshot.ornament.intensity) || "moderate";
+        const scalar = INTENSITY_SCALAR[intensity] || "2";
+        blocks.push(ruleBlock(":root", { "--aes-ornament-intensity": scalar }, "ornament intensity"));
+
+        /* B-1 per-surface density. Each entry emits its own scoped block
+           so an unstamped surface continues to inherit the global cascade. */
+        const densityBySurface = (snapshot && snapshot.density && snapshot.density.bySurface) || {};
+        for (const surface of Object.keys(densityBySurface)) {
+            const v = densityBySurface[surface];
+            const tokens = DENSITY_TOKENS[v];
+            if (tokens) {
+                blocks.push(ruleBlock(
+                    '[data-aes-surface="' + cssIdent(surface) + '"]',
+                    tokens,
+                    "density: " + surface + "=" + v
+                ));
+            }
+        }
+
+        /* B-1 numeric formatting — affects elements stamped with
+           data-aes-numeric (or any descendant of a stamped surface). */
+        const num = (snapshot && snapshot.numerals) || {};
+        if (num.style) {
+            const variant = num.style === "tabular" ? "tabular-nums lining-nums" : "proportional-nums";
+            const feat = num.style === "tabular" ? '"tnum","lnum"' : '"pnum"';
+            blocks.push(
+                "/* numerals: " + num.style + " */\n" +
+                "[data-aes-numeric] {\n" +
+                "  font-variant-numeric: " + variant + ";\n" +
+                "  font-feature-settings: " + feat + ";\n" +
+                "}"
+            );
+        }
+
         return blocks.filter(Boolean).join("\n\n");
     }
 
@@ -116,6 +176,39 @@
         return String(s).replace(/[^a-zA-Z0-9_-]/g, "");
     }
 
+    /* Flip body[data-aes-skin] from the active preset's optional `skin`
+       field. Used by deco-ivory / deco-noir to switch on the Art Deco
+       ornament layer in css/skin/skin-art-deco.css. Other presets leave
+       the attribute unset, so the ornament layer stays inert.
+
+       Also writes body[data-aes-ornament] from the customization
+       ornament intensity so skin CSS attribute selectors can gate
+       effects per intensity level. */
+    function applySkin() {
+        const body = document.body;
+        if (!body) return;
+        const store = window.AESCustomizationStore;
+        const preset = store ? store.activePreset() : null;
+        const skin = preset && typeof preset.skin === "string" ? preset.skin : "";
+        const safe = skin.replace(/[^a-zA-Z0-9_-]/g, "");
+        if (safe) {
+            if (body.getAttribute("data-aes-skin") !== safe) {
+                body.setAttribute("data-aes-skin", safe);
+            }
+        } else if (body.hasAttribute("data-aes-skin")) {
+            body.removeAttribute("data-aes-skin");
+        }
+
+        const intensity = store && typeof store.ornamentIntensity === "function"
+            ? store.ornamentIntensity() : "moderate";
+        const safeIntensity = String(intensity).replace(/[^a-z]/g, "");
+        if (safeIntensity) {
+            if (body.getAttribute("data-aes-ornament") !== safeIntensity) {
+                body.setAttribute("data-aes-ornament", safeIntensity);
+            }
+        }
+    }
+
     function apply() {
         const store = window.AESCustomizationStore;
         const snapshot = store ? store.get() : null;
@@ -124,6 +217,7 @@
         if (el.textContent !== css) {
             el.textContent = css;
         }
+        applySkin();
     }
 
     function boot() {

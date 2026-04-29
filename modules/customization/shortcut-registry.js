@@ -45,7 +45,12 @@
             const m = location.pathname.match(ENTERPRISE_RE);
             return m ? "/app/info/enterprises/" + m[1] : null;
         } },
-        { id: "nav.settings",    keys: "g x", desc: "Settings",           go: () => "/app/enterprise/settings" },
+        { id: "nav.settings",    keys: "g x", desc: "Settings",           action: function () {
+            const us = window.AesUnifiedSettings;
+            if (us && typeof us.open === "function") { us.open(); return; }
+            // Fallback while shell hasn't booted: legacy direct URL.
+            try { location.assign("/app/enterprise/settings"); } catch (_) {}
+        } },
         { id: "studio.toggle",   keys: "g c", desc: "Customization Studio", action: function () {
             const host = window.AESCustomizationHost;
             if (host && typeof host.toggle === "function") host.toggle();

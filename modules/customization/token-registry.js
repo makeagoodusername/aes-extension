@@ -63,7 +63,18 @@
         { var: "--aes-fs-display", label: "Font size — display", default: "56px", format: "length", group: "type" }
     ];
 
-    const ALL = COLORS.concat(SPACING).concat(TYPE);
+    /* Art Deco ornament tokens — consumed by css/skin/skin-art-deco.css.
+       Inert outside the deco skin (skin selector gates the body context).
+       Format "keyword" renders as a plain text input in Studio until B-2
+       lands a dedicated keyword renderer. */
+    const ORNAMENT = [
+        { var: "--aes-ornament-chevron-angle", label: "Chevron angle",   default: "12deg",     format: "length",  group: "ornament" },
+        { var: "--aes-ornament-frame-style",   label: "Frame style",     default: "solid",     format: "keyword", group: "ornament" },
+        { var: "--aes-ornament-rule-pattern",  label: "Rule pattern",    default: "1px solid", format: "keyword", group: "ornament" },
+        { var: "--aes-deco-fluting-density",   label: "Fluting density", default: "8px",       format: "length",  group: "ornament" }
+    ];
+
+    const ALL = COLORS.concat(SPACING).concat(TYPE).concat(ORNAMENT);
     const BY_VAR = Object.create(null);
     for (const t of ALL) BY_VAR[t.var] = t;
 
@@ -82,7 +93,7 @@
     }
 
     window.AESTokenRegistry = {
-        COLORS, SPACING, TYPE, ALL, BY_VAR,
+        COLORS, SPACING, TYPE, ORNAMENT, ALL, BY_VAR,
         get, has, list, defaults
     };
 })();

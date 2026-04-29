@@ -21,13 +21,24 @@
     const SCHEMA_VERSION = 1;
     const PATCH_MSG = "aes:customization:patch";
 
+    /* B-1 ornament intensity scale — keep in sync with skin-art-deco.css.
+       "moderate" is the default so a fresh install of a deco preset
+       surfaces the full Art Deco vocabulary; users tune down via Studio. */
+    const ORNAMENT_INTENSITIES = ["none", "subtle", "moderate", "full"];
+    const DENSITY_VALUES = ["compact", "comfortable", "spacious"];
+    const NUMERAL_STYLES = ["tabular", "proportional"];
+
     function emptyStore() {
         return {
             schemaVersion: SCHEMA_VERSION,
             active: { presetId: "default" },
             presets: {},
             scopes: { global: {} },
-            shortcuts: {}
+            shortcuts: {},
+            ornament: { intensity: "moderate" },
+            density: { bySurface: {} },
+            numerals: {},
+            userPresets: {}
         };
     }
 
@@ -47,6 +58,10 @@
             return;
         }
         const scopes = (blob.scopes && typeof blob.scopes === "object") ? blob.scopes : {};
+        const ornamentBlob = (blob.ornament && typeof blob.ornament === "object") ? blob.ornament : {};
+        const densityBlob = (blob.density && typeof blob.density === "object") ? blob.density : {};
+        const intensity = String(ornamentBlob.intensity || "");
+        const okIntensity = ORNAMENT_INTENSITIES.indexOf(intensity) >= 0 ? intensity : "moderate";
         cache = {
             schemaVersion: Number(blob.schemaVersion) || SCHEMA_VERSION,
             active: blob.active && typeof blob.active === "object"
@@ -58,7 +73,14 @@
                 section: (scopes.section && typeof scopes.section === "object") ? scopes.section : {},
                 tile:    (scopes.tile    && typeof scopes.tile    === "object") ? scopes.tile    : {}
             },
-            shortcuts: (blob.shortcuts && typeof blob.shortcuts === "object") ? blob.shortcuts : {}
+            shortcuts: (blob.shortcuts && typeof blob.shortcuts === "object") ? blob.shortcuts : {},
+            ornament: { intensity: okIntensity },
+            density: {
+                bySurface: (densityBlob.bySurface && typeof densityBlob.bySurface === "object")
+                    ? densityBlob.bySurface : {}
+            },
+            numerals: (blob.numerals && typeof blob.numerals === "object") ? blob.numerals : {},
+            userPresets: (blob.userPresets && typeof blob.userPresets === "object") ? blob.userPresets : {}
         };
     }
 
@@ -116,6 +138,115 @@
 
     function shortcutOverrides() {
         return cache.shortcuts || {};
+    }
+
+    /* ── B-1 ornament / density / numerals / user-preset accessors ── */
+
+    function ornamentIntensity() {
+        const v = (cache.ornament && cache.ornament.intensity) || "moderate";
+        return ORNAMENT_INTENSITIES.indexOf(v) >= 0 ? v : "moderate";
+    }
+
+    function densityFor(surface) {
+        const all = (cache.density && cache.density.bySurface) || {};
+        if (surface == null) return all;
+        const v = all[surface];
+        return DENSITY_VALUES.indexOf(v) >= 0 ? v : null;
+    }
+
+    function numerals() {
+        return cache.numerals || {};
+    }
+
+    function listUserPresets() {
+        const dict = cache.userPresets || {};
+        const out = [];
+        for (const id of Object.keys(dict)) {
+            const p = dict[id];
+            if (p && typeof p === "object") out.push(p);
+        }
+        out.sort(function (a, b) {
+            return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+        });
+        return out;
+    }
+
+    function getUserPreset(id) {
+        const dict = cache.userPresets || {};
+        return (id && dict[id]) || null;
+    }
+
+    function setOrnamentIntensity(intensity) {
+        const v = String(intensity || "");
+        if (ORNAMENT_INTENSITIES.indexOf(v) < 0) {
+            return Promise.resolve({ ok: false, error: "bad intensity" });
+        }
+        return patch({ ornament: { intensity: v } });
+    }
+
+    function setDensityFor(surface, value) {
+        const s = String(surface || "");
+        if (!s) return Promise.resolve({ ok: false, error: "missing surface" });
+        if (value == null) {
+            return patch({ density: { bySurface: { [s]: null } } });
+        }
+        const v = String(value);
+        if (DENSITY_VALUES.indexOf(v) < 0) {
+            return Promise.resolve({ ok: false, error: "bad density" });
+        }
+        return patch({ density: { bySurface: { [s]: v } } });
+    }
+
+    function setNumerals(spec) {
+        if (!spec || typeof spec !== "object") {
+            return Promise.resolve({ ok: false, error: "bad numerals" });
+        }
+        const node = {};
+        if (typeof spec.style === "string" && NUMERAL_STYLES.indexOf(spec.style) >= 0) {
+            node.style = spec.style;
+        }
+        if (typeof spec.currency === "string") node.currency = spec.currency;
+        if (typeof spec.time === "string") node.time = spec.time;
+        if (typeof spec.separator === "string") node.separator = spec.separator;
+        return patch({ numerals: node });
+    }
+
+    function saveUserPreset(name, snapshot) {
+        const trimmed = String(name || "").trim().slice(0, 64);
+        if (!trimmed) return Promise.resolve({ ok: false, error: "missing name" });
+        const id = "user-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+        const entry = {
+            id: id,
+            name: trimmed,
+            createdAt: Date.now(),
+            snapshot: (snapshot && typeof snapshot === "object") ? snapshot : {}
+        };
+        return patch({ userPresets: { [id]: entry } }).then(function (resp) {
+            if (resp && resp.ok) resp.id = id;
+            return resp;
+        });
+    }
+
+    function updateUserPreset(id, fields) {
+        const k = String(id || "");
+        if (!k || !cache.userPresets || !cache.userPresets[k]) {
+            return Promise.resolve({ ok: false, error: "missing preset" });
+        }
+        const node = {};
+        if (fields && typeof fields === "object") {
+            if (typeof fields.name === "string") node.name = fields.name.trim().slice(0, 64);
+            if (fields.snapshot && typeof fields.snapshot === "object") node.snapshot = fields.snapshot;
+        }
+        if (!Object.keys(node).length) {
+            return Promise.resolve({ ok: false, error: "empty update" });
+        }
+        return patch({ userPresets: { [k]: node } });
+    }
+
+    function deleteUserPreset(id) {
+        const k = String(id || "");
+        if (!k) return Promise.resolve({ ok: false, error: "missing id" });
+        return patch({ userPresets: { [k]: null } });
     }
 
     /* ── Active editing scope (in-memory only, not persisted) ─────
@@ -300,6 +431,9 @@
     window.AESCustomizationStore = {
         KEY,
         SCHEMA_VERSION,
+        ORNAMENT_INTENSITIES,
+        DENSITY_VALUES,
+        NUMERAL_STYLES,
         load,
         get,
         isHydrated,
@@ -310,6 +444,11 @@
         tileOverrides,
         scopeOverrides,
         shortcutOverrides,
+        ornamentIntensity,
+        densityFor,
+        numerals,
+        listUserPresets,
+        getUserPreset,
         patch,
         setActivePreset,
         setOverride,
@@ -318,6 +457,12 @@
         clearGlobalOverrides,
         clearScope,
         setShortcut,
+        setOrnamentIntensity,
+        setDensityFor,
+        setNumerals,
+        saveUserPreset,
+        updateUserPreset,
+        deleteUserPreset,
         subscribe,
         getCurrentScope,
         setCurrentScope,

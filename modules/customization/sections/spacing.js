@@ -41,18 +41,22 @@
         const store = window.AESCustomizationStore;
         if (!slider || !store) return;
 
-        // Density at the top (preserved from Phase 1)
+        // Global density (Phase 1, legacy — covers unstamped markup) ───
         const card = document.createElement("div");
         card.style.cssText = [
             "border:" + T.geom.bw2 + " solid " + T.color.oxide,
             "background:" + T.color.bone,
             "padding:" + T.sp[3],
-            "margin-bottom:" + T.sp[5]
+            "margin-bottom:" + T.sp[3]
         ].join(";");
         const dHead = document.createElement("div");
-        dHead.textContent = "DENSITY";
+        dHead.textContent = "GLOBAL DENSITY";
         dHead.style.cssText = headStyle(T);
         card.appendChild(dHead);
+        const dSub = document.createElement("div");
+        dSub.textContent = "Applies to legacy markup that has not opted into per-surface stamps.";
+        dSub.style.cssText = "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";color:" + T.color.slate + ";margin-bottom:" + T.sp[2];
+        card.appendChild(dSub);
         const seg = document.createElement("div");
         seg.style.cssText = "display:flex;gap:0";
         const opts = [
@@ -82,6 +86,9 @@
         card.appendChild(seg);
         host.appendChild(card);
 
+        // B-2 — per-surface density matrix (Phase 2, granular) ─────────
+        host.appendChild(perSurfaceMatrix(T, store));
+
         // Spacing scale
         host.appendChild(sectionHead(T, "SPACING SCALE", "Per-step sliders. The 4px grid is a guideline, not a constraint."));
         for (const s of SP) {
@@ -109,6 +116,141 @@
             store.setOverridesBatch(tokens);
         });
         host.appendChild(reset);
+    }
+
+    /* B-2 — per-surface density matrix.
+       Surfaces stamp data-aes-surface (see modules/_shared/surface-stamp.js
+       and central-hub/{tile,shell}.js). The applier emits scoped density
+       overrides keyed off this attribute. "Comfortable" stores user intent
+       but emits no rule (inherits global). */
+    const SURFACES = [
+        { id: "panel",  label: "Panel",  hint: "Section containers" },
+        { id: "tile",   label: "Tile",   hint: "Hub tiles" },
+        { id: "modal",  label: "Modal",  hint: "Dialogs / overlays" },
+        { id: "table",  label: "Table",  hint: "Data tables" },
+        { id: "card",   label: "Card",   hint: "Inline cards" }
+    ];
+    const SURFACE_DENSITIES = ["compact", "comfortable", "spacious"];
+
+    function perSurfaceMatrix(T, store) {
+        const wrap = document.createElement("div");
+        wrap.style.cssText = [
+            "border:" + T.geom.bw2 + " solid " + T.color.oxide,
+            "background:" + T.color.bone,
+            "padding:" + T.sp[3],
+            "margin-bottom:" + T.sp[5]
+        ].join(";");
+
+        const head = document.createElement("div");
+        head.textContent = "PER-SURFACE DENSITY";
+        head.style.cssText = headStyle(T);
+        wrap.appendChild(head);
+
+        const sub = document.createElement("div");
+        sub.textContent = "Override spacing per surface kind. Only stamped surfaces apply (panel & tile today; modals/tables opt in via AesSurface.stamp).";
+        sub.style.cssText = "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";color:" + T.color.slate + ";margin-bottom:" + T.sp[3];
+        wrap.appendChild(sub);
+
+        const grid = document.createElement("div");
+        grid.style.cssText = [
+            "display:grid",
+            "grid-template-columns:120px repeat(3, minmax(0, 1fr))",
+            "gap:0"
+        ].join(";");
+
+        // Header row
+        const colHeads = ["", "Compact", "Comfortable", "Spacious"];
+        for (const ch of colHeads) {
+            const cell = document.createElement("div");
+            cell.textContent = ch.toUpperCase();
+            cell.style.cssText = [
+                "padding:" + T.sp[2],
+                "font-family:" + T.font.display,
+                "font-size:" + T.fs.small,
+                "font-weight:" + T.fw.display,
+                "letter-spacing:" + T.track.caps,
+                "color:" + T.color.slate,
+                "border-bottom:" + T.geom.bw1 + " solid " + T.color.paperRule
+            ].join(";");
+            grid.appendChild(cell);
+        }
+
+        // One row per surface
+        for (const s of SURFACES) {
+            const lbl = document.createElement("div");
+            const lblTitle = document.createElement("div");
+            lblTitle.textContent = s.label;
+            lblTitle.style.cssText = [
+                "font-family:" + T.font.display,
+                "font-weight:" + T.fw.display,
+                "font-size:" + T.fs.small,
+                "letter-spacing:" + T.track.caps,
+                "color:" + T.color.oxide,
+                "text-transform:uppercase"
+            ].join(";");
+            const lblHint = document.createElement("div");
+            lblHint.textContent = s.hint;
+            lblHint.style.cssText = "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";color:" + T.color.slate + ";margin-top:2px";
+            lbl.append(lblTitle, lblHint);
+            lbl.style.cssText = "padding:" + T.sp[2] + ";display:flex;flex-direction:column;justify-content:center";
+            grid.appendChild(lbl);
+
+            for (const d of SURFACE_DENSITIES) {
+                const cell = document.createElement("button");
+                cell.type = "button";
+                cell.dataset.surface = s.id;
+                cell.dataset.density = d;
+                cell.style.cssText = matrixCellStyle(T, false);
+                const dot = document.createElement("span");
+                dot.textContent = "●";
+                dot.style.cssText = "font-size:" + T.fs.body + ";";
+                cell.appendChild(dot);
+                cell.addEventListener("click", function (e) {
+                    e.preventDefault();
+                    store.setDensityFor(s.id, d).then(paintGrid);
+                });
+                grid.appendChild(cell);
+            }
+        }
+
+        function paintGrid() {
+            const cur = store.densityFor(null) || {};
+            Array.from(grid.querySelectorAll("button[data-surface]")).forEach(function (b) {
+                const surfaceVal = cur[b.dataset.surface] || "comfortable";
+                const active = surfaceVal === b.dataset.density;
+                b.style.cssText = matrixCellStyle(T, active);
+            });
+        }
+
+        store.subscribe(paintGrid);
+        paintGrid();
+        wrap.appendChild(grid);
+
+        // Reset button
+        const reset = document.createElement("button");
+        reset.type = "button";
+        reset.textContent = "Reset all surfaces to comfortable";
+        reset.style.cssText = btnStyle(T);
+        reset.style.marginTop = T.sp[3];
+        reset.addEventListener("click", function (e) {
+            e.preventDefault();
+            store.patch({ density: { bySurface: "__CLEAR__" } });
+        });
+        wrap.appendChild(reset);
+
+        return wrap;
+    }
+
+    function matrixCellStyle(T, active) {
+        return [
+            "padding:" + T.sp[2],
+            "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+            "background:" + (active ? T.color.rust : T.color.bone),
+            "color:" + (active ? T.color.bone : T.color.slate),
+            "cursor:pointer",
+            "text-align:center",
+            "transition:background " + T.tr.fast
+        ].join(";");
     }
 
     function pxSlider(T, slider, store, spec) {

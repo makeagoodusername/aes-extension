@@ -31,16 +31,18 @@
     let scopeUnsub = null;
 
     const SECTIONS = [
-        { id: "theme",       num: "01", label: "Theme",        active: true },
-        { id: "color",       num: "02", label: "Colour",       active: true },
-        { id: "typography",  num: "03", label: "Typography",   active: true },
-        { id: "spacing",     num: "04", label: "Spacing",      active: true },
-        { id: "components",  num: "05", label: "Components",   active: false },
-        { id: "motion",      num: "06", label: "Motion",       active: true },
-        { id: "keybindings", num: "07", label: "Keybindings",  active: true },
-        { id: "layout",      num: "08", label: "Layout",       active: false },
-        { id: "scopes",      num: "09", label: "Scopes",       active: false },
-        { id: "backup",      num: "10", label: "Backup",       active: false }
+        { id: "theme",       num: "01",  label: "Theme",        active: true },
+        { id: "color",       num: "02",  label: "Colour",       active: true },
+        { id: "typography",  num: "03",  label: "Typography",   active: true },
+        { id: "spacing",     num: "04",  label: "Spacing",      active: true },
+        { id: "components",  num: "05",  label: "Components",   active: false },
+        { id: "motion",      num: "06",  label: "Motion",       active: true },
+        { id: "ornament",    num: "06b", label: "Ornament",     active: true },
+        { id: "keybindings", num: "07",  label: "Keybindings",  active: true },
+        { id: "layout",      num: "08",  label: "Layout",       active: false },
+        { id: "scopes",      num: "09",  label: "Scopes",       active: false },
+        { id: "backup",      num: "10",  label: "Backup",       active: false },
+        { id: "numerals",    num: "11",  label: "Numerals",     active: true }
     ];
 
     function tokens() { return window.AESTokens; }
@@ -307,7 +309,9 @@
             typography:  window.AESStudioTypographySection,
             spacing:     window.AESStudioSpacingSection,
             motion:      window.AESStudioMotionSection,
-            keybindings: window.AESStudioKeybindingsSection
+            ornament:    window.AESStudioOrnamentSection,
+            keybindings: window.AESStudioKeybindingsSection,
+            numerals:    window.AESStudioNumeralsSection
         };
         const r = renderers[activeSectionId];
         if (r && typeof r.render === "function") {
@@ -355,6 +359,36 @@
         if (panelEl) close_(); else open();
     }
 
+    function renderInto(host) {
+        if (!host) return;
+        ensureSafetyStyle();
+        const T = tokens();
+        host.textContent = "";
+
+        const wrap = document.createElement("div");
+        wrap.id = PANEL_ID + "-embed";
+        wrap.style.cssText = [
+            "display:flex",
+            "flex-direction:column",
+            "min-height:0",
+            "height:100%",
+            "background:" + T.color.bone,
+            "color:" + T.color.oxide,
+            "font-family:" + T.font.display
+        ].join(";");
+
+        wrap.appendChild(buildScopeRibbon(T));
+        wrap.appendChild(buildSplit(T));
+        host.appendChild(wrap);
+
+        // When scope changes, re-render the active section so values reflect overrides.
+        const store = window.AESCustomizationStore;
+        if (store && typeof store.subscribeScope === "function") {
+            scopeUnsub = store.subscribeScope(function () { renderActiveSection(); });
+        }
+        return wrap;
+    }
+
     function onEscape(e) {
         if (e.key === "Escape" && panelEl) {
             // Don't swallow Esc for inputs — let them clear first.
@@ -368,5 +402,5 @@
         }
     }
 
-    window.AESCustomizationStudio = { open, close: close_, toggle };
+    window.AESCustomizationStudio = { open, close: close_, toggle, renderInto };
 })();

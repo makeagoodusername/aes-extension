@@ -38,8 +38,95 @@
                 tokens: cloneTokens(preset.tokens || {})
             } : null,
             globalOverrides: cloneTokens(snapshot.scopes && snapshot.scopes.global || {}),
+            sectionOverrides: cloneSectionOverrides(snapshot.scopes && snapshot.scopes.section || {}),
+            tileOverrides:    cloneTileOverrides(snapshot.scopes && snapshot.scopes.tile || {}),
+            ornament: cloneOrnament(snapshot.ornament || {}),
+            density:  cloneDensity(snapshot.density || {}),
+            numerals: cloneNumerals(snapshot.numerals || {}),
+            userPresets: cloneUserPresets(snapshot.userPresets || {}),
             shortcuts: cloneShortcuts(snapshot.shortcuts || {})
         };
+    }
+
+    /* B-3 — export a single user-defined preset as its own bundle, suitable
+       for sharing one configuration without leaking the rest of the user's
+       Studio state. */
+    function exportUserPreset(preset) {
+        if (!preset || !preset.snapshot) return null;
+        const snap = preset.snapshot;
+        return {
+            schema: SCHEMA,
+            schemaVersion: SCHEMA_VERSION,
+            exportedAt: new Date().toISOString(),
+            extensionVersion: chromeRuntimeVersion(),
+            kind: "user-preset",
+            preset: {
+                id: String(preset.id || ""),
+                name: String(preset.name || "Imported preset"),
+                createdAt: Number(preset.createdAt) || Date.now()
+            },
+            active: { presetId: String(snap.presetId || "default") },
+            globalOverrides:  cloneTokens(snap.globalOverrides  || {}),
+            sectionOverrides: cloneSectionOverrides(snap.sectionOverrides || {}),
+            tileOverrides:    cloneTileOverrides(snap.tileOverrides || {}),
+            ornament: cloneOrnament(snap.ornament || {}),
+            density:  cloneDensity(snap.density || {}),
+            numerals: cloneNumerals(snap.numerals || {})
+        };
+    }
+
+    function cloneSectionOverrides(map) {
+        const out = {};
+        for (const id of Object.keys(map)) {
+            const v = map[id];
+            if (v && typeof v === "object") out[id] = cloneTokens(v);
+        }
+        return out;
+    }
+    function cloneTileOverrides(map) {
+        const out = {};
+        for (const id of Object.keys(map)) {
+            const v = map[id];
+            if (v && typeof v === "object") out[id] = cloneTokens(v);
+        }
+        return out;
+    }
+    function cloneOrnament(o) {
+        const out = {};
+        if (o && typeof o.intensity === "string") out.intensity = o.intensity;
+        return out;
+    }
+    function cloneDensity(d) {
+        const out = { bySurface: {} };
+        const src = (d && d.bySurface && typeof d.bySurface === "object") ? d.bySurface : {};
+        for (const k of Object.keys(src)) {
+            const v = src[k];
+            if (typeof v === "string") out.bySurface[k] = v;
+        }
+        return out;
+    }
+    function cloneNumerals(n) {
+        const out = {};
+        if (!n || typeof n !== "object") return out;
+        for (const k of Object.keys(n)) {
+            const v = n[k];
+            if (typeof v === "string") out[k] = v;
+        }
+        return out;
+    }
+    function cloneUserPresets(map) {
+        const out = {};
+        for (const id of Object.keys(map)) {
+            const p = map[id];
+            if (!p || typeof p !== "object") continue;
+            out[id] = {
+                id:        String(p.id || id),
+                name:      String(p.name || "Untitled"),
+                createdAt: Number(p.createdAt) || Date.now(),
+                snapshot:  p.snapshot && typeof p.snapshot === "object" ? p.snapshot : {}
+            };
+        }
+        return out;
     }
 
     function chromeRuntimeVersion() {
@@ -95,8 +182,15 @@
                         name: String(data.preset.name || "Imported preset"),
                         tokens: cloneTokens(data.preset.tokens || {})
                     } : null,
-                globalOverrides: cloneTokens(data.globalOverrides || {}),
-                shortcuts: cloneShortcuts(data.shortcuts || {})
+                globalOverrides:  cloneTokens(data.globalOverrides || {}),
+                sectionOverrides: cloneSectionOverrides(data.sectionOverrides || {}),
+                tileOverrides:    cloneTileOverrides(data.tileOverrides || {}),
+                ornament: cloneOrnament(data.ornament || {}),
+                density:  cloneDensity(data.density || {}),
+                numerals: cloneNumerals(data.numerals || {}),
+                userPresets: cloneUserPresets(data.userPresets || {}),
+                shortcuts: cloneShortcuts(data.shortcuts || {}),
+                kind: data.kind === "user-preset" ? "user-preset" : null
             }
         };
     }
@@ -108,19 +202,40 @@
     function apply(bundle) {
         const store = window.AESCustomizationStore;
         if (!store || !bundle) return Promise.resolve({ ok: false, error: "no store" });
-        const patch = {
+
+        // Apply the clear pass + base preset assignment first.
+        const clearPatch = {
             active: { presetId: bundle.active.presetId },
-            scopes: { global: "__CLEAR__" },
+            scopes: { global: "__CLEAR__", section: "__CLEAR__", tile: "__CLEAR__" },
+            ornament: bundle.ornament || { intensity: "moderate" },
+            density: { bySurface: "__CLEAR__" },
+            numerals: "__CLEAR__",
             shortcuts: bundle.shortcuts
         };
-        // Apply the cleared global, then re-write overrides as a 2nd patch.
-        return store.patch(patch).then(function () {
-            return store.patch({ scopes: { global: bundle.globalOverrides || {} } });
+
+        return store.patch(clearPatch).then(function () {
+            // Re-write overrides as a second patch (deep-merge fills the cleared branches).
+            return store.patch({
+                scopes: {
+                    global:  bundle.globalOverrides  || {},
+                    section: bundle.sectionOverrides || {},
+                    tile:    bundle.tileOverrides    || {}
+                },
+                density: { bySurface: (bundle.density && bundle.density.bySurface) || {} },
+                numerals: bundle.numerals || {}
+            });
         }).then(function () {
-            if (bundle.preset && bundle.preset.id !== "default" && bundle.preset.id !== "editorial-brutalism" && bundle.preset.id !== "oxide-dark") {
-                // Persist a user-defined preset alongside built-ins
+            const builtIns = ["default", "editorial-brutalism", "oxide-dark", "deco-ivory", "deco-noir"];
+            if (bundle.preset && builtIns.indexOf(bundle.preset.id) < 0) {
+                // Persist a user-defined preset alongside built-ins.
                 return store.patch({ presets: { [bundle.preset.id]: bundle.preset } });
             }
+            return null;
+        }).then(function () {
+            // Persist any imported user-defined preset bundles (B-3).
+            const up = bundle.userPresets || {};
+            const ids = Object.keys(up);
+            if (ids.length) return store.patch({ userPresets: up });
             return null;
         });
     }
@@ -141,6 +256,7 @@
         SCHEMA,
         SCHEMA_VERSION,
         exportBundle,
+        exportUserPreset,
         parse,
         apply,
         downloadJson

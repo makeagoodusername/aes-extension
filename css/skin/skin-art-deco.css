@@ -1,0 +1,201 @@
+/* ===========================================================
+   AES "DECO" — css/skin/skin-art-deco.css
+   Art Deco-inspired ornament layer, opt-in via body[data-aes-skin="art-deco"].
+   Foundation slice U-AD-1 — primitives only, palette flips via preset.
+
+   Extends css/design-tokens.css. Inherits the bone/oxide/rust palette
+   (re-mapped by deco-ivory or deco-noir preset to ivory/lacquer/brass)
+   and adds Art Deco geometry: stepped frames, sunburst radials, vertical
+   fluting, double-rule outlines, drop-cap heads, tabular numerics.
+
+   All scoped under body[data-aes-skin="art-deco"] so a default install
+   sees zero change. Orthogonal to .aes-cubist (the Cubist skin); both
+   may coexist, with documented conflict resolution where they overlap.
+
+   Effect intensity gated by body[data-aes-ornament] (none|subtle|moderate|full).
+   When the attribute is absent (e.g. before B-1 wires the Studio control),
+   effects render as if the value were "moderate".
+   =========================================================== */
+
+body[data-aes-skin="art-deco"] {
+    /* ---- Ornament tokens (Studio-customisable) ----------- */
+    --aes-ornament-chevron-angle:  12deg;
+    --aes-ornament-frame-style:    solid;
+    --aes-ornament-rule-pattern:   1px solid;
+    --aes-deco-fluting-density:    8px;
+
+    /* Numeric scalar (0..3) bound to the ornament intensity attr.
+       B-1 will drive this from chrome.storage; until then, it stays 2. */
+    --aes-ornament-intensity:      2;
+}
+
+/* ---- Tabular numerics on data surfaces (always-on under deco) -- */
+body[data-aes-skin="art-deco"] .table tbody td,
+body[data-aes-skin="art-deco"] [data-aes-numeric],
+body[data-aes-skin="art-deco"] [data-aes-surface="table"] td,
+body[data-aes-skin="art-deco"] .aes-data-cell {
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum", "lnum";
+}
+
+/* ---- Stepped panel borders (gated: subtle+moderate+full) -------
+   Layered approach: the panel's outer border is the existing 2px oxide
+   rule; we add a thin secondary outline 4px out, and chevron-clip the
+   bottom-right corner via ::before. No box-shadow — would collide with
+   the brutalist `4px 4px 0 oxide` panel-header drop offset.
+*/
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]) [data-aes-surface="panel"] {
+    position: relative;
+    outline: var(--aes-bw-1) solid var(--aes-rust);
+    outline-offset: var(--aes-sp-1);
+}
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]):not([data-aes-ornament="subtle"]) [data-aes-surface="panel"]::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: var(--aes-sp-4);
+    height: var(--aes-sp-4);
+    background: var(--aes-rust);
+    clip-path: polygon(100% 0, 100% 100%, 0 0);
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0.85;
+}
+
+/* ---- Sunburst behind hero KPI cards (gated: moderate+full) -----
+   Conic gradient centred at the bottom edge, masked into a rising
+   fan. Strictly decorative; sits at z-index 0 so existing card content
+   (positioned at z-index 1 in tile.js) reads cleanly above.
+
+   Excluded from .aes-cubist .aes-polyhedron descendants — the cubist
+   polyhedron applies clip-path to the host, which would crop the
+   sunburst's bottom edge. Cubist wins on hero tiles; deco still applies
+   elsewhere on the page.
+*/
+body[data-aes-skin="art-deco"][data-aes-ornament="moderate"] [data-tile-id*="kpi"],
+body[data-aes-skin="art-deco"][data-aes-ornament="full"] [data-tile-id*="kpi"],
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]):not([data-aes-ornament="subtle"]) .aes-hero-kpi {
+    position: relative;
+    overflow: hidden;
+}
+body[data-aes-skin="art-deco"][data-aes-ornament="moderate"] [data-tile-id*="kpi"]::before,
+body[data-aes-skin="art-deco"][data-aes-ornament="full"] [data-tile-id*="kpi"]::before,
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]):not([data-aes-ornament="subtle"]) .aes-hero-kpi::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background: repeating-conic-gradient(
+        from 270deg at 50% 100%,
+        var(--aes-rust-soft, rgba(184, 134, 46, 0.14)) 0deg 6deg,
+        transparent 6deg 12deg
+    );
+    -webkit-mask-image: radial-gradient(ellipse at 50% 100%, #000 0%, transparent 72%);
+            mask-image: radial-gradient(ellipse at 50% 100%, #000 0%, transparent 72%);
+    pointer-events: none;
+}
+/* Suppress sunburst inside cubist polyhedron to avoid clip-path conflict. */
+body.aes-cubist[data-aes-skin="art-deco"] .aes-polyhedron [data-tile-id*="kpi"]::before,
+body.aes-cubist[data-aes-skin="art-deco"] .aes-polyhedron .aes-hero-kpi::before {
+    display: none;
+}
+
+/* ---- Vertical fluting on side rails (gated: subtle+moderate+full) -- */
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]) .aes-side-rail,
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]) [data-aes-rail] {
+    position: relative;
+}
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]) .aes-side-rail::before,
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]) [data-aes-rail]::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        90deg,
+        var(--aes-paper-rule) 0 1px,
+        transparent 1px var(--aes-deco-fluting-density)
+    );
+    pointer-events: none;
+    opacity: 0.55;
+}
+body[data-aes-skin="art-deco"][data-aes-ornament="subtle"] .aes-side-rail::before,
+body[data-aes-skin="art-deco"][data-aes-ornament="subtle"] [data-aes-rail]::before {
+    opacity: 0.30;
+}
+body[data-aes-skin="art-deco"][data-aes-ornament="full"] .aes-side-rail::before,
+body[data-aes-skin="art-deco"][data-aes-ornament="full"] [data-aes-rail]::before {
+    opacity: 0.85;
+}
+
+/* ---- Double-rule modal frames (gated: moderate+full) -----------
+   Outline-based double frame; deliberately avoids box-shadow so it does
+   not interact with the brutalist panel drop offset elsewhere.
+*/
+body[data-aes-skin="art-deco"][data-aes-ornament="moderate"] [data-aes-surface="modal"],
+body[data-aes-skin="art-deco"][data-aes-ornament="full"] [data-aes-surface="modal"],
+body[data-aes-skin="art-deco"][data-aes-ornament="moderate"] [role="dialog"],
+body[data-aes-skin="art-deco"][data-aes-ornament="full"] [role="dialog"],
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]):not([data-aes-ornament="subtle"]) .aes-modal {
+    outline: var(--aes-bw-1) solid var(--aes-rust);
+    outline-offset: var(--aes-sp-1);
+    border: var(--aes-bw-2) var(--aes-ornament-frame-style) var(--aes-oxide);
+}
+
+/* ---- Drop-cap section heads + tracked uppercase (gated: moderate+full)
+   Targets the existing `.aes-section-head` class plus `[data-section] > h2`
+   first-of-type. ::first-letter floats large, brass-tinted, line-leading
+   bumped down so the cap squares under the baseline of the second line.
+*/
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]) .aes-section-head,
+body[data-aes-skin="art-deco"]:not([data-aes-ornament="none"]) [data-section] > h2:first-of-type {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+}
+body[data-aes-skin="art-deco"][data-aes-ornament="moderate"] .aes-section-head::first-letter,
+body[data-aes-skin="art-deco"][data-aes-ornament="full"] .aes-section-head::first-letter,
+body[data-aes-skin="art-deco"][data-aes-ornament="moderate"] [data-section] > h2:first-of-type::first-letter,
+body[data-aes-skin="art-deco"][data-aes-ornament="full"] [data-section] > h2:first-of-type::first-letter {
+    font-size: var(--aes-fs-h1);
+    font-weight: var(--aes-fw-display);
+    letter-spacing: 0;
+    color: var(--aes-rust);
+    float: left;
+    line-height: 0.85;
+    padding-right: var(--aes-sp-2);
+    padding-top: 0.05em;
+}
+
+/* ---- Hairline rule under tile titles (always-on under deco) ----
+   A subtle horizontal accent that reads as Art Deco "ribbon" trim
+   without competing with the brutalist 2px oxide title underline.
+*/
+body[data-aes-skin="art-deco"] [data-aes-surface="tile"] > header,
+body[data-aes-skin="art-deco"] [data-aes-surface="tile"] > .aes-tile-header {
+    border-bottom: var(--aes-bw-1) var(--aes-ornament-frame-style) var(--aes-rust);
+}
+
+/* ---- Below 1200px viewport: drop ornaments, keep palette ------- */
+@media (max-width: 1199px) {
+    body[data-aes-skin="art-deco"] [data-aes-surface="panel"]::before,
+    body[data-aes-skin="art-deco"] [data-tile-id*="kpi"]::before,
+    body[data-aes-skin="art-deco"] .aes-hero-kpi::before,
+    body[data-aes-skin="art-deco"] .aes-side-rail::before,
+    body[data-aes-skin="art-deco"] [data-aes-rail]::before {
+        display: none !important;
+    }
+    body[data-aes-skin="art-deco"] [data-aes-surface="panel"] {
+        outline: none !important;
+    }
+}
+
+/* ---- Reduced-motion: ornament layer has no transitions to neutralise,
+   block reserved for parity with cubist.css. ------------------- */
+@media (prefers-reduced-motion: reduce) {
+    body[data-aes-skin="art-deco"] [data-tile-id*="kpi"]::before,
+    body[data-aes-skin="art-deco"] .aes-hero-kpi::before {
+        animation: none !important;
+    }
+}
