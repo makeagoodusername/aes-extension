@@ -235,6 +235,27 @@
     }
 
     /**
+     * Recent strategy journal entries — narrative log of decisions, weight
+     * changes, overrides, watchlist toggles. Newest first; sliced to `limit`.
+     * Filterable by action kind. Useful for an LLM to ask "what's been
+     * happening?" without parsing raw bus events.
+     */
+    async function journal(opts) {
+        const o = opts || {}
+        if (!window.AesStrategyJournal || typeof window.AesStrategyJournal.loadAll !== "function") {
+            return {ok: false, error: "AesStrategyJournal.loadAll unavailable"}
+        }
+        try {
+            const all = await window.AesStrategyJournal.loadAll(o.accountId)
+            let entries = Array.isArray(all) ? all.slice() : []
+            if (o.action) entries = entries.filter(e => e && e.action === o.action)
+            const limit = Number.isFinite(o.limit) ? Math.max(1, o.limit) : 50
+            if (entries.length > limit) entries = entries.slice(0, limit)
+            return {ok: true, count: entries.length, entries}
+        } catch (e) { return _err((e && e.message) || e) }
+    }
+
+    /**
      * Active strategy signals — the LLM's "what should I pay attention to?"
      * surface. Reads `signal:*` events from the bus history (last `windowMs`
      * ms, default 1h), deduplicates by signal kind keeping the most recent,
@@ -295,7 +316,7 @@
 
     window.AesRead = {
         snapshot, routes, hubs, fleet, crew, cash,
-        competitors, alliance, settings, missing, signals, refresh
+        competitors, alliance, settings, missing, signals, journal, refresh
     }
 
     // ─── AesTools registration ───────────────────────────────────────
@@ -405,6 +426,15 @@
             sideEffects: "read",
             tags:        ["read", "signals"],
             run:         (a) => signals(a || {})
+        })
+        window.AesTools.register({
+            name:        "read.journal",
+            description: "Recent strategy journal entries — narrative log of decisions, weight changes, overrides, watchlist toggles. Newest first. Filter by `action` (override-save | note-save | watchlist-toggle | apply-decision | weight-change).",
+            params:      {action: "string?", limit: "number? (default 50)", accountId: "string?"},
+            returns:     "{ok, count, entries: [...]}",
+            sideEffects: "read",
+            tags:        ["read", "journal"],
+            run:         (a) => journal(a || {})
         })
         window.AesTools.register({
             name:        "read.refresh",
