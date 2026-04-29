@@ -58,6 +58,7 @@
                 "modules/_shared/migrate-legacy.js",
                 "modules/_shared/data-bus.js",
                 "modules/_shared/data-bus-topics.js",
+                "modules/_shared/strategy-bus.js",
                 "modules/_shared/utils.js",
                 "modules/_shared/settings-bridge.js",
                 "modules/_shared/prefix-store.js",
@@ -134,6 +135,7 @@
                 "modules/unified-settings/adapters/aircraft-flight-plan.js",
                 "modules/unified-settings/adapters/schedule-management.js",
                 "modules/unified-settings/adapters/competitor-intel.js",
+                "modules/unified-settings/adapters/drag-and-palette.js",
                 "modules/aes-menu.js",
                 "modules/command-bridge/menu-installer.js",
                 "modules/about-dialog.js",
@@ -473,6 +475,7 @@
             "js": [
                 "modules/flightsfrom/data-store.js",
                 "modules/flightsfrom/scan-controller.js",
+                "modules/flightsfrom/schedule-panel.js",
                 "modules/station-automation/country-scraper.js",
                 "modules/aircraft-type-specs.js",
                 "modules/route-assistant/demand-store.js",
