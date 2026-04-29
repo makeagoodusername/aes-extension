@@ -226,6 +226,13 @@ class RouteAssistantMarketsPageScraper {
         }
         if (Object.keys(writes).length) {
             await chrome.storage.local.set(writes)
+            if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+                window.AesDataBus.emit("data:route-assistant:markets:updated", {
+                    hub:         base.hub,
+                    dest:        base.dest,
+                    keysTouched: Object.keys(saved)
+                })
+            }
         }
         return saved
     }

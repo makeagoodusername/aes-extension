@@ -22,7 +22,8 @@ class RouteAssistantModeTabs {
             {id: "table",   label: "Table",   glyph: "≡",  view: typeof RouteAssistantTableView   !== "undefined" ? RouteAssistantTableView   : null},
             {id: "waves",   label: "Waves",   glyph: "📊", view: typeof RouteAssistantWaveView    !== "undefined" ? RouteAssistantWaveView    : null},
             {id: "sandbox", label: "Sandbox", glyph: "🧪", view: typeof RouteAssistantSandboxView !== "undefined" ? RouteAssistantSandboxView : null},
-            {id: "heatmap", label: "Heatmap", glyph: "🗺", view: typeof RouteAssistantHeatmapView !== "undefined" ? RouteAssistantHeatmapView : null}
+            {id: "heatmap", label: "Heatmap", glyph: "🗺", view: typeof RouteAssistantHeatmapView !== "undefined" ? RouteAssistantHeatmapView : null},
+            {id: "compass", label: "Compass", glyph: "🧭", view: typeof RouteAssistantCompassView !== "undefined" ? RouteAssistantCompassView : null}
         ]
     }
 

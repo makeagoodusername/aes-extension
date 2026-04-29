@@ -123,6 +123,13 @@ class AesAfpFlightLogStore {
             updatedAt:  now
         }
         await chrome.storage.local.set({[AesAfpFlightLogStore._key(server, aircraftId)]: next})
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+            window.AesDataBus.emit("data:afp:flightLog:appended", {
+                server,
+                aircraftId:  next.aircraftId,
+                flightCount: next.flights.length
+            })
+        }
         return next
     }
 

@@ -771,6 +771,29 @@
                     for (const a of (list || [])) addOpt(a && a.iata)
                 } catch (_) { /* noop */ }
             }
+            if (typeof AesAfpScheduleStore !== "undefined"
+                && ctx && ctx.server && ctx.aircraftId) {
+                try {
+                    const sched = await AesAfpScheduleStore.load(ctx.server, ctx.aircraftId)
+                    if (sched) {
+                        addOpt(sched.hubIata)
+                        for (const leg of (sched.legs || [])) {
+                            addOpt(leg && leg.origin)
+                            addOpt(leg && leg.destination)
+                        }
+                    }
+                } catch (_) { /* noop */ }
+            }
+            if (typeof RouteAssistantWatchlistStore !== "undefined") {
+                try {
+                    const wl = await RouteAssistantWatchlistStore.loadAll()
+                    for (const key of wl.keys()) {
+                        const [hub, dest] = String(key || "").split("-")
+                        addOpt(hub)
+                        addOpt(dest)
+                    }
+                } catch (_) { /* noop */ }
+            }
             datalist.innerHTML = ""
             for (const code of opts) {
                 const opt = document.createElement("option")

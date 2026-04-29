@@ -1086,6 +1086,15 @@ class RouteAssistantPricingApplier {
                 console.warn("[AES pricingApplier] apply-log write failed", e)
             }
         }
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function"
+                && (record.status === "verified" || record.status === "posted")) {
+            window.AesDataBus.emit("data:route-assistant:pricing:applied", {
+                hub:      record.hub,
+                dest:     record.dest,
+                classes:  record.newPrices ? Object.keys(record.newPrices) : [],
+                verified: record.status === "verified"
+            })
+        }
         return record
     }
 

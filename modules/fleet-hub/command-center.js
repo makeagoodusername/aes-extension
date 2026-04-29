@@ -61,6 +61,8 @@ class FleetHubCommandCenter {
         this._presetsBlock  = null    // {presets, defaultPresetId, ...}
         this._waveDrafts    = new Map()  // hub -> draft record (or null)
         this._aircraftDrafts = new Map()  // aircraftId -> draft record (or null)
+        this._hubManagement = null       // {hiddenHubs:[], labels:{IATA:label}, ...}
+        this._hubMenuDispose = null      // dismisses the open hub-card kebab menu
 
         // Strategy header strip — composed lazily on mount, repainted on
         // chrome.storage.onChanged for any aesStrategy key. The plan is
@@ -216,6 +218,13 @@ class FleetHubCommandCenter {
         this._tagPopoverEl = null
         this._tagEditOpenFor = null
 
+        // Same for the hub-card kebab menu.
+        if (this._hubMenuDispose) {
+            try { this._hubMenuDispose() } catch (_) { /* noop */ }
+            this._hubMenuDispose = null
+        }
+        this._hubMenuOpenFor = null
+
         this._legStatusBySeq = {}
         if (this.rootEl && this.rootEl.parentElement) {
             this.rootEl.parentElement.removeChild(this.rootEl)
@@ -277,7 +286,8 @@ class FleetHubCommandCenter {
             this._loadAircraftTags(),
             this._loadRoutines(),
             this._loadKnownAccounts(),
-            this._loadStrategyAux()
+            this._loadStrategyAux(),
+            this._loadHubManagement()
         ]
         await Promise.all(tasks)
         this._loaded = true
@@ -483,6 +493,25 @@ class FleetHubCommandCenter {
     }
 
     /**
+     * User-managed hub overrides (hidden hubs + display labels). Single
+     * read off the per-airline FleetHubHubManagement store. Empty record
+     * is the safe default — every consumer treats absent fields as
+     * "no overrides".
+     */
+    async _loadHubManagement() {
+        if (typeof window.FleetHubHubManagement === "undefined") {
+            this._hubManagement = {hiddenHubs: [], labels: {}}
+            return
+        }
+        try {
+            this._hubManagement = await window.FleetHubHubManagement.load(
+                this.server, this.airlineCode)
+        } catch (_) {
+            this._hubManagement = {hiddenHubs: [], labels: {}}
+        }
+    }
+
+    /**
      * Per-aircraft tags (status + roles + notes) — surfaces controlled
      * vocabularies as filter dimensions for routines and as inline chips
      * on the Aircraft tab. Cheap single-key read.
@@ -558,6 +587,7 @@ class FleetHubCommandCenter {
         const afpStatePrefix    = "aircraftFlightPlan:state:"    + this.server + ":"
         const afpSchedulePrefix = "aircraftFlightPlan:schedule:" + this.server + ":"
         const waveDraftPrefix   = "routeAssistant:waveDraft"
+        const hubMgmtKey        = "fleetHub:hubManagement:" + this.server + ":" + this.airlineCode
 
         // Strategy keys repaint the strip in place rather than the whole
         // CC so the user's active tab + scroll position don't reset on
@@ -583,6 +613,7 @@ class FleetHubCommandCenter {
                 if (k === fleetKey)                            { fullHit = true; continue }
                 if (k === sIndex)                              { fullHit = true; continue }
                 if (k === FleetHubCommandCenter.SETTINGS_KEY)  { fullHit = true; continue }
+                if (k === hubMgmtKey)                          { fullHit = true; continue }
                 if (k.indexOf(sPrefix)            === 0)       { fullHit = true; continue }
                 if (k.indexOf(afpDraftPrefix)     === 0)       { fullHit = true; continue }
                 if (k.indexOf(afpStatePrefix)     === 0)       { fullHit = true; continue }
@@ -1432,9 +1463,14 @@ class FleetHubCommandCenter {
         if (decisionsBlock) this.bodyEl.appendChild(decisionsBlock)
 
         if (!hubs.length) {
-            this.bodyEl.appendChild(this._emptyState(
-                "No hub data yet — visit each aircraft's Flight Plan tab once to capture its location."
+            const hiddenCount = (this._hubManagement && Array.isArray(this._hubManagement.hiddenHubs))
+                ? this._hubManagement.hiddenHubs.length : 0
+            this.bodyEl.appendChild(this._emptyState(hiddenCount
+                ? "All visible hubs are hidden — unhide any of the " + hiddenCount + " below to bring its card back."
+                : "No hub data yet — visit each aircraft's Flight Plan tab once to capture its location."
             ))
+            const stripIfAny = this._renderHiddenHubsStrip()
+            if (stripIfAny) this.bodyEl.appendChild(stripIfAny)
             return
         }
 
@@ -1447,6 +1483,8 @@ class FleetHubCommandCenter {
             grid.appendChild(this._renderHubCard(h))
         }
         this.bodyEl.appendChild(grid)
+        const hidden = this._renderHiddenHubsStrip()
+        if (hidden) this.bodyEl.appendChild(hidden)
         if (unassigned) {
             this.bodyEl.appendChild(this._renderUnassignedBlock(unassigned))
         }
@@ -1719,10 +1757,21 @@ class FleetHubCommandCenter {
      * appended at the end of the list — never silently dropped.
      */
     _buildHubAggregate() {
+        // User-hidden hubs (per-airline override) drop out of the seeding
+        // loops AND any aircraft tagged to them fall into UNASSIGNED. This
+        // is a UI suppression — the underlying data is untouched, so an
+        // unhide flips the card back instantly.
+        const hidden = new Set(
+            (this._hubManagement && Array.isArray(this._hubManagement.hiddenHubs))
+                ? this._hubManagement.hiddenHubs.map(s => String(s).toUpperCase())
+                : []
+        )
+
         const byHub = new Map()
         const getOrCreate = (rawHub) => {
             if (!rawHub) return null
             const k = String(rawHub).toUpperCase()
+            if (hidden.has(k)) return null
             let entry = byHub.get(k)
             if (!entry) {
                 entry = {
@@ -1770,7 +1819,11 @@ class FleetHubCommandCenter {
             sources: new Set()
         }
         for (const r of this._rows) {
-            const target = r.hub ? getOrCreate(r.hub) : unassigned
+            // getOrCreate returns null when r.hub is in the hidden set; the
+            // aircraft then falls into UNASSIGNED so the user can still see
+            // it and unhide the hub from the strip below.
+            const created = r.hub ? getOrCreate(r.hub) : null
+            const target = created || unassigned
             if (target !== unassigned) target.sources.add("aircraft")
             target.aircraft.push(r)
             if (r.hasDraftedPlan) target.drafted++
@@ -1845,13 +1898,23 @@ class FleetHubCommandCenter {
                 + (empty ? "opacity:0.86;" : "")
 
         const head = document.createElement("div")
-        head.style.cssText = "display:flex;align-items:baseline;gap:8px;"
+        head.style.cssText = "display:flex;align-items:baseline;gap:8px;position:relative;"
+        const labels = (this._hubManagement && this._hubManagement.labels) || {}
+        const customLabel = labels[hub.hub] || ""
         const iata = document.createElement("span")
         iata.style.cssText = T
             ? "font-family:" + T.font.mono + ";font-size:" + T.fs.h3 + ";font-weight:" + T.fw.bold + ";color:" + T.color.oxide + ";letter-spacing:" + T.track.mono + ";"
             : "font-family:monospace;font-size:18px;font-weight:700;color:#2b2520;"
-        iata.textContent = hub.hub
+        iata.textContent = customLabel || hub.hub
         head.appendChild(iata)
+        if (customLabel) {
+            const sub = document.createElement("span")
+            sub.style.cssText = T
+                ? "font-family:" + T.font.mono + ";font-size:" + T.fs.small + ";color:" + T.color.slate + ";letter-spacing:" + T.track.mono + ";"
+                : "font-family:monospace;font-size:11px;color:#7a6f66;"
+            sub.textContent = "(" + hub.hub + ")"
+            head.appendChild(sub)
+        }
         const acCount = document.createElement("span")
         acCount.style.cssText = T
             ? "font-size:" + T.fs.small + ";color:" + T.color.slate + ";"
@@ -1861,11 +1924,17 @@ class FleetHubCommandCenter {
             : hub.aircraft.length + " aircraft"
         head.appendChild(acCount)
         if (hub.liveSchedule) head.appendChild(this._badge("LIVE", "moss"))
+
+        // Kebab — hide / rename / clear-drafts. Pushed against the right
+        // edge so the row reads IATA · count · LIVE · ⋯ · chevron.
+        const kebab = this._renderHubCardMenu(hub, customLabel)
+        if (kebab) head.appendChild(kebab)
+
         if (!empty) {
             const chevron = document.createElement("span")
             chevron.style.cssText = T
-                ? "margin-left:auto;font-size:" + T.fs.small + ";color:" + T.color.slate + ";"
-                : "margin-left:auto;font-size:11px;color:#7a6f66;"
+                ? "font-size:" + T.fs.small + ";color:" + T.color.slate + ";"
+                : "font-size:11px;color:#7a6f66;"
             chevron.textContent = "▸"
             chevron.setAttribute("aria-hidden", "true")
             head.appendChild(chevron)
@@ -1966,6 +2035,274 @@ class FleetHubCommandCenter {
         }
 
         return card
+    }
+
+    /**
+     * Builds the kebab control + on-demand popover for a hub card. Returns
+     * null when FleetHubHubManagement isn't loaded so the head still renders
+     * cleanly. Click-outside / Escape close the menu; openings are mutually
+     * exclusive across cards (only one menu open at a time).
+     *
+     * Actions:
+     *   • Hide hub               — adds IATA to hiddenHubs[]
+     *   • Rename label…          — prompts for a display label
+     *   • Clear label            — only when a custom label is set
+     *   • Clear drafted plans    — bulk-removes AesAfpActiveDraftStore drafts
+     *                              for every aircraft tagged to this hub
+     *
+     * Empty hubs (no aircraft) skip "Clear drafted plans" — there's nothing
+     * to clear.
+     */
+    _renderHubCardMenu(hub, customLabel) {
+        if (typeof window.FleetHubHubManagement === "undefined") return null
+        const T = window.AESTokens
+
+        const wrap = document.createElement("span")
+        wrap.style.cssText = "margin-left:auto;position:relative;display:inline-flex;align-items:center;"
+
+        const btn = document.createElement("button")
+        btn.type = "button"
+        btn.title = "Hub actions"
+        btn.setAttribute("aria-label", "Hub actions for " + hub.hub)
+        btn.textContent = "⋯"
+        btn.style.cssText = T
+            ? [
+                "padding:0 " + T.sp[1],
+                "background:transparent",
+                "border:none",
+                "color:" + T.color.slate,
+                "font-size:" + T.fs.h3,
+                "line-height:1",
+                "cursor:pointer"
+            ].join(";")
+            : "padding:0 4px;background:transparent;border:none;color:#7a6f66;font-size:18px;line-height:1;cursor:pointer;"
+
+        btn.addEventListener("click", (ev) => {
+            ev.preventDefault()
+            ev.stopPropagation()
+            // Toggle: clicking the kebab while its own menu is open closes it.
+            if (this._hubMenuDispose && this._hubMenuOpenFor === hub.hub) {
+                this._closeHubMenu()
+                return
+            }
+            this._closeHubMenu()
+            this._openHubMenu(wrap, hub, customLabel)
+        })
+        wrap.appendChild(btn)
+        return wrap
+    }
+
+    _closeHubMenu() {
+        if (this._hubMenuDispose) {
+            try { this._hubMenuDispose() } catch (_) { /* noop */ }
+            this._hubMenuDispose = null
+        }
+        this._hubMenuOpenFor = null
+    }
+
+    _openHubMenu(anchor, hub, customLabel) {
+        const T = window.AESTokens
+        const menu = document.createElement("div")
+        menu.style.cssText = T
+            ? [
+                "position:absolute",
+                "top:100%",
+                "right:0",
+                "z-index:50",
+                "background:" + T.color.bone,
+                "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+                "box-shadow:0 2px 6px rgba(0,0,0,0.18)",
+                "min-width:200px",
+                "display:flex",
+                "flex-direction:column"
+            ].join(";")
+            : "position:absolute;top:100%;right:0;z-index:50;background:#f4f1ea;border:1px solid #c9c0b0;box-shadow:0 2px 6px rgba(0,0,0,0.18);min-width:200px;display:flex;flex-direction:column;"
+        // Prevent the card's drilldown click from firing through the menu.
+        menu.addEventListener("click", (e) => e.stopPropagation())
+
+        const item = (label, onSelect) => {
+            const it = document.createElement("button")
+            it.type = "button"
+            it.textContent = label
+            it.style.cssText = T
+                ? [
+                    "padding:" + T.sp[2] + " " + T.sp[3],
+                    "background:transparent",
+                    "border:none",
+                    "color:" + T.color.oxide,
+                    "font-family:" + T.font.display,
+                    "font-size:" + T.fs.small,
+                    "text-align:left",
+                    "cursor:pointer"
+                ].join(";")
+                : "padding:8px 12px;background:transparent;border:none;color:#2b2520;font-size:11px;text-align:left;cursor:pointer;"
+            it.addEventListener("mouseenter", () => {
+                it.style.background = T ? T.color.bone2 : "#ece7dc"
+            })
+            it.addEventListener("mouseleave", () => {
+                it.style.background = "transparent"
+            })
+            it.addEventListener("click", (e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                this._closeHubMenu()
+                Promise.resolve()
+                    .then(() => onSelect())
+                    .catch(err => console.warn("[AES Fleet CC] hub menu action failed", err))
+            })
+            return it
+        }
+
+        menu.appendChild(item("Hide hub", () => this._hubMenuHide(hub)))
+        menu.appendChild(item(customLabel ? "Rename label…" : "Set label…",
+            () => this._hubMenuRename(hub, customLabel)))
+        if (customLabel) {
+            menu.appendChild(item("Clear label",
+                () => this._hubMenuClearLabel(hub)))
+        }
+        if (!hub.empty && hub.aircraft && hub.aircraft.length) {
+            menu.appendChild(item("Clear drafted plans for hub",
+                () => this._hubMenuClearDrafts(hub)))
+        }
+
+        anchor.appendChild(menu)
+        this._hubMenuOpenFor = hub.hub
+
+        // Close on outside-click or Escape. Both listeners self-detach via
+        // the dispose closure stored on the instance.
+        const onDocClick = (e) => {
+            if (anchor.contains(e.target)) return
+            this._closeHubMenu()
+        }
+        const onKey = (e) => {
+            if (e.key === "Escape") this._closeHubMenu()
+        }
+        // Defer attach so the click that opened the menu doesn't immediately
+        // bubble back up and close it.
+        setTimeout(() => {
+            document.addEventListener("click", onDocClick, true)
+            document.addEventListener("keydown", onKey, true)
+        }, 0)
+        this._hubMenuDispose = () => {
+            document.removeEventListener("click", onDocClick, true)
+            document.removeEventListener("keydown", onKey, true)
+            if (menu.parentElement) menu.parentElement.removeChild(menu)
+        }
+    }
+
+    async _hubMenuHide(hub) {
+        if (!hub || !hub.hub) return
+        if (!window.confirm("Hide hub " + hub.hub
+                + " from the command center? You can unhide it from the strip below the hub grid.")) {
+            return
+        }
+        await window.FleetHubHubManagement.hide(this.server, this.airlineCode, hub.hub)
+        // The storage onChanged listener will fire and trigger _scheduleRepaint,
+        // but call it eagerly so the user sees the card disappear immediately
+        // even before the listener round-trips.
+        this._scheduleRepaint()
+    }
+
+    async _hubMenuRename(hub, currentLabel) {
+        if (!hub || !hub.hub) return
+        const next = window.prompt("Display label for " + hub.hub
+            + ".\nLeave blank to clear.", currentLabel || "")
+        if (next === null) return
+        await window.FleetHubHubManagement.setLabel(
+            this.server, this.airlineCode, hub.hub, next.trim())
+        this._scheduleRepaint()
+    }
+
+    async _hubMenuClearLabel(hub) {
+        if (!hub || !hub.hub) return
+        await window.FleetHubHubManagement.setLabel(
+            this.server, this.airlineCode, hub.hub, "")
+        this._scheduleRepaint()
+    }
+
+    /**
+     * Removes every AesAfpActiveDraftStore record for aircraft currently
+     * tagged to this hub. Doesn't touch saved schedules or wave presets —
+     * those have their own delete affordances on the Schedules / Waves tabs.
+     */
+    async _hubMenuClearDrafts(hub) {
+        if (!hub || !hub.aircraft || !hub.aircraft.length) return
+        if (typeof window.AesAfpActiveDraftStore === "undefined") return
+        const count = hub.aircraft.length
+        if (!window.confirm("Clear drafted plans for all " + count
+                + " aircraft at " + hub.hub + "? Saved schedules and wave presets are not affected.")) {
+            return
+        }
+        const tasks = hub.aircraft.map(r =>
+            window.AesAfpActiveDraftStore.remove(this.server, r.aircraftId)
+                .catch(err => console.warn("[AES Fleet CC] clear draft failed", r.aircraftId, err)))
+        await Promise.all(tasks)
+        this._scheduleRepaint()
+    }
+
+    /**
+     * Strip of "unhide" chips for any hubs the user has hidden. Renders
+     * nothing when nothing is hidden — keeps the Overview clean by default.
+     */
+    _renderHiddenHubsStrip() {
+        const hidden = (this._hubManagement && Array.isArray(this._hubManagement.hiddenHubs))
+            ? this._hubManagement.hiddenHubs : []
+        if (!hidden.length) return null
+        if (typeof window.FleetHubHubManagement === "undefined") return null
+        const T = window.AESTokens
+
+        const wrap = document.createElement("div")
+        wrap.style.cssText = T
+            ? [
+                "display:flex",
+                "align-items:center",
+                "flex-wrap:wrap",
+                "gap:" + T.sp[2],
+                "margin-top:" + T.sp[3],
+                "padding:" + T.sp[2] + " " + T.sp[3],
+                "background:" + T.color.bone,
+                "border:" + T.geom.bw1 + " dashed " + T.color.paperRule
+            ].join(";")
+            : "display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:12px;padding:8px 12px;background:#f4f1ea;border:1px dashed #c9c0b0;"
+
+        const title = document.createElement("span")
+        title.style.cssText = "font-size:11px;font-weight:" + (T ? T.fw.bold : 700)
+            + ";text-transform:uppercase;letter-spacing:" + (T ? T.track.caps : "0.08em")
+            + ";color:" + (T ? T.color.oxide : "#2b2520") + ";"
+        title.textContent = "Hidden hubs"
+        wrap.appendChild(title)
+
+        for (const iata of hidden) {
+            const chip = document.createElement("button")
+            chip.type = "button"
+            chip.title = "Unhide " + iata
+            chip.textContent = iata + " ⤴"
+            chip.style.cssText = T
+                ? [
+                    "padding:" + T.sp[1] + " " + T.sp[2],
+                    "background:transparent",
+                    "color:" + T.color.oxide,
+                    "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+                    "font-family:" + T.font.mono,
+                    "font-size:" + T.fs.small,
+                    "letter-spacing:" + T.track.mono,
+                    "cursor:pointer"
+                ].join(";")
+                : "padding:4px 8px;background:transparent;color:#2b2520;border:1px solid #c9c0b0;font-family:monospace;font-size:11px;cursor:pointer;"
+            chip.addEventListener("click", async (e) => {
+                e.preventDefault()
+                try {
+                    await window.FleetHubHubManagement.unhide(
+                        this.server, this.airlineCode, iata)
+                    this._scheduleRepaint()
+                } catch (err) {
+                    console.warn("[AES Fleet CC] unhide hub failed", iata, err)
+                }
+            })
+            wrap.appendChild(chip)
+        }
+
+        return wrap
     }
 
     // ── Schedules tab ────────────────────────────────────────────────────

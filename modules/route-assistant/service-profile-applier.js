@@ -522,6 +522,13 @@ class RouteAssistantServiceProfileApplier {
                 console.warn("[AES serviceProfileApplier] apply-log write failed", e)
             }
         }
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function"
+                && record.status === "posted") {
+            window.AesDataBus.emit("data:route-assistant:serviceProfile:applied", {
+                profileId: record.profileId,
+                verified:  !!record.verified
+            })
+        }
         return record
     }
 

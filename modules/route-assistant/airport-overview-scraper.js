@@ -80,6 +80,12 @@ class RouteAssistantAirportOverviewScraper {
             scrapedAt: Date.now()
         }
         await chrome.storage.local.set({[key]: rec})
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+            window.AesDataBus.emit("data:route-assistant:airportOverview:updated", {
+                stationId: id,
+                pairCount: rec.pairs.length
+            })
+        }
         return rec
     }
 

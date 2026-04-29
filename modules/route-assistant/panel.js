@@ -5282,7 +5282,8 @@ class RouteAssistantPanel {
             table:   typeof RouteAssistantTableView   !== "undefined" ? RouteAssistantTableView   : null,
             waves:   typeof RouteAssistantWaveView    !== "undefined" ? RouteAssistantWaveView    : null,
             sandbox: typeof RouteAssistantSandboxView !== "undefined" ? RouteAssistantSandboxView : null,
-            heatmap: typeof RouteAssistantHeatmapView !== "undefined" ? RouteAssistantHeatmapView : null
+            heatmap: typeof RouteAssistantHeatmapView !== "undefined" ? RouteAssistantHeatmapView : null,
+            compass: typeof RouteAssistantCompassView !== "undefined" ? RouteAssistantCompassView : null
         }
         return VIEWS[mode] || VIEWS.table || {render: (panel, sorted) => panel._drawTable(sorted)}
     }

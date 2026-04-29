@@ -109,6 +109,21 @@ class AesAfpMaintenanceStore {
 
         const key = AesAfpMaintenanceStore._key(server, aircraftId)
         await chrome.storage.local.set({[key]: next})
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+            window.AesDataBus.emit("data:afp:maintenance:updated", {
+                server,
+                aircraftId:  next.aircraftId,
+                ratioStatus: next.ratioStatus
+            })
+            if (next.ratioStatus === "bad" || next.ratioStatus === "warn") {
+                window.AesDataBus.emit("signal:strategy:wear-pressure", {
+                    server,
+                    aircraftId: next.aircraftId,
+                    severity:   next.ratioStatus === "bad" ? 1 : 0.5,
+                    ratio:      next.ratio
+                })
+            }
+        }
         return next
     }
 

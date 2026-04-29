@@ -677,7 +677,7 @@ class RouteAssistantSettings {
      * doesn't strand the user in an unrecognised mode.
      */
     static _resolvePanelMode(block, fallback) {
-        const VALID = {table: 1, waves: 1, sandbox: 1, heatmap: 1}
+        const VALID = {table: 1, waves: 1, sandbox: 1, heatmap: 1, compass: 1}
         if (block && typeof block.panelMode === "string" && VALID[block.panelMode]) {
             return block.panelMode
         }

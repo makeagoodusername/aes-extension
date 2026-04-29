@@ -124,6 +124,12 @@ class RouteAssistantSchedulePageScraper {
             source:    source || "fetch"
         }, fields || {})
         await chrome.storage.local.set({[key]: rec})
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+            window.AesDataBus.emit("data:route-assistant:schedule:updated", {
+                hub:  rec.hub,
+                dest: rec.dest
+            })
+        }
         return rec
     }
 
