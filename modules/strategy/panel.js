@@ -1349,6 +1349,122 @@
                 text.appendChild(_el("div",
                     "color:" + (r.ok ? COLOR.ok : COLOR.err) + ";font:11px sans-serif;margin-top:4px;",
                     (r.ok ? "✓ applied" : "✗ failed") + (r.error ? " — " + String(r.error).slice(0, 200) : "")))
+                // Slice 12 — IL applier envelope: surface dry-run / verified
+                // status, formAvailable hint, bodyPreview disclosure. Always
+                // show bodyPreview when present (§11.6 "show me what'd post").
+                if (d.domain === "alliance" && r.envelope) {
+                    const env = r.envelope
+                    const statusTone = (env.status === "verified" || env.status === "posted") ? COLOR.ok
+                        : (env.status === "dry-run") ? COLOR.warn
+                        : (env.status === "noop") ? COLOR.muted
+                        : COLOR.err
+                    text.appendChild(_el("div",
+                        "color:" + statusTone + ";font:600 11px sans-serif;margin-top:4px;letter-spacing:0.04em;text-transform:uppercase;",
+                        "status · " + env.status
+                            + (env.formAvailable ? " · form found" : " · no form")
+                            + (env.httpStatus != null ? " · HTTP " + env.httpStatus : "")))
+                    if (env.warning) {
+                        text.appendChild(_el("div",
+                            "color:" + COLOR.warn + ";font:11px sans-serif;margin-top:2px;",
+                            "⚠ " + String(env.warning).slice(0, 240)))
+                    }
+                    if (env.bodyPreview) {
+                        const det = _el("details", "margin-top:4px;color:" + COLOR.muted + ";font:11px sans-serif;")
+                        det.appendChild(_el("summary",
+                            "cursor:pointer;color:" + COLOR.accent + ";",
+                            "Preview body that would post"))
+                        det.appendChild(_el("pre",
+                            "white-space:pre-wrap;word-break:break-all;margin:4px 0 0;padding:6px 8px;"
+                            + "background:rgba(255,255,255,0.04);border-radius:3px;font:11px monospace;color:" + COLOR.text + ";",
+                            String(env.bodyPreview)))
+                        text.appendChild(det)
+                    }
+                }
+            }
+            // Slice 12 — per-card affordance for alliance moves. il-request
+            // routes through `AesStrategy.applyDecision` (single-decision
+            // dispatch); alliance-join opens /app/alliance because AS lacks
+            // a one-click join API.
+            if (d.domain === "alliance") {
+                const actions = _el("div",
+                    "display:flex;gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap;")
+                const payloadKind = (d.payload && d.payload.kind) || null
+                if (payloadKind === "il-request") {
+                    const sendBtn = _btn("Send IL request", false)
+                    sendBtn.addEventListener("click", async (ev) => {
+                        ev.preventDefault()
+                        ev.stopPropagation()
+                        if (sendBtn.disabled) return
+                        sendBtn.disabled = true
+                        sendBtn.textContent = "Sending…"
+                        try {
+                            const ns = window.AesStrategy
+                            if (!ns || typeof ns.applyDecision !== "function") {
+                                d._result = {ok: false, error: "applyDecision not loaded"}
+                            } else {
+                                const ctx = {server: _state.server || _currentPageServer(),
+                                              airlineCode: _state.airline || _currentPageAirline()}
+                                const report = await ns.applyDecision(d, {ctx, source: "strategy-card"})
+                                const env = report && Array.isArray(report.applied) && report.applied[0]
+                                    ? report.applied[0].result : null
+                                const skipReason = report && Array.isArray(report.skipped) && report.skipped[0]
+                                    ? report.skipped[0].reason : null
+                                if (env) {
+                                    const ok = env.status === "verified" || env.status === "posted" || env.status === "dry-run"
+                                    d._result = {
+                                        ok:       ok,
+                                        envelope: env,
+                                        error:    ok ? null
+                                            : (env.error && env.error.message) || env.warning || env.status
+                                    }
+                                } else if (skipReason) {
+                                    d._result = {ok: false, error: "skipped · " + skipReason}
+                                } else if (report && report.aborted) {
+                                    d._result = {ok: false, error: report.abortReason || "aborted"}
+                                } else {
+                                    d._result = {ok: false, error: "no result"}
+                                }
+                            }
+                        } catch (e) {
+                            d._result = {ok: false, error: (e && e.message) || String(e)}
+                        }
+                        sendBtn.disabled = false
+                        sendBtn.textContent = "Send IL request"
+                        if (typeof _renderDecisions === "function" && _state.decisionsHost) {
+                            _renderDecisions(_state.decisionsHost, _state.diff)
+                        } else {
+                            _refresh({skipSeed: true})
+                        }
+                    })
+                    actions.appendChild(sendBtn)
+                } else if (payloadKind === "alliance-join") {
+                    const openBtn = _btn("Open alliance page", false)
+                    openBtn.addEventListener("click", (ev) => {
+                        ev.preventDefault()
+                        ev.stopPropagation()
+                        const server = _state.server || _currentPageServer()
+                        if (!server) return
+                        window.open("https://" + server + ".airlinesim.aero/app/alliance", "_blank", "noopener")
+                    })
+                    actions.appendChild(openBtn)
+                }
+                // Always offer a "Open partner page" link for alliance rows
+                // — gives the user a manual escape hatch when the applier
+                // returns noop or fails.
+                if (d.payload && d.payload.partnerEnterpriseId) {
+                    const server = _state.server || _currentPageServer()
+                    if (server) {
+                        const link = _el("a",
+                            "color:" + COLOR.muted + ";font:11px sans-serif;text-decoration:underline;",
+                            "Open partner page")
+                        link.href = "https://" + server + ".airlinesim.aero/app/info/enterprises/"
+                            + encodeURIComponent(String(d.payload.partnerEnterpriseId)) + "?tab=1"
+                        link.target = "_blank"
+                        link.rel = "noopener"
+                        actions.appendChild(link)
+                    }
+                }
+                if (actions.children.length) text.appendChild(actions)
             }
 
             // Per-route goal override (Slice S1). Only meaningful for
@@ -1381,7 +1497,7 @@
         }
 
         if (grouped) {
-            for (const domain of ["schedule", "service", "price", "crew", "routeCreation"]) {
+            for (const domain of ["schedule", "service", "price", "crew", "routeCreation", "alliance"]) {
                 const items = groups.get(domain) || []
                 if (!items.length) continue
                 list.appendChild(_el("div", [
