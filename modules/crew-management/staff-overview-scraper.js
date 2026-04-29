@@ -117,6 +117,16 @@ class CrewMgmtStaffOverviewScraper {
             ? 0
             : CrewMgmtStaffOverviewScraper._int(redundantText)
 
+        // pp vs country average — the unitless value crew-tuner / pay-perception
+        // reason about. Undefined when countryAverage is missing or zero
+        // (schema-drift safe: §4.8 graceful-null).
+        const payTierPctVsCountry = (countryAverage > 0 && salaryPerEmployee != null)
+            ? Math.round((salaryPerEmployee / countryAverage) * 100)
+            : null
+        const nextPayTierPctVsCountry = (countryAverage > 0 && nextWeekSalaryPerEmployee != null)
+            ? Math.round((nextWeekSalaryPerEmployee / countryAverage) * 100)
+            : null
+
         return {
             label,
             positionId,
@@ -128,6 +138,8 @@ class CrewMgmtStaffOverviewScraper {
             nextWeekSalaryPerEmployee,
             nextWeekSalaryTotal,
             countryAverage,
+            payTierPctVsCountry,
+            nextPayTierPctVsCountry,
             redundant,
             moodDigit,
             moodTrend,
