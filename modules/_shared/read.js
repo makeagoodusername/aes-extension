@@ -234,6 +234,38 @@
         } catch (e) { return _err((e && e.message) || e) }
     }
 
+    /**
+     * Active strategy signals — the LLM's "what should I pay attention to?"
+     * surface. Reads `signal:*` events from the bus history (last `windowMs`
+     * ms, default 1h), deduplicates by signal kind keeping the most recent,
+     * and returns the latest hint payload.
+     *
+     * Doesn't depend on AesStrategy.snapshot — bus history is independent
+     * of the snapshot cache, so this works on pages where strategy/context
+     * isn't loaded.
+     */
+    function signals(opts) {
+        const o = opts || {}
+        const windowMs = Number.isFinite(o.windowMs) ? o.windowMs : 60 * 60 * 1000
+        if (!window.AesDataBus || typeof window.AesDataBus.history !== "function") {
+            return {ok: false, error: "AesDataBus.history unavailable"}
+        }
+        const cutoff = Date.now() - windowMs
+        const recent = window.AesDataBus.history({limit: 500}) || []
+        const byKind = new Map()
+        for (const ev of recent) {
+            if (!ev || typeof ev.topic !== "string") continue
+            if (ev.topic.indexOf("signal:") !== 0) continue
+            if (Number(ev.at) < cutoff) continue
+            const prev = byKind.get(ev.topic)
+            if (!prev || ev.at > prev.at) byKind.set(ev.topic, ev)
+        }
+        const out = Array.from(byKind.values())
+            .sort((a, b) => b.at - a.at)
+            .map(ev => ({topic: ev.topic, at: ev.at, ageMs: Date.now() - ev.at, hint: ev.hint || null}))
+        return {ok: true, count: out.length, windowMs, signals: out}
+    }
+
     function refresh() {
         _cache = null
         return {ok: true}
@@ -263,7 +295,7 @@
 
     window.AesRead = {
         snapshot, routes, hubs, fleet, crew, cash,
-        competitors, alliance, settings, missing, refresh
+        competitors, alliance, settings, missing, signals, refresh
     }
 
     // ─── AesTools registration ───────────────────────────────────────
@@ -364,6 +396,15 @@
             sideEffects: "read",
             tags:        ["meta", "introspection"],
             run:         () => missing()
+        })
+        window.AesTools.register({
+            name:        "read.signals",
+            description: "Active strategy signals (cash-low / crew-pressure / competitor-threat / wear-pressure) emitted in the last `windowMs` ms (default 1h). Deduplicated by signal kind, latest first. The 'what should I pay attention to?' surface.",
+            params:      {windowMs: "number? (default 3600000)"},
+            returns:     "{ok, count, windowMs, signals: [{topic, at, ageMs, hint}]}",
+            sideEffects: "read",
+            tags:        ["read", "signals"],
+            run:         (a) => signals(a || {})
         })
         window.AesTools.register({
             name:        "read.refresh",
