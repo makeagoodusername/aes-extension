@@ -349,6 +349,7 @@
                 "modules/strategy/briefing.js",
                 "modules/central-hub/tiles/strategy-tile.js",
                 "modules/central-hub/tiles/strategy-briefing-tile.js",
+                "modules/central-hub/tiles/weekly-review-tile.js",
                 "modules/central-hub/tiles/diagnostics-tile.js",
                 "modules/central-hub/tiles/conductor-tile.js",
                 "modules/central-hub/tiles/family-tile.js",
