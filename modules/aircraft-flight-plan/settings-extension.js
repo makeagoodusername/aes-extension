@@ -24,6 +24,25 @@
  *     doesn't blow away the other two.
  */
 class AesAfpSettings {
+    /**
+     * Normalize the `activePresetIdByHub` map. Accepts a plain object;
+     * keeps only entries where key is a 3-letter IATA-shape and value is
+     * a non-empty string. Returns a fresh object so callers can mutate
+     * without affecting the source.
+     */
+    static _normHubPresetMap(raw) {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+        const out = {}
+        for (const k of Object.keys(raw)) {
+            const hub = String(k || "").toUpperCase()
+            if (!/^[A-Z]{3}$/.test(hub)) continue
+            const v = raw[k]
+            if (typeof v !== "string" || !v) continue
+            out[hub] = v
+        }
+        return out
+    }
+
     static _defaults() {
         return {
             enabled:           true,
@@ -37,6 +56,14 @@ class AesAfpSettings {
                 watchlistOnly:          false
             },
             lastSelectedPresetId: null,
+            // Hub Plan Workbench — per-hub active preset pointer. Promoted
+            // from the single global `lastSelectedPresetId` so a multi-hub
+            // airline can have JFK and LHR each pinned to their own plan.
+            // Key: hub IATA (uppercase). Value: presetId string. Allocator
+            // and slot-optimizer prefer this map over `lastSelectedPresetId`
+            // (legacy fallback). The wave-picker writes through both so
+            // there's no need for an offline migration step.
+            activePresetIdByHub: {},
             // Track 3 — auto-scheduler. Phase-1 ships disabled behind the
             // "preview-only" tier gate; consumers (Track 5) flip the tier when
             // the user opts in. `weights` deep-merges so a future tuning agent
@@ -80,6 +107,21 @@ class AesAfpSettings {
                     toleranceMin: 15
                 }
             },
+            // Lane A Phase 2 — drag-to-schedule (G9). Default `manual` mode
+            // preserves the form-driver no-submit invariant (§4.2): the
+            // orchestrator pre-fills via `form-driver.fill()` and the user
+            // clicks AS submit. `confirmed` mode submits via the existing
+            // background-tab path after a toast confirm. `auto` mode is
+            // deferred to a later phase.
+            //
+            // `dragSubmit.dryRunOnly: true` is the kill-switch — when true,
+            // every G9 drop is preview-only regardless of dragSubmitMode.
+            // Default true so the gesture is safe to enable broadly while
+            // the user evaluates it.
+            dragSubmit: {
+                dryRunOnly: true
+            },
+            dragSubmitMode: "manual",   // "manual" | "confirmed" | "auto"
             // Track 9 — Flight Studio (Slice S1+). Compose-and-apply
             // surface for the AS New Flight Number form, reachable from
             // AESMenu. Independent from autoScheduler — one's per-flight
@@ -175,6 +217,12 @@ class AesAfpSettings {
                 toleranceMin: numFieldNonNeg(bDiff.toleranceMin, defDiff.toleranceMin)
             }
         }
+        const validDragMode = (m) => (m === "manual" || m === "confirmed" || m === "auto")
+        const defDrag = def.dragSubmit || {dryRunOnly: true}
+        const bDrag   = b.dragSubmit   || {}
+        const dragSubmit = {
+            dryRunOnly: (typeof bDrag.dryRunOnly === "boolean") ? bDrag.dryRunOnly : defDrag.dryRunOnly
+        }
         return {
             enabled:               (typeof b.enabled === "boolean") ? b.enabled : def.enabled,
             defaultTopN:           numField(b.defaultTopN,     def.defaultTopN),
@@ -183,8 +231,11 @@ class AesAfpSettings {
             showWavePreview:       (typeof b.showWavePreview === "boolean") ? b.showWavePreview : def.showWavePreview,
             candidateChips:        Object.assign({}, def.candidateChips || {}, b.candidateChips || {}),
             lastSelectedPresetId:  (typeof b.lastSelectedPresetId === "string") ? b.lastSelectedPresetId : def.lastSelectedPresetId,
+            activePresetIdByHub:   AesAfpSettings._normHubPresetMap(b.activePresetIdByHub),
             autoScheduler:         autoScheduler,
-            studio:                studio
+            studio:                studio,
+            dragSubmit:            dragSubmit,
+            dragSubmitMode:        validDragMode(b.dragSubmitMode) ? b.dragSubmitMode : def.dragSubmitMode
         }
     }
 
@@ -265,6 +316,13 @@ class AesAfpSettings {
                 (p.studio && p.studio.featureFlags) || {}
             )}
         )
+        // activePresetIdByHub deep-merges so a single-hub patch
+        // ({JFK: "id"}) doesn't wipe out other hubs' active presets.
+        const mergedHubMap = Object.assign(
+            {},
+            current.activePresetIdByHub || {},
+            p.activePresetIdByHub || {}
+        )
         const next = AesAfpSettings._mergeAircraftFlightPlan(
             AesAfpSettings._defaults(),
             Object.assign({}, current, p,
@@ -274,8 +332,9 @@ class AesAfpSettings {
                     current.candidateChips || {},
                     p.candidateChips || {}
                 )},
-                {autoScheduler: mergedAuto},
-                {studio:        mergedStudio}
+                {autoScheduler:       mergedAuto},
+                {studio:              mergedStudio},
+                {activePresetIdByHub: mergedHubMap}
             )
         )
         const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null

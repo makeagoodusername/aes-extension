@@ -20,12 +20,18 @@
  *     name:         string,    // cached preset.name + " — " + wave.label
  *     color:        string,    // CSS color (HSL string from picker)
  *     opacity:      number,    // 0..1, default 0.35
+ *     role:         string,    // "active" (drives allocator) or "comparison"
  *     timeShiftMin: number,    // global shift on both windows (default 0)
  *     arrShiftMin:  number,    // independent arrival-only shift (Alt-drag, slice 2)
  *     depShiftMin:  number,    // independent departure-only shift (Alt-drag, slice 2)
  *     days:         boolean[], // length 7 Mon..Sun; default [true]*7
  *     addedAt:      number
  *   }
+ *
+ * `role` partitions the band visuals: active layers render solid + multiply
+ * blended; comparison layers render dashed + lower opacity. A hub gets at
+ * most one active layer at a time — `setActiveForHub` enforces this by
+ * removing any prior active layer with the same hub before upserting.
  *
  * Hard cap of 5 active layers — matched to `MAX_LAYERS`. Any save() that
  * would exceed this returns null without touching storage; the caller is
@@ -58,13 +64,15 @@ class FleetScheduleGridWaveLayoutStore {
         const days = Array.isArray(l.days) && l.days.length === 7
             ? l.days.map(d => !!d)
             : [true, true, true, true, true, true, true]
+        const role = (l.role === "active") ? "active" : "comparison"
         return {
             id:           String(l.id || ("layer-" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36))),
             presetId:     String(l.presetId || ""),
             waveId:       String(l.waveId   || ""),
-            hub:          String(l.hub      || ""),
+            hub:          String(l.hub      || "").toUpperCase(),
             name:         String(l.name     || ""),
             color:        String(l.color    || "hsl(200,60%,60%)"),
+            role:         role,
             opacity:      typeof l.opacity      === "number" && isFinite(l.opacity)      ? Math.max(0.05, Math.min(1, l.opacity))      : FleetScheduleGridWaveLayoutStore.DEFAULT_OPACITY,
             timeShiftMin: typeof l.timeShiftMin === "number" && isFinite(l.timeShiftMin) ? Math.round(l.timeShiftMin) : 0,
             arrShiftMin:  typeof l.arrShiftMin  === "number" && isFinite(l.arrShiftMin)  ? Math.round(l.arrShiftMin)  : 0,
@@ -124,6 +132,35 @@ class FleetScheduleGridWaveLayoutStore {
         const block = await FleetScheduleGridWaveLayoutStore.load(server, airlineCode)
         const norm = FleetScheduleGridWaveLayoutStore._normLayer(layer)
         if (!norm) return null
+        const idx = block.layers.findIndex(l => l.id === norm.id)
+        if (idx >= 0) {
+            block.layers[idx] = norm
+        } else {
+            if (block.layers.length >= FleetScheduleGridWaveLayoutStore.MAX_LAYERS) {
+                return null
+            }
+            block.layers.push(norm)
+        }
+        return FleetScheduleGridWaveLayoutStore.save(server, airlineCode, block)
+    }
+
+    /**
+     * Hub Plan Workbench — atomically replaces any existing role:"active"
+     * layer for `hub` with the supplied layer (whose role is forced to
+     * "active"). Comparison layers for the same hub are untouched. The
+     * cap counts active + comparison together, so callers should ensure
+     * the cap won't be busted (the picker enforces 1 active + 2 compares).
+     */
+    static async setActiveForHub(server, airlineCode, hub, layer) {
+        const block = await FleetScheduleGridWaveLayoutStore.load(server, airlineCode)
+        const HUB = String(hub || "").toUpperCase()
+        const norm = FleetScheduleGridWaveLayoutStore._normLayer(
+            Object.assign({}, layer, {role: "active", hub: HUB})
+        )
+        if (!norm) return null
+        // Drop any prior active layer for this hub.
+        block.layers = block.layers.filter(l => !(l.role === "active" && l.hub === HUB))
+        // Replace by id if one already exists, else append (cap-checked).
         const idx = block.layers.findIndex(l => l.id === norm.id)
         if (idx >= 0) {
             block.layers[idx] = norm

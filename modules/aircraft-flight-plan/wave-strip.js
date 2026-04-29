@@ -307,6 +307,13 @@
             + "background-image:linear-gradient(to right, #131b29 1px, transparent 1px);"
             + "background-size:" + (100 / Math.max(1, ctx.cropMax - ctx.cropMin)) + "% 100%;"
         strip.dataset.aesWaveStripLane = "1"
+        // Phase A2 — tag the lane with its wave id so coordsToWave can
+        // identify it without walking band children, and surface ctx
+        // dimensions so coordsToMinute can convert pointer X without a
+        // separate ctx ref.
+        strip.dataset.aesWaveLaneId = wave.id
+        strip.dataset.aesWaveStartMin = String(ctx.startMin)
+        strip.dataset.aesWaveTotalMin = String(ctx.totalMin)
         lane.append(strip)
 
         // Bands — arrival (green) and departure (blue).
@@ -353,7 +360,32 @@
         return band
     }
 
-    /** Mouse-driven move/resize. 5-min snap; persists on mouseup via wave-editor. */
+    /** Mouse-driven move/resize. 5-min snap; persists on mouseup via wave-editor.
+     *
+     * Phase A1: lifted into AesDragArbiter so ESC cancels universally and
+     * snap math stays consistent with FSG / wave-overlay. The legacy inline
+     * path is preserved as fallback for pages where the arbiter hasn't
+     * loaded — same behavior, no ESC.
+     */
+    let _arbGestureRegistered = false
+
+    function _ensureArbGesture() {
+        if (_arbGestureRegistered) return
+        if (!window.AesDragArbiter) return
+        _arbGestureRegistered = true
+        window.AesDragArbiter.register({
+            id:       "afp.waveStrip.band",
+            surface:  "afp",
+            priority: 100,
+            matches:  (e, c) => !!(c && c.kind === "afp.waveStrip.band"),
+            feedback: {
+                onMove:   (ev, c)   => _arbBandMove(ev, c),
+                onCancel: (c, info) => _arbBandCancel(c, info)
+            },
+            effect:   (drop) => _arbBandDrop(drop)
+        })
+    }
+
     function _wireBandDrag(band, win, ctx, wave, kind, strip, tag) {
         const fStart = (kind === "arrival") ? "arrivalStart" : "departureStart"
         const fEnd   = (kind === "arrival") ? "arrivalEnd"   : "departureEnd"
@@ -365,7 +397,7 @@
 
         band.addEventListener("mousedown", (e) => {
             if (e.button !== 0) return
-            e.preventDefault()
+            _ensureArbGesture()
             const stripRect = strip.getBoundingClientRect()
             const bandRect  = band.getBoundingClientRect()
             const fromLeft  = e.clientX - bandRect.left
@@ -376,75 +408,104 @@
             const startMouse  = e.clientX
             const initStart   = ScheduleFactors.parseHHMM(win.start)
             const initEnd     = ScheduleFactors.parseHHMM(win.end)
+
+            const arbCtx = {
+                kind: "afp.waveStrip.band",
+                band, win, waveCtx: ctx, wave, kindBand: kind, strip, tag,
+                fStart, fEnd, mode, stripRect,
+                origLeftPct:  band.style.left,
+                origWidthPct: band.style.width,
+                origTagText:  tag.textContent,
+                initStart, initEnd, startMouse,
+                pendingStart: initStart, pendingEnd: initEnd
+            }
+            if (!window.AesDragArbiter || !window.AesDragArbiter.startManual(e, arbCtx)) return
+            e.preventDefault()
             band.dataset.aesDragging = "1"
             document.body.style.cursor = (mode === "move") ? "grabbing" : "ew-resize"
             band.style.cursor = document.body.style.cursor
-
-            let pendingStart = initStart
-            let pendingEnd   = initEnd
-
-            function onMove(ev) {
-                const dxPx  = ev.clientX - startMouse
-                const dxMin = (dxPx / stripRect.width) * ctx.totalMin
-                let newStart = initStart
-                let newEnd   = initEnd
-                if (mode === "move") {
-                    newStart = clamp(initStart + dxMin)
-                    newEnd   = clamp(initEnd   + dxMin)
-                    // Hold the window length when the move would clamp on one side.
-                    const len = initEnd - initStart
-                    if (newStart + len > maxDayMin) { newStart = maxDayMin - len; newEnd = maxDayMin }
-                    if (newStart < minDayMin)       { newStart = minDayMin;       newEnd = minDayMin + len }
-                    newStart = snap(newStart)
-                    newEnd   = snap(newStart + len)
-                } else if (mode === "resize-start") {
-                    newStart = clamp(snap(initStart + dxMin))
-                    if (newStart >= initEnd - SNAP_MIN) newStart = initEnd - SNAP_MIN
-                    newEnd = initEnd
-                } else {
-                    newEnd = clamp(snap(initEnd + dxMin))
-                    if (newEnd <= initStart + SNAP_MIN) newEnd = initStart + SNAP_MIN
-                    newStart = initStart
-                }
-                pendingStart = newStart
-                pendingEnd   = newEnd
-                const leftPct  = ((newStart - ctx.startMin) / ctx.totalMin) * 100
-                const widthPct = ((newEnd - newStart) / ctx.totalMin) * 100
-                band.style.left  = leftPct + "%"
-                band.style.width = widthPct + "%"
-                tag.textContent = (kind === "arrival" ? "↘ " : "↗ ")
-                    + ScheduleFactors.formatHHMM(newStart)
-                    + "–" + ScheduleFactors.formatHHMM(newEnd)
-            }
-
-            async function onUp() {
-                document.removeEventListener("mousemove", onMove)
-                document.removeEventListener("mouseup",   onUp)
-                document.body.style.cursor = ""
-                band.style.cursor = "grab"
-                delete band.dataset.aesDragging
-
-                const newStartStr = ScheduleFactors.formatHHMM(pendingStart)
-                const newEndStr   = ScheduleFactors.formatHHMM(pendingEnd)
-                const writes = []
-                if (newStartStr !== win.start) writes.push([fStart, newStartStr])
-                if (newEndStr   !== win.end)   writes.push([fEnd,   newEndStr])
-                if (!writes.length) return
-                try {
-                    for (const [field, val] of writes) {
-                        await RouteAssistantWaveEditor.updateWaveTime(
-                            ctx.preset.id, wave.id, field, val)
-                    }
-                } catch (e) {
-                    console.warn("[AES afp] wave-strip persist failed", e)
-                } finally {
-                    await _reRender()
-                }
-            }
-
-            document.addEventListener("mousemove", onMove)
-            document.addEventListener("mouseup",   onUp,   {once: true})
         })
+    }
+
+    function _arbBandMove(ev, c) {
+        const minDayMin = 0
+        const maxDayMin = 24 * 60 - 1
+        const dxPx  = ev.clientX - c.startMouse
+        const dxMin = (dxPx / c.stripRect.width) * c.waveCtx.totalMin
+        const initStart = c.initStart, initEnd = c.initEnd
+        const snapV = (m) => Math.round(m / SNAP_MIN) * SNAP_MIN
+        const clamp = (m) => Math.max(minDayMin, Math.min(maxDayMin, m))
+        let newStart = initStart, newEnd = initEnd
+        if (c.mode === "move") {
+            newStart = clamp(initStart + dxMin)
+            newEnd   = clamp(initEnd   + dxMin)
+            const len = initEnd - initStart
+            if (newStart + len > maxDayMin) { newStart = maxDayMin - len; newEnd = maxDayMin }
+            if (newStart < minDayMin)       { newStart = minDayMin;       newEnd = minDayMin + len }
+            newStart = snapV(newStart)
+            newEnd   = snapV(newStart + len)
+        } else if (c.mode === "resize-start") {
+            newStart = clamp(snapV(initStart + dxMin))
+            if (newStart >= initEnd - SNAP_MIN) newStart = initEnd - SNAP_MIN
+            newEnd = initEnd
+        } else {
+            newEnd = clamp(snapV(initEnd + dxMin))
+            if (newEnd <= initStart + SNAP_MIN) newEnd = initStart + SNAP_MIN
+            newStart = initStart
+        }
+        c.pendingStart = newStart
+        c.pendingEnd   = newEnd
+        const leftPct  = ((newStart - c.waveCtx.startMin) / c.waveCtx.totalMin) * 100
+        const widthPct = ((newEnd - newStart) / c.waveCtx.totalMin) * 100
+        c.band.style.left  = leftPct + "%"
+        c.band.style.width = widthPct + "%"
+        c.tag.textContent = (c.kindBand === "arrival" ? "↘ " : "↗ ")
+            + ScheduleFactors.formatHHMM(newStart)
+            + "–" + ScheduleFactors.formatHHMM(newEnd)
+    }
+
+    function _arbBandCancel(c) {
+        // ESC pressed mid-drag — revert visual state, no persistence.
+        document.body.style.cursor = ""
+        c.band.style.cursor = "grab"
+        delete c.band.dataset.aesDragging
+        if (c.origLeftPct  != null) c.band.style.left  = c.origLeftPct
+        if (c.origWidthPct != null) c.band.style.width = c.origWidthPct
+        if (c.origTagText  != null) c.tag.textContent  = c.origTagText
+    }
+
+    async function _arbBandDrop(drop) {
+        const c = drop.ctx
+        document.body.style.cursor = ""
+        c.band.style.cursor = "grab"
+        delete c.band.dataset.aesDragging
+        const newStartStr = ScheduleFactors.formatHHMM(c.pendingStart)
+        const newEndStr   = ScheduleFactors.formatHHMM(c.pendingEnd)
+        const writes = []
+        if (newStartStr !== c.win.start) writes.push([c.fStart, newStartStr])
+        if (newEndStr   !== c.win.end)   writes.push([c.fEnd,   newEndStr])
+        if (!writes.length) {
+            return {ok: true, audit: {kind: "afp-wavestrip-band", outcome: "no-change"}}
+        }
+        try {
+            for (const [field, val] of writes) {
+                await RouteAssistantWaveEditor.updateWaveTime(
+                    c.waveCtx.preset.id, c.wave.id, field, val)
+            }
+            await _reRender()
+            return {ok: true, audit: {
+                kind:     "afp-wavestrip-band",
+                mode:     c.mode,
+                presetId: c.waveCtx.preset.id,
+                waveId:   c.wave.id,
+                bandKind: c.kindBand,
+                before:   {start: c.win.start, end: c.win.end},
+                after:    {start: newStartStr, end: newEndStr}
+            }}
+        } catch (err) {
+            console.warn("[AES afp] wave-strip persist failed", err)
+            return {ok: false, message: String(err && err.message || err)}
+        }
     }
 
     // ---- Bus + storage observer -------------------------------------------
@@ -490,9 +551,52 @@
         }
     }
 
+    /**
+     * Phase A2 — pure helpers used by drag-to-schedule. Both functions
+     * accept any wave-strip lane element (i.e. one tagged with
+     * `data-aes-wave-strip-lane="1"`) and return a wave-id (coordsToWave)
+     * or a minute-of-day (coordsToMinute), or null when the strip element
+     * is missing/malformed.
+     */
+    function coordsToMinute(stripEl, clientX) {
+        if (!stripEl || !stripEl.getBoundingClientRect) return null
+        const rect = stripEl.getBoundingClientRect()
+        if (!rect.width) return null
+        const startMin = Number(stripEl.dataset.aesWaveStartMin) || 0
+        const totalMin = Number(stripEl.dataset.aesWaveTotalMin) || (24 * 60)
+        const x = clientX - rect.left
+        const min = Math.round((x / rect.width) * totalMin + startMin)
+        const snapped = Math.round(min / SNAP_MIN) * SNAP_MIN
+        return Math.max(0, Math.min(24 * 60 - 1, snapped))
+    }
+
+    function coordsToWave(rootEl, clientY) {
+        if (!rootEl || !rootEl.querySelectorAll) return null
+        const lanes = rootEl.querySelectorAll('[data-aes-wave-strip-lane="1"]')
+        let best = null
+        let bestDist = Infinity
+        for (const lane of lanes) {
+            const r = lane.getBoundingClientRect()
+            if (!r.height) continue
+            const mid = r.top + r.height / 2
+            const d = Math.abs(mid - clientY)
+            if (d < bestDist) {
+                bestDist = d
+                best = {
+                    lane,
+                    waveId: lane.dataset.aesWaveLaneId || null,
+                    rect:   r
+                }
+            }
+        }
+        return best
+    }
+
     window.AesAfpWaveStrip = {
         render,
         attach: _attach,
+        coordsToMinute,
+        coordsToWave,
         get activePresetId() { return _activePresetId },
         clearActivePreset() { _activePresetId = null }
     }

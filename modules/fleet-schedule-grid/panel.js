@@ -37,6 +37,7 @@ class FleetScheduleGridPanel {
         this._selectedAircraftId = d.selectedAircraftId != null ? String(d.selectedAircraftId) : null
         this.fleet       = []                          // RowRecord[]
         this.schedules   = new Map()                   // aircraftId -> Schedule
+        this.maintenance = new Map()                   // aircraftId -> MaintenanceRecord
         this.coloring    = null
         this._scraper    = null
         this._renderer   = null
@@ -50,6 +51,7 @@ class FleetScheduleGridPanel {
         this._refreshBtn = null
         this._closeBtn   = null
         this._keydownHandler = null
+        this._mxUnwatch  = null
         this._renderTimer = null
         this._lastRenderAt = 0
     }
@@ -78,6 +80,7 @@ class FleetScheduleGridPanel {
             document.removeEventListener("keydown", this._keydownHandler, true)
             this._keydownHandler = null
         }
+        if (this._mxUnwatch) { try { this._mxUnwatch() } catch (_) {} this._mxUnwatch = null }
         if (this._overlayEl && this._overlayEl.parentElement) {
             this._overlayEl.parentElement.removeChild(this._overlayEl)
         }
@@ -157,13 +160,16 @@ class FleetScheduleGridPanel {
         // wrote it; we just re-aggregate it through FleetHubAircraftAggregator
         // so we get hub/locIata/etc.
         await this._loadFleet()
+        await this._loadMaintenance()
         this._renderer = new FleetScheduleGridRenderer({
-            rootEl:    gridEl,
-            fleet:     this.fleet,
-            schedules: this.schedules,
-            coloring:  null
+            rootEl:      gridEl,
+            fleet:       this.fleet,
+            schedules:   this.schedules,
+            maintenance: this.maintenance,
+            coloring:    null
         })
         this._populateHubSelect()
+        this._wireMaintenanceWatch()
 
         // Apply deep-link hub filter (e.g. when launched from Fleet Command
         // Center's per-hub Schedule button) so the grid opens already
@@ -543,6 +549,7 @@ class FleetScheduleGridPanel {
         this._renderer.coloring = this.coloring
         this._renderer.fleet = this.fleet
         this._renderer.schedules = this.schedules
+        this._renderer.maintenance = this.maintenance
         this._renderer.render()
         this._renderLegend(null)
         // Keep the cockpit's schedule summary current as bulk-scrape lands.
@@ -578,10 +585,11 @@ class FleetScheduleGridPanel {
 
         if (typeof FleetScheduleGridWavePicker !== "undefined") {
             this._wavePicker = new FleetScheduleGridWavePicker({
-                server:      this.server,
-                airlineCode: this.airlineCode,
-                currentHub:  this._mostCommonHub(),
-                onChange:    () => this._paintWaveBands()
+                server:        this.server,
+                airlineCode:   this.airlineCode,
+                currentHub:    this._mostCommonHub(),
+                getHubSummary: (hub) => this._buildHubHeaderData(hub),
+                onChange:      () => this._paintWaveBands()
             })
             const pane = this._wavePicker.buildPane()
             tabs.push({
@@ -590,6 +598,11 @@ class FleetScheduleGridPanel {
                 paneEl:      pane,
                 onActivate:  () => this._wavePicker.refresh()
             })
+            // Cross-tab sync — when AesAfpSettings.activePresetIdByHub
+            // changes from another tab (or from a sibling surface like
+            // Route Assistant), refresh the picker so the active marker
+            // and Hub Plan Header reflect reality.
+            this._attachSettingsWatcher()
         }
 
         // Per-aircraft cockpit — surfaces candidates · ORS · competitors ·
@@ -649,6 +662,42 @@ class FleetScheduleGridPanel {
         return best || ""
     }
 
+    /**
+     * Hub Plan Workbench — fleet-derived summary for the picker's Hub
+     * Plan Header card. Returns count of aircraft whose home hub matches,
+     * plus total fleet size, so the user sees "matched 5/9 aircraft".
+     */
+    _buildHubHeaderData(hub) {
+        const HUB = String(hub || "").toUpperCase()
+        if (!HUB || !this.fleet || !this.fleet.length) return null
+        let count = 0
+        for (const r of this.fleet) {
+            if (r && String(r.hub || "").toUpperCase() === HUB) count++
+        }
+        return {count, total: this.fleet.length}
+    }
+
+    /**
+     * Watch chrome.storage for AesAfpSettings changes so the picker
+     * repaints when another tab updates the per-hub active map. The
+     * settings blob lives under the top-level "settings" key; we
+     * unconditionally refresh the picker on any change there — a
+     * narrower diff isn't worth the complexity since refresh() is cheap.
+     */
+    _attachSettingsWatcher() {
+        if (this._settingsWatcherAttached) return
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.onChanged) return
+        this._settingsWatcherAttached = true
+        const handler = (changes, area) => {
+            if (area !== "local") return
+            if (!changes || !changes.settings) return
+            if (!this._wavePicker) return
+            this._wavePicker.refresh().then(() => this._paintWaveBands()).catch(() => {})
+        }
+        try { chrome.storage.onChanged.addListener(handler) }
+        catch (_) {}
+    }
+
     // ── Drag-and-drop bridge (Slice 3) ──────────────────────────────────
 
     _mountDndBridge() {
@@ -705,11 +754,52 @@ class FleetScheduleGridPanel {
         }
         if (res && res.ok && res.schedule) {
             this.schedules.set(String(aircraftId), res.schedule)
+            await this._refreshMaintenance(aircraftId)
             this._renderAll()
             this._setStatus("Updated " + (res.schedule && res.schedule.aircraftId ? "aircraft " + res.schedule.aircraftId : aircraftId))
         } else if (res && !res.ok) {
             this._setStatus("Rescrape failed: " + ((res.error && res.error.code) || "?"))
         }
+    }
+
+    /**
+     * Bulk-load maintenance records for every fleet row at panel mount.
+     * Silently skips when AesAfpMaintenanceStore isn't loaded — same defensive
+     * pattern as the rest of the AFP-store callers.
+     */
+    async _loadMaintenance() {
+        if (typeof AesAfpMaintenanceStore === "undefined") return
+        if (!this.fleet || !this.fleet.length) return
+        const recs = await Promise.all(this.fleet.map(row =>
+            AesAfpMaintenanceStore.load(this.server, row.aircraftId).catch(() => null)
+        ))
+        for (let i = 0; i < this.fleet.length; i++) {
+            const rec = recs[i]
+            if (rec) this.maintenance.set(String(this.fleet[i].aircraftId), rec)
+        }
+    }
+
+    async _refreshMaintenance(aircraftId) {
+        if (typeof AesAfpMaintenanceStore === "undefined") return
+        try {
+            const rec = await AesAfpMaintenanceStore.load(this.server, aircraftId)
+            if (rec) this.maintenance.set(String(aircraftId), rec)
+        } catch (_) { /* noop */ }
+    }
+
+    /**
+     * Re-render when a maintenance record changes in any tab — keeps the row
+     * header in sync with whatever the AFP page scraper most recently wrote.
+     */
+    _wireMaintenanceWatch() {
+        if (typeof AesAfpMaintenanceStore === "undefined") return
+        if (typeof AesAfpMaintenanceStore.watch !== "function") return
+        this._mxUnwatch = AesAfpMaintenanceStore.watch(({server, aircraftId, maintenance}) => {
+            if (!aircraftId) return
+            if (server && this.server && String(server) !== String(this.server)) return
+            this.maintenance.set(String(aircraftId), maintenance)
+            this._scheduleIncRender()
+        })
     }
 
     _paintWaveBands() {
@@ -751,59 +841,97 @@ class FleetScheduleGridPanel {
         const layerId = bandEl.dataset.layerId
         const bandKind = bandEl.dataset.bandKind
         if (!layerId || !this._wavePicker) return
-        // Snapshot picker layers so we can mutate freely during drag.
         this._dragLayers = JSON.parse(JSON.stringify(this._wavePicker.getLayers()))
         const target = this._dragLayers.find(l => l.id === layerId)
         if (!target) { this._dragLayers = null; return }
 
-        e.preventDefault()
+        FleetScheduleGridPanel._ensureArbGesture()
         const rect = lane.getBoundingClientRect()
         const startX = e.clientX
         const startTimeShift = target.timeShiftMin || 0
         const startArrShift  = target.arrShiftMin  || 0
         const startDepShift  = target.depShiftMin  || 0
-        const altMode = !!e.altKey   // independent shift only on the grabbed kind
+        const altMode = !!e.altKey
         const widthMin = FleetScheduleGridRenderer.MIN_PER_DAY
 
-        let pendingFrame = null
-        let lastDeltaMin = 0
+        const arbCtx = {
+            kind: "fsg.band.shift",
+            panel: this, target, layerId, bandKind, altMode, widthMin,
+            rect, startX, startTimeShift, startArrShift, startDepShift,
+            pendingFrame: null, lastDeltaMin: 0,
+            origLayer: JSON.parse(JSON.stringify(target))
+        }
+        if (!window.AesDragArbiter || !window.AesDragArbiter.startManual(e, arbCtx)) return
+        e.preventDefault()
+    }
 
-        const onMove = (ev) => {
-            const dxPx = ev.clientX - startX
-            const deltaMin = Math.round((dxPx / rect.width) * widthMin / 5) * 5  // snap 5min
-            if (deltaMin === lastDeltaMin) return
-            lastDeltaMin = deltaMin
-            // Update the in-memory layer.
-            if (altMode) {
-                if (bandKind === "arr") target.arrShiftMin = startArrShift + deltaMin
-                else                    target.depShiftMin = startDepShift + deltaMin
-            } else {
-                target.timeShiftMin = startTimeShift + deltaMin
-            }
-            if (pendingFrame) return
-            pendingFrame = requestAnimationFrame(() => {
-                pendingFrame = null
-                this._paintWaveBands()
-                this._showDragReadout(target, altMode ? bandKind : "both")
-            })
+    static _ensureArbGesture() {
+        if (FleetScheduleGridPanel._arbRegistered) return
+        if (!window.AesDragArbiter) return
+        FleetScheduleGridPanel._arbRegistered = true
+        window.AesDragArbiter.register({
+            id:       "fsg.band.shift",
+            surface:  "fsg",
+            priority: 100,
+            matches:  (e, c) => !!(c && c.kind === "fsg.band.shift"),
+            feedback: {
+                onMove:   (ev, c)   => FleetScheduleGridPanel._arbBandMove(ev, c),
+                onCancel: (c, info) => FleetScheduleGridPanel._arbBandCancel(c, info)
+            },
+            effect:   (drop)        => FleetScheduleGridPanel._arbBandDrop(drop)
+        })
+    }
+
+    static _arbBandMove(ev, c) {
+        const dxPx = ev.clientX - c.startX
+        const deltaMin = Math.round((dxPx / c.rect.width) * c.widthMin / 5) * 5
+        if (deltaMin === c.lastDeltaMin) return
+        c.lastDeltaMin = deltaMin
+        if (c.altMode) {
+            if (c.bandKind === "arr") c.target.arrShiftMin = c.startArrShift + deltaMin
+            else                       c.target.depShiftMin = c.startDepShift + deltaMin
+        } else {
+            c.target.timeShiftMin = c.startTimeShift + deltaMin
         }
-        const onUp = async () => {
-            window.removeEventListener("mousemove", onMove, true)
-            window.removeEventListener("mouseup", onUp, true)
-            if (pendingFrame) { cancelAnimationFrame(pendingFrame); pendingFrame = null }
-            const finalLayer = target
-            this._dragLayers = null
-            this._hideDragReadout()
-            // Persist via the picker's update path so the chip readouts stay current.
-            if (typeof FleetScheduleGridWaveLayoutStore !== "undefined") {
-                try { await FleetScheduleGridWaveLayoutStore.upsertLayer(this.server, this.airlineCode, finalLayer) }
-                catch (err) { console.warn("[AES FSG] wave drag persist failed", err) }
-                if (this._wavePicker) await this._wavePicker.refresh()
-            }
-            this._paintWaveBands()
+        if (c.pendingFrame) return
+        c.pendingFrame = requestAnimationFrame(() => {
+            c.pendingFrame = null
+            c.panel._paintWaveBands()
+            c.panel._showDragReadout(c.target, c.altMode ? c.bandKind : "both")
+        })
+    }
+
+    static _arbBandCancel(c) {
+        if (c.pendingFrame) { cancelAnimationFrame(c.pendingFrame); c.pendingFrame = null }
+        // Revert in-memory layer to pre-drag snapshot.
+        c.target.timeShiftMin = c.origLayer.timeShiftMin || 0
+        c.target.arrShiftMin  = c.origLayer.arrShiftMin  || 0
+        c.target.depShiftMin  = c.origLayer.depShiftMin  || 0
+        c.panel._dragLayers = null
+        c.panel._hideDragReadout()
+        c.panel._paintWaveBands()
+    }
+
+    static async _arbBandDrop(drop) {
+        const c = drop.ctx
+        if (c.pendingFrame) { cancelAnimationFrame(c.pendingFrame); c.pendingFrame = null }
+        const finalLayer = c.target
+        c.panel._dragLayers = null
+        c.panel._hideDragReadout()
+        if (typeof FleetScheduleGridWaveLayoutStore !== "undefined") {
+            try { await FleetScheduleGridWaveLayoutStore.upsertLayer(c.panel.server, c.panel.airlineCode, finalLayer) }
+            catch (err) { console.warn("[AES FSG] wave drag persist failed", err) }
+            if (c.panel._wavePicker) await c.panel._wavePicker.refresh()
         }
-        window.addEventListener("mousemove", onMove, true)
-        window.addEventListener("mouseup", onUp, true)
+        c.panel._paintWaveBands()
+        return {ok: true, audit: {
+            kind:     "fsg-band-shift",
+            layerId:  c.layerId,
+            bandKind: c.bandKind,
+            altMode:  c.altMode,
+            before:   {time: c.startTimeShift, arr: c.startArrShift, dep: c.startDepShift},
+            after:    {time: finalLayer.timeShiftMin || 0, arr: finalLayer.arrShiftMin || 0, dep: finalLayer.depShiftMin || 0}
+        }}
     }
 
     _showDragReadout(layer, kind) {

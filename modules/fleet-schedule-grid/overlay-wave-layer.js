@@ -115,9 +115,43 @@ class FleetScheduleGridWaveOverlay {
 
         const container = document.createElement("div")
         container.className = FleetScheduleGridWaveOverlay.CONTAINER_CLASS
-        container.style.cssText = "position:absolute;inset:0;pointer-events:none;"
-            + "mix-blend-mode:multiply;z-index:2;"
+        // Active bands use multiply blend so the schedule blocks underneath
+        // remain readable; comparison bands are already faded so we use
+        // normal blend to keep the dashed treatment from being squashed.
+        // We render two stacked containers so each can carry its own blend
+        // mode without per-band overrides fighting the parent's setting.
+        container.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;"
 
+        const activeLayers = []
+        const compareLayers = []
+        for (const layer of layers) {
+            if (layer && layer.role === "active") activeLayers.push(layer)
+            else compareLayers.push(layer)
+        }
+
+        // Comparison layer container — rendered FIRST so active bands sit
+        // on top visually. Lower z-index, normal blend.
+        if (compareLayers.length) {
+            const cmp = document.createElement("div")
+            cmp.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:1;mix-blend-mode:normal;"
+            cmp.dataset.bandRole = "comparison"
+            FleetScheduleGridWaveOverlay._paintLayersInto(cmp, compareLayers, fadeRatio, hubMatch)
+            container.appendChild(cmp)
+        }
+
+        // Active layer container — rendered SECOND, multiply blend, on top.
+        if (activeLayers.length) {
+            const act = document.createElement("div")
+            act.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;mix-blend-mode:multiply;"
+            act.dataset.bandRole = "active"
+            FleetScheduleGridWaveOverlay._paintLayersInto(act, activeLayers, fadeRatio, hubMatch)
+            container.appendChild(act)
+        }
+
+        laneEl.appendChild(container)
+    }
+
+    static _paintLayersInto(container, layers, fadeRatio, hubMatch) {
         for (const layer of layers) {
             const matches = !!hubMatch(layer)
             const effOp = matches ? layer.opacity : (layer.opacity * fadeRatio)
@@ -129,39 +163,41 @@ class FleetScheduleGridWaveOverlay {
                 if (a < b) {
                     container.appendChild(FleetScheduleGridWaveOverlay._buildBand(layer, kind, win, a, b, effOp, matches))
                 } else {
-                    // Wraps midnight — split into two bands.
                     container.appendChild(FleetScheduleGridWaveOverlay._buildBand(layer, kind, win, a, FleetScheduleGridWaveOverlay.MIN_PER_DAY, effOp, matches))
                     container.appendChild(FleetScheduleGridWaveOverlay._buildBand(layer, kind, win, 0, b, effOp, matches))
                 }
             }
         }
-        laneEl.appendChild(container)
     }
 
     static _buildBand(layer, kind, win, startMin, endMin, opacity, hubMatched) {
         const left  = (startMin / FleetScheduleGridWaveOverlay.MIN_PER_DAY) * 100
         const width = Math.max(0.05, ((endMin - startMin) / FleetScheduleGridWaveOverlay.MIN_PER_DAY) * 100)
+        const isActive = (layer.role === "active")
         const el = document.createElement("div")
         el.className = FleetScheduleGridWaveOverlay.BAND_CLASS
             + " " + FleetScheduleGridWaveOverlay.BAND_CLASS + "--" + kind
+            + " " + FleetScheduleGridWaveOverlay.BAND_CLASS + "--" + (isActive ? "active" : "comparison")
             + (hubMatched ? "" : " " + FleetScheduleGridWaveOverlay.BAND_CLASS + "--faded")
         el.dataset.layerId = layer.id
         el.dataset.bandKind = kind
         el.dataset.startMin = String(startMin)
         el.dataset.endMin   = String(endMin)
-        // Slightly different visual treatment per band kind so users can
-        // distinguish arrival vs departure on the same layer color:
-        //   arr — solid fill
-        //   dep — diagonal stripe
+        // Visual treatment forks on role:
+        //   active     — solid (arr) / diagonal stripe (dep), opaque borders
+        //   comparison — same fill at lower opacity + dashed left/right
+        //                edges so the user can tell what's "real" vs "what-if"
         const stripeBg = (kind === "dep")
             ? "background:repeating-linear-gradient(45deg, " + layer.color + " 0 6px, rgba(255,255,255,0.18) 6px 10px);"
             : "background:" + layer.color + ";"
+        const borderStyle = isActive ? "solid" : "dashed"
+        const borderColor = isActive ? "rgba(0,0,0,0.45)" : "rgba(0,0,0,0.55)"
         el.style.cssText = "position:absolute;top:0;bottom:0;"
             + "left:" + left + "%;width:" + width + "%;"
             + stripeBg
             + "opacity:" + opacity + ";"
-            + "border-left:1.5px solid rgba(0,0,0,0.45);"
-            + "border-right:1.5px solid rgba(0,0,0,0.45);"
+            + "border-left:1.5px " + borderStyle + " " + borderColor + ";"
+            + "border-right:1.5px " + borderStyle + " " + borderColor + ";"
             + "pointer-events:auto;cursor:ew-resize;"
             + "transition:opacity 80ms linear;"
         // Tiny label inside, top-left corner.
@@ -173,7 +209,8 @@ class FleetScheduleGridWaveOverlay {
             + "text-shadow:0 0 1px rgba(255,255,255,0.7);"
         lbl.textContent = win.label
         el.appendChild(lbl)
-        el.title = layer.name + " · " + (kind === "arr" ? "Arrival" : "Departure")
+        const rolePrefix = isActive ? "Active · " : "Comparing · "
+        el.title = rolePrefix + layer.name + " · " + (kind === "arr" ? "Arrival" : "Departure")
             + " " + win.startLocal + "–" + win.endLocal
             + (hubMatched ? "" : " · (different hub — faded)")
         return el

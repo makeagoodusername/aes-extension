@@ -767,6 +767,28 @@
             const wlKey  = origin + "-" + c.destIata
             const starred = !!(this._watchlistKeys && this._watchlistKeys.has(wlKey))
 
+            // Lane A Phase 2 — drag handle (G9). The arbiter consumes manual
+            // mousedown on this span; releasing onto a wave-strip lane fires
+            // the schedule-apply orchestrator. Hidden when drag-to-schedule
+            // module isn't loaded so old installs never show a dead handle.
+            if (window.AesAfpDragToSchedule && c.destIata) {
+                const grip = document.createElement("span")
+                grip.textContent = "⋮⋮"
+                grip.title = "Drag onto a wave to pre-fill flight"
+                grip.style.cssText = "color:#475569;cursor:grab;margin-right:4px;"
+                    + "font-size:11px;user-select:none;font-weight:400;"
+                grip.addEventListener("mouseenter", () => { grip.style.color = "#60a5fa" })
+                grip.addEventListener("mouseleave", () => { grip.style.color = "#475569" })
+                grip.addEventListener("mousedown", (ev) => {
+                    if (ev.button !== 0) return
+                    ev.stopPropagation()
+                    if (typeof window.AesAfpDragToSchedule.startCandidateDrag === "function") {
+                        window.AesAfpDragToSchedule.startCandidateDrag(ev, c, this._lastCtx)
+                    }
+                })
+                destCell.appendChild(grip)
+            }
+
             const star = document.createElement("span")
             star.textContent = starred ? "★" : "☆"
             star.title = (typeof RouteAssistantWatchlistStore === "undefined")

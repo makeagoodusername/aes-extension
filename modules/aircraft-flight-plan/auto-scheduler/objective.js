@@ -152,14 +152,27 @@
         const slackPenalty = weeklyExcess * slackPenPerHour
                            + dailyExcess  * dailyOverrunPenPerHr
 
-        const total = gross * grossWeight - fuelCost * fuelWeight - slackPenalty
+        // Lane C Phase 2 — symmetric under-utilization term. Punishes
+        // leaving a tail below targetWeeklyHours. Two arithmetic ops; pure;
+        // 60Hz-safe per §4.7. Default weight 0 ⇒ bit-for-bit identical to
+        // pre-Phase-2 until the user enables fleetOptimizer.targetingEnabled.
+        // The optimum sits between targetWeeklyHours (penalty 0) and
+        // maxWeeklyBlockHours (slackPenalty starts climbing).
+        const targetWeekly      = _num(budget.targetWeeklyHours, NaN)
+        const underUtilWeight   = _num(w.underUtilWeight, 0)
+        const underUtilHours    = (isFinite(targetWeekly) && targetWeekly > 0)
+            ? Math.max(0, targetWeekly - projectedWeekly) : 0
+        const underUtilPenalty  = underUtilHours * underUtilWeight
+
+        const total = gross * grossWeight - fuelCost * fuelWeight - slackPenalty - underUtilPenalty
         return {
             total: total,
             parts: {
-                gross:          gross,
-                fuelCost:       fuelCost,
-                slackPenalty:   slackPenalty,
-                distanceFactor: distanceFactor
+                gross:            gross,
+                fuelCost:         fuelCost,
+                slackPenalty:     slackPenalty,
+                underUtilPenalty: underUtilPenalty,
+                distanceFactor:   distanceFactor
             }
         }
     }

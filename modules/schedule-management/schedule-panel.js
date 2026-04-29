@@ -946,13 +946,41 @@ class SchedulePanel {
     }
 
     _buildLegRow(flight) {
+        return SchedulePanel.buildLegRow(flight, {
+            perLegEdits:   (this.draft && this.draft.perLegEdits)   || {},
+            appliedLegs:   (this.draft && this.draft.appliedLegs)   || {},
+            dismissedLegs: (this.draft && this.draft.dismissedLegs) || {}
+        }, {
+            transient:           this._legStatusBySeq,
+            onLegEdit:           (seq, patch) => this._patchLegEdit(seq, patch),
+            onLegApply:          (seq)        => this._onLegApply(seq),
+            onLegDismissToggle:  (seq, makeDismissed) => this._onLegDismissToggle(seq, makeDismissed)
+        })
+    }
+
+    /**
+     * Pure leg-row builder. Lifted out of `_buildLegRow` so Fleet Command
+     * Center can render the same per-leg editor inline without depending
+     * on SchedulePanel's overlay-mode state machine.
+     *
+     * @param {object} flight  — flight envelope (seq, direction, waveLabel, origin, destination, depTimeLocal, pricePct)
+     * @param {object} state   — {perLegEdits, appliedLegs, dismissedLegs} maps from AesAfpActiveDraftStore
+     * @param {object} opts
+     *   - opts.transient                  optional {[seq]: "submitting"|"error"} for status pill + apply-button disable
+     *   - opts.onLegEdit(seq, patch)      called when destination/time/price changes
+     *   - opts.onLegApply(seq)            called when Apply / Re-apply clicked
+     *   - opts.onLegDismissToggle(seq, makeDismissed)  called when Dismiss / Restore clicked
+     */
+    static buildLegRow(flight, state, opts) {
+        const o = opts || {}
+        const s = state || {}
         const tr = document.createElement("tr")
         const seq = flight.seq
-        const overlay = (this.draft.perLegEdits || {})[seq] || {}
+        const overlay = (s.perLegEdits || {})[seq] || {}
         const eff = Object.assign({}, flight, overlay)
-        const applied   = !!(this.draft.appliedLegs   || {})[seq]
-        const dismissed = !!(this.draft.dismissedLegs || {})[seq]
-        const transient = this._legStatusBySeq[seq] || null  // queued/submitting/error
+        const applied   = !!(s.appliedLegs   || {})[seq]
+        const dismissed = !!(s.dismissedLegs || {})[seq]
+        const transient = (o.transient && o.transient[seq]) || null
 
         if (dismissed) {
             tr.style.cssText = "opacity:0.45;"
@@ -974,9 +1002,10 @@ class SchedulePanel {
 
         // Destination — editable text input.
         const destCell = document.createElement("td")
-        const destInput = this._legTextInput(eff.destination || "", (v) => {
+        const destInput = SchedulePanel._mkLegTextInput(eff.destination || "", (v) => {
+            if (typeof o.onLegEdit !== "function") return
             const norm = String(v || "").toUpperCase().trim()
-            return this._patchLegEdit(seq, {destination: norm || null})
+            return o.onLegEdit(seq, {destination: norm || null})
         }, {maxLength: 4, style: "text-transform:uppercase;width:64px;"})
         destCell.append(destInput)
         tr.append(destCell)
@@ -989,9 +1018,10 @@ class SchedulePanel {
         timeInput.style.cssText = "width:90px;"
         timeInput.value = eff.depTimeLocal || ""
         timeInput.addEventListener("change", () => {
+            if (typeof o.onLegEdit !== "function") return
             const v = timeInput.value
             if (v && (typeof ScheduleFactors === "undefined" || ScheduleFactors.parseHHMM(v))) {
-                this._patchLegEdit(seq, {depTimeLocal: v})
+                o.onLegEdit(seq, {depTimeLocal: v})
             }
         })
         timeCell.append(timeInput)
@@ -1007,8 +1037,9 @@ class SchedulePanel {
         priceInput.min = 0
         priceInput.max = 200
         priceInput.addEventListener("change", () => {
+            if (typeof o.onLegEdit !== "function") return
             const v = parseInt(priceInput.value, 10)
-            this._patchLegEdit(seq, {pricePct: isNaN(v) ? 100 : v})
+            o.onLegEdit(seq, {pricePct: isNaN(v) ? 100 : v})
         })
         priceCell.append(priceInput)
         tr.append(priceCell)
@@ -1039,7 +1070,12 @@ class SchedulePanel {
             applyBtn.textContent = applied ? "Re-apply" : "Apply"
             applyBtn.title = "Open the per-aircraft Flight Plan page in a hidden tab and submit this leg."
             applyBtn.disabled = (transient === "submitting")
-            applyBtn.addEventListener("click", () => this._onLegApply(seq))
+            if (typeof o.onLegApply === "function") {
+                applyBtn.addEventListener("click", () => o.onLegApply(seq))
+            } else {
+                applyBtn.disabled = true
+                applyBtn.title = "Apply requires AFP submit-bridge — open this aircraft's Flight Plan page."
+            }
             actionsCell.append(applyBtn)
             actionsCell.append(document.createTextNode(" "))
         }
@@ -1047,11 +1083,28 @@ class SchedulePanel {
         dismissBtn.type = "button"
         dismissBtn.className = "btn btn-default btn-xs"
         dismissBtn.textContent = dismissed ? "Restore" : "Dismiss"
-        dismissBtn.addEventListener("click", () => this._onLegDismissToggle(seq, !dismissed))
+        if (typeof o.onLegDismissToggle === "function") {
+            dismissBtn.addEventListener("click", () => o.onLegDismissToggle(seq, !dismissed))
+        } else {
+            dismissBtn.disabled = true
+        }
         actionsCell.append(dismissBtn)
         tr.append(actionsCell)
 
         return tr
+    }
+
+    /** Internal helper — pure text input wrapper, used by the static row builder. */
+    static _mkLegTextInput(value, onChange, opts) {
+        opts = opts || {}
+        const input = document.createElement("input")
+        input.type = "text"
+        input.className = "form-control input-sm"
+        input.value = value
+        if (opts.maxLength) input.maxLength = opts.maxLength
+        if (opts.style) input.setAttribute("style", opts.style)
+        input.addEventListener("change", () => onChange(input.value))
+        return input
     }
 
     _legTextInput(value, onChange, opts) {

@@ -134,7 +134,17 @@
         const budget = o.budget || _fallbackBudget(settings)
 
         // ── Greedy pass (slice 3c) ─────────────────────────────────────
-        const w = settings.autoScheduler.weights
+        // Lane C Phase 2 — overlay underUtilWeight from fleet-optimizer
+        // settings when the user has opted in. Default 0 → bit-for-bit
+        // identical to pre-Phase-2 allocator output.
+        const w = Object.assign({}, settings.autoScheduler.weights)
+        try {
+            const fos = (typeof window !== "undefined" && window.AesStrategyFleetOptimizerSettings)
+                ? await window.AesStrategyFleetOptimizerSettings.load() : null
+            if (fos && fos.targetingEnabled === true && isFinite(fos.underUtilWeight)) {
+                w.underUtilWeight = Number(fos.underUtilWeight)
+            }
+        } catch (_) { /* dormant fallback */ }
         const presetTurnaround = Number((preset.factors && preset.factors.minTransferMinutes)) || 45
         const perStationTA = (o.perStationTurnaroundMin && typeof o.perStationTurnaroundMin === "object")
             ? o.perStationTurnaroundMin : {}
@@ -629,7 +639,15 @@
     function _resolvePreset(presetsBlock, explicitId, settings, ctx) {
         const list = (presetsBlock && Array.isArray(presetsBlock.presets)) ? presetsBlock.presets : []
         if (!list.length) return null
+        // Hub Plan Workbench — per-hub active pointer wins over the legacy
+        // global `lastSelectedPresetId` so multi-hub airlines route each
+        // aircraft to the plan pinned for its current station.
+        const iata = ctx && ctx.currentLocationIata
+            ? String(ctx.currentLocationIata).toUpperCase() : null
+        const hubMap = (settings && settings.activePresetIdByHub) || {}
+        const hubActiveId = iata ? hubMap[iata] : null
         const wanted = explicitId
+            || hubActiveId
             || (settings && settings.lastSelectedPresetId)
             || (presetsBlock && presetsBlock.defaultPresetId)
             || null
@@ -637,8 +655,6 @@
         if (preset) return preset
         // Hub-matching fallback so the diagnostics console doesn't have to
         // hunt for a presetId by hand.
-        const iata = ctx && ctx.currentLocationIata
-            ? String(ctx.currentLocationIata).toUpperCase() : null
         if (iata) preset = list.find(p => p && String(p.hub).toUpperCase() === iata) || null
         return preset || list[0]
     }

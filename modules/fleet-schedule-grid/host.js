@@ -35,6 +35,40 @@ class FleetScheduleGridHost {
         this.airlineCode = o.airlineCode
             || (typeof fltmng_getAirlineName === "function" ? fltmng_getAirlineName() : "")
             || ""
+        this._wireOpenTileBus()
+    }
+
+    /**
+     * Phase I — listen for `open-tile` events targeting the canvas. The
+     * Fleet Hub Command Center emits these for under-drafted hubs so the
+     * canvas opens pre-seeded into Builder mode for that hub. Idempotent
+     * — second wire is a no-op.
+     */
+    _wireOpenTileBus() {
+        if (this._openTileOff) return
+        if (typeof window === "undefined" || !window.CentralHubBus) return
+        const handler = (payload) => this._handleOpenTile(payload)
+        this._openTileOff = window.CentralHubBus.on("open-tile", handler)
+        // Replay any open-tile request that fired before we mounted.
+        try {
+            const last = window.CentralHubBus.replay && window.CentralHubBus.replay("open-tile")
+            if (last) handler(last)
+        } catch (_) {}
+    }
+
+    _handleOpenTile(payload) {
+        if (!payload) return
+        if (payload.tileId !== "fleet-schedule-canvas") return
+        const filter = payload.filter || {}
+        if (typeof CanvasModal === "undefined") return
+        this._resolveContext()
+        CanvasModal.open({
+            server:             this.server,
+            airlineCode:        this.airlineCode,
+            selectedHub:        filter.hub || null,
+            selectedAircraftId: filter.aircraftId || null,
+            railMode:           filter.railMode || null
+        }).catch(err => console.warn("[AES Schedule Canvas] open via bus failed", err))
     }
 
     mount() {
@@ -102,11 +136,23 @@ class FleetScheduleGridHost {
         btn.addEventListener("click", () => this._openPanel())
         this._buttonEl = btn
 
+        const canvasBtn = document.createElement("button")
+        canvasBtn.type = "button"
+        canvasBtn.style.cssText = "padding:6px 14px;cursor:pointer;font-size:12px;"
+            + "background:" + (T ? T.color.bone : "#F4F1EA") + ";"
+            + "color:" + (T ? T.color.oxide : "#2B2520") + ";"
+            + "border:" + (T ? T.geom.bw2 : "2px") + " solid " + (T ? T.color.oxide : "#2B2520") + ";"
+            + "font-family:" + (T ? T.font.display : "system-ui, sans-serif") + ";"
+            + "text-transform:uppercase;letter-spacing:0.06em;font-weight:" + (T ? T.fw.bold : "700") + ";"
+        canvasBtn.textContent = "▦ Open Schedule Canvas"
+        canvasBtn.title = "Wave-as-spine canvas with a context-aware assistant rail"
+        canvasBtn.addEventListener("click", () => this._openCanvas())
+
         const note = document.createElement("span")
         note.style.cssText = "font-size:11px;color:" + (T ? T.color.slate : "#7A6F66") + ";font-style:italic;"
         note.textContent = "Stacks every aircraft's Mon–Sun timeline; colors flights by route so you can spot overlaps and gaps across the fleet."
 
-        wrap.append(btn, note)
+        wrap.append(btn, canvasBtn, note)
         anchor.appendChild(wrap)
         return true
     }
@@ -116,16 +162,32 @@ class FleetScheduleGridHost {
             console.warn("[AES Fleet Schedule Grid] panel module not loaded — check manifest order on /app/fleets*")
             return
         }
+        this._resolveContext()
+        FleetScheduleGridPanel.open({
+            server:      this.server,
+            airlineCode: this.airlineCode
+        }).catch(err => console.warn("[AES Fleet Schedule Grid] open failed", err))
+    }
+
+    _openCanvas() {
+        if (typeof CanvasModal === "undefined") {
+            console.warn("[AES Schedule Canvas] modal module not loaded — check manifest order on /app/fleets*")
+            return
+        }
+        this._resolveContext()
+        CanvasModal.open({
+            server:      this.server,
+            airlineCode: this.airlineCode
+        }).catch(err => console.warn("[AES Schedule Canvas] open failed", err))
+    }
+
+    _resolveContext() {
         if (!this.server) {
             this.server = (typeof AES !== "undefined" && AES.getServerName) ? AES.getServerName() : ""
         }
         if (!this.airlineCode && typeof fltmng_getAirlineName === "function") {
             try { this.airlineCode = fltmng_getAirlineName() || "" } catch (_) {}
         }
-        FleetScheduleGridPanel.open({
-            server:      this.server,
-            airlineCode: this.airlineCode
-        }).catch(err => console.warn("[AES Fleet Schedule Grid] open failed", err))
     }
 }
 

@@ -30,15 +30,16 @@ class FleetScheduleGridRenderer {
 
     constructor(opts) {
         const o = opts || {}
-        this.rootEl   = o.rootEl   || null
-        this.fleet    = o.fleet    || []         // RowRecord[] from FleetHubAircraftAggregator
-        this.schedules = o.schedules || new Map() // Map<aircraftId, Schedule>
-        this.coloring = o.coloring || null
+        this.rootEl    = o.rootEl    || null
+        this.fleet     = o.fleet     || []         // RowRecord[] from FleetHubAircraftAggregator
+        this.schedules = o.schedules || new Map()  // Map<aircraftId, Schedule>
+        this.maintenance = o.maintenance || new Map() // Map<aircraftId, MaintenanceRecord>
+        this.coloring  = o.coloring  || null
         this._hoveredRoute = null
         this._filterRoute  = null
         this._filterHub    = null
-        this._dayMode      = "all"                // "all" or 0..6
-        this._lastEls      = []                   // {el, routeKey}
+        this._dayMode      = "all"                 // "all" or 0..6
+        this._lastEls      = []                    // {el, routeKey}
     }
 
     setHub(hub)         { this._filterHub = hub || null;     this.render() }
@@ -187,14 +188,18 @@ class FleetScheduleGridRenderer {
         const summary = document.createElement("span")
         summary.style.cssText = "margin-left:auto;font-family:" + (T ? T.font.mono : "monospace") + ";"
             + "font-size:11px;color:" + (T ? T.color.slate : "#7A6F66") + ";"
+            + "display:flex;align-items:center;gap:6px;min-width:0;"
+        const schedText = document.createElement("span")
         if (sched && sched.summary) {
             const m = sched.summary.weeklyBlockMinutes || 0
             const h = (m / 60).toFixed(1)
-            summary.textContent = (sched.summary.flightCount || 0) + " flights · "
+            schedText.textContent = (sched.summary.flightCount || 0) + " flights · "
                 + h + "h block · scraped " + this._fmtAge(sched.scrapedAt)
         } else {
-            summary.textContent = "no schedule loaded"
+            schedText.textContent = "no schedule loaded"
         }
+        summary.appendChild(schedText)
+        this._appendMaintenanceChips(summary, row, T)
 
         // Inspect chevron — opens the per-aircraft cockpit drawer (Aircraft
         // tab on the side rail). Side rail listens for this event on the
@@ -410,6 +415,38 @@ class FleetScheduleGridRenderer {
         if (ms < 3600_000)      return Math.floor(ms / 60_000) + "m ago"
         if (ms < 86_400_000)    return Math.floor(ms / 3600_000) + "h ago"
         return Math.floor(ms / 86_400_000) + "d ago"
+    }
+
+    /**
+     * Append " · MX X% · Cond Y%" to the row-header summary span. Values are
+     * read from AesAfpMaintenanceStore (populated when the user opens the AFP
+     * page for the tail). Status colors mirror the AFP sidebar widget so the
+     * two surfaces look consistent. When no reading exists the chips render
+     * dashes in muted gray.
+     */
+    _appendMaintenanceChips(parentEl, row, T) {
+        const STATUS_COLOR = {good: "#34d399", warn: "#facc15", bad: "#f87171"}
+        const muted = T ? T.color.slate : "#7A6F66"
+        const rec = this.maintenance.get(String(row.aircraftId)) || null
+
+        const ratio = rec && typeof rec.ratio === "number" && isFinite(rec.ratio) ? rec.ratio : null
+        const cond  = rec && typeof rec.condition === "number" && isFinite(rec.condition) ? rec.condition : null
+        const ratioColor = (rec && STATUS_COLOR[rec.ratioStatus]) || muted
+        const condColor  = (rec && STATUS_COLOR[rec.conditionStatus]) || muted
+
+        const sep1 = document.createTextNode(" · ")
+        const mxChip = document.createElement("span")
+        mxChip.style.cssText = "color:" + ratioColor + ";"
+        mxChip.textContent = "MX " + (ratio != null ? ratio.toFixed(1) + "%" : "—")
+        mxChip.title = "Maintenance ratio (read at last AFP scrape)"
+
+        const sep2 = document.createTextNode(" · ")
+        const condChip = document.createElement("span")
+        condChip.style.cssText = "color:" + condColor + ";"
+        condChip.textContent = "Cond " + (cond != null ? Math.round(cond) + "%" : "—")
+        condChip.title = "Airframe condition (read at last AFP scrape)"
+
+        parentEl.append(sep1, mxChip, sep2, condChip)
     }
 
     /** Build a legend element from coloring.routes. Caller embeds. */

@@ -128,6 +128,34 @@
             ? _forecastRatio(currentRatio, fit, adjustedMaxWeekly, 1)
             : null
 
+        // Lane C Phase 2 — derive fleet-optimizer target hours dormantly.
+        // null when:
+        //   * fleetOptimizer settings missing
+        //   * targetingEnabled === false (default)
+        //   * regression unstable (slope >= 0 → equilibriumWeeklyBlockHours not finite)
+        //   * tail explicitly excluded via perAircraft override
+        // Bit-for-bit identical to pre-Phase-2 when null is returned.
+        let targetWeeklyHours = null
+        let floorPct = null
+        let headroomPct = null
+        try {
+            const fos = (typeof window !== "undefined" && window.AesStrategyFleetOptimizerSettings)
+                ? await window.AesStrategyFleetOptimizerSettings.load() : null
+            if (fos && fos.targetingEnabled === true) {
+                const per = (fos.perAircraft && fos.perAircraft[String(aircraftId)]) || null
+                if (!(per && per.excludeFromOptimizer === true)) {
+                    floorPct    = (per && isFinite(per.floorPct))    ? Number(per.floorPct)
+                                : (isFinite(fos.ratioFloorPct) ? Number(fos.ratioFloorPct) : null)
+                    headroomPct = (per && isFinite(per.headroomPct)) ? Number(per.headroomPct)
+                                : (isFinite(fos.headroomPct) ? Number(fos.headroomPct) : null)
+                    if (useRegression && isFinite(ceiling.maxWeeklyBlockHours) && headroomPct != null) {
+                        targetWeeklyHours = Math.max(0,
+                            ceiling.maxWeeklyBlockHours * (1 - headroomPct / 100))
+                    }
+                }
+            }
+        } catch (_) { /* dormant fallback */ }
+
         return {
             maxWeeklyBlockHours:               adjustedMaxWeekly,
             maxDailyBlockHours:                adjustedMaxDaily,
@@ -144,7 +172,11 @@
             ratioFloor:                        RATIO_FLOOR,
             fit:                               fit || null,
             scheduledMaintenanceHoursPerWeek,
-            rawMaxWeeklyBlockHours:            ceiling.maxWeeklyBlockHours
+            rawMaxWeeklyBlockHours:            ceiling.maxWeeklyBlockHours,
+            // Lane C Phase 2 — null until user opts in via fleetOptimizer settings.
+            targetWeeklyHours,
+            floorPct,
+            headroomPct
         }
     }
 

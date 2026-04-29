@@ -31,6 +31,15 @@ class SchedulePresets {
      *   - tweakedFor:   aircraftId the tweak optimized against
      * Plain user-created presets leave all three undefined; the picker UI
      * keys on `tweakedFrom` to render the 🔧 glyph.
+     *
+     * Additive Phase-1 fields (Wave Mechanics Expansion):
+     *   - pinned/starredAt: palette ordering hints
+     *   - geography:        {region, country, federation} for Lane B
+     *   - kinPresetId:      cross-account ref (Letter L9)
+     *   - templateRevision: bumps on every wave-set change
+     *   - appliesToFleets:  soft fleet hint (Lane C may hard-constrain)
+     *   - schedule:         {weekPattern, dayMask:bool[7]} day-of-week mask
+     * All optional — legacy presets reading without these stay valid.
      */
     static newPreset(name) {
         return {
@@ -41,7 +50,14 @@ class SchedulePresets {
             factors: ScheduleFactors.defaultFactors(),
             notes: "",
             createdAt: Date.now(),
-            updatedAt: Date.now()
+            updatedAt: Date.now(),
+            pinned:           false,
+            starredAt:        null,
+            geography:        {region: null, country: null, federation: null},
+            kinPresetId:      null,
+            templateRevision: 1,
+            appliesToFleets:  [],
+            schedule:         {weekPattern: "daily", dayMask: [true, true, true, true, true, true, true]}
         }
     }
 
@@ -49,6 +65,19 @@ class SchedulePresets {
      * Builds a fresh wave record. Keep wave defaults conservative: 30-min
      * arrival/departure windows with a 45-min connection gap is a common
      * starting point for medium hubs.
+     *
+     * Additive Phase-1 fields (Wave Mechanics Expansion):
+     *   - subBands:         enriched sub-windows inside the rectangle
+     *   - composition.byDay 7 × {S,M,L} | null  (null inherits composition)
+     *   - priority          0..99 — wave-route-fitter tiebreak
+     *   - pinDestinations   wave-scoped destination overrides
+     *   - preferredAircraft {ids:[], types:[]} soft allocator hint
+     *   - kin               {coordinatedHubs[], allianceTier}
+     *   - geo               {region, country}
+     *   - routePolicy       "auto"|"lockedSet"|"templateOnly"
+     *   - notes             free-text per wave
+     *   - archivedAt        soft-delete; UI hides; preserves overrides
+     * Legacy waves without these read fine — consumers default-guard.
      */
     static newWave(label) {
         return {
@@ -59,8 +88,41 @@ class SchedulePresets {
             composition: {
                 shortHaul: 0,
                 mediumHaul: 0,
-                longHaul: 0
-            }
+                longHaul: 0,
+                byDay: null
+            },
+            subBands:           [],
+            priority:           50,
+            pinDestinations:    [],
+            preferredAircraft:  {ids: [], types: []},
+            kin:                {coordinatedHubs: [], allianceTier: "none"},
+            geo:                {region: null, country: null},
+            routePolicy:        "auto",
+            notes:              "",
+            archivedAt:         null
+        }
+    }
+
+    /**
+     * Builds a fresh sub-band record. Sub-bands enrich a wave's
+     * arrivalWindow/departureWindow rectangle — e.g. a thick arrival window
+     * with a "premium" sub-band 06:10–06:25 where wide-bodies must land.
+     *
+     * The wave's outer arrival/departureWindow stays canonical and captures
+     * the rectangle that contains all sub-bands; sub-band-aware code reads
+     * the sub-bands directly while wave-route-fitter (legacy) keeps reading
+     * the rectangle without changes.
+     */
+    static newSubBand(kind, start, end, label) {
+        const validKind = (kind === "arrival" || kind === "departure" || kind === "groundOnly")
+            ? kind : "arrival"
+        return {
+            id: "sb" + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36),
+            kind:   validKind,
+            start:  start || "06:00",
+            end:    end   || "06:15",
+            weight: 1,
+            label:  label || ""
         }
     }
 
@@ -107,12 +169,20 @@ class SchedulePresets {
     /**
      * Patches a preset in place. `fields` is shallowly merged; nested
      * `factors` and `waves` should be passed in full to avoid losing keys.
+     *
+     * When `fields.waves` is present the additive `templateRevision`
+     * counter bumps so palette / Gantt subscribers can render an "edited"
+     * marker without diffing the whole wave list.
      */
     static async update(id, fields) {
         const block = await SchedulePresets.load()
         const preset = block.presets.find(p => p.id === id)
         if (!preset) return null
+        const wavesChanged = fields && Object.prototype.hasOwnProperty.call(fields, "waves")
         Object.assign(preset, fields, {updatedAt: Date.now()})
+        if (wavesChanged) {
+            preset.templateRevision = Number(preset.templateRevision || 0) + 1
+        }
         await SchedulePresets.save({presets: block.presets})
         return preset
     }

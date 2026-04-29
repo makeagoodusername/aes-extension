@@ -790,10 +790,17 @@
                     scoreDelta: null}
         }
 
-        // Resolve base preset.
+        // Resolve base preset. Hub Plan Workbench: per-hub active pointer
+        // wins over the legacy `lastSelectedPresetId` so each aircraft is
+        // optimised against the plan pinned for its station.
         const presets = await SchedulePresets.load()
         const list = (presets && Array.isArray(presets.presets)) ? presets.presets : []
+        const stationIata = ctx.currentLocationIata
+            ? String(ctx.currentLocationIata).toUpperCase() : null
+        const hubMap = (settings && settings.activePresetIdByHub) || {}
+        const hubActiveId = stationIata ? hubMap[stationIata] : null
         const wantedId = a.presetId
+            || hubActiveId
             || (settings && settings.lastSelectedPresetId)
             || (presets && presets.defaultPresetId)
             || (list[0] && list[0].id)
