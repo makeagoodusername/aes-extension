@@ -254,8 +254,8 @@ Examples: `decide-routes.js`, `allocate-fleet.js`, `route-creation.js`, `price-m
 
 ### Pillar III — APPLY
 Two-gated, atomic, undoable, audited. Reuses existing actuators.
-Examples: `apply-pipeline.js`, `pricing-applier.js`, `service-profile-applier.js`, `staff-pilots-applier.js`, `route-creation-applier.js`, `fleet-apply-orchestrator.js`, future pay-tier-applier, future IL-request-applier.
-**Maturity:** ~60% (apply pipeline + 4 domains + service-tuner + pricing engine elaborations shipped; crew pay-tier actuator (HTML inspection pending) / IL request / marketing / slot bidder still open).
+Examples: `apply-pipeline.js`, `pricing-applier.js`, `service-profile-applier.js`, `staff-pilots-applier.js`, `route-creation-applier.js`, `fleet-apply-orchestrator.js`, `il-request-applier.js`, future pay-tier-applier.
+**Maturity:** ~65% (apply pipeline + 4 domains + service-tuner + pricing engine elaborations + IL-request actuator shipped (Slice 12, default `dryRunOnly:true` until live AS form calibration); crew pay-tier actuator (HTML inspection pending) / marketing / slot bidder still open).
 
 ### Pillar IV — LEARN
 Close the loop. Outcomes, finite-difference learning, backtesting, drift detection.
@@ -340,7 +340,7 @@ The next ~50 sessions cluster into seven epochs. Each is shippable on its own; e
 | L7 — Combined-supply / effective-competition columns | FEDERATE + SENSE | RA panel "Canopy view" toggle; MyWk · Cmp* · FShare · Cannib · Gap?. Pure-function aggregator. |
 | L8 — Geography (country/region as first-class dim) | FEDERATE + COMPOSE | Per-country demand pool, per-country kin presence, regulatory lens. New "Geography" tab. |
 | Strategy Slice 11 — Cross-Airline / Sister Coordination | FEDERATE | Lifts `allocateFleet` to portfolio reasoning. Lease proposals between sisters. |
-| Strategy Slice 12 — Alliance & IL Codeshare Optimisation | FEDERATE + DECIDE | Connectivity bonus; partner-upgrade proposals; one-click "Send IL request". |
+| Strategy Slice 12 — Alliance & IL Codeshare Optimisation | FEDERATE + DECIDE | ✅ Shipped. Connectivity bonus in `scoreRoutes`; per-card "Send IL request" with dry-run preview; per-account `alliance:ilRequestApplyLog:acct:<id>` ring. IL applier `dryRunOnly:true` until live AS form calibration. |
 
 **Acceptance:** A user with two airlines on the same server sees: combined supply on contested hubs, kin cannibalisation warnings, cross-account gap routes, and a unified portfolio P&L. No data corruption: each airline's overrides / ORS readings / topRoutes stay isolated. Affiliation graph correctly classifies every observed enterprise.
 
@@ -616,6 +616,7 @@ When this document changes, log the change here in one line. Anyone reading the 
 | --- | --- | --- |
 | 2026-04-28 | Initial draft. Synthesises STRATEGY-ROADMAP, FLIGHT-STUDIO-ROADMAP, PLAN-drag-to-schedule, HANDOVER §1/§9/§10/§11 into one constitutional doc. Seven pillars, seven epochs, 20 first principles, one mantra. | session 2026-04-28 |
 | 2026-04-29 | Added Pillar VIII (ORCHESTRATE) and Epoch H (The Conductor). Reserved letter K for Conductor slices. New companion doc `docs/CONDUCTOR-ROADMAP.md` covering signal layer, scenario engine, routine state machines, adaptive cadence, trust quotient, and the Conductor attention queue. Folds Strategy Slices 23/24/26/27 + the just-shipped scrape auto-drive cadence layer under the new pillar. | session 2026-04-29 |
+| 2026-04-29 | Strategy Slice 12 (Alliance & IL Codeshare Optimisation) shipped — first FEDERATE + DECIDE slice in Epoch C to fully integrate. Pillar III maturity bumped 60% → 65% with IL-request actuator now in the example list (`dryRunOnly:true` until live AS form calibration). New first-principle bound by `dryRunOnly` two-gate model — see HANDOVER §10 invariant. | session 2026-04-29 |
 
 ---
 

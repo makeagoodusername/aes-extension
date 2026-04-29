@@ -593,26 +593,33 @@ async function learn(opts) {
 
 ---
 
-### Slice 12 🟡 Alliance & IL Codeshare Optimization
+### Slice 12 ✅ Alliance & IL Codeshare Optimization
 
 **Goal:** maximize feed traffic via interline / alliance partnerships.
 
-**Mechanism:**
+**Status:** Shipped. Proposer + applier + connectivity-bonus scoring + per-card "Send IL request" UI + per-account scoping all wired into the Strategy modal. IL applier ships with `dryRunOnly:true` until live AS form calibration. See `HANDOVER.md §1` "Strategy Slice 12 — Alliance & IL Codeshare Optimisation" for the integration details.
 
-1. Read alliance membership from `airport-overview-scraper` and `enterprise-meta-scraper`.
-2. For each alliance partner, model their route footprint (`AesCompetitorEnterpriseScraper.scrape().routeFootprint`).
-3. Compute connectivity bonus: a route from `HUB → DEST` that connects to a partner's `DEST → THIRD` earns extra score (incremental pax via codeshare).
-4. Propose **partner upgrades**: which non-allied airlines are best candidates for a new IL agreement. Score by `connectivityBonus × routeOverlapInverse`.
+**Mechanism (as shipped):**
 
-**Constraints:**
+1. `modules/strategy/context.js:_loadAllianceContext()` reads alliance membership (`AllianceOverviewScraper`) + contractual partners (`RouteAssistantContractualPartnersScraper`) and pre-computes `partnerOnwardByDest: Map<destIata, Set<partnerId>>` from cached `competitorIntel:enterprise:<server>:<partnerId>` records.
+2. `modules/strategy/decide-routes.js:_connectivityTerm()` reads that map, awards bonus = `connectivityWeight × clamp01(partnerCount / connectivityNormalizer)` (defaults 0.10 / 5) when a route's dest is a partner hub. Pure-function — no I/O during scoring.
+3. `modules/strategy/alliance.js:proposeAllianceMoves()` ranks non-partner candidates by `4·feedToHub + 1.5·newReach − 5·overlapDom` (matches `world-view/recommend-interline.js`); emits `il-request` (per-partner) and `alliance-join` (bucketed by alliance) decision kinds.
+4. `modules/strategy/diff-plan.js` adds `_allianceDecisions` producer; `il-request` rows are `applicable:true` (the applier exists), `alliance-join` rows are `applicable:false` (AS lacks a one-click join API — open `/app/alliance` manually).
+5. `modules/strategy/apply-pipeline.js:_applyAllianceMoves()` dispatches `il-request` decisions through `AllianceIlRequestApplier` (two-gate: `applyEnabled` + `dryRunOnly`); per-card UX uses `AesStrategy.applyDecision(d, ctx)` for single-decision dispatch with full audit trail.
 
-- IL agreements are POST-able via AS but require both parties to accept; engine can't unilaterally form. So Slice 12 surfaces *recommendations* with one-click "Send IL request" that fills the form.
-- Alliance dynamics shift weekly; the engine refreshes recommendations on every learn cycle.
+**Constraints (honoured):**
 
-**Files:**
+- IL agreements bilateral — engine sends only the request side. Per-card "Send IL request" UI shows dry-run `bodyPreview` before any wire activity.
+- `dryRunOnly:true` default is the §4.18 contract; first flip prompts a confirm modal.
+- Alliance dynamics refresh on every plan compose; the per-snapshot `partnerOnwardByDest` caches one set per `_composePlan()` call.
 
-- new `modules/strategy/alliance.js`
-- new `modules/alliance/il-request-applier.js` (one-click form filler, gated identical to other appliers)
+**Files (as shipped):**
+
+- existing `modules/strategy/alliance.js` (proposer, shipped earlier; now wired)
+- existing `modules/alliance/il-request-applier.js` (per-account scoping + manifest wiring this slice)
+- modified: `modules/strategy/decide-routes.js` (connectivity term), `modules/strategy/context.js` (partner-footprint pre-compute), `modules/strategy/diff-plan.js` (alliance producer), `modules/strategy/panel.js` (compose hook + per-card UX), `modules/strategy/apply-pipeline.js` (`_applyAllianceMoves` + `applyDecision`), `modules/strategy/default-settings.js` (alliance block + DOMAIN_FLAGS), `manifest.json` (il-request-applier on dashboard + fleets blocks).
+
+**v1 deferrals:** live AS form calibration (gate flip ships separately); auto-apply tier explicitly excluded; alliance-leave / ratification poller / codeshare-share % in scoring all future slices. See HANDOVER §1 for the full deferral list.
 
 ---
 
