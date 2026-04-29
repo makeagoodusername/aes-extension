@@ -65,8 +65,8 @@
     function _competitorIncomeGuard(snapshot) {
         if (typeof RouteAssistantCompetitorIncome === "undefined") return {available: false}
         const econ = (snapshot && snapshot.settings && snapshot.settings.economics) || {}
-        const stratEcon = (snapshot && snapshot.settings && snapshot.settings.strategy
-                           && snapshot.settings.strategy.economics) || {}
+        const stratEcon = (snapshot && snapshot.strategySettings
+                           && snapshot.strategySettings.economics) || {}
         const floor = _num(econ.competitorIncomeFloorWeekly,
                            _num(stratEcon.competitorIncomeFloorWeekly, 5000))
         const hubs = (snapshot && snapshot.hubs) || []
@@ -165,14 +165,14 @@
 
     /**
      * Resolve the active service-cost tables: prefer
-     * `snapshot.settings.strategy.serviceCosts.*`, fall back to the frozen
+     * `snapshot.strategySettings.serviceCosts.*`, fall back to the frozen
      * literals above when the settings block is absent or partial. Engine
      * stays pure — caller resolves once per propose() so no per-cell store
      * read.
      */
     function _resolveServiceCosts(snapshot) {
-        const s = snapshot && snapshot.settings && snapshot.settings.strategy
-                  && snapshot.settings.strategy.serviceCosts
+        const s = snapshot && snapshot.strategySettings
+                  && snapshot.strategySettings.serviceCosts
         const cw = (s && s.categoryWeights && typeof s.categoryWeights === "object")
             ? Object.assign({}, CATEGORY_COST_WEIGHT, s.categoryWeights)
             : CATEGORY_COST_WEIGHT

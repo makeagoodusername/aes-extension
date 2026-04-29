@@ -83,6 +83,8 @@
         const ourShare      = _num(route.ourPaxShare, 0)
         const compSharePct  = Math.max(0, Math.min(100, (1 - ourShare) * 100))
         const econ          = (snapshot && snapshot.settings && snapshot.settings.economics) || {}
+        const stratEcon     = (snapshot && snapshot.strategySettings
+                               && snapshot.strategySettings.economics) || {}
         let result
         try {
             result = RouteAssistantCompetitorIncome.estimate({
@@ -97,7 +99,8 @@
         if (!result || result.confidence === "low") return {available: false}
         const estProfit = _num(result.estProfitPerWeek, NaN)
         if (!isFinite(estProfit)) return {available: false}
-        const floor = _num(econ.competitorIncomeFloorWeekly, 5000)
+        const floor = _num(econ.competitorIncomeFloorWeekly,
+                           _num(stratEcon.competitorIncomeFloorWeekly, 5000))
         // Only downward moves trigger the spiral risk — upward moves give
         // competitor breathing room, not the opposite.
         const dampen = move < 0 && estProfit < floor
@@ -175,7 +178,13 @@
         const shareTilt = isFinite(share) && share < 0.15 ? -2
                        : isFinite(share) && share > 0.40 ? +2 : 0
 
-        return _round(Math.max(70, Math.min(150, target + shareTilt)), 0)
+        // Demand is the primary driver: paxScore ≥7 takes margin, ≤3
+        // undercuts to fill. Combines additively with shareTilt.
+        const pax = _num(route.paxScore, NaN)
+        const demandTilt = isFinite(pax) && pax >= 7 ? +5
+                        : isFinite(pax) && pax <= 3 ? -5 : 0
+
+        return _round(Math.max(70, Math.min(150, target + shareTilt + demandTilt)), 0)
     }
 
     // ── Slice 9 — yield-curve elasticity hint ─────────────────────────
@@ -312,17 +321,57 @@
     function proposePriceMoves(snapshot, opts) {
         const o = opts || {}
 
+        // Pricing Compass — single-route filter. Lets a caller compute the
+        // moves for one (hub, dest) without solving the whole network. The
+        // joint tuner gets the same flag so it skips its own per-route loop.
+        const restrict = o.restrictTo
+        const wantHub  = restrict && restrict.hub  ? String(restrict.hub).toUpperCase()  : null
+        const wantDest = restrict && restrict.dest ? String(restrict.dest).toUpperCase() : null
+        const inRestrict = (hub, dest) => {
+            if (!wantHub && !wantDest) return true
+            if (wantHub  && String(hub).toUpperCase()  !== wantHub)  return false
+            if (wantDest && String(dest).toUpperCase() !== wantDest) return false
+            return true
+        }
+
+        // Per-route price pin (manual override): when a route has
+        // `override.pricePin` set, the auto path emits no moves for it.
+        // Build the set up-front so both joint-tuner output and S1 loop
+        // honour it without re-walking the snapshot.
+        const pinned = new Set()
+        for (const r of _flatten(snapshot)) {
+            if (r && r.override && r.override.pricePin != null) {
+                pinned.add(String(r.hub).toUpperCase() + "-" + String(r.dest).toUpperCase())
+            }
+        }
+        const isPinned = (hub, dest) =>
+            pinned.has(String(hub).toUpperCase() + "-" + String(dest).toUpperCase())
+
         // Velvet Cascade · PR 1A — prefer the joint rank-target tuner when
         // ORS data is in the snapshot. Falls through to the S1 competitor-
         // band heuristic when the tuner returns null (e.g. no ORS cache,
         // missing model module). The tuner's output already carries the
         // PriceMove shape this function returns, so we pass it through.
+        // When restrictTo is set we bypass the snapshot's cached `_jointPlan`
+        // (which holds the network-wide solve) and run a fresh single-route
+        // tuner call so the returned moves match the caller's filter.
         if (typeof ns.tuneJointly === "function" && o.useJointTuner !== false) {
-            const cached = (snapshot && snapshot._jointPlan) || null
-            const joint = cached || ns.tuneJointly(snapshot, {skipService: true})
+            const cached = (!wantHub && !wantDest) ? ((snapshot && snapshot._jointPlan) || null) : null
+            const joint = cached || ns.tuneJointly(snapshot, {
+                skipService: true,
+                restrictTo:  restrict || null
+            })
             if (joint && Array.isArray(joint.priceMoves) && joint.priceMoves.length) {
-                if (snapshot && !cached) snapshot._jointPlan = joint
-                return joint.priceMoves
+                if (snapshot && !cached && !wantHub && !wantDest) snapshot._jointPlan = joint
+                const restrictFiltered = (wantHub || wantDest)
+                    ? joint.priceMoves.filter(m => inRestrict(m.hub, m.dest))
+                    : joint.priceMoves
+                const filtered = pinned.size
+                    ? restrictFiltered.filter(m => !isPinned(m.hub, m.dest))
+                    : restrictFiltered
+                if (filtered.length) return filtered
+                // tuner returned moves but none matched the filter — fall
+                // through to the S1 path below for this route.
             }
         }
 
@@ -331,6 +380,8 @@
 
         const moves = []
         for (const r of _flatten(snapshot)) {
+            if (!inRestrict(r.hub, r.dest)) continue
+            if (isPinned(r.hub, r.dest)) continue
             const resolved = _resolveWeights(snapshot, o, r.hub, r.dest)
             const w        = resolved.weights
             const profitPerWeek = _num(r.profitPerWeek, 0)
@@ -510,6 +561,76 @@
                 "[smoke s9] elasticity rationale present when orsHistory has ≥3 samples")
             console.assert(yMove && /degraded rank/.test(yMove.rationale.join(" ")),
                 "[smoke s9] elasticity flags degraded-rank case for upward moves")
+
+            // Pricing Compass — single-route filter on the S1 fallback. Two
+            // routes in the snapshot, restrictTo names one; every returned
+            // move must match that hub/dest.
+            const restrictSnap = {
+                hubs: [{iata: "FRA", byRoute: [
+                    {dest: "LHR", profitPerWeek: 100000,
+                     competitor: {priceMin: 90, priceMax: 110},
+                     ownPricing: {prices: {Y: 130}}, cargoScore: 0},
+                    {dest: "CDG", profitPerWeek: 100000,
+                     competitor: {priceMin: 90, priceMax: 110},
+                     ownPricing: {prices: {Y: 130}}, cargoScore: 0}
+                ]}]
+            }
+            const restrictMoves = proposePriceMoves(restrictSnap, {
+                useJointTuner: false,
+                restrictTo:    {hub: "FRA", dest: "LHR"},
+                objective:     {kind: "balanced"}
+            })
+            console.assert(restrictMoves.length > 0,
+                "[smoke compass] restrictTo still emits moves for the named route")
+            console.assert(restrictMoves.every(m => m.hub === "FRA" && m.dest === "LHR"),
+                "[smoke compass] restrictTo filters S1 fallback to one route only")
+
+            // Demand tilt — high paxScore lifts toPct above competitor mid;
+            // low paxScore drops it below mid. Same competitor band, same
+            // current price, different paxScore → opposite move directions.
+            const demandSnapHi = {
+                hubs: [{iata: "FRA", byRoute: [{
+                    dest: "AMS", profitPerWeek: 50000,
+                    competitor: {priceMin: 95, priceMax: 105},
+                    ownPricing: {prices: {Y: 100}}, cargoScore: 0,
+                    paxScore: 9
+                }]}]
+            }
+            const demandSnapLo = {
+                hubs: [{iata: "FRA", byRoute: [{
+                    dest: "AMS", profitPerWeek: 50000,
+                    competitor: {priceMin: 95, priceMax: 105},
+                    ownPricing: {prices: {Y: 100}}, cargoScore: 0,
+                    paxScore: 2
+                }]}]
+            }
+            const hi = proposePriceMoves(demandSnapHi, {useJointTuner: false,
+                deadband: 2,
+                objective: {kind: "balanced"}}).find(m => m.classKey === "Y")
+            const lo = proposePriceMoves(demandSnapLo, {useJointTuner: false,
+                deadband: 2,
+                objective: {kind: "balanced"}}).find(m => m.classKey === "Y")
+            console.assert(hi && hi.toPct >= 100,
+                "[smoke demand] high paxScore raises toPct to/above parity")
+            console.assert(lo && lo.toPct <= 100,
+                "[smoke demand] low paxScore drops toPct to/below parity")
+            console.assert(hi && lo && hi.toPct > lo.toPct,
+                "[smoke demand] high-pax toPct strictly greater than low-pax toPct")
+
+            // Pin skip — pricePin set on a route → no moves emitted.
+            const pinSnap = {
+                hubs: [{iata: "FRA", byRoute: [{
+                    dest: "LHR", profitPerWeek: 100000,
+                    competitor: {priceMin: 90, priceMax: 110},
+                    ownPricing: {prices: {Y: 130, C: 120, F: 115}},
+                    cargoScore: 0,
+                    override: {pricePin: 105}
+                }]}]
+            }
+            const pinMoves = proposePriceMoves(pinSnap, {useJointTuner: false,
+                objective: {kind: "balanced"}})
+            console.assert(pinMoves.length === 0,
+                "[smoke pin] pricePin suppresses all moves for that route")
         }
     } catch (_) { /* never let smoke break the page */ }
 })()

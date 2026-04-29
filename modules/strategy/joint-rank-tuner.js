@@ -145,14 +145,22 @@
     /**
      * PASS 2 — per-route price solve with comfortDelta locked. Returns the
      * priceMoves array compatible with the existing PriceMove shape.
+     *
+     * `restrictTo: {hub, dest}` — Pricing Compass single-route filter. Pass 1
+     * still runs network-wide so the comfort delta lock doesn't drift on
+     * one route; Pass 2 just skips routes that don't match.
      */
-    function _solvePricesPerRoute(snapshot, comfortDelta) {
+    function _solvePricesPerRoute(snapshot, comfortDelta, restrictTo) {
         const out = []
         const hubs = (snapshot && snapshot.hubs) || []
         const solver = SOLVER()
         if (!solver) return out
+        const wantHub  = restrictTo && restrictTo.hub  ? String(restrictTo.hub).toUpperCase()  : null
+        const wantDest = restrictTo && restrictTo.dest ? String(restrictTo.dest).toUpperCase() : null
 
         for (const h of hubs) for (const r of (h && h.byRoute) || []) {
+            if (wantHub  && String(h.iata).toUpperCase()  !== wantHub)  continue
+            if (wantDest && String(r.dest).toUpperCase()  !== wantDest) continue
             const weights = window.AesStrategyObjective
                 ? window.AesStrategyObjective.resolveForRoute(snapshot, h.iata, r.dest)
                 : null
@@ -293,7 +301,7 @@
             comfortDelta = pass1.comfortDelta || 0
         }
 
-        const priceMoves   = _solvePricesPerRoute(snapshot, comfortDelta)
+        const priceMoves   = _solvePricesPerRoute(snapshot, comfortDelta, o.restrictTo || null)
         const serviceMoves = _buildServiceMoves(snapshot, comfortDelta)
 
         return {
