@@ -32,10 +32,25 @@ function acctKey(prefix, suffix) {
     return prefix + ":acct:" + id + tail
 }
 
+/**
+ * L1 → L2 bridge: build a per-account scoped key for an explicitly
+ * provided accountId, bypassing window.__aesAccountId. Cross-account
+ * aggregators (Fleet Command, etc.) need this to read another account's
+ * stores without depending on which account is currently bootstrapped on
+ * the page. Removed once L2 lands a native cross-account read API.
+ */
+function acctKeyForAccount(prefix, accountId, suffix) {
+    const tail = (suffix == null || suffix === "") ? "" : (":" + suffix)
+    if (!accountId) return prefix + tail
+    return prefix + ":acct:" + accountId + tail
+}
+
 function isAccountScopedKey(key) {
     return typeof key === "string" && key.indexOf(":acct:") !== -1
 }
 
 if (typeof window !== "undefined") {
-    window.AesAccountKey = {acctKey, currentAccountIdSync, isAccountScopedKey}
+    window.AesAccountKey = {
+        acctKey, acctKeyForAccount, currentAccountIdSync, isAccountScopedKey
+    }
 }
