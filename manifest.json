@@ -120,6 +120,7 @@
                 "modules/unified-settings/adapters/schedule-management.js",
                 "modules/unified-settings/adapters/competitor-intel.js",
                 "modules/aes-menu.js",
+                "modules/command-bridge/menu-installer.js",
                 "modules/about-dialog.js",
                 "modules/site-skin/keyboard-shortcuts.js",
                 "modules/site-skin/density-toggle.js",

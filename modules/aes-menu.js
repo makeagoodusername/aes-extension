@@ -73,6 +73,22 @@ class AESMenu {
         ].join(";")
 
         const content = [{
+            label: "Workspace",
+            isHeader: true
+        },{
+            label: "Command Bridge",
+            icon: { className: "fa-th-large" },
+            onClick: () => {
+                try {
+                    chrome.runtime.sendMessage(
+                        {type: "aes:bridge:open"},
+                        () => { void chrome.runtime.lastError }
+                    )
+                } catch (_) { /* noop */ }
+            }
+        },{
+            isDivider: true
+        },{
             label: "Skin",
             isHeader: true
         },{
