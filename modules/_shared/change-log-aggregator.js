@@ -63,7 +63,8 @@
 
     const DOMAINS = [
         "pricing", "service-profile", "flight-numbers", "strategy",
-        "auto-scheduler", "afp-audit"
+        "auto-scheduler", "afp-audit", "competitor-intel",
+        "service-experiment"
     ]
 
     const PRICING_KEY        = "routeAssistant:pricingApplyLog"
@@ -72,6 +73,8 @@
     const STRATEGY_KEY       = "aesStrategy:audit"
     const AUTO_SCHEDULER_KEY = "aircraftFlightPlan:autoApplyLog"
     const AFP_AUDIT_KEY      = "aircraftFlightPlan:auditLog"
+    const COMPETITOR_KEY     = "competitorIntel:snapshots:"  // prefix, not a single key
+    const SERVICE_EXP_KEY    = "aesStrategy:serviceExperiments"  // also matches :acct:* via prefix scan
 
     /**
      * Storage keys watched by the modal's live-update listener. Exported so
@@ -80,7 +83,15 @@
      */
     const SOURCE_KEYS = [
         PRICING_KEY, SERVICE_KEY, FLIGHT_NUM_KEY, STRATEGY_KEY,
-        AUTO_SCHEDULER_KEY, AFP_AUDIT_KEY
+        AUTO_SCHEDULER_KEY, AFP_AUDIT_KEY,
+        // Trailing colon stays — modal's onStorage scans for prefix matches
+        // ("k.startsWith(sk + ':')") so this entry covers every per-server,
+        // per-enterprise snapshot key.
+        COMPETITOR_KEY,
+        // Bare key + per-account scope both share this prefix; the modal's
+        // prefix matcher handles `aesStrategy:serviceExperiments` and
+        // `aesStrategy:serviceExperiments:acct:<id>` alike.
+        SERVICE_EXP_KEY
     ]
 
     const DEFAULT_LIMIT = 1000
@@ -306,13 +317,37 @@
         }).filter(Boolean)
     }
 
+    /**
+     * Competitor-intel adapter — delegates to the standalone module
+     * `modules/competitor-intel/change-log-adapter.js`. Returns [] when
+     * the module hasn't loaded (e.g. on pages that don't bundle the
+     * canopy stack), keeping the aggregator robust to load-order skew.
+     */
+    async function _competitorIntelAdapter(opts) {
+        if (!window.AesCompetitorChangeLogAdapter) return []
+        return window.AesCompetitorChangeLogAdapter.load(opts || {})
+    }
+
+    /**
+     * Service-experiment adapter — delegates to the standalone module
+     * `modules/strategy/service-experiment-change-log-adapter.js`. Returns
+     * [] when the module isn't loaded so the aggregator stays robust on
+     * pages that don't bundle the strategy stack.
+     */
+    async function _serviceExperimentAdapter(opts) {
+        if (!window.AesServiceExperimentChangeLogAdapter) return []
+        return window.AesServiceExperimentChangeLogAdapter.load(opts || {})
+    }
+
     const ADAPTERS = {
-        "pricing":         _pricingAdapter,
-        "service-profile": _serviceProfileAdapter,
-        "flight-numbers":  _flightNumbersAdapter,
-        "strategy":        _strategyAdapter,
-        "auto-scheduler":  _autoSchedulerAdapter,
-        "afp-audit":       _afpAuditAdapter
+        "pricing":            _pricingAdapter,
+        "service-profile":    _serviceProfileAdapter,
+        "flight-numbers":     _flightNumbersAdapter,
+        "strategy":           _strategyAdapter,
+        "auto-scheduler":     _autoSchedulerAdapter,
+        "afp-audit":          _afpAuditAdapter,
+        "competitor-intel":   _competitorIntelAdapter,
+        "service-experiment": _serviceExperimentAdapter
     }
 
     /**
@@ -510,11 +545,89 @@
         return null
     }
 
+    /**
+     * Phase D3 — virtual section: in-flight service-profile A/B experiments.
+     * These are not "applied changes" but they share the modal's mental
+     * model: a record of strategy activity. Returns UnifiedEntry-shaped
+     * rows tagged `domain: "service-experiment-active"` so renderers can
+     * style them differently from concluded entries.
+     */
+    async function loadActiveExperiments() {
+        const store = window.AesServiceExperimentStore
+        if (!store || typeof store.active !== "function") return []
+        try {
+            const rows = await store.active()
+            return (rows || []).filter(Boolean).map(r => ({
+                id:       "se-active:" + r.experimentId,
+                ts:       r.startedAt || 0,
+                domain:   "service-experiment-active",
+                source:   "tuner",
+                scope:    {profileId: r.baseProfileId != null ? Number(r.baseProfileId) : null},
+                status:   "active",
+                summary:  (r.baseProfileName || ("#" + r.baseProfileId))
+                          + " · perturb " + (r.perturbationProfileName || "?")
+                          + (r.expectedConcludeAt
+                              ? " · concludes "
+                                + new Date(r.expectedConcludeAt).toISOString().slice(0, 10)
+                              : ""),
+                prev:     null,
+                next:     null,
+                reason:   null,
+                dryRun:   false,
+                count:    1,
+                raw:      r
+            }))
+        } catch (e) {
+            console.warn("[AES change-log] loadActiveExperiments threw", e)
+            return []
+        }
+    }
+
+    /**
+     * Phase D3 — virtual section: pending decision-dispatch requests.
+     * Reads `aesStrategy:dispatchPending` via the decision-dispatch
+     * facade. Pending entries have no `applied` flag yet. Already-applied
+     * payloads are filtered out (decision-dispatch.applyPending sets
+     * `applied: true` on the storage payload).
+     */
+    async function loadPendingDispatches() {
+        const dispatch = window.AesStrategyDecisionDispatch
+        if (!dispatch || typeof dispatch.readPending !== "function") return []
+        try {
+            const p = await dispatch.readPending()
+            if (!p || p.applied) return []
+            return [{
+                id:       "dp:" + (p.requestedAt || 0),
+                ts:       p.requestedAt || 0,
+                domain:   "dispatch-pending",
+                source:   p.source || "compass",
+                scope:    {hub: p.hub || null, dest: p.dest || null,
+                           routeKey: (p.hub && p.dest) ? (p.hub + "-" + p.dest) : null},
+                status:   p.failed ? "failed" : "pending",
+                summary:  (p.hub || "?") + " → " + (p.dest || "?")
+                          + " · " + (p.classKey || "?")
+                          + (isFinite(p.toPct) ? " → " + p.toPct + "%" : "")
+                          + (p.failed ? " · " + p.failed : ""),
+                prev:     null,
+                next:     null,
+                reason:   p.failed || null,
+                dryRun:   false,
+                count:    1,
+                raw:      p
+            }]
+        } catch (e) {
+            console.warn("[AES change-log] loadPendingDispatches threw", e)
+            return []
+        }
+    }
+
     window.AesChangeLogAggregator = {
         DOMAINS,
         SOURCE_KEYS,
         loadAll,
         loadByPair,
+        loadActiveExperiments,
+        loadPendingDispatches,
         detectActiveRoute
     }
 })()

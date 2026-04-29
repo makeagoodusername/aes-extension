@@ -43,7 +43,12 @@ class CanvasRailController {
         this._railShell = null
         this._busOff = []
         this._activeBuilderRunId = 0
+        // Phase K — last-N advisor suggestions (live + resolved), newest first.
+        this._advisorHistory = []
+        this._advisorTab = "live"
     }
+
+    static HISTORY_MAX = 5
 
     /** Public: stage one or more edits from outside the rail (drop bridge,
      *  context menu, demand badges). Same envelope shape as Builder Adopt. */
@@ -164,10 +169,76 @@ class CanvasRailController {
         const T = (typeof window !== "undefined" && window.AESTokens) || null
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;flex-direction:column;gap:6px;"
+
+        this._advisorTabsEl = this._buildAdvisorTabs(T)
+        wrap.append(this._advisorTabsEl)
+
+        this._advisorPaneEl = document.createElement("div")
+        this._advisorPaneEl.style.cssText = "display:flex;flex-direction:column;gap:6px;"
+        wrap.append(this._advisorPaneEl)
+
+        this._railShell.setBody(wrap)
+        this._renderAdvisorPane()
+    }
+
+    _refreshAdvisorTabs() {
+        if (!this._advisorTabsEl || !this._advisorTabsEl.parentElement) return
+        const T = (typeof window !== "undefined" && window.AESTokens) || null
+        const next = this._buildAdvisorTabs(T)
+        this._advisorTabsEl.parentElement.replaceChild(next, this._advisorTabsEl)
+        this._advisorTabsEl = next
+    }
+
+    _buildAdvisorTabs(T) {
+        const row = document.createElement("div")
+        row.style.cssText = "display:inline-flex;border:1px solid " + (T ? T.color.oxide : "#2B2520") + ";align-self:flex-start;"
+        const make = (id, label) => {
+            const isActive = this._advisorTab === id
+            const btn = document.createElement("button")
+            btn.type = "button"
+            btn.textContent = label
+            btn.style.cssText = [
+                "padding:2px 8px",
+                "font-size:9px",
+                "text-transform:uppercase",
+                "letter-spacing:0.06em",
+                "border:0",
+                "border-right:1px solid " + (T ? T.color.oxide : "#2B2520"),
+                "background:" + (isActive ? (T ? T.color.oxide : "#2B2520") : (T ? T.color.bone : "#F4F1EA")),
+                "color:" + (isActive ? (T ? T.color.boneFg || "#F4F1EA" : "#F4F1EA") : (T ? T.color.oxide : "#2B2520")),
+                "cursor:pointer",
+                "font-family:" + (T ? T.font.display : "system-ui, sans-serif"),
+                "font-weight:" + (T ? T.fw.bold : "700")
+            ].join(";")
+            btn.addEventListener("click", () => {
+                if (this._advisorTab === id) return
+                this._advisorTab = id
+                this._renderAdvisorBody()
+            })
+            return btn
+        }
+        const liveBtn = make("live", "Live")
+        const histLabel = "History" + (this._advisorHistory.length ? " (" + this._advisorHistory.length + ")" : "")
+        const histBtn = make("history", histLabel)
+        row.append(liveBtn, histBtn)
+        if (row.lastChild) row.lastChild.style.borderRight = "0"
+        return row
+    }
+
+    _renderAdvisorPane() {
+        if (!this._advisorPaneEl) return
+        this._advisorPaneEl.innerHTML = ""
+        const T = (typeof window !== "undefined" && window.AESTokens) || null
+        if (this._advisorTab === "history") {
+            this._advisorListEl = null
+            this._renderAdvisorHistoryInto(this._advisorPaneEl, T)
+            return
+        }
+        // Live (default)
         const lead = document.createElement("div")
         lead.style.cssText = "font-size:11px;color:" + (T ? T.color.slate : "#7A6F66") + ";line-height:1.4;"
         lead.textContent = "Advisor surfaces conflicts and suggestions as you edit. Drag a route to a cell to start."
-        wrap.append(lead)
+        this._advisorPaneEl.append(lead)
 
         // Phase H — auto-proposer surfacing CTA. Runs the configured silent-auto
         // proposer over the active hub's cached top routes; positive proposals
@@ -190,14 +261,88 @@ class CanvasRailController {
             proposerBtn.disabled = false
         })
         proposerRow.append(proposerBtn, proposerStatus)
-        wrap.append(proposerRow)
+        this._advisorPaneEl.append(proposerRow)
 
         this._advisorListEl = document.createElement("div")
         this._advisorListEl.setAttribute("role", "list")
         this._advisorListEl.setAttribute("aria-label", "Advisor suggestions")
         this._advisorListEl.style.cssText = "display:flex;flex-direction:column;gap:6px;"
-        wrap.append(this._advisorListEl)
-        this._railShell.setBody(wrap)
+        this._advisorPaneEl.append(this._advisorListEl)
+    }
+
+    _renderAdvisorHistoryInto(host, T) {
+        if (!this._advisorHistory.length) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "font-size:11px;color:" + (T ? T.color.slate : "#7A6F66") + ";font-style:italic;padding:24px 0;text-align:center;"
+            empty.textContent = "No advisor activity yet."
+            host.append(empty)
+            return
+        }
+        const list = document.createElement("div")
+        list.setAttribute("role", "list")
+        list.setAttribute("aria-label", "Recent advisor suggestions")
+        list.style.cssText = "display:flex;flex-direction:column;gap:6px;"
+        for (const entry of this._advisorHistory) {
+            list.append(this._renderHistoryEntry(entry, T))
+        }
+        host.append(list)
+    }
+
+    _renderHistoryEntry(entry, T) {
+        const sev = entry.severity || "info"
+        const borderColor = sev === "error" ? (T ? T.color.crimson : "#A02034")
+            : sev === "warn"  ? (T ? T.color.amber   : "#B8861F")
+            :                    (T ? T.color.cobalt  : "#3656A8")
+        const card = document.createElement("article")
+        card.setAttribute("role", "listitem")
+        card.style.cssText = [
+            "background:" + (T ? T.color.bone2 : "#ECE7DC"),
+            "border:1px solid " + (T ? T.color.paperRule : "#C9C0B0"),
+            "border-left:3px solid " + borderColor,
+            "padding:6px 8px",
+            "display:flex",
+            "flex-direction:column",
+            "gap:2px",
+            "opacity:" + (entry.disposition === "pending" ? "1" : "0.78")
+        ].join(";")
+
+        const head = document.createElement("div")
+        head.style.cssText = "display:flex;align-items:baseline;gap:6px;"
+        const sevTag = document.createElement("span")
+        sevTag.textContent = sev.toUpperCase()
+        sevTag.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";font-size:9px;letter-spacing:0.08em;color:" + borderColor + ";"
+        const kind = document.createElement("span")
+        kind.style.cssText = "flex:1 1 auto;font-size:10px;color:" + (T ? T.color.slate : "#7A6F66") + ";"
+        kind.textContent = entry.kind || ""
+        const age = document.createElement("span")
+        age.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";font-size:9px;color:" + (T ? T.color.slate : "#7A6F66") + ";"
+        age.textContent = this._formatAge(entry.at)
+        head.append(sevTag, kind, age)
+        card.append(head)
+
+        const msg = document.createElement("div")
+        msg.style.cssText = "font-size:11px;line-height:1.35;color:" + (T ? T.color.oxide : "#2B2520") + ";"
+        msg.textContent = entry.message || ""
+        card.append(msg)
+
+        const dispText = entry.disposition === "accepted" ? "✓ accepted"
+            : entry.disposition === "dismissed" ? "✕ dismissed"
+            : "· pending"
+        const disp = document.createElement("div")
+        disp.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";font-size:9px;color:" + (T ? T.color.slate : "#7A6F66") + ";letter-spacing:0.04em;"
+        disp.textContent = dispText
+        card.append(disp)
+        return card
+    }
+
+    _formatAge(at) {
+        if (!isFinite(at)) return ""
+        const sec = Math.max(0, Math.floor((Date.now() - at) / 1000))
+        if (sec < 60) return sec + "s ago"
+        const min = Math.floor(sec / 60)
+        if (min < 60) return min + "m ago"
+        const hr = Math.floor(min / 60)
+        return hr + "h ago"
     }
 
     async _runBuilder() {
@@ -380,6 +525,7 @@ class CanvasRailController {
             }
         })
         sub(window.AesCanvasEvents.ADVISOR_SUGGESTION, (s) => this._onAdvisorSuggestion(s))
+        sub(window.AesCanvasEvents.ADVISOR_SUGGESTION_RESOLVED, (p) => this._onAdvisorResolved(p))
         // External stage events — advisor card actions, the demand-overlay
         // "Stage edit" badge, the silent-auto-proposer surface() wrapper, etc.
         // The controller's own _stageEdits emits also flow through here; we
@@ -404,10 +550,18 @@ class CanvasRailController {
 
     _onAdvisorSuggestion(suggestion) {
         if (!suggestion) return
+        this._recordHistory(suggestion)
         // Always queue advisor suggestions in the list. Mode-flipping is
         // handled in _stageEdits; if the user is in Builder mode we still
         // collect suggestions silently so they show up the moment they
         // flip to Advisor.
+        if (this._currentMode() !== window.CanvasRailShell.MODE_ADVISOR) return
+        if (this._advisorTab !== "live") {
+            // History tab is showing; refresh the pane so the new entry appears.
+            this._renderAdvisorPane()
+            this._refreshAdvisorTabs()
+            return
+        }
         if (!this._advisorListEl) {
             // Re-render advisor body lazily so the list element exists.
             this._renderAdvisorBody()
@@ -416,6 +570,34 @@ class CanvasRailController {
         const card = window.CanvasAdvisorCard.render(suggestion)
         // Newest at the top — feels more reactive to the user's last action.
         this._advisorListEl.insertBefore(card, this._advisorListEl.firstChild)
+        this._refreshAdvisorTabs()
+    }
+
+    _recordHistory(suggestion) {
+        const entry = {
+            id:          suggestion.id || null,
+            kind:        suggestion.kind || "",
+            severity:    suggestion.severity || "info",
+            message:     suggestion.message || "",
+            at:          Date.now(),
+            disposition: "pending"
+        }
+        this._advisorHistory.unshift(entry)
+        if (this._advisorHistory.length > CanvasRailController.HISTORY_MAX) {
+            this._advisorHistory.length = CanvasRailController.HISTORY_MAX
+        }
+    }
+
+    _onAdvisorResolved(payload) {
+        if (!payload || !payload.id) return
+        const entry = this._advisorHistory.find(e => e.id === payload.id)
+        if (!entry) return
+        entry.disposition = payload.accepted ? "accepted" : "dismissed"
+        // Refresh history view if it's the active tab so the disposition
+        // badge updates without waiting for the next mode switch.
+        if (this._currentMode() === window.CanvasRailShell.MODE_ADVISOR && this._advisorTab === "history") {
+            this._renderAdvisorPane()
+        }
     }
 }
 

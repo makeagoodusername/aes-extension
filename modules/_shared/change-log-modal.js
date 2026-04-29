@@ -79,25 +79,33 @@
 
     function domainGlyph(domain) {
         switch (domain) {
-            case "pricing":         return "💲"
-            case "service-profile": return "🍽"
-            case "flight-numbers":  return "🔢"
-            case "strategy":        return "🎯"
-            case "auto-scheduler":  return "🛫"
-            case "afp-audit":       return "📋"
-            default:                return "•"
+            case "pricing":                   return "\u{1F4B2}"
+            case "service-profile":           return "\u{1F37D}"
+            case "flight-numbers":            return "\u{1F522}"
+            case "strategy":                  return "\u{1F3AF}"
+            case "auto-scheduler":            return "\u{1F6EB}"
+            case "afp-audit":                 return "\u{1F4CB}"
+            case "competitor-intel":          return "\u{1F6F0}"
+            case "service-experiment":        return "\u{1F9EA}"
+            case "service-experiment-active": return "\u{1F9EA}"
+            case "dispatch-pending":          return "\u{2192}"
+            default:                          return "•"
         }
     }
 
     function domainLabel(domain) {
         switch (domain) {
-            case "pricing":         return "Pricing"
-            case "service-profile": return "Service profile"
-            case "flight-numbers":  return "Flight numbers"
-            case "strategy":        return "Strategy"
-            case "auto-scheduler":  return "Auto-scheduler"
-            case "afp-audit":       return "AFP audit"
-            default:                return domain
+            case "pricing":                   return "Pricing"
+            case "service-profile":           return "Service profile"
+            case "flight-numbers":            return "Flight numbers"
+            case "strategy":                  return "Strategy"
+            case "auto-scheduler":            return "Auto-scheduler"
+            case "afp-audit":                 return "AFP audit"
+            case "competitor-intel":          return "Competitor intel"
+            case "service-experiment":        return "Service experiment"
+            case "service-experiment-active": return "Active experiment"
+            case "dispatch-pending":          return "Pending dispatch"
+            default:                          return domain
         }
     }
 
@@ -754,6 +762,39 @@
         setTimeout(() => { try { inp.focus(); inp.select() } catch (_) {} }, 0)
     }
 
+    /**
+     * Phase D3 — render a virtual section (active experiments / pending
+     * dispatches) above the main list. Each entry uses the same row
+     * shape as renderList but with a coloured left border to flag it as
+     * in-flight rather than applied.
+     */
+    function _renderVirtualSection(title, sub, entries, accentColor) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "margin-bottom:14px;border-left:3px solid " + accentColor
+            + ";padding-left:10px;"
+        const header = document.createElement("div")
+        header.style.cssText = "display:flex;align-items:baseline;gap:8px;"
+            + "margin-bottom:6px;"
+        const ttl = document.createElement("span")
+        ttl.style.cssText = "color:" + accentColor + ";font-weight:600;font-size:12px;"
+            + "text-transform:uppercase;letter-spacing:0.04em;"
+        ttl.textContent = title + " · " + entries.length
+        header.append(ttl)
+        const subEl = document.createElement("span")
+        subEl.style.cssText = "color:#94a3b8;font-size:11px;"
+        subEl.textContent = sub
+        header.append(subEl)
+        wrap.append(header)
+        const list = document.createElement("div")
+        list.style.cssText = "display:flex;flex-direction:column;gap:1px;"
+        const expandedSet = new Set()
+        for (const e of entries) {
+            list.append(renderRow(e, expandedSet, () => {}, () => {}))
+        }
+        wrap.append(list)
+        return wrap
+    }
+
     function renderList(entries, expandedSet, onToggle, onNoteSave) {
         const list = document.createElement("div")
         list.style.cssText = "display:flex;flex-direction:column;gap:1px;"
@@ -1119,11 +1160,22 @@
         document.body.append(overlay)
 
         let allEntries = []
+        // Phase D3 — virtual sections (active experiments + pending
+        // dispatches). Loaded alongside applied entries; rendered above
+        // the main list so users see in-flight strategy state at a glance.
+        let virtualEntries = {active: [], pending: []}
         const fetchAndRender = async (isLive) => {
             try {
-                allEntries = await agg.loadAll({sinceMs: 0, domains: agg.DOMAINS, limit: 1000})
+                const [merged, active, pending] = await Promise.all([
+                    agg.loadAll({sinceMs: 0, domains: agg.DOMAINS, limit: 1000}),
+                    typeof agg.loadActiveExperiments === "function" ? agg.loadActiveExperiments() : Promise.resolve([]),
+                    typeof agg.loadPendingDispatches === "function" ? agg.loadPendingDispatches() : Promise.resolve([])
+                ])
+                allEntries = merged
+                virtualEntries = {active: active || [], pending: pending || []}
             } catch (e) {
                 allEntries = []
+                virtualEntries = {active: [], pending: []}
                 console.warn("[AES change-log] aggregator threw", e)
             }
             render(isLive === true)
@@ -1195,6 +1247,26 @@
             statsHost.innerHTML = ""
             statsHost.append(renderStats(entries, allEntries))
             listHost.innerHTML = ""
+            // Phase D3 — virtual sections rendered above the main list.
+            // Always render when entries exist so the user sees in-flight
+            // strategy state regardless of filter (filters only target the
+            // applied-changes list).
+            if (virtualEntries.pending.length) {
+                listHost.append(_renderVirtualSection(
+                    "Pending dispatches",
+                    "Compose requests waiting for the panel to apply.",
+                    virtualEntries.pending,
+                    "#fbbf24"
+                ))
+            }
+            if (virtualEntries.active.length) {
+                listHost.append(_renderVirtualSection(
+                    "Active experiments",
+                    "Service-profile A/B tests in progress.",
+                    virtualEntries.active,
+                    "#60a5fa"
+                ))
+            }
             if (!entries.length) {
                 const empty = document.createElement("div")
                 empty.style.cssText = "color:#94a3b8;padding:20px;text-align:center;"

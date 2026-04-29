@@ -366,6 +366,71 @@ class CentralInventoryQuickPriceApplier {
             return null
         }
     }
+
+    /**
+     * Slice 9 — batch apply mode. Sequentially apply a list of price
+     * updates against the inventory form. Sequential (not parallel) so AS
+     * doesn't see two concurrent submits for the same airline. Each entry
+     * is the full `apply()` shape: `{hub, dest, classKey, newPrice, server,
+     * dryRun?, onPreflight?}`.
+     *
+     * Options:
+     *   interMs:      delay between submits (default 250ms — keeps AS
+     *                 happy without slowing the user too much).
+     *   stopOnError:  when true, abort the batch on first non-dry-run
+     *                 failure. Defaults to false so a per-route hiccup
+     *                 doesn't drop the whole batch.
+     *   onProgress:   `(idx, total, lastResult) → void` per-entry hook.
+     *
+     * Returns `{results: [...], summary: {ok, failed, dryRun, aborted}}`.
+     * `results[i].status` mirrors the per-entry `apply()` envelope; if
+     * the batch aborted mid-way, trailing entries get `{status: "skipped",
+     * reason: "aborted"}` so caller indices stay aligned with input.
+     */
+    async applyBatch(entries, opts) {
+        opts = opts || {}
+        const interMs = Math.max(0, Number(opts.interMs) || 250)
+        const stopOnError = !!opts.stopOnError
+        const onProgress = (typeof opts.onProgress === "function") ? opts.onProgress : null
+        const list = Array.isArray(entries) ? entries : []
+        const results = new Array(list.length)
+        const summary = {ok: 0, failed: 0, dryRun: 0, aborted: false, total: list.length}
+        let aborted = false
+
+        for (let i = 0; i < list.length; i++) {
+            if (aborted) {
+                results[i] = {status: "skipped", reason: "aborted",
+                              hub: list[i] && list[i].hub, dest: list[i] && list[i].dest,
+                              classKey: list[i] && list[i].classKey}
+                continue
+            }
+            let r
+            try {
+                r = await this.apply(list[i] || {})
+            } catch (e) {
+                r = {status: "failed", error: (e && e.message) || String(e),
+                     hub: list[i] && list[i].hub, dest: list[i] && list[i].dest,
+                     classKey: list[i] && list[i].classKey}
+            }
+            results[i] = r
+            if (r.status === "verified" || r.status === "posted") summary.ok++
+            else if (r.status === "dry-run") summary.dryRun++
+            else if (r.status === "failed" || r.status === "aborted") summary.failed++
+
+            if (onProgress) {
+                try { onProgress(i, list.length, r) } catch (_) { /* hook optional */ }
+            }
+            if (stopOnError && (r.status === "failed" || r.status === "aborted")) {
+                aborted = true
+                summary.aborted = true
+                continue
+            }
+            if (interMs > 0 && i < list.length - 1 && !aborted) {
+                await new Promise(res => setTimeout(res, interMs))
+            }
+        }
+        return {results: results, summary: summary}
+    }
 }
 
 if (typeof window !== "undefined") {

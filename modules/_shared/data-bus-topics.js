@@ -191,6 +191,26 @@ window.AES_DATA_BUS_TOPICS = [
         emittedBy: "modules/aircraft-flight-plan/maintenance-store.js",
         hint:     "{server, aircraftId, severity: 0..1, ratio?}",
         notes:    "fired when ratioStatus is 'warn' (severity 0.5) or 'bad' (severity 1.0). Consumed by auto-driver to drop schedule-domain candidates; by salience scorer to boost fleet/maintenance tile."
+    },
+
+    // -- strategy outcomes --
+    {
+        topic:    "data:strategy:serviceExperiment:concluded",
+        emittedBy: "modules/strategy/service-experiment-store.js  // _appendOutcome",
+        hint:     "{experimentId, state, winner: 'perturbation'|'base'|'tie'|null}",
+        notes:    "fired on first transition to a terminal state with a non-null outcome. Consumed by Phase D2's weekly-review tile."
+    },
+    {
+        topic:    "data:strategy:dispatch:pending",
+        emittedBy: "modules/strategy/decision-dispatch.js  // composeMove",
+        hint:     "{hub, dest, classKey, source}",
+        notes:    "fired when a compose request lands. Strategy panel reads aesStrategy:dispatchPending via readPending() to scroll/select."
+    },
+    {
+        topic:    "data:strategy:dispatch:applied",
+        emittedBy: "modules/strategy/decision-dispatch.js  // applyPending",
+        hint:     "{hub, dest, classKey, decisionId, appliedAt}",
+        notes:    "fired only on successful direct-apply via applyPending(). Consumed by review tile to flag the dispatch as resolved."
     }
 
     // Slices 2 + 3 will add: data:schedule-management:store:saved,

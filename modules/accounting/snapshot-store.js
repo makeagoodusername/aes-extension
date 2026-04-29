@@ -81,6 +81,11 @@ class AccountingSnapshotStore {
 
         await chrome.storage.local.set({[key]: record, [indexKey]: trimmed})
         if (droppedKeys.length) await chrome.storage.local.remove(droppedKeys)
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+            window.AesDataBus.emit("data:accounting:snapshot:updated", {
+                server, airline, weekId, type
+            })
+        }
     }
 
     /** Returns one tab's record, or null. */
@@ -126,6 +131,11 @@ class AccountingSnapshotStore {
         if (!AccountingSnapshotStore.SISTER_TYPES.includes(type)) return
         const key = AccountingSnapshotStore._sisterKey(server, airline, type)
         await chrome.storage.local.set({[key]: {type, scrapedAt: Date.now(), payload}})
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+            window.AesDataBus.emit("data:accounting:snapshot:updated", {
+                server, airline, type, sister: true
+            })
+        }
     }
 
     /** Returns one sister-page record, or null. */
