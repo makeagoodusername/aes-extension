@@ -16,7 +16,7 @@
  *   - aircraftFlightPlan:schedule:<server>:<id>             → schedule.scraped
  *   - scrapeOrchestrator:phase:<server>:<airline>:<phaseId> → scrape.phase.completed
  *   - markets:competitors:<route>                           → competitor.changed
- *   - accounting:balance:<server>:<airline>                 → cash.balance.changed
+ *   - <server><airline>accounting:bank:<weekId>             → cash.balance.changed
  *   - routeAssistant:ors:[acct:<id>:]<HUB>-<DEST>           → ors.rank.changed
  *   - routeAssistant:topRoutes:<HUB>                        → route.profit.changed (per-route diff)
  *   - direct emit from auto-driver                          → auto-drive.ticked
@@ -209,11 +209,22 @@
         }).catch(() => {})
     }
 
-    function _onBalanceChange(key, change) {
-        const oldV = change && change.oldValue
-        const newV = change && change.newValue
-        const oldBal = _num(oldV && (oldV.balance != null ? oldV.balance : oldV.cash))
-        const newBal = _num(newV && (newV.balance != null ? newV.balance : newV.cash))
+    /** F-9227-001: AccountingSnapshotStore.saveTab wraps each scrape as
+     *  \`{weekId, type, scrapedAt, payload}\` — the BANK tab's payload carries
+     *  \`cashBalance\` (the headline navbar balance, see bank-scraper.js).
+     *  Original code read newValue.balance/cash off the top level, which is
+     *  the legacy hand-seed shape; both paths are kept for back-compat. */
+    function _extractCashBalance(v) {
+        if (!v || typeof v !== "object") return null
+        if (v.payload && v.payload.cashBalance != null) return _num(v.payload.cashBalance)
+        if (v.balance != null) return _num(v.balance)
+        if (v.cash != null) return _num(v.cash)
+        return null
+    }
+
+    function _onBankCashChange(key, change) {
+        const oldBal = _extractCashBalance(change && change.oldValue)
+        const newBal = _extractCashBalance(change && change.newValue)
         if (oldBal === newBal) return
         if (newBal == null) return
         const delta = oldBal != null ? newBal - oldBal : null
@@ -308,7 +319,7 @@
         if (key.indexOf("aircraftFlightPlan:schedule:") === 0)    return _onScheduleChange(key, change)
         if (key.indexOf("scrapeOrchestrator:phase:") === 0)        return _onPhaseChange(key, change)
         if (key.indexOf("markets:competitors:") === 0)             return _onCompetitorChange(key, change)
-        if (key.indexOf("accounting:balance:") === 0)              return _onBalanceChange(key, change)
+        if (key.indexOf("accounting:bank:") !== -1)                 return _onBankCashChange(key, change)
         if (key.indexOf("routeAssistant:ors:") === 0 && key.indexOf("-") !== -1) return _onOrsChange(key, change)
         if (/^routeAssistant:topRoutes:[A-Z]{3,4}$/.test(key))     return _onTopRoutesChange(key, change)
     }
