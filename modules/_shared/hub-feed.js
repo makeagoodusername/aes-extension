@@ -52,7 +52,8 @@
         }
         const name = opts.name
         const ttlMs = Number(opts.ttlMs) || 0  // 0 = never marked stale by age
-        meta.set(name, {ttlMs: ttlMs})
+        const getScrapedAt = (typeof opts.getScrapedAt === "function") ? opts.getScrapedAt : null
+        meta.set(name, {ttlMs: ttlMs, getScrapedAt: getScrapedAt})
         AesView.declare({
             name:       name,
             deps:       Array.isArray(opts.deps) ? opts.deps.slice() : [],
@@ -85,9 +86,22 @@
         if (!m) return null
         const list = AesView.list().find((v) => v.name === name)
         if (!list || !list.computedAt) return {at: null, ttlMs: m.ttlMs, isStale: true, ageMs: null}
-        const ageMs = Date.now() - list.computedAt
+        // Prefer the underlying-data timestamp when the slice exposes one,
+        // so the stale-dot tracks scrape freshness and not just recompute
+        // time on whichever page happens to be loaded.
+        let at = list.computedAt
+        if (m.getScrapedAt) {
+            try {
+                const v = AesView.get(name)
+                if (v !== undefined) {
+                    const t = m.getScrapedAt(v)
+                    if (Number.isFinite(t) && t > 0) at = t
+                }
+            } catch (_) { /* extractor threw — fall back to computedAt */ }
+        }
+        const ageMs = Date.now() - at
         return {
-            at:      list.computedAt,
+            at:      at,
             ttlMs:   m.ttlMs,
             ageMs:   ageMs,
             isStale: m.ttlMs > 0 ? ageMs > m.ttlMs : false

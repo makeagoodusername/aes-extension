@@ -31,6 +31,7 @@
         ],
         ttlMs:      24 * 3600 * 1000,
         debounceMs: 80,
+        getScrapedAt: (v) => v && Number.isFinite(v.appliedAt) ? v.appliedAt : null,
         compute:    async () => {
             try {
                 if (window.AesStrategy && typeof window.AesStrategy.getApplied === "function") {

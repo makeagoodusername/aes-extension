@@ -38,6 +38,7 @@
         ],
         ttlMs:      30 * 60 * 1000,
         debounceMs: 100,
+        getScrapedAt: (v) => v && Number.isFinite(v.scrapedAt) ? v.scrapedAt : null,
         compute:    async () => {
             const ctx = pickContext()
             if (!ctx.server || !ctx.airline) {
@@ -56,8 +57,14 @@
             const keys   = ["bank", "income"].map((t) =>
                 ctx.server + ctx.airline + "accounting:" + t + ":" + week)
             const recs   = await chrome.storage.local.get(keys)
-            const bank   = recs[keys[0]] && recs[keys[0]].payload
-            const income = recs[keys[1]] && recs[keys[1]].payload
+            const bankRec   = recs[keys[0]]
+            const incomeRec = recs[keys[1]]
+            const bank   = bankRec && bankRec.payload
+            const income = incomeRec && incomeRec.payload
+            const newestScrapedAt = Math.max(
+                Number(bankRec && bankRec.scrapedAt) || 0,
+                Number(incomeRec && incomeRec.scrapedAt) || 0
+            ) || null
 
             if (bank && Number.isFinite(bank.cashBalance)) {
                 return {
@@ -67,6 +74,7 @@
                     server:      ctx.server,
                     airline:     ctx.airline,
                     weekId:      week,
+                    scrapedAt:   newestScrapedAt,
                     hasSnapshot: true
                 }
             }
@@ -81,12 +89,14 @@
                         server:      ctx.server,
                         airline:     ctx.airline,
                         weekId:      week,
+                        scrapedAt:   newestScrapedAt,
                         hasSnapshot: true
                     }
                 }
             }
             return {value: null, label: "open /finance/accounting", kind: "muted",
-                    server: ctx.server, airline: ctx.airline, weekId: week, hasSnapshot: false}
+                    server: ctx.server, airline: ctx.airline, weekId: week,
+                    scrapedAt: newestScrapedAt, hasSnapshot: false}
         }
     })
 
