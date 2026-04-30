@@ -24,10 +24,10 @@
         card.appendChild(desc);
 
         const a = H.actions();
-        const hasPanel = !!(window.AesCompetitorOutlinePanel && typeof window.AesCompetitorOutlinePanel.open === "function");
+        const hasPanel = !!(window.AesCompetitorOutlinePanel && typeof window.AesCompetitorOutlinePanel.show === "function");
         a.appendChild(H.actionBtn("Open Competitor Outline →", function () {
             H.closeModalThen(function () {
-                if (hasPanel) window.AesCompetitorOutlinePanel.open();
+                if (hasPanel) window.AesCompetitorOutlinePanel.show({});
             });
         }, { primary: true, disabled: !hasPanel }));
         card.appendChild(a);
