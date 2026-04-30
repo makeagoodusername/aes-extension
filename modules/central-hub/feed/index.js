@@ -70,8 +70,29 @@
         } catch (_) { /* bus is best-effort */ }
     }
 
-    // helpers.js bootstraps __aesAccountId on a setTimeout(0). Wait two
-    // microticks to let it land, then emit even if it didn't (callers
-    // already handle a null accountId).
-    setTimeout(_emitAccountBootstrapped, 50)
+    // helpers.js bootstraps __aesAccountId on a setTimeout(0). Poll for
+    // AES.getAirlineIdentity() to resolve to a non-empty string before
+    // emitting — slices like hub:cash:weekly key off the airline name and
+    // would otherwise compute against an empty identity (yielding a
+    // permanent "no airline" value because deps don't fire again on
+    // first-load). Cap the wait so login / pre-DOM flows still emit.
+    function _waitForAirlineThenEmit() {
+        const startedAt = Date.now()
+        const MAX_WAIT_MS = 6000
+        const POLL_MS = 100
+        function tick() {
+            if (window.__aesAccountBootstrapEmitted) return
+            let airline = ""
+            try {
+                if (typeof AES !== "undefined" && typeof AES.getAirlineIdentity === "function") {
+                    airline = AES.getAirlineIdentity() || ""
+                }
+            } catch (_) { /* swallow — emit will fall through on timeout */ }
+            if (airline) return _emitAccountBootstrapped()
+            if (Date.now() - startedAt >= MAX_WAIT_MS) return _emitAccountBootstrapped()
+            setTimeout(tick, POLL_MS)
+        }
+        tick()
+    }
+    setTimeout(_waitForAirlineThenEmit, 50)
 })()

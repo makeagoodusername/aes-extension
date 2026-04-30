@@ -40,7 +40,7 @@
         debounceMs: 100,
         getScrapedAt: (v) => v && Number.isFinite(v.scrapedAt) ? v.scrapedAt : null,
         compute:    async () => {
-            const ctx = pickContext()
+            const ctx = await pickContextAwait()
             if (!ctx.server || !ctx.airline) {
                 return {value: null, label: "no airline", kind: "muted",
                         server: ctx.server, airline: ctx.airline, weekId: "", hasSnapshot: false}
@@ -99,6 +99,23 @@
                     scrapedAt: newestScrapedAt, hasSnapshot: false}
         }
     })
+
+    async function pickContextAwait() {
+        // Eager compute fires at content-script-load, often before the AS
+        // top-nav has painted. Poll briefly so the slice lands a real
+        // {server, airline} on first compute instead of latching the
+        // muted "no airline" value the dashboard then shows for the rest
+        // of the page lifetime.
+        const startedAt = Date.now()
+        const MAX_WAIT_MS = 1500
+        const POLL_MS = 100
+        for (;;) {
+            const ctx = pickContext()
+            if (ctx.server && ctx.airline) return ctx
+            if (Date.now() - startedAt >= MAX_WAIT_MS) return ctx
+            await new Promise((r) => setTimeout(r, POLL_MS))
+        }
+    }
 
     function pickContext() {
         let server = "", airline = ""
