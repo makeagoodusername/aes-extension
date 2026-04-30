@@ -200,7 +200,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/unified-settings/adapters/_helpers.js (lines 13–21, COLORS map; consumed by drag-and-palette.js:142)
 - Severity: P1
 - Found by: port-9224
-- Status: OPEN
+- Status: FIXED
 - Repro: open the unified settings → Modules → "Drag & Palette" → click any keybind capture button. The button's "Press chord…" active state sets `btn.style.background = H.COLORS.rust`. Compare against any rust button rendered through css/components.css (`.aes-btn--primary { background: var(--aes-rust); }` → #B8472A) and the visual is obviously different — yellow-amber rather than red-orange.
 - Expected: `COLORS.rust` matches `--aes-rust` from css/design-tokens.css → `#B8472A` (red-orange brand accent).
 - Actual: `_helpers.js:20` defines `COLORS.rust = "#B8862E"` — yellow-amber, almost identical to `--aes-amber: #B8861F`. Every consumer that expects "brand rust" gets amber instead. Currently the only consumer is the chord-capture active state (drag-and-palette.js:142), but the helper is the canonical adapter palette so future adapters that lift from H.COLORS will hit the same wrong colour.
