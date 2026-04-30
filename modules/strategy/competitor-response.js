@@ -328,9 +328,12 @@
         const k = FREQ_COOLDOWN_KEY_PREFIX + String(hub).toUpperCase()
             + "-" + String(dest).toUpperCase()
         try {
-            chrome.storage.local.set({[k]: {ts: ts, hub: hub, dest: dest}})
-                .catch && chrome.storage.local.set({[k]: {ts: ts, hub: hub, dest: dest}})
-                    .catch(() => {})
+            // Fire-and-forget single write. The original `.catch && ...` form
+            // accidentally evaluated `.catch` as a truthy promise method then
+            // triggered a SECOND `set()` for the rhs of `&&` — every cooldown
+            // landed twice and the FIRST set's rejection was unhandled.
+            const p = chrome.storage.local.set({[k]: {ts: ts, hub: hub, dest: dest}})
+            if (p && typeof p.catch === "function") p.catch(() => {})
         } catch (_) {}
     }
 
