@@ -272,9 +272,30 @@
 
     window.AesAfpSpecResolver = AesAfpSpecResolver
 
-    if (window.AesAfp && window.AesAfp.bus) {
+    // Bus wiring — poll-retry attach so spec-resolver isn't dead-wired when
+    // it parses ahead of host.js. The /app/fleets/aircraft/*/0* page loads
+    // spec-resolver.js (manifest block A) BEFORE host.js (manifest block B
+    // matching /app/fleets*); without the retry, the IIFE-bottom guard
+    // `if (window.AesAfp && window.AesAfp.bus)` was false at parse time and
+    // the listener never subscribed — leaving `AesAfpSpecResolver.last`
+    // stuck at null and route-candidates frozen on "Waiting for aircraft
+    // spec…" forever. Mirrors the route-candidates.js:1337 _attach pattern.
+    function _attach() {
+        if (!window.AesAfp || !window.AesAfp.bus
+                || typeof window.AesAfp.bus.on !== "function") {
+            setTimeout(_attach, 50)
+            return
+        }
         window.AesAfp.bus.on("ctx:ready", () => {
             resolveForCurrent().catch(e => console.warn("[AFP-B] resolve failed", e))
         })
+        // Race-safe one-shot: ctx may already be populated when we attach
+        // (host.js's mount() ran during the retry interval and emitted
+        // ctx:ready before this listener subscribed). Kick off resolution
+        // ourselves so we don't wait for the next Wicket re-mount.
+        if (window.AesAfp.ctx) {
+            resolveForCurrent().catch(e => console.warn("[AFP-B] resolve failed", e))
+        }
     }
+    _attach()
 })()
