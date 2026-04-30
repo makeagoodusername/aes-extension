@@ -75,6 +75,7 @@
         }
         const existing = await load(server)
         const byCountryId = (existing && existing.byCountryId) || {}
+        const before = existing ? JSON.stringify(existing.byCountryId || {}) : null
         // RouteAssistantDemandStore exposes a getAll-style helper through
         // its store; fall back to scanning chrome.storage if absent.
         let allRecords = []
@@ -101,6 +102,12 @@
                 if (guess) slot.iso2 = guess
             }
             byCountryId[cid] = slot
+        }
+        // Idempotent re-seed: if the merged map equals the prior persisted
+        // map, return the existing block unchanged so scrapedAt + storage
+        // writes (and their onChanged echoes) don't churn.
+        if (existing && before === JSON.stringify(byCountryId)) {
+            return existing
         }
         const block = {schemaVersion: 1, scrapedAt: Date.now(), byCountryId}
         await chrome.storage.local.set({[_key(server)]: block})
