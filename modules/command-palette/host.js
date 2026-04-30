@@ -141,9 +141,9 @@
         style.textContent = `
             #${HOST_ID}-backdrop {
                 position: fixed; inset: 0;
-                background: rgba(0, 0, 0, 0.45);
-                z-index: 2147483646;
-                opacity: 0; transition: opacity 120ms ease;
+                background: rgba(26, 22, 18, 0.55);
+                z-index: calc(var(--aes-z-modal) - 1);
+                opacity: 0; transition: opacity var(--aes-tr-medium);
             }
             #${HOST_ID}-backdrop.open { opacity: 1; }
             #${HOST_ID} {
@@ -151,68 +151,109 @@
                 top: 18vh; left: 50%; transform: translateX(-50%) translateY(-12px);
                 width: min(640px, calc(100vw - 32px));
                 max-height: 70vh; display: flex; flex-direction: column;
-                background: #181a1f; color: #d8dde6;
-                border: 1px solid #2c313a; border-radius: 10px;
-                box-shadow: 0 20px 50px -12px rgba(0,0,0,0.55), 0 4px 12px rgba(0,0,0,0.35);
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                font-size: 13px; line-height: 1.4;
-                z-index: 2147483647;
-                opacity: 0; transition: opacity 120ms ease, transform 120ms ease;
+                background: var(--aes-bone); color: var(--aes-oxide);
+                border: var(--aes-bw-2) solid var(--aes-oxide);
+                border-radius: var(--aes-radius);
+                box-shadow: 6px 6px 0 0 var(--aes-oxide);
+                font-family: var(--aes-font-display);
+                font-size: var(--aes-fs-body); line-height: var(--aes-lh-body);
+                z-index: var(--aes-z-modal);
+                opacity: 0; transition: opacity var(--aes-tr-medium), transform var(--aes-tr-medium);
                 overflow: hidden;
             }
             #${HOST_ID}.open { opacity: 1; transform: translateX(-50%) translateY(0); }
             #${HOST_ID}-input {
                 appearance: none; -webkit-appearance: none;
-                width: 100%; padding: 14px 16px;
-                background: transparent; color: #f1f3f7;
-                border: 0; border-bottom: 1px solid #2c313a;
-                font-size: 15px; outline: none;
+                width: 100%;
+                padding: var(--aes-sp-3) var(--aes-sp-4);
+                background: transparent; color: var(--aes-oxide);
+                border: 0; border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+                font-family: var(--aes-font-display);
+                font-size: var(--aes-fs-lead);
+                outline: none;
             }
-            #${HOST_ID}-input::placeholder { color: #6a7280; }
+            #${HOST_ID}-input::placeholder { color: var(--aes-slate); font-style: normal; }
             #${HOST_ID}-list {
-                list-style: none; margin: 0; padding: 6px 0;
+                list-style: none; margin: 0; padding: var(--aes-sp-1) 0;
                 overflow-y: auto; flex: 1 1 auto;
             }
             #${HOST_ID}-list .row {
-                display: flex; align-items: center; gap: 12px;
-                padding: 9px 16px; cursor: pointer;
-                border-left: 3px solid transparent;
+                display: flex; align-items: center; gap: var(--aes-sp-3);
+                padding: var(--aes-sp-2) var(--aes-sp-4);
+                cursor: pointer;
+                border-left: var(--aes-bw-3) solid transparent;
+                transition: background var(--aes-tr-fast);
             }
             #${HOST_ID}-list .row.selected {
-                background: #232730; border-left-color: #5fa8ff;
+                background: var(--aes-rust-soft);
+                border-left-color: var(--aes-rust);
             }
-            #${HOST_ID}-list .row:hover { background: #20242c; }
-            #${HOST_ID}-list .label { color: #f1f3f7; font-weight: 500; flex: 0 0 auto; }
-            #${HOST_ID}-list .hint  {
-                color: #8a93a3; font-size: 12px;
+            #${HOST_ID}-list .row:hover { background: var(--aes-bone-2); }
+            #${HOST_ID}-list .row.selected:hover { background: var(--aes-rust-soft); }
+            #${HOST_ID}-list .label {
+                color: var(--aes-oxide);
+                font-family: var(--aes-font-display);
+                font-weight: var(--aes-fw-medium);
+                flex: 0 0 auto;
+            }
+            #${HOST_ID}-list .hint {
+                color: var(--aes-slate);
+                font-family: var(--aes-font-display);
+                font-size: var(--aes-fs-small);
                 flex: 1 1 auto; min-width: 0;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
             }
             #${HOST_ID}-list .scope {
-                color: #5fa8ff; background: rgba(95,168,255,0.1);
-                font-size: 10px; padding: 2px 7px; border-radius: 9px;
-                text-transform: uppercase; letter-spacing: 0.4px;
+                color: var(--aes-rust);
+                background: var(--aes-rust-soft);
+                border: var(--aes-bw-1) solid var(--aes-rust);
+                font-family: var(--aes-font-mono);
+                font-size: var(--aes-fs-micro);
+                padding: 1px var(--aes-sp-2);
+                border-radius: var(--aes-radius);
+                text-transform: uppercase;
+                letter-spacing: var(--aes-tracking-mono);
                 flex: 0 0 auto;
             }
             #${HOST_ID}-list .recent-tag {
-                color: #d3a04c; background: rgba(211,160,76,0.12);
-                font-size: 10px; padding: 2px 7px; border-radius: 9px;
-                text-transform: uppercase; letter-spacing: 0.4px;
+                color: var(--aes-cobalt);
+                background: var(--aes-cobalt-soft);
+                border: var(--aes-bw-1) solid var(--aes-cobalt);
+                font-family: var(--aes-font-mono);
+                font-size: var(--aes-fs-micro);
+                padding: 1px var(--aes-sp-2);
+                border-radius: var(--aes-radius);
+                text-transform: uppercase;
+                letter-spacing: var(--aes-tracking-mono);
                 flex: 0 0 auto;
             }
             #${HOST_ID}-list .empty {
-                padding: 16px; color: #6a7280; text-align: center; font-style: italic;
+                padding: var(--aes-sp-4);
+                color: var(--aes-slate);
+                text-align: center;
+                font-family: var(--aes-font-mono);
+                font-size: var(--aes-fs-small);
+                text-transform: uppercase;
+                letter-spacing: var(--aes-tracking-mono);
             }
             #${HOST_ID}-footer {
-                padding: 8px 14px; font-size: 11px; color: #6a7280;
-                border-top: 1px solid #2c313a;
-                display: flex; gap: 14px; justify-content: flex-end;
+                padding: var(--aes-sp-2) var(--aes-sp-3);
+                font-family: var(--aes-font-mono);
+                font-size: var(--aes-fs-micro);
+                color: var(--aes-slate);
+                border-top: var(--aes-bw-1) solid var(--aes-paper-rule);
+                display: flex; gap: var(--aes-sp-3); justify-content: flex-end;
+                text-transform: uppercase;
+                letter-spacing: var(--aes-tracking-mono);
             }
             #${HOST_ID}-footer kbd {
-                background: #232730; color: #d8dde6;
-                padding: 1px 6px; border-radius: 4px; font-size: 10px;
-                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                border: 1px solid #2c313a;
+                background: var(--aes-bone-2);
+                color: var(--aes-oxide);
+                padding: 1px var(--aes-sp-2);
+                border-radius: var(--aes-radius);
+                border: var(--aes-bw-1) solid var(--aes-oxide);
+                font-family: var(--aes-font-mono);
+                font-size: var(--aes-fs-micro);
             }
         `
         document.head.appendChild(style)
@@ -241,6 +282,10 @@
         inputEl.autocomplete = "off"
         inputEl.spellcheck = false
         inputEl.placeholder = "Type to search commands…"
+        inputEl.setAttribute("role", "combobox")
+        inputEl.setAttribute("aria-expanded", "true")
+        inputEl.setAttribute("aria-controls", HOST_ID + "-list")
+        inputEl.setAttribute("aria-autocomplete", "list")
         inputEl.addEventListener("input", _refresh)
 
         listEl = document.createElement("ul")
@@ -289,6 +334,7 @@
                 ? `No commands match "${inputEl.value.trim()}"`
                 : "No commands available on this page"
             listEl.append(empty)
+            _syncActiveDescendant()
             return
         }
         const recentIds = new Set(reg.recent().map(r => r.id))
@@ -296,6 +342,7 @@
         for (let i = 0; i < curResults.length; i++) {
             const cmd = curResults[i]
             const row = document.createElement("li")
+            row.id = HOST_ID + "-row-" + i
             row.className = "row" + (i === selectedIndex ? " selected" : "")
             row.dataset.cmdId = cmd.id
             row.setAttribute("role", "option")
@@ -334,6 +381,14 @@
             })
             listEl.append(row)
         }
+        _syncActiveDescendant()
+    }
+
+    function _syncActiveDescendant() {
+        if (!inputEl) return
+        const cur = listEl && listEl.children && listEl.children[selectedIndex]
+        if (cur && cur.id) inputEl.setAttribute("aria-activedescendant", cur.id)
+        else inputEl.removeAttribute("aria-activedescendant")
     }
 
     function _updateSelectedClass() {
@@ -348,6 +403,7 @@
         if (cur && typeof cur.scrollIntoView === "function") {
             cur.scrollIntoView({block: "nearest"})
         }
+        _syncActiveDescendant()
     }
 
     function _moveSelection(delta) {
