@@ -535,7 +535,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/central-hub/tiles/data-flow-inspector-tile.js + modules/central-hub/tile.js (`_feedFreshness` rendering, lines 389-406)
 - Severity: P2
 - Found by: port-9223
-- Status: OPEN
+- Status: WONTFIX
+- Note (port-9224): the AesFlow surface this finding depends on (modules/_shared/flow.js, signal:flow:flow-degraded, data:flow:health:updated, deadPathwayWindowMin) is not present in the current tree — the file doesn't exist, no module emits the signals, and grep for "AesFlow" returns only audit/findings.md + HANDOVER.md hits. F-9223-005's "FIXED" status references the same missing file, so either the slice never landed or the infrastructure was rolled back. Re-open if/when AesFlow lands; the proposed wiring (CentralHubTile._attachFeedSubscriptions also subscribing to the flow-degraded signal) remains the right shape.
 - Repro: tile.js's `_feedFreshness` is set ONLY by `_attachFeedSubscriptions()` (line 451) — i.e. only by HubFeed slice subscription, not by AesFlow.health complaints. A tile that uses watchedStorageKeys (most tiles) gets `_feedFreshness === null` always → no stale dot. Even tiles that DO use feedSlices only see their slice's age, not whether the underlying bus pathway is degraded.
 - Expected: when AesFlow.health reports `signal:flow:flow-degraded` (e.g. a tile's source topic hasn't fired in 30 min when it should), affected tiles render a warning dot.
 - Actual: the degraded signal is fired on the bus but no tile subscribes — the data-flow-inspector tile renders the diagnostic in its own body, but every other tile renders "fine" even when its data is days old. The freshness-dot machinery exists but is unreachable for ~25 of ~30 tiles.
@@ -555,7 +556,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/_shared/hub-feed.js (lines 54, 89-94) + each declared slice
 - Severity: P3
 - Found by: port-9223
-- Status: OPEN
+- Status: FIXED
 - Repro: declared slices use `ttlMs: 0` (hub:strategy:settings line 55), `ttlMs: 30 * 60 * 1000` (hub:cash:weekly line 39), `ttlMs: 24 * 3600 * 1000` (hub:strategy:applied line 32). For ttlMs=0, `freshness().isStale` is hard-coded false (line 93). For non-zero, isStale fires when ageMs > ttlMs — but only counts time since the LAST recompute, not since the underlying scrape that produced the value. Combined with F-9223-010 / F-9223-011, the recompute path is broken on most pages so ageMs effectively measures "time since page load."
 - Expected: stale-dot reflects "underlying data is older than X" — the last accounting scrape, the last fuel-price scrape, the last fleet roster fetch.
 - Actual: stale-dot reflects "time since last view recompute". On bridge.html where feed/index.js bridges don't load, ageMs grows from zero forever and tiles either (a) never show a dot (ttlMs=0) or (b) ALL show a dot once enough time passes (ttlMs>0). The dot doesn't track real-world data freshness.
@@ -658,7 +659,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/aircraft-flights/scheduled-decorator.js (lines 134-143, 164-176)
 - Severity: P2
 - Found by: port-9228 (code-static)
-- Status: OPEN
+- Status: FIXED
 - Repro: open `/app/fleets/aircraft/<id>/1`, observe pill works, navigate via top-nav to a different aircraft `/app/fleets/aircraft/<id2>/1`, return to the original. Each visit potentially re-initialises the module if the page is a Wicket-fragment SPA reload. [needs-mcp-verify]
 - Expected: at most one chrome.storage.onChanged listener attached per tab lifetime, scoped to the *current* aircraft.
 - Actual: `_attachStorageListener` (line 134-143) adds a listener with no removal path. The IIFE guard at line 26 (`if (window.AesAircraftFlightsScheduledDecorator) return`) only prevents double-execution of the IIFE, not double-execution of `_init`. If the AS Wicket fragment re-mounts the table content scripts (the `_waitForTable` polling pattern at line 151-162 suggests they do), `_init` would re-register. Listener is also keyed to `_server`/`_aircraftId` captured at FIRST init via closure; after navigation to a different aircraft, `myKey` (line 137) still points at the original aircraft's schedule key. The listener callback at line 138-142 references the closure-captured `myKey` so post-nav storage events for the new aircraft never fire, while old-aircraft schedule writes still trigger `_scheduleRepaint()` (which then re-decorates a table that's no longer there).
