@@ -103,6 +103,7 @@ class AesCompetitorAggregator {
         if (!competitorsRec && !marketShareRec) return null
 
         const byEnterprise = new Map()
+        const nameToPrefix = new Map()
         if (competitorsRec && Array.isArray(competitorsRec.competitors)) {
             for (const c of competitorsRec.competitors) {
                 if (!c || c.isOurs) continue
@@ -112,18 +113,33 @@ class AesCompetitorAggregator {
                 existing.weeklyFlights += 1
                 if (c.availability && c.availability.totalSeats) existing.weeklySeats += c.availability.totalSeats
                 byEnterprise.set(key, existing)
+                if (c.name) nameToPrefix.set(c.name, key)
             }
+        }
+        // Populate per-competitor weekly counts via the markets-page join:
+        // marketShare entries are keyed by name; the byEnterprise map is
+        // keyed by flight-code prefix. Use the name→prefix map built from
+        // competitorsRec to bridge them. Where the join fails (no flight
+        // code on the markets page), keep weeklyFlights/Seats as null so
+        // downstream consumers can distinguish "no signal" from a real 0.
+        const lookupCounts = (name) => {
+            const prefix = name ? nameToPrefix.get(name) : null
+            const rec = prefix ? byEnterprise.get(prefix) : null
+            return rec
+                ? {weeklyFlights: rec.weeklyFlights, weeklySeats: rec.weeklySeats}
+                : {weeklyFlights: null, weeklySeats: null}
         }
         const competitors = []
         if (marketShareRec && Array.isArray(marketShareRec.pax)) {
             for (const r of marketShareRec.pax) {
+                const counts = lookupCounts(r.name)
                 competitors.push({
                     enterpriseId: r.enterpriseId ? String(r.enterpriseId) : null,
                     name: r.name,
                     sharePctPax: r.sharePct,
                     sharePctCargo: null,
-                    weeklyFlights: 0,
-                    weeklySeats: 0
+                    weeklyFlights: counts.weeklyFlights,
+                    weeklySeats: counts.weeklySeats
                 })
             }
         }
@@ -131,14 +147,17 @@ class AesCompetitorAggregator {
             for (const r of marketShareRec.cargo) {
                 const existing = competitors.find(x => x.name === r.name)
                 if (existing) existing.sharePctCargo = r.sharePct
-                else competitors.push({
-                    enterpriseId: r.enterpriseId ? String(r.enterpriseId) : null,
-                    name: r.name,
-                    sharePctPax: null,
-                    sharePctCargo: r.sharePct,
-                    weeklyFlights: 0,
-                    weeklySeats: 0
-                })
+                else {
+                    const counts = lookupCounts(r.name)
+                    competitors.push({
+                        enterpriseId: r.enterpriseId ? String(r.enterpriseId) : null,
+                        name: r.name,
+                        sharePctPax: null,
+                        sharePctCargo: r.sharePct,
+                        weeklyFlights: counts.weeklyFlights,
+                        weeklySeats: counts.weeklySeats
+                    })
+                }
             }
         }
 
