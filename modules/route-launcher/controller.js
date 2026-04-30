@@ -60,7 +60,14 @@ class AesRouteLauncherController {
 
     async setActive(payload) {
         if (!payload || !payload.aircraftId) return
-        const next = Object.assign({}, this.active || {}, payload)
+        // F-9230-001: only inherit prior fields when the aircraft id is unchanged.
+        // Bus emitters (focus-aircraft) send `{aircraftId, ...}` without hub /
+        // equipment, so merging across an id flip stamps the previous aircraft's
+        // hub onto the new selection — the ranker then renders rows from the wrong
+        // base and launchTo posts an impossible leg.
+        const prev = this.active || {}
+        const sameAircraft = String(prev.aircraftId || "") === String(payload.aircraftId)
+        const next = sameAircraft ? Object.assign({}, prev, payload) : Object.assign({}, payload)
         if (!next.hub && window.AesAfpActiveDraftStore) {
             try {
                 const draft = await window.AesAfpActiveDraftStore.load(this.server, next.aircraftId)
