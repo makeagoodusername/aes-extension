@@ -620,7 +620,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/scrape-orchestrator/competitor-outline-runner.js (runForServer lines 45-69, _listEnterpriseIds lines 71-81)
 - Severity: P3
 - Found by: port-9226
-- Status: CLAIMED:9226
+- Status: FIXED
 - Repro: with N cached competitors on the active server, open the outline panel and click Refresh. Then click Refresh again immediately. Watch network tab — N×4 fetches per click (each enterprise scrape fires `/app/info/enterprises/<id>`, `?tab=2`, `?tab=3`, `?tab=4`).
 - Expected: a refresh re-fetches only enterprises whose record is older than the enterpriseDeep TTL, OR the user can choose "force all" vs "stale only" via a UI hint.
 - Actual: `_listEnterpriseIds` returns every cached id with no TTL filter. The whole list is re-scraped at concurrency=2, stagger=1000ms. With 30 competitors that's ~3 minutes of full-fat scrapes for nothing. Combined with F-9226-005 (no in-flight dedup), two refresh clicks in quick succession would double-stack the work.
