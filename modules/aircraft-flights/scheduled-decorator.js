@@ -80,7 +80,8 @@
         const span = document.createElement("span")
         span.setAttribute(PILL_ATTR, "1")
         span.style.cssText = "display:inline-block;margin-right:6px;padding:1px 6px;"
-            + "border-radius:8px;background:#1d4ed8;color:#f8fafc;font-size:10px;"
+            + "border-radius:8px;background:var(--aes-accent, #1d4ed8);"
+            + "color:var(--aes-paper, #f8fafc);font-size:10px;"
             + "font-weight:600;vertical-align:middle;"
         span.title = "This flight number appears in the persisted AFP schedule"
             + (leg.origin && leg.destination
