@@ -75,8 +75,8 @@ class ScrapeOrchestratorPhases {
         const E = host.enumerators
         const hubs        = await E.enumerateHubs(host.server, host.airline)
         const aircraft    = await E.enumerateAircraft(host.server, host.airline)
-        const routes      = await E.enumerateAllRoutes()      // pre-existing topRoutes cache
-        const competitors = await E.enumerateCompetitorIds()
+        const routes      = await E.enumerateAllRoutes(host.server)      // pre-existing topRoutes cache
+        const competitors = await E.enumerateCompetitorIds(host.server)
         const airports    = await E.enumerateAirportsForFlightsFrom(hubs, routes)
         return {
             foundation:   ScrapeOrchestratorPhases.FOUNDATION_TARGETS.length,
@@ -181,7 +181,7 @@ class ScrapeOrchestratorPhases {
             concurrency: 2,
             staggerMs:   1500,
             buildJobs:   async (host) => {
-                const routes = await host.enumerators.enumerateAllRoutes()
+                const routes = await host.enumerators.enumerateAllRoutes(host.server)
                 const jobs = []
                 for (const r of routes) {
                     const pair = String(r.hub).toUpperCase() + String(r.dest).toUpperCase()
@@ -208,7 +208,7 @@ class ScrapeOrchestratorPhases {
             // moving on.
             postRun: async (host) => {
                 if (!window.RouteAssistantOrsScraper) return {skipped: true, reason: "ORS scraper not loaded"}
-                const routes = await host.enumerators.enumerateAllRoutes()
+                const routes = await host.enumerators.enumerateAllRoutes(host.server)
                 if (!routes.length) return {skipped: true, reason: "no routes"}
                 try {
                     const scraper = new window.RouteAssistantOrsScraper(host.server, {})
@@ -233,7 +233,7 @@ class ScrapeOrchestratorPhases {
             concurrency: 2,
             staggerMs:   1500,
             buildJobs:   async (host) => {
-                const ids = await host.enumerators.enumerateCompetitorIds()
+                const ids = await host.enumerators.enumerateCompetitorIds(host.server)
                 return ids.map(id => ({
                     jobId:                  "competitor-" + id,
                     phaseId:                "per-competitor",
@@ -255,7 +255,7 @@ class ScrapeOrchestratorPhases {
             staggerMs:   2000,
             buildJobs:   async (host) => {
                 const hubs   = await host.enumerators.enumerateHubs(host.server, host.airline)
-                const routes = await host.enumerators.enumerateAllRoutes()
+                const routes = await host.enumerators.enumerateAllRoutes(host.server)
                 const airports = await host.enumerators.enumerateAirportsForFlightsFrom(hubs, routes)
                 return airports.map(iata => ({
                     jobId:                  "ffrom-" + iata,

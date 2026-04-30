@@ -187,7 +187,7 @@ class RouteAssistantMarketsPageScraper {
      * produced. Skips families where the parser returned null (e.g., no
      * pricing fieldset present on a sub-page).
      */
-    static async saveAllRecords(hub, dest, parsed, source) {
+    static async saveAllRecords(hub, dest, parsed, source, server) {
         const ts = Date.now()
         const base = {
             hub:       String(hub || "").toUpperCase(),
@@ -195,6 +195,7 @@ class RouteAssistantMarketsPageScraper {
             scrapedAt: ts,
             source:    source || "fetch"
         }
+        if (server) base.server = String(server)
         const writes = {}
         const saved = {}
         // Read the existing historic record so a fresh single-payload
@@ -325,7 +326,7 @@ class RouteAssistantMarketsPageScraper {
             // other families.
             await RouteAssistantMarketsPageScraper.saveAllRecords(hubIata, destIata, {
                 competitors: null, ownPricing: null, marketShare: null, historic: parsed
-            }, "fetch")
+            }, "fetch", this.server)
             return {
                 periods:    parsed.periods,
                 capacities: parsed.capacities || [],
@@ -422,7 +423,7 @@ class RouteAssistantMarketsPageScraper {
             const html = await resp.text()
             const parsed = RouteAssistantMarketsPageScraper.parseFromHtml(html)
             const saved = await RouteAssistantMarketsPageScraper.saveAllRecords(
-                hubIata, destIata, parsed, "fetch"
+                hubIata, destIata, parsed, "fetch", this.server
             )
             this._sessionCache.set(pair, saved)
             return saved

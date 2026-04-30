@@ -84,7 +84,7 @@ class ScrapeOrchestratorEnumerators {
      * Returns every cached (hub, dest) pair across every per-hub
      * topRoutes record. Used as the universe for Phase 4 fan-out.
      */
-    static async enumerateAllRoutes() {
+    static async enumerateAllRoutes(server) {
         const all = await chrome.storage.local.get(null)
         const prefix = "routeAssistant:topRoutes:"
         const seen = new Set()
@@ -95,6 +95,9 @@ class ScrapeOrchestratorEnumerators {
             if (!hubPart || hubPart.indexOf(":") >= 0) continue
             const blob = all[k]
             if (!blob || !Array.isArray(blob.rows)) continue
+            // Tolerant server filter: skip blobs from another server, but
+            // accept legacy blobs that pre-date the `server` field.
+            if (server && blob.server && String(blob.server) !== String(server)) continue
             const hub = String(blob.hub || hubPart).toUpperCase()
             for (const r of blob.rows) {
                 const dest = r && (r.destIata || r.dest)
@@ -115,7 +118,7 @@ class ScrapeOrchestratorEnumerators {
      * `competitors[].enterpriseId` (or similar — see HANDOVER §4 for
      * the exact field name; we tolerate variations).
      */
-    static async enumerateCompetitorIds() {
+    static async enumerateCompetitorIds(server) {
         const all = await chrome.storage.local.get(null)
         const prefix = "routeAssistant:markets:competitors:"
         const seen = new Set()
@@ -123,6 +126,7 @@ class ScrapeOrchestratorEnumerators {
             if (k.indexOf(prefix) !== 0) continue
             const rec = all[k]
             if (!rec) continue
+            if (server && rec.server && String(rec.server) !== String(server)) continue
             const list = rec.competitors || rec.rows || rec.airlines || []
             if (!Array.isArray(list)) continue
             for (const c of list) {
