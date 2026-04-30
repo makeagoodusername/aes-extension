@@ -51,14 +51,42 @@
         "Laos":                     "LA"
     }
 
+    // Lazy reverse index: lowercased+normalized canonical English name → ISO2.
+    // Built once from `AesGeographyBase.COUNTRY_CONTINENT` × the platform's
+    // `Intl.DisplayNames("en", {type:"region"})` so any AS country whose
+    // name matches the canonical form resolves without a hand-curated entry.
+    // NAME_TO_ISO2 still wins for variants Intl doesn't return ("Russia",
+    // "Czech Republic", "South Korea", "Vietnam", …). The normalizer folds
+    // "&"↔"and" so "Trinidad & Tobago" (Intl form) matches AS's
+    // "Trinidad and Tobago".
+    function _normalizeName(s) {
+        return String(s).trim().toLowerCase().replace(/\s*&\s*/g, " and ").replace(/\s+/g, " ")
+    }
+    let _iso2ByName = null
+    function _buildIso2ByName() {
+        const out = Object.create(null)
+        if (typeof window.AesGeographyBase === "undefined" || typeof Intl === "undefined" || typeof Intl.DisplayNames !== "function") {
+            return out
+        }
+        let dn
+        try { dn = new Intl.DisplayNames(["en"], {type: "region"}) }
+        catch (_) { return out }
+        for (const code in window.AesGeographyBase.COUNTRY_CONTINENT) {
+            let name
+            try { name = dn.of(code) } catch (_) { continue }
+            if (!name || typeof name !== "string") continue
+            out[_normalizeName(name)] = code
+        }
+        return out
+    }
+
     function _guessIso2(name) {
         if (!name) return null
         const k = String(name).trim()
         if (NAME_TO_ISO2[k]) return NAME_TO_ISO2[k]
-        // ISO2 codes are uppercase 2-letter. Country names are 3+ letters.
-        // Try to find a 2-letter substring anchored to a known mapping —
-        // not worth it; keep simple.
-        return null
+        if (_iso2ByName === null) _iso2ByName = _buildIso2ByName()
+        const hit = _iso2ByName[_normalizeName(k)]
+        return hit || null
     }
 
     async function load(server) {
