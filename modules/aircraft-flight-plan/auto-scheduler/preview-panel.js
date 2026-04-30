@@ -405,7 +405,7 @@
         if (!_state.ctxReady)           return "Waiting for AFP context."
         if (!_ctx().aircraftId)         return "No aircraft id resolved."
         if (!_state.spec)               return "Waiting for aircraft spec (Track B)."
-        if (!_state.candidatesLen)      return "Waiting for route candidates (Slice C)."
+        if (!_state.candidatesLen)      return "Route candidates not ready yet — open the route candidates panel first."
         return ""
     }
 
@@ -445,7 +445,9 @@
                 + "border-radius:3px;"
             empty.textContent = build
                 ? "Auto-build returned no flights — see status above."
-                : "No build yet. Click \"Auto-build week\" to generate a proposal."
+                : !_state.candidatesLen
+                    ? "Route candidates not ready yet — open the route candidates panel first."
+                    : "No build yet. Click \"Auto-build week\" to generate a proposal."
             _previewEl.appendChild(empty)
             return
         }
