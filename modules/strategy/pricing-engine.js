@@ -150,7 +150,21 @@
                 }
             } catch (_) { /* yield-history-store unavailable */ }
         }
-        return out
+        // F-9227-005: dedupe by (day-bucket, pricePct rounded to 0.1pp) so
+        // observations duplicated across orsHistory + yield-history-store
+        // don't bias the logistic fit. Timestamp-less rows collapse together
+        // under a 'no-ts' bucket (rare path; keyspace stays disjoint from
+        // real-timestamped data).
+        const seen = new Set()
+        const deduped = []
+        for (const t of out) {
+            const dayBucket = isFinite(t.ts) ? Math.floor(t.ts / 86400000) : "no-ts"
+            const k = dayBucket + ":" + (Math.round(t.pricePct * 10) / 10)
+            if (seen.has(k)) continue
+            seen.add(k)
+            deduped.push(t)
+        }
+        return deduped
     }
 
     function _findRoute(snapshot, hub, dest) {
