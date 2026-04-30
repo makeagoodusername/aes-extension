@@ -144,6 +144,20 @@
         }).catch(() => {})
     }
 
+    function _aggPrice(arr) {
+        let min = Infinity, max = -Infinity
+        for (const c of arr) {
+            const pmin = _num(c && c.priceMin)
+            const pmax = _num(c && c.priceMax)
+            if (pmin != null && pmin < min) min = pmin
+            if (pmax != null && pmax > max) max = pmax
+        }
+        return {
+            priceMin: isFinite(min) ? min : null,
+            priceMax: isFinite(max) ? max : null
+        }
+    }
+
     function _onCompetitorChange(key, change) {
         const oldV = change && change.oldValue
         const newV = change && change.newValue
@@ -152,14 +166,45 @@
         const newArr = Array.isArray(newV.competitors) ? newV.competitors : (Array.isArray(newV) ? newV : [])
         const before = oldArr.length
         const after  = newArr.length
-        if (before === after) return
         const routeKey = key.replace(/^markets:competitors:/, "")
-        const delta = after - before
+
+        if (before !== after) {
+            const delta = after - before
+            emit({
+                type:    "competitor.changed",
+                payload: {
+                    routeKey, before, after, delta,
+                    direction: delta > 0 ? "entry" : "exit"
+                }
+            }).catch(() => {})
+            return
+        }
+
+        // F-9227-007: count unchanged but aggregate price may have moved.
+        // Surface price-only events so CompetitorEntry/Exit scenarios and
+        // competitor-response classifier can react to a price war that
+        // didn't add/remove operators.
+        const oldP = _aggPrice(oldArr)
+        const newP = _aggPrice(newArr)
+        const minMoved = (oldP.priceMin !== newP.priceMin)
+        const maxMoved = (oldP.priceMax !== newP.priceMax)
+        if (!minMoved && !maxMoved) return
+        const minDelta = (newP.priceMin != null && oldP.priceMin != null)
+            ? newP.priceMin - oldP.priceMin : null
+        let direction = "flat"
+        if (minDelta != null) {
+            direction = minDelta < 0 ? "priceCut" : (minDelta > 0 ? "priceHike" : "flat")
+        } else if (oldP.priceMin == null && newP.priceMin != null) {
+            direction = "step"
+        }
         emit({
             type:    "competitor.changed",
             payload: {
-                routeKey, before, after, delta,
-                direction: delta > 0 ? "entry" : "exit"
+                routeKey, before, after, delta: 0,
+                priceMinFrom: oldP.priceMin, priceMinTo: newP.priceMin,
+                priceMaxFrom: oldP.priceMax, priceMaxTo: newP.priceMax,
+                priceDelta:   minDelta,
+                direction:    direction
             }
         }).catch(() => {})
     }
