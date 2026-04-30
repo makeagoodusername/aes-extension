@@ -51,8 +51,13 @@
     function _num(v, f) { const n = Number(v); return isFinite(n) ? n : f }
 
     function _sigmoid(p, params) {
+        // F-9227-009: exp(-k*(p-p0)) so k<0 corresponds to normal demand
+        // (price up -> lf down). The kTryRange grid is hard-coded all-
+        // negative; this sign convention is what makes the fitter actually
+        // fit real airlinesim data. The inverse in suggestPriceForLfTarget
+        // mirrors the flip.
         const z = params.k * (p - params.p0)
-        return params.L / (1 + Math.exp(z))
+        return params.L / (1 + Math.exp(-z))
     }
 
     function _residual(tuples, params) {
@@ -198,7 +203,8 @@
         const ratio = (f.params.L / lf) - 1
         if (ratio <= 0) return null
         const z = Math.log(ratio)
-        const p = f.params.p0 + (z / f.params.k)
+        // F-9227-009 mirror flip: inverse of exp(-k*(p-p0)) is p = p0 - z/k
+        const p = f.params.p0 - (z / f.params.k)
         if (!isFinite(p)) return null
         return Math.max(50, Math.min(200, p))
     }
