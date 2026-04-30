@@ -24,16 +24,15 @@ class RouteAssistantWaveKeybindsStore {
     static LEGACY_KEY   = "routeAssistant:waveKeybinds"
     static SCOPE_PREFIX = "routeAssistant:waveKeybinds"
 
+    // Only `palette.open` has a keydown consumer (wave-palette.js:532). The
+    // eight other action ids that previously lived here — panel.toggleWaves,
+    // palette.savePresetVar, palette.pinActive, wave.next, wave.prev,
+    // wave.add, wave.delete, drag.cancel — were unwired: any UI that listed
+    // them as configurable chords made a promise the runtime couldn't keep.
+    // Re-add an id here only when a keydown listener that calls
+    // `WaveKeybindsStore.matches()`/`.resolve()` for it actually ships.
     static DEFAULT_BINDINGS = {
-        "palette.open":           "Mod+Shift+K",
-        "panel.toggleWaves":      "Mod+Shift+W",
-        "palette.savePresetVar":  "Mod+Shift+S",
-        "palette.pinActive":      "Mod+Shift+P",
-        "wave.next":              "W",
-        "wave.prev":              "Shift+W",
-        "wave.add":               "N",
-        "wave.delete":            "Delete",
-        "drag.cancel":            "Escape"
+        "palette.open": "Mod+Shift+K"
     }
 
     static _key()       { return acctKey(RouteAssistantWaveKeybindsStore.SCOPE_PREFIX, "") }
