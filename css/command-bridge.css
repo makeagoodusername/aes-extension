@@ -887,7 +887,7 @@ a.aes-bridge__opps-row-name:hover { color: var(--aes-rust-deep); }
     margin: 0 0 var(--aes-sp-3) 0;
     font-size: var(--aes-fs-h3);
     text-transform: uppercase;
-    letter-spacing: var(--aes-tracking-h);
+    letter-spacing: var(--aes-tracking-caps);
 }
 .aes-bridge__pane-empty {
     color: var(--aes-slate);
