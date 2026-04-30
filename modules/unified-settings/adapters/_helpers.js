@@ -11,13 +11,13 @@
     if (window.AesUnifiedSettingsAdapterHelpers) return;
 
     const COLORS = {
-        bone:   "#F4F1EA",
-        bone2:  "#E7E0CC",
-        oxide:  "#2B2520",
-        oxide2: "#5A4F45",
-        slate:  "#7A6F66",
-        rule:   "#C9C0B0",
-        rust:   "#B8472A"
+        bone:   "var(--aes-bone)",
+        bone2:  "var(--aes-bone-2)",
+        oxide:  "var(--aes-oxide)",
+        oxide2: "var(--aes-oxide-2)",
+        slate:  "var(--aes-slate)",
+        rule:   "var(--aes-paper-rule)",
+        rust:   "var(--aes-rust)"
     };
 
     function header(label, sub) {

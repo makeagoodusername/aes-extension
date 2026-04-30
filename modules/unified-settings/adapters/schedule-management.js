@@ -20,7 +20,7 @@
         const card = H.card();
         const status = document.createElement("div");
         status.textContent = "Loading…";
-        status.style.cssText = "font-size:12px;color:#5A4F45";
+        status.style.cssText = "font-size:12px;color:var(--aes-oxide-2)";
         card.appendChild(status);
         host.appendChild(card);
 
@@ -39,7 +39,7 @@
             card.appendChild(H.row("Last build",      (s && s.lastBuildId) || "—"));
 
             const note = document.createElement("div");
-            note.style.cssText = "font-size:11px;color:#7A6F66;margin-top:10px;line-height:1.5";
+            note.style.cssText = "font-size:11px;color:var(--aes-slate);margin-top:10px;line-height:1.5";
             note.textContent = "Edit presets from the Schedule Management panel on a hub page (/app/com/scheduling/*).";
             card.appendChild(note);
         }).catch(function (e) {

@@ -32,18 +32,18 @@
         const rail = document.createElement("nav");
         rail.style.cssText = [
             "flex:0 0 220px",
-            "border-right:1px solid #C9C0B0",
-            "background:#F4F1EA",
+            "border-right:1px solid var(--aes-paper-rule)",
+            "background:var(--aes-bone)",
             "overflow-y:auto",
             "padding:8px 0"
         ].join(";");
 
         const pane = document.createElement("section");
-        pane.style.cssText = "flex:1 1 auto;overflow:auto;padding:18px 20px;background:#F4F1EA";
+        pane.style.cssText = "flex:1 1 auto;overflow:auto;padding:18px 20px;background:var(--aes-bone)";
 
         if (!list.length) {
             const empty = document.createElement("div");
-            empty.style.cssText = "padding:32px;text-align:center;color:#7A6F66;font-style:italic";
+            empty.style.cssText = "padding:32px;text-align:center;color:var(--aes-slate);font-style:italic";
             empty.textContent = "No module adapters registered yet.";
             pane.appendChild(empty);
         } else {
@@ -98,8 +98,8 @@
             "width:100%",
             "padding:10px 14px",
             "border:none",
-            "background:" + (active ? "#2B2520" : "transparent"),
-            "color:" + (active ? "#F4F1EA" : "#2B2520"),
+            "background:" + (active ? "var(--aes-oxide)" : "transparent"),
+            "color:" + (active ? "var(--aes-bone)" : "var(--aes-oxide)"),
             "font-family:'Inter Tight',system-ui,sans-serif",
             "font-weight:700",
             "font-size:11px",

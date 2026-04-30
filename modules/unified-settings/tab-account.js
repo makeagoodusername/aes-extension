@@ -62,9 +62,9 @@
             const card = document.createElement("div");
             card.style.cssText = [
                 "padding:14px 16px",
-                "border:2px solid #2B2520",
-                "background:#F4F1EA",
-                "box-shadow:4px 4px 0 #2B2520",
+                "border:2px solid var(--aes-oxide)",
+                "background:var(--aes-bone)",
+                "box-shadow:4px 4px 0 var(--aes-oxide)",
                 "display:flex",
                 "flex-direction:column",
                 "gap:8px"
@@ -72,19 +72,19 @@
 
             const t = document.createElement("div");
             t.textContent = c.title.toUpperCase();
-            t.style.cssText = "font-weight:800;font-size:12px;letter-spacing:0.08em;color:#2B2520";
+            t.style.cssText = "font-weight:800;font-size:12px;letter-spacing:0.08em;color:var(--aes-oxide)";
             const b = document.createElement("div");
             b.textContent = c.blurb;
-            b.style.cssText = "font-size:11px;color:#5A4F45;line-height:1.4";
+            b.style.cssText = "font-size:11px;color:var(--aes-oxide-2);line-height:1.4";
 
             const btn = document.createElement("button");
             btn.type = "button";
             btn.textContent = "Open →";
             btn.style.cssText = [
                 "align-self:flex-start",
-                "border:1px solid #2B2520",
-                "background:#2B2520",
-                "color:#F4F1EA",
+                "border:1px solid var(--aes-oxide)",
+                "background:var(--aes-oxide)",
+                "color:var(--aes-bone)",
                 "padding:6px 12px",
                 "font-family:inherit",
                 "font-size:11px",

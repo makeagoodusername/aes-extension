@@ -21,7 +21,7 @@
             return;
         }
         const ph = document.createElement("div");
-        ph.style.cssText = "padding:32px;text-align:center;color:#7A6F66;font-style:italic";
+        ph.style.cssText = "padding:32px;text-align:center;color:var(--aes-slate);font-style:italic";
         ph.textContent = "Customization Studio unavailable.";
         host.appendChild(ph);
     }

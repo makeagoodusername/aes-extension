@@ -19,7 +19,7 @@
 
         const card = H.card();
         const desc = document.createElement("div");
-        desc.style.cssText = "font-size:12px;color:#2B2520;line-height:1.5;margin-bottom:10px";
+        desc.style.cssText = "font-size:12px;color:var(--aes-oxide);line-height:1.5;margin-bottom:10px";
         desc.textContent = "Competitor Intel watches rival airlines on routes you fly. Settings live alongside the outline panel so they apply within the user's hub context.";
         card.appendChild(desc);
 

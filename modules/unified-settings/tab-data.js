@@ -28,7 +28,7 @@
         // Storage usage card
         const usageCard = section("Storage usage");
         const usageTxt = document.createElement("div");
-        usageTxt.style.cssText = "font-family:'JetBrains Mono',monospace;font-size:12px;color:#2B2520";
+        usageTxt.style.cssText = "font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--aes-oxide)";
         usageTxt.textContent = "Loading…";
         usageCard.appendChild(usageTxt);
 
@@ -46,7 +46,7 @@
         // Export / Import card
         const ioCard = section("Export / Import");
         const blurb = document.createElement("div");
-        blurb.style.cssText = "font-size:11px;color:#5A4F45;line-height:1.5;margin-bottom:8px";
+        blurb.style.cssText = "font-size:11px;color:var(--aes-oxide-2);line-height:1.5;margin-bottom:8px";
         blurb.textContent = "Customization presets and overrides round-trip through JSON bundles.";
         ioCard.appendChild(blurb);
 
@@ -86,10 +86,10 @@
 
     function section(title) {
         const wrap = document.createElement("div");
-        wrap.style.cssText = "padding:14px 16px;border:2px solid #2B2520;background:#F4F1EA;box-shadow:4px 4px 0 #2B2520";
+        wrap.style.cssText = "padding:14px 16px;border:2px solid var(--aes-oxide);background:var(--aes-bone);box-shadow:4px 4px 0 var(--aes-oxide)";
         const h = document.createElement("div");
         h.textContent = title.toUpperCase();
-        h.style.cssText = "font-weight:800;font-size:11px;letter-spacing:0.08em;color:#2B2520;margin-bottom:8px";
+        h.style.cssText = "font-weight:800;font-size:11px;letter-spacing:0.08em;color:var(--aes-oxide);margin-bottom:8px";
         wrap.appendChild(h);
         return wrap;
     }
@@ -99,9 +99,9 @@
         btn.type = "button";
         btn.textContent = label;
         btn.style.cssText = [
-            "border:1px solid #2B2520",
-            "background:#2B2520",
-            "color:#F4F1EA",
+            "border:1px solid var(--aes-oxide)",
+            "background:var(--aes-oxide)",
+            "color:var(--aes-bone)",
             "padding:6px 12px",
             "font-family:inherit",
             "font-size:11px",

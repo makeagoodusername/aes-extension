@@ -21,7 +21,7 @@
 
         const title = document.createElement("div");
         title.textContent = "AIRLINESIM ENHANCEMENT SUITE";
-        title.style.cssText = "font-weight:800;font-size:14px;letter-spacing:0.08em;color:#2B2520";
+        title.style.cssText = "font-weight:800;font-size:14px;letter-spacing:0.08em;color:var(--aes-oxide)";
         wrap.appendChild(title);
 
         let version = "";
@@ -33,16 +33,16 @@
         } catch (_) {}
         const ver = document.createElement("div");
         ver.textContent = version ? ("Version " + version) : "Version unavailable";
-        ver.style.cssText = "font-family:'JetBrains Mono',monospace;font-size:12px;color:#5A4F45";
+        ver.style.cssText = "font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--aes-oxide-2)";
         wrap.appendChild(ver);
 
         const blurb = document.createElement("p");
-        blurb.style.cssText = "font-size:12px;line-height:1.6;color:#2B2520;margin:0";
+        blurb.style.cssText = "font-size:12px;line-height:1.6;color:var(--aes-oxide);margin:0";
         blurb.textContent = "Vanilla-JS Chrome extension for the AirlineSim browser game. Customisation, hub navigation, route assistance, fleet planning, and strategic tooling.";
         wrap.appendChild(blurb);
 
         const note = document.createElement("div");
-        note.style.cssText = "font-size:11px;color:#7A6F66;line-height:1.5;border-top:1px solid #C9C0B0;padding-top:10px;margin-top:6px";
+        note.style.cssText = "font-size:11px;color:var(--aes-slate);line-height:1.5;border-top:1px solid var(--aes-paper-rule);padding-top:10px;margin-top:6px";
         note.textContent = "Settings persist to chrome.storage.local; the site-skin enabled/density toggles persist to chrome.storage.sync so they follow you across devices. No telemetry, no remote calls, no dependencies.";
         wrap.appendChild(note);
 

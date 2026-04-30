@@ -44,7 +44,7 @@
         const card = H.card();
         const status = document.createElement("div");
         status.textContent = "Loading…";
-        status.style.cssText = "font-size:12px;color:#5A4F45";
+        status.style.cssText = "font-size:12px;color:var(--aes-oxide-2)";
         card.appendChild(status);
         host.appendChild(card);
 
@@ -70,7 +70,7 @@
             }
 
             const note = document.createElement("div");
-            note.style.cssText = "font-size:11px;color:#7A6F66;margin-top:10px;line-height:1.5";
+            note.style.cssText = "font-size:11px;color:var(--aes-slate);margin-top:10px;line-height:1.5";
             note.textContent = "Settings drawer requires the RA panel to be visible — open it from a hub page first.";
             card.appendChild(note);
         }).catch(function (e) {
