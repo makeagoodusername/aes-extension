@@ -44,6 +44,13 @@
     const BREAKER_FAIL_THRESHOLD   = 3;
     const BREAKER_COOLDOWN_MS      = 10 * 60 * 1000;
 
+    // Persistence: chrome.storage.local key for orphan-tab recovery on
+    // MV3 service-worker idle eviction. Only enough state is persisted
+    // to close orphan tabs and broadcast `run-done` so wedged content-side
+    // awaits resolve. The plan is intentionally NOT persisted — restart
+    // by user click is preferable to silent resume of a partial run.
+    const RUN_STATE_KEY            = 'scrapeOrchestrator:runState';
+
     // ---------------------------------------------------------------
     // Run state — only one orchestrator run at a time
     // ---------------------------------------------------------------
@@ -93,6 +100,7 @@
         state.concurrency         = (opts && opts.concurrency) || DEFAULT_CONCURRENCY;
         state.staggerMs           = (opts && opts.staggerMs)   || DEFAULT_STAGGER_MS;
         state.lastDispatchAt      = 0;
+        _persistState();
 
         _broadcastProgress({type: 'run-start', runId: state.runId, totalJobs: plan.length});
 
@@ -255,6 +263,7 @@
         state.running     = false;
         state.activeTabs  = new Map();
         state.lastDispatchAt = 0;
+        _clearPersistedState();
     }
 
     // ---------------------------------------------------------------
@@ -287,6 +296,7 @@
 
             tab = await _createTab(job.url);
             state.activeTabs.set(tab.id, job.jobId);
+            _persistState();
 
             await _waitForTabComplete(tab.id, loadTimeoutMs);
             if (state.abortFlag) throw new Error('aborted');
@@ -312,6 +322,7 @@
             }
             if (tab && tab.id != null) {
                 state.activeTabs.delete(tab.id);
+                _persistState();
                 try { chrome.tabs.remove(tab.id); } catch (_) { /* noop */ }
             }
         }
@@ -440,6 +451,91 @@
         state.haltReason          = null;
         return {ok: true};
     }
+
+    // ---------------------------------------------------------------
+    // Persistence — survives MV3 service-worker idle eviction
+    // ---------------------------------------------------------------
+    // Writes a small snapshot of the run's identifying state (NOT the
+    // plan, NOT the per-job results) so that on the next SW boot we can
+    // detect a half-dead run, close orphan tabs, and broadcast a
+    // synthetic `run-done` to unwedge any content-side awaits. Fire-and-
+    // forget; failures are non-fatal because the live in-memory state
+    // remains the source of truth while the SW is alive.
+    function _persistState() {
+        try {
+            const snap = {
+                running:     state.running,
+                runId:       state.runId,
+                activeTabIds: Array.from(state.activeTabs.keys()),
+                senderTabId: state.senderTabId,
+                startedAt:   state.startedAt,
+                persistedAt: Date.now()
+            };
+            chrome.storage.local.set({[RUN_STATE_KEY]: snap}, () => {
+                void chrome.runtime.lastError;
+            });
+        } catch (_) { /* noop */ }
+    }
+
+    function _clearPersistedState() {
+        try {
+            chrome.storage.local.remove(RUN_STATE_KEY, () => {
+                void chrome.runtime.lastError;
+            });
+        } catch (_) { /* noop */ }
+    }
+
+    // On module load — i.e. each SW boot, since this file is loaded via
+    // importScripts from background.js — reconcile any persisted run
+    // state. Presence of `running: true` means the previous SW died
+    // mid-run; close any orphan tabs from that run, emit a synthetic
+    // `run-done` so wedged content-side `await _runPhaseJobs(...)` calls
+    // resolve, and clear the persisted record.
+    function _recoverFromCrash() {
+        try {
+            chrome.storage.local.get([RUN_STATE_KEY], (blob) => {
+                void chrome.runtime.lastError;
+                const prev = blob && blob[RUN_STATE_KEY];
+                if (!prev || !prev.running) {
+                    if (prev) _clearPersistedState();
+                    return;
+                }
+                const orphanTabIds = Array.isArray(prev.activeTabIds) ? prev.activeTabIds : [];
+                for (const tabId of orphanTabIds) {
+                    try { chrome.tabs.remove(tabId, () => { void chrome.runtime.lastError; }); }
+                    catch (_) { /* noop */ }
+                }
+                // Synthetic run-done so any content-side listener awaiting
+                // a real one (orchestrator._runPhaseJobs) can resolve and
+                // release its `_busy` flag instead of hanging forever.
+                const recovered = {
+                    type:        'run-done',
+                    reason:      'sw-evicted',
+                    runId:       prev.runId,
+                    durationMs:  prev.startedAt ? (Date.now() - prev.startedAt) : 0,
+                    running:     false,
+                    totalJobs:   0,
+                    completed:   0,
+                    succeeded:   0,
+                    failed:      0,
+                    failedJobs:  [],
+                    activeTabs:  0,
+                    haltReason:  'sw-evicted',
+                    startedAt:   prev.startedAt || 0,
+                    orphanTabsClosed: orphanTabIds.length
+                };
+                const message = {type: 'aes:scrape-all:progress', event: recovered};
+                if (prev.senderTabId != null) {
+                    try { chrome.tabs.sendMessage(prev.senderTabId, message, () => { void chrome.runtime.lastError; }); }
+                    catch (_) { /* noop */ }
+                }
+                try { chrome.runtime.sendMessage(message, () => { void chrome.runtime.lastError; }); }
+                catch (_) { /* noop */ }
+                _clearPersistedState();
+            });
+        } catch (_) { /* noop */ }
+    }
+    _recoverFromCrash();
 
     globalThis.ScrapeTabPool = {
         startRun:     startRun,
