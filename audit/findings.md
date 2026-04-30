@@ -42,7 +42,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/_shared/data-bus.js (STORAGE_ECHO_SUPPRESS_MS = 200, onStorageChanged loop)
 - Severity: P2
 - Found by: port-9223
-- Status: CLAIMED:9227
+- Status: FIXED
 - Repro: at bridge.html: register a `bridgeStorage({prefix:"aes_test_echo_", topic:"data:test:echo:saved"})`, subscribe to that topic, then `AesDataBus.emit("data:test:echo:saved",{suffix:"k1"}); await new Promise(r=>setTimeout(r,250)); chrome.storage.local.set({"aes_test_echo_k1":{v:1}})`.
 - Expected: subscriber sees ONE event for the logical save (the documented contract — "Producer awaits chrome.storage.local.set then calls AesDataBus.emit"; the 200ms suppress prevents the writer's own echo from double-firing).
 - Actual: subscriber sees TWO events: `{source:"local"}` then `{source:"storage"}` ~250ms apart. Live: `eventCount:2`.
@@ -158,7 +158,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: css/command-bridge.css (`.aes-bridge__picker-chip`, `.aes-bridge__ribbon-chip`, `.aes-bridge__card`, `.aes-bridge__btn`)
 - Severity: P3
 - Found by: port-9224
-- Status: CLAIMED:9225
+- Status: FIXED
+- Fix: added a shared `:focus-visible` rule in css/command-bridge.css covering `.aes-bridge__picker-chip`, `.aes-bridge__ribbon-chip`, `.aes-bridge__ribbon-sentence`, `.aes-bridge__card`, `.aes-bridge__lane`, `.aes-bridge__btn`, `.aes-bridge__adder-btn`, `.aes-bridge__coalitions-new`, `.aes-bridge__card-del`, `.aes-bridge__opps-row-name` → `outline: var(--aes-bw-2) solid var(--aes-rust); outline-offset: 2px;` (matches the existing `.aes-btn:focus-visible` rule in components.css). Verified by: at port-9225 chrome-extension://.../bridge.html after cache-bypass reload, individually focusing `.aes-bridge__ribbon-chip` and `.aes-bridge__adder-btn` via `el.focus({focusVisible:true})` — `getComputedStyle(el).outline` resolves to `rgb(184, 71, 42) solid 2px` (= `--aes-rust` `#B8472A` at `--aes-bw-2` `2px`) with `outline-offset: 2px`; pre-fix only the browser-default 1.5px outline applied. `el.matches(':focus-visible')` returns true and the only matching outline rule in the cascade is the new selector group.
 - Repro: open chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/bridge.html → tab through the page (or focus a chip via DevTools). Verified by querying every stylesheet rule whose selectorText contains "picker-chip" + ":focus" — zero matches. The chip is in normal tab flow (`tabIndex === 0`) so users do reach it via keyboard, but only the browser-default outline shows.
 - Expected: tracked, high-contrast focus ring matching the rest of the brutalist UI (cf. `.aes-btn:focus-visible { outline: var(--aes-bw-2) solid var(--aes-rust); outline-offset: 2px }` in css/components.css and `.aes-bridge__adder-title:focus { outline: var(--aes-bw-2) solid var(--aes-rust); outline-offset: -2px }` in command-bridge.css for adder inputs).
 - Actual: the only `:focus`/`:focus-visible` rules in command-bridge.css cover the adder inputs (`.aes-bridge__adder-title`, `.aes-bridge__adder-lane`, `.aes-bridge__adder-bind`, `.aes-bridge__coalitions-name`). All chip / button / card / lane / ribbon-chip surfaces inherit only the browser default outline, which on the bone background is a thin blue ring barely visible against the brutalist palette.
@@ -168,7 +169,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/unified-settings/shell.js (`ensureStyle`, lines 43–95)
 - Severity: P3
 - Found by: port-9224
-- Status: OPEN
+- Status: FIXED
 - Repro: code review + token comparison. The shell does fetch tokens via `window.AESTokens` but only uses three of them (bone, oxide, paperRule). Every other CSS value is inlined as a literal.
 - Expected: same token discipline as design-tokens.css contract ("no value outside this file"). Use `var(--aes-fs-body)` (12px) or the token resolver's `T.fs.body`, `var(--aes-font-display)`, `var(--aes-z-modal)`, and a soft-overlay token.
 - Actual: shell.js:53 hardcodes `rgba(26,22,18,0.55)` (oxide-bg with 55% alpha — no token); shell.js:54 hardcodes `120ms ease` for the open transition (`--aes-tr-medium` is `140ms linear`); shell.js:62 hardcodes `width:min(960px, calc(100vw - 32px))` and `border:2px solid` instead of `var(--aes-bw-2) solid` and `box-shadow:6px 6px 0` (no token for the brutalist drop-shadow signature); shell.js:63 hardcodes `font-family:'Inter Tight',system-ui,sans-serif;font-size:13px` — but design-tokens.css defines `--aes-font-display` which is the Inter Tight stack, and 13px isn't on the design's typography scale at all (10/11/12/14/18/24/36/56). 13px is the only scale violator in this file. The same `2147483646/2147483647` z-index pattern from the command palette doesn't repeat — z-index is `9998/9999`, which is *under* `--aes-z-modal` (10000) and could be hidden under a brutalist toast.
@@ -241,7 +242,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/competitor-intel/outline-aggregator.js (memoise IIFE lines 765-781)
 - Severity: P2
 - Found by: port-9226
-- Status: OPEN
+- Status: WONTFIX (memoise IIFE no longer present in current outline-aggregator.js — file is 758 lines, no JSON.stringify hash, build() loads economics/ourFleet inline on every call so the staleness window doesn't exist)
 - Repro: by code review — the hash function is `({s: a.server || "", e: ids, h: a.hubFilter || ""})`. Call build({server:"free1", economics: E1}) then within 30s call build({server:"free1", economics: E2}) — second call returns the cached result built with E1's profitability assumptions even though the caller passed E2.
 - Expected: changing `economics` (load factor, yield/km, fuel cost) or `ourFleet` between calls forces a rebuild because the per-route profit estimates are derived from those inputs.
 - Actual: the memoise key only varies by `server`, sorted `enterpriseIds`, and `hubFilter`. `args[0].economics` and `args[0].ourFleet` are silently ignored, so a build with overridden economics is shadowed by an earlier same-server cache hit. Compounding: `hubFilter` is in the hash but no caller passes `hubFilter` (grep across modules/* finds the field name only at this single line in outline-aggregator.js — every other `hubFilter` occurrence is a local variable in unrelated modules). So the hash spends a slot on a phantom field while ignoring the real ones.
@@ -271,7 +272,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/competitor-intel/aggregator.js (buildEdgeRecord lines 87-163)
 - Severity: P2
 - Found by: port-9226
-- Status: OPEN
+- Status: FIXED
 - Repro: trigger a markets-page scrape for a route with multiple competitors (e.g. JFK-LHR), then inspect the saved record at storage key `competitorIntel:edge:<server>:JFK-LHR`. Look at `competitors[i].weeklyFlights` and `competitors[i].weeklySeats`.
 - Expected: each competitor entry in the edge record carries the per-carrier weekly flight/seat count derived from the markets-page competitor list (the `byEnterprise` map at lines 105-116 collects exactly that data, keyed by flight-code prefix).
 - Actual: every entry has `weeklyFlights: 0, weeklySeats: 0`. The `byEnterprise` map IS built (lines 109-115) and IS used for the edge's overall `totals.totalWeeklyFlights / totalSeats` (lines 145-150) — but the per-competitor `competitors[]` array at lines 117-143 is built independently from `marketShareRec.pax / .cargo` keyed by `name`, and never merges in the byEnterprise data because the join key (flight-code prefix vs enterprise name) doesn't line up. The `weeklyFlights: 0` and `weeklySeats: 0` initial values flow straight to `AesCompetitorStore.saveEdge` at line 161.
@@ -381,7 +382,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/marketing/budget-store.js (lines 54-80)
 - Severity: P1
 - Found by: port-9227
-- Status: OPEN
+- Status: FIXED
 - Repro: at any AS app page, run in DevTools: (1) `await AesMarketingBudgetStore.save({server:"free1", airline:"AAA", regions:[{regionId:"europe", currentBudgetAS:50000}]}, {server:"free1", airline:"AAA"})` — note no accountId in the ctx, simulating a hand-seed before account-registry mapped this airline. (2) `await AesMarketingBudgetStore.load({accountId:"acct-totally-different", server:"free2", airline:"BBB"})`.
 - Expected: load returns null because no record exists for the second account.
 - Actual: load returns the FIRST account's regions array. Reason: save's line 76 (`if (!stamped.accountId) writes[KEY_BASE] = stamped`) wrote the record to the unscoped legacy `aesMarketing:budgets` key. load's line 57-58 fetches both the scoped key and KEY_BASE, returning `got[scopedKey] || got[KEY_BASE] || null` — so any new account whose scoped key has no record falls through to the legacy global record.
@@ -401,7 +402,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/strategy/pricing-engine.js (lines 68-110)
 - Severity: P2
 - Found by: port-9227
-- Status: OPEN
+- Status: FIXED
 - Repro: code review of `timeDecayCompetitorBand(historic, opts)`. Lines 73-81 push rows from `historic.weeks` into `rows[]`; lines 82-93 push rows from `historic.byPayload` into the SAME `rows[]`. No de-duplication. Sample input: `{weeks:[{timestamp:T1, priceMin:100, priceMax:120}], byPayload:{[T1]:{timestamp:T1, priceMin:100, priceMax:120}}}` returns `priceMin: 100, samples: 2` — the same observation contributed twice with the same time-decay weight, so both halves of the weighted average are duplicated.
 - Expected: each observation contributes once to the time-decayed band.
 - Actual: when the upstream parser ships both shapes (the `routeAssistant:markets:historic:<HUB>-<DEST>` store does, when it captures per-payload + weekly aggregates), every observation is double-counted. `priceMin`/`priceMax` averages are biased toward whichever data is duplicated. Downstream pricing-compass + auto-driver pricing decisions consume this directly.
@@ -441,7 +442,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/strategy/apply-pipeline.js (lines 153-171)
 - Severity: P2
 - Found by: port-9227
-- Status: OPEN
+- Status: FIXED
 - Repro: with two airlines on the same Chrome profile, both with accountId resolved by AesAccountRegistry: (1) apply a plan on airline A — `await AesStrategy.apply(planA)`. (2) inspect `chrome.storage.local.get(["aesStrategy:audit"]).then(b => b["aesStrategy:audit"].length)` → some N. (3) apply a plan on airline B. (4) re-inspect → ring length is whatever airline B's scoped ring length is, NOT N + B's-applies. Airline A's audit entries are gone from the legacy key (still present in `aesStrategy:audit:acct:<idA>`).
 - Expected: per the comment (apply-pipeline.js:80-83), the legacy key "stays current so a fresh install reading the unscoped key sees the most recent apply across all accounts (the old behaviour)."
 - Actual: when `scopedKey` exists, line 160 picks `readKey = scopedKey`, ring is the SCOPED account's ring, and lines 165-167 write that ring to BOTH the legacy AUDIT_KEY and the scoped key. Each apply on a different airline clobbers the legacy ring with that airline's history. A back-compat reader on the legacy key sees a single-account view, not "most recent across all accounts."
@@ -451,7 +452,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/strategy/elasticity-fit.js (lines 8-12 docstring, 226-236 smoke test)
 - Severity: P2
 - Found by: port-9227
-- Status: OPEN
+- Status: FIXED
 - Repro: run the formula directly in DevTools: `const sig = (p, params) => params.L / (1 + Math.exp(params.k * (p - params.p0))); const tp = {L:0.92, k:-0.05, p0:110}; [80, 110, 140].map(p => [p, sig(p, tp)])` → returns `[[80, 0.168], [110, 0.46], [140, 0.752]]`. Higher price → HIGHER LF. That's a Giffen-good curve. Real airlinesim demand goes the other way (price↑ → LF↓), so real data fits with `k > 0`, NOT `k < 0`. The smoke test (line 226) generates synth data with `k:-0.05` and asserts `f.slope < 0` (line 236) — passes on the synthetic Giffen data, masks the inverted convention.
 - Expected: per the header comment "k = slope (negative when raising price reduces LF — the natural direction for any non-Giffen good)", `k < 0` should produce LF DROPPING as price rises. The bundled formula gives the opposite.
 - Actual: the math is internally consistent (the fitter recovers whatever sign the data has), so production isn't broken — when fed real airlinesim data, the fitter returns `k > 0` and `suggestPriceForLfTarget` correctly returns lower prices for higher LF targets. But the docs + smoke test are inverted from reality, so anyone extending the engine from the docstring will write inside-out logic. The `slope < 0` assertion in the smoke is meaningless — any synthetic data will round-trip whatever k it was generated with.
@@ -461,7 +462,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/accounting/snapshot-store.js (lines 45-92, `saveTab`)
 - Severity: P3
 - Found by: port-9227
-- Status: OPEN
+- Status: FIXED
 - Repro: from two AS app windows visiting `/app/finance/accounting/0` (Income) and `/app/finance/accounting/1` (Balance) for the same airline at near-the-same moment: both call `AccountingSnapshotStore.saveTab(...)`; both `await chrome.storage.local.get([indexKey])` see the same baseline index; both `entry["has" + Type]= true` on their LOCAL copy; both `await chrome.storage.local.set({key, indexKey})` — second write wins on the indexKey, so the first scrape's hasX flag is silently lost from the index entry. The PER-TAB record (the income/balance key) is preserved fine because each writes its own key.
 - Expected: after parallel income+balance scrapes for the same weekId, the index entry shows both `hasIncome:true` and `hasBalance:true`.
 - Actual: only the flag from the second-finishing scrape persists. Side-effect: the panel + the Conductor's central-hub-shell read hasX flags off the index when deciding whether to surface "complete week" — so a partially-scraped week may render as "complete" or "missing" depending on which scrape lost the race.
@@ -490,7 +491,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/_shared/views/accounting-ledger.js (lines 35-62) vs modules/accounting/snapshot-store.js (line 87) vs modules/central-hub/feed/index.js (line 35)
 - Severity: P1
 - Found by: port-9223
-- Status: OPEN
+- Status: NOT-APPLICABLE
+- Note: port-9223 verified that `modules/_shared/views/accounting-ledger.js` does not exist in the current tree. The phantom topic strings (`data:accounting:snapshot:saved`, `data:accounting:bank:saved`, `data:route-assistant:topRoutes:saved`) appear nowhere in the codebase either. Original finding was likely based on a planned/unmerged view file. Cash-feed slice does subscribe to `data:accounting:weekly:saved` correctly (cash-feed.js:36). Skipping; if the view is added later, the topic-drift fix needs to ship with it.
 - Repro: grep emit/publish call sites for the three deps. The view declares deps `data:accounting:snapshot:saved`, `data:accounting:bank:saved`, `data:route-assistant:topRoutes:saved`. None of those exact strings are emitted anywhere. The actual producer for accounting publishes `data:accounting:snapshot:updated` (note the verb mismatch: `:updated` vs `:saved`) and the storage bridge in feed/index.js emits `data:accounting:weekly:saved` (different slice). `data:accounting:bank:saved` and `data:route-assistant:topRoutes:saved` are not emitted by any module.
 - Expected: an accounting scrape on `/app/finance/accounting/{0,1,2}` triggers the view to recompute and any consumer (bridge accounting-pane Phase 2C) sees a fresh ledger.
 - Actual: the view's eager compute primes the memo on declare, but every subsequent dep firing is on a phantom topic — no recompute. `AesAccountingLedger.compute(server, airline)` returns the stale memo until the page reloads. Subscribers via `AesView.subscribe("accounting:ledger", …)` never fire after the first load.
@@ -609,7 +611,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/competitor-intel/outline-panel.js:237-239; modules/central-hub/tiles/competitor-outline-tile.js:58
 - Severity: P2 (refines F-9226-003)
 - Found by: port-9226
-- Status: OPEN
+- Status: WONTFIX (refines F-9226-003 which is also WONTFIX — no memo wrapper exists in current outline-aggregator.js, so the no-args call sites at panel.js:237 and tile.js:58 are correctly handled by inline _loadEconomics/_loadOurFleet inside build())
 - Repro: open the outline panel. Inside outline-aggregator's _loadEconomics() it calls `RouteAssistantSettingsStore.load()` and reads `settings.economics`. Now go to RA settings and adjust `loadFactor` from 0.75 → 0.85. Click "Save". Within 30s, refresh the outline panel. Their estimated profit-per-week numbers don't move.
 - Expected: changes to RA economics flow through to the next outline build. Either the memo invalidates on RA-settings:economics:saved (a signal the panel can subscribe to), or the build's hash includes the economics blob.
 - Actual: the memo hash at outline-aggregator.js:771-776 is `JSON.stringify({s, e, h})` — no economics, no ourFleet. The `_loadEconomics()` await INSIDE the memoised function never runs on the second call within TTL because memoByInput's lookup hits the cache at the very top. The user sees stale profit numbers until the 30s TTL expires.

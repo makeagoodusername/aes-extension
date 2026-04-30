@@ -930,3 +930,18 @@ a.aes-bridge__opps-row-name:hover { color: var(--aes-rust-deep); }
     .aes-bridge__conductor-grid,
     .aes-bridge__strategy-grid { grid-template-columns: 1fr; }
 }
+
+/* ----- Focus rings (a11y) --------------------------------- */
+.aes-bridge__picker-chip:focus-visible,
+.aes-bridge__ribbon-chip:focus-visible,
+.aes-bridge__ribbon-sentence:focus-visible,
+.aes-bridge__card:focus-visible,
+.aes-bridge__lane:focus-visible,
+.aes-bridge__btn:focus-visible,
+.aes-bridge__adder-btn:focus-visible,
+.aes-bridge__coalitions-new:focus-visible,
+.aes-bridge__card-del:focus-visible,
+.aes-bridge__opps-row-name:focus-visible {
+    outline: var(--aes-bw-2) solid var(--aes-rust);
+    outline-offset: 2px;
+}
