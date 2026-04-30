@@ -148,7 +148,7 @@
             catch (e) { console.warn("[AFP-B] cache save failed", e) }
         }
 
-        const source = (viaPath === "fleet") ? "fleet-store" : "heuristic"
+        const source = (viaPath === "fleet") ? "fleet-store" : "as-fetched"
         const spec = _buildSpec(record, ctx, source)
         AesAfpSpecResolver.last = spec
         renderSummaryCard(_slot(), spec)
