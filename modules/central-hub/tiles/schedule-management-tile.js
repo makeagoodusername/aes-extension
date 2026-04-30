@@ -25,11 +25,44 @@ class CentralHubScheduleManagementTile extends window.CentralHubTile {
 
     watchedStorageKeys(ctx) {
         const server = (ctx && ctx.server) || ""
-        return ["settings", server + (ctx && ctx.airline || "") + "scheduleManagement:"]
+        // F-9230-003: dropped the bare "settings" prefix — that key holds every
+        // module's settings slice, so watching it caused refreshes from
+        // unrelated module writes. mount() attaches a slice-aware listener
+        // that fires only on settings.scheduleManagement changes.
+        return [server + (ctx && ctx.airline || "") + "scheduleManagement:"]
+    }
+
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        // F-9230-003: scoped listener for the scheduleManagement slice of the
+        // global settings blob. Compares fingerprint before/after to skip
+        // refreshes on unrelated slice writes (UAS, RA, …).
+        this._smSettingsListener = (changes, area) => {
+            if (area !== "local" || !changes.settings) return
+            const oldSlice = changes.settings.oldValue && changes.settings.oldValue.scheduleManagement
+            const newSlice = changes.settings.newValue && changes.settings.newValue.scheduleManagement
+            if (JSON.stringify(oldSlice || null) === JSON.stringify(newSlice || null)) return
+            this.refresh()
+        }
+        try { chrome.storage.onChanged.addListener(this._smSettingsListener) }
+        catch (_) { /* tile still works without it */ }
+    }
+
+    dispose() {
+        if (this._smSettingsListener) {
+            try { chrome.storage.onChanged.removeListener(this._smSettingsListener) }
+            catch (_) { /* noop */ }
+            this._smSettingsListener = null
+        }
+        super.dispose()
     }
 
     openHandler() {
-        return () => CentralHubLegacy.switchDropdownTo("scheduleManagement")
+        return () => {
+            if (window.CentralHubLegacy && typeof window.CentralHubLegacy.switchDropdownTo === "function") {
+                window.CentralHubLegacy.switchDropdownTo("scheduleManagement")
+            }
+        }
     }
 
     async _loadPresets() {
@@ -50,8 +83,13 @@ class CentralHubScheduleManagementTile extends window.CentralHubTile {
         const blob = await chrome.storage.local.get([indexKey])
         const idList = blob[indexKey]
         if (!Array.isArray(idList) || !idList.length) return []
-        const keys = idList.slice(0, 5).map(id =>
-            server + airline + "scheduleManagement:" + id)
+        // Index entries are summary objects ({scheduleId, presetName, hub, ...});
+        // accept legacy bare-id strings for forward-compat in case the schema
+        // was ever tightened.
+        const ids = idList.slice(0, 5).map(e =>
+            (e && typeof e === "object") ? e.scheduleId : e).filter(Boolean)
+        if (!ids.length) return []
+        const keys = ids.map(id => server + airline + "scheduleManagement:" + id)
         const records = await chrome.storage.local.get(keys)
         return keys.map(k => records[k]).filter(Boolean)
     }
