@@ -118,7 +118,7 @@
         if (!totals || typeof totals !== "object") return 0
         // Prefer EBT (after financial result), fall back to EBIT, then any
         // adjEbitda — first finite "current" wins.
-        for (const k of ["ebt", "ebit", "adjebitda"]) {
+        for (const k of ["ebt", "ebit", "adjEbitda"]) {
             const t = totals[k]
             if (!t) continue
             const v = _num(t.current, NaN)
