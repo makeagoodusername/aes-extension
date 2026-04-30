@@ -35,19 +35,29 @@ class AesCompetitorEnterpriseScraper {
 
     async scrape(enterpriseId) {
         const id = String(enterpriseId)
-        if (this._sessionCache.has(id)) return this._sessionCache.get(id)
+        // Cache the in-flight Promise (not the resolved record) so a second
+        // concurrent caller — bulk runner racing against airport-panel host,
+        // or two near-simultaneous panel opens — coalesces against the same
+        // 4-fetch deep parse instead of duplicating it. On rejection the
+        // entry is dropped so a follow-up call can retry.
+        const cached = this._sessionCache.get(id)
+        if (cached) return cached
 
-        const meta = this._meta ? await this._safeMeta(id) : {}
-        const deep = await this._scrapeDeep(id)
-        const merged = AesCompetitorEnterpriseScraper._merge(meta, deep)
+        const promise = (async () => {
+            const meta = this._meta ? await this._safeMeta(id) : {}
+            const deep = await this._scrapeDeep(id)
+            const merged = AesCompetitorEnterpriseScraper._merge(meta, deep)
 
-        const rec = await AesCompetitorStore.saveEnterprise(this.server, id, merged)
-        this._sessionCache.set(id, rec)
-        if (typeof AesCompetitorSnapshotStore !== "undefined") {
-            try { await AesCompetitorSnapshotStore.record(this.server, id, rec) }
-            catch (e) { console.warn("[AES competitor-intel] snapshot record failed:", e) }
-        }
-        return rec
+            const rec = await AesCompetitorStore.saveEnterprise(this.server, id, merged)
+            if (typeof AesCompetitorSnapshotStore !== "undefined") {
+                try { await AesCompetitorSnapshotStore.record(this.server, id, rec) }
+                catch (e) { console.warn("[AES competitor-intel] snapshot record failed:", e) }
+            }
+            return rec
+        })()
+        this._sessionCache.set(id, promise)
+        promise.catch(() => { this._sessionCache.delete(id) })
+        return promise
     }
 
     async _safeMeta(id) {
