@@ -210,7 +210,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/unified-settings/{shell.js, tab-data.js, tab-account.js, tab-about.js, tab-customisation.js, adapters/_helpers.js, adapters/aircraft-flight-plan.js, adapters/strategy.js, adapters/route-assistant.js, …}
 - Severity: P2
 - Found by: port-9224
-- Status: OPEN
+- Status: FIXED
 - Repro: `cd project && grep -nE '#[0-9A-Fa-f]{6}\b' modules/unified-settings/*.js modules/unified-settings/adapters/*.js | wc -l` → 46. Most are duplicates of design-tokens (#F4F1EA / #2B2520 / #C9C0B0 — fine, just non-DRY), but three are *new off-palette colours* that don't exist in css/design-tokens.css:
     - `#5A4F45` — used as "oxide2" in tab-data.js:49,78; tab-account.js:78; tab-about.js:36; _helpers.js:17. Token equivalent is `--aes-oxide-2: #4A413B` (noticeably darker grey). Visible drift wherever an adapter row sits next to a brutalist `.aes-btn` that renders the real oxide-2.
     - `#E7E0CC` — used as "bone2" in _helpers.js:15. Token equivalent is `--aes-bone-2: #ECE7DC` (slightly cooler bone). Adapter "notice" cards therefore paint on a different bg than the surrounding `.aes-modal` body.
@@ -313,7 +313,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/route-assistant/wave-keybinds-store.js (DEFAULT_BINDINGS), modules/unified-settings/adapters/drag-and-palette.js (ACTION_LABELS)
 - Severity: P2
 - Found by: port-9225
-- Status: OPEN
+- Status: CLAIMED:9225
 - Repro: open Unified Settings → "Drag & Wave Palette" → "Wave palette chords" card. Click any chord row OTHER than "Open wave palette" (e.g. "Toggle wave panel", "Save preset variant", "Pin active preset", "Next wave", "Previous wave", "Add wave", "Delete wave", "Cancel drag") and record a new chord (e.g. F8). Save. Then on any AS app page, press the new chord. Nothing happens.
 - Expected: every action exposed in the chord-binding card has a working keyboard handler that consumes its chord — that's the contract the settings card establishes when it lets you edit the chord.
 - Actual: only `palette.open` is wired (modules/route-assistant/wave-palette.js:558 — `RouteAssistantWaveKeybindsStore.matches(event, chord)`). All eight other action ids — `panel.toggleWaves`, `palette.savePresetVar`, `palette.pinActive`, `wave.next`, `wave.prev`, `wave.add`, `wave.delete`, `drag.cancel` — appear in DEFAULT_BINDINGS (wave-keybinds-store.js:27-37) AND in the unified-settings adapter ACTION_LABELS (drag-and-palette.js:25-35) but no keydown listener anywhere in `modules/` ever calls `RouteAssistantWaveKeybindsStore.resolve(...)` or `.matches(...)` for them. Verified via `grep -rn "WaveKeybinds.matches\|wave\.next\|wave\.prev\|wave\.add\|wave\.delete\|drag\.cancel\|panel\.toggleWaves\|palette\.savePresetVar\|palette\.pinActive" modules/ --include="*.js"` — only one call site (`palette.open` in wave-palette.js:558) and the two definition files appear.
@@ -323,7 +323,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/route-assistant/wave-registry.js (search, line 224-225)
 - Severity: P2
 - Found by: port-9225
-- Status: OPEN
+- Status: FIXED
 - Repro: open the Wave Palette (Mod+Shift+K on any AS app page), type "+star" into the search box. Even with starred presets persisted (see wave-favorites-store), the filtered list comes back empty (or unchanged).
 - Expected: typing `+star` in the palette returns only presets that have been starred (per the user's `RouteAssistantWaveFavoritesStore` favorites map).
 - Actual: `wave-registry.js:224-225` filters `candidates.filter(p => p.starredAt != null)`. The enriched preset shape built by `wave-registry.build()` (lines 64-78) merges in `tags`, `role`, `colorToken`, `pinnedTo` from `AesWavePresetMetaStore`, but DOES NOT merge in any starred state from `RouteAssistantWaveFavoritesStore`. The only place `preset.starredAt` would be set is `presets-store.js:55` (`newPreset()` sets it to `null`); no code path ever assigns a non-null value to `preset.starredAt`. Star info lives in a separate keyed map at `routeAssistant:waveFavorites:byPresetId.<presetId>.starredAt` — and `wave-palette.js:193` correctly reads it from there for badge rendering, while `wave-registry.search` looks in the wrong place.
@@ -333,7 +333,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/aircraft-flight-plan/spec-resolver.js (line 151)
 - Severity: P3
 - Found by: port-9225
-- Status: OPEN
+- Status: FIXED
 - Repro: navigate to `/app/fleets/aircraft/<id>/0` for an aircraft whose typeId resolves only via the page-link fallback (NOT via `RouteAssistantFleetStore`) — i.e. fleet store is cold but the AFP page's `<a href="aircraftsType?id=…">` link is present. Watch the spec card render. Inspect `document.querySelector('[data-aes-afp-spec-card="resolved"]').dataset.source`.
 - Expected: per the JSDoc at spec-resolver.js:30 — `source ∈ "cached" | "fleet-store" | "heuristic" | "as-fetched"`. A fresh AS fetch via `AESAircraftTypeSpecs.fetchById(typeId)` should be tagged `"as-fetched"`.
 - Actual: line 151 sets `const source = (viaPath === "fleet") ? "fleet-store" : "heuristic"`. Anything that wasn't fleet-store-derived gets the `"heuristic"` label, regardless of whether the data came from a fresh AS fetch or from a heuristic. The `"as-fetched"` enum value the doc lists is never actually used anywhere in the resolver. (The "heuristic" label IS appropriate when `RouteAssistantFuelBurn.heuristic()` synthesises burn data, but that's a different module entirely.)
@@ -353,7 +353,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/aircraft-flight-plan/auto-scheduler/preview-panel.js (gantt empty-state copy + CTA disabled-state)
 - Severity: P3
 - Found by: port-9225
-- Status: OPEN
+- Status: FIXED
 - Repro: open `/app/fleets/aircraft/<id>/0` for an aircraft whose route candidates haven't been generated this session (i.e. you haven't visited the per-route scheduling page or run the route-candidates panel for this hub yet). Look at the "Auto-build (preview)" card. The "Auto-build week" button has `disabled` and `title="Waiting for route candidates (Slice C)."`. Right below, the gantt-area placeholder says `No build yet. Click "Auto-build week" to generate a proposal.`
 - Expected: the empty-state instruction is consistent with the button's disabled-state — either tells the user what to do FIRST to unblock the button (e.g. "Open this aircraft's hub on /app/com/scheduling so route candidates are computed, then return here"), or omits the click instruction when the button can't be clicked.
 - Actual: the user sees a button they're told to click but that's already disabled, and the disabled tooltip mentions an internal slice name ("Slice C") rather than a user-actionable next step. Minor friction — but compounded for new users who don't know what "Slice C" is.
@@ -373,7 +373,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/conductor/signal-layer.js (line 305) ↔ modules/accounting/snapshot-store.js (line 26) ↔ modules/conductor/scenarios.js (`CashStep`, lines 275-292)
 - Severity: P1
 - Found by: port-9227
-- Status: OPEN
+- Status: FIXED
 - Repro: at any AS app page, open DevTools and run `chrome.storage.local.get(null).then(b => Object.keys(b).filter(k => /accounting:balance/.test(k)))`. Observed format is `<server><airline>accounting:balance:<weekId>` (e.g. `free1ACCaccounting:balance:2026-05-02`) — set by AccountingSnapshotStore._tabKey: `server + airline + "accounting:" + type + ":" + weekId`. signal-layer's router is `if (key.indexOf("accounting:balance:") === 0) return _onBalanceChange(...)` (signal-layer.js:305) — strict prefix-at-zero match. The actual key starts with the server name, so indexOf returns the position of "accounting:" inside the key (>0), never 0. The route NEVER fires. Confirm by visiting `/app/finance/accounting/1` (Balance Sheet), waiting for the balance scrape to land in storage, then `chrome.storage.local.get([<the new key>])` shows the record exists but `AesConductorSignalStore.recent({server,airline}).then(arr => arr.filter(s => s.type === "cash.balance.changed"))` is empty.
 - Expected: every balance-sheet scrape emits a `cash.balance.changed` signal so downstream `CashStep` (scenarios.js:275-292) can fire when the bank balance moves > 100,000 AS$.
 - Actual: the routing branch's prefix match fails for every real key the snapshot-store writes, so the extractor never runs. CashStep is dead. Even if the route DID match, `_onBalanceChange` reads `change.newValue.balance` / `.cash` (signal-layer.js:170-171), but the snapshot-store's record shape is `{weekId, type, scrapedAt, payload}` (no top-level `balance`/`cash` field) — the extractor would silently no-op via the `if (oldBal === newBal) return` guard.
