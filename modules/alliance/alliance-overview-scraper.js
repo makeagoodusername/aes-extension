@@ -74,15 +74,27 @@ class AllianceOverviewScraper {
             if (!resp.ok) return 0
             const html = await resp.text()
             const doc = new DOMParser().parseFromString(html, "text/html")
-            // The applications panel sits under the active .tab-pane on tabs=1.
-            // Count rows in any tbody we can find on the page; if the panel is
-            // absent or empty AS still renders the table shell, so we tolerate
-            // the most permissive selector.
-            const panel = doc.querySelector(".tab-pane.active table tbody")
-                || doc.querySelector(".tab-content table tbody")
-                || doc.querySelector("table tbody")
-            if (!panel) return 0
-            return panel.querySelectorAll("tr").length
+            // AS renders only the active tab's pane server-side. When
+            // `?tabs=1` is honored the active pane is the applications
+            // panel, with one tbody per pending request. When AS falls
+            // back to the default tab (expired session, URL not honored,
+            // or future routing change) the active pane is the Members
+            // roster — `<table class="... members">`. Reject any tbody
+            // whose containing table carries the `members` class so a
+            // failed-to-route request never reports the member count as
+            // pending-applications count.
+            const candidates = doc.querySelectorAll(
+                ".tab-pane.active tbody, .tab-content tbody, tbody"
+            )
+            for (const tb of candidates) {
+                const table = tb.closest("table")
+                if (!table) continue
+                if (table.classList.contains("members")) continue
+                const rows = tb.querySelectorAll("tr")
+                if (!rows.length) continue
+                return rows.length
+            }
+            return 0
         } catch (e) {
             console.warn("[AES allianceScraper] applications fetch failed:", e)
             return 0
