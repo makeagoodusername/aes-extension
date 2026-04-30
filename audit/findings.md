@@ -135,7 +135,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/command-bridge/afp-pane.js + canvas-pane.js + dna-pane.js + ra-pane.js (and shared `.aes-bridge__pane-column`); css/command-bridge.css missing rules
 - Severity: P2
 - Found by: port-9224
-- Status: CLAIMED:9225
+- Status: WONTFIX
+- WONTFIX reason: could not reproduce. The afp/canvas-grid/dna-grid/ra-grid/pane-column classes do not exist anywhere in the source tree on slice/e-integration (`grep -rn "aes-bridge__afp"` matches only audit/findings.md itself; same for the other classes). The five JS modules listed in Area (afp-pane.js, canvas-pane.js, dna-pane.js, ra-pane.js) are absent under modules/command-bridge/ — `ls modules/command-bridge/` shows only activity-ribbon, bridge-app, coalitions-panel, menu-installer, opportunities-panel, priority-board, priority-store, subsidiary-cards. Live DOM at chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/bridge.html (verified on port-9225 after a cache-bypass reload) shows 5 sections — activity, subsidiaries, board, coalitions, opportunities — and contains zero matches for the listed classes; the strings "AIRCRAFT FLIGHT PLAN" and "WEAR" do not appear in document.body.innerText. Adding the proposed CSS would dead-code rules with no markup to bind to.
 - Repro: open chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/bridge.html → scroll to "AIRCRAFT FLIGHT PLAN — WEAR" section. Three pills are emitted next to each other: "0 bad", "0 warn", "0 good".
 - Expected: each count is a chip-like pill — coloured dot/border, padding, separated visually. Same for `.aes-bridge__canvas-grid`, `.aes-bridge__dna-grid`, `.aes-bridge__ra-grid` and `.aes-bridge__pane-column` blocks (column wrappers with hairline / spacing). Mirrors the pattern used by `.aes-bridge__opps-card` etc.
 - Actual: the three pills render as default inline `<span>`s with zero padding/margin/border/bg. Computed: `display:inline; padding:0px; margin:0px; backgroundColor:rgba(0,0,0,0); borderColor:rgb(43,37,32)` (border colour comes only from the inherited oxide on `*`-style resets). Visible result: `0 bad0 warn0 good` runs together as one string (screenshot: /tmp/aes-ui-screens/bridge-picker-flynyon-active.png). No CSS rules exist for: `.aes-bridge__afp-strip`, `.aes-bridge__afp-pill`, `.aes-bridge__afp-pill--bad/warn/good`, `.aes-bridge__canvas-grid`, `.aes-bridge__dna-grid`, `.aes-bridge__ra-grid`, `.aes-bridge__pane-column`. Verified: `grep -E "aes-bridge__(afp|canvas-grid|dna-grid|ra-grid|pane-column)" css/command-bridge.css` returns nothing.
@@ -260,7 +261,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/competitor-intel/enterprise-scraper.js (scrape(), lines 36-51)
 - Severity: P2
 - Found by: port-9226
-- Status: OPEN
+- Status: FIXED
 - Repro: call `scraper.scrape("123")` twice in parallel (e.g. two near-simultaneous panel opens, or the bulk runner racing against the airport-panel host's per-carrier kick) — both calls pass the `_sessionCache.has(id)` guard, both fire the four-tab Promise.all fetch (`/app/info/enterprises/<id>` + `?tab=2,3,4`), both call AesCompetitorStore.saveEnterprise, both append a snapshot via AesCompetitorSnapshotStore.record (the second always returns null because the projected snapshot doesn't differ from the just-saved first).
 - Expected: a second concurrent call deduplicates against the in-flight scrape and returns the same Promise (or its result).
 - Actual: the cache is set to the resolved record only AFTER `await this._scrapeDeep(id)` and `await AesCompetitorStore.saveEnterprise(...)` complete (lines 41-45). Two concurrent callers race past the `has(id)` check and execute the full 4-fetch deep parse independently. Per-call cost is real on AS: 4 parallel fetches × every duplicate caller, each parsing a 100-300KB document.
@@ -390,7 +391,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/strategy/competitor-response.js (lines 326-335)
 - Severity: P2
 - Found by: port-9227
-- Status: OPEN
+- Status: FIXED
 - Repro: code review — the construction is `chrome.storage.local.set({...}).catch && chrome.storage.local.set({...}).catch(() => {})`. The first `.set(...)` returns a Promise; `.catch` is the truthy `Promise.prototype.catch` reference. The `&&` then evaluates the right side: a SECOND `chrome.storage.local.set(...)` call with the same payload, with its own `.catch(() => {})` swallowing rejections. End result: every successful path runs `chrome.storage.local.set` twice; the FIRST call's rejection (if any — quota / disk) is unhandled and surfaces as an "Uncaught (in promise)" page-console warning. Verify by adding a temporary breakpoint on `chrome.storage.local.set` and triggering competitor-response via `await AesStrategy.proposeCompetitorMoves(snapshot)` with a freq-add event prior matching a route.
 - Expected: a single fire-and-forget set per cooldown roll-forward (the function header says "Persist a fresh freq-proposal timestamp. Fire-and-forget").
 - Actual: every call writes twice, doubling chrome.storage write traffic and chrome.storage.onChanged dispatch (which the conductor signal-layer also reacts to). On rejection the first write surfaces an unhandled-rejection warning.
