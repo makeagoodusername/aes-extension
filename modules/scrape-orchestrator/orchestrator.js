@@ -183,13 +183,41 @@ class ScrapeOrchestrator {
     }
 
     _runPhaseJobs(phase, jobs) {
+        // Watchdog: 15 min of silence with no progress event = treat the
+        // background tab pool as gone. Without this, killing the SW
+        // mid-phase (or any other path that drops the run-done relay)
+        // leaks the listener and leaves start()'s await pending forever.
+        const SILENCE_TIMEOUT_MS = 15 * 60 * 1000
         return new Promise((resolve) => {
             let succeeded = 0
             let failed    = 0
             let haltReason = null
+            let watchdog = null
+            let settled  = false
+
+            const finish = (result) => {
+                if (settled) return
+                settled = true
+                if (watchdog) { clearTimeout(watchdog); watchdog = null }
+                chrome.runtime.onMessage.removeListener(handler)
+                resolve(result)
+            }
+
+            const armWatchdog = () => {
+                if (watchdog) clearTimeout(watchdog)
+                watchdog = setTimeout(() => {
+                    finish({
+                        total:      jobs.length,
+                        succeeded:  succeeded,
+                        failed:     failed,
+                        haltReason: "background-disconnect"
+                    })
+                }, SILENCE_TIMEOUT_MS)
+            }
 
             const handler = (msg) => {
                 if (!msg || msg.type !== "aes:scrape-all:progress" || !msg.event) return
+                armWatchdog()
                 const event = msg.event
                 this.onProgress(event)
 
@@ -200,8 +228,7 @@ class ScrapeOrchestrator {
                     if (event.reason && event.reason !== "done") {
                         haltReason = haltReason || event.reason
                     }
-                    chrome.runtime.onMessage.removeListener(handler)
-                    resolve({
+                    finish({
                         total:      jobs.length,
                         succeeded:  succeeded,
                         failed:     failed,
@@ -210,6 +237,7 @@ class ScrapeOrchestrator {
                 }
             }
             chrome.runtime.onMessage.addListener(handler)
+            armWatchdog()
 
             chrome.runtime.sendMessage({
                 type:        "aes:scrape-all:start",
@@ -219,8 +247,7 @@ class ScrapeOrchestrator {
             }, (resp) => {
                 void chrome.runtime.lastError
                 if (!resp || !resp.ok) {
-                    chrome.runtime.onMessage.removeListener(handler)
-                    resolve({
+                    finish({
                         total:      jobs.length,
                         succeeded:  0,
                         failed:     jobs.length,
