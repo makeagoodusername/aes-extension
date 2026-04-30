@@ -35,6 +35,7 @@
     let _aircraftId = ""
     let _legByFnId  = null
     let _repaintTimer = null
+    let _listenerFn   = null
 
     function _extractAircraftIdFromUrl() {
         const m = (window.location.pathname || "").match(/\/aircraft\/(\d+)\//)
@@ -115,9 +116,13 @@
 
     async function _loadAndDecorate() {
         if (typeof AesAfpScheduleStore === "undefined") return
-        if (!_server || !_aircraftId) return
+        // Re-resolve from the URL so SPA navigation to a different
+        // aircraft picks up the right schedule on the next repaint.
+        const aircraftId = _extractAircraftIdFromUrl() || _aircraftId
+        if (!_server || !aircraftId) return
+        _aircraftId = aircraftId
         let schedule = null
-        try { schedule = await AesAfpScheduleStore.load(_server, _aircraftId) }
+        try { schedule = await AesAfpScheduleStore.load(_server, aircraftId) }
         catch (e) { console.warn("[AES /1 scheduled-decorator] load failed", e); return }
         _legByFnId = _indexLegs(schedule)
         _decorate()
@@ -134,12 +139,25 @@
     function _attachStorageListener() {
         if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.onChanged) return
         if (typeof AesAfpScheduleStore === "undefined") return
-        const myKey = AesAfpScheduleStore._key(_server, _aircraftId)
-        chrome.storage.onChanged.addListener((changes, area) => {
+        // Detach any previous handle so a fresh content-script injection
+        // doesn't stack listeners.
+        if (_listenerFn) {
+            try { chrome.storage.onChanged.removeListener(_listenerFn) }
+            catch (_) { /* listener was never registered */ }
+            _listenerFn = null
+        }
+        _listenerFn = (changes, area) => {
             if (area !== "local") return
+            // Re-key dynamically so post-navigation writes for the current
+            // aircraft fire the repaint (the previous aircraft's key would
+            // be stale after SPA nav).
+            const aircraftId = _extractAircraftIdFromUrl()
+            if (!aircraftId || !_server) return
+            const myKey = AesAfpScheduleStore._key(_server, aircraftId)
             if (!Object.prototype.hasOwnProperty.call(changes, myKey)) return
             _scheduleRepaint()
-        })
+        }
+        chrome.storage.onChanged.addListener(_listenerFn)
     }
 
     /**
