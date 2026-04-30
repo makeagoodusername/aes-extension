@@ -410,6 +410,7 @@ class CanvasShell {
 
     _renderCurrentView() {
         if (!this._mainBodyEl) return
+        const T = (typeof window !== "undefined" && window.AESTokens) || null
         if (this._state.view === CanvasShell.VIEW_TIMELINE) {
             this._mainBodyEl.innerHTML = ""
             if (this.mountTimelineView) {
