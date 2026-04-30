@@ -251,7 +251,7 @@
                 detail: "No routes enumerable. Visit accounting once so per-route ledger seeds.",
                 action: {kind: "nav",
                          label: "Open accounting →",
-                         url: "/app/accounting/income"}}
+                         url: "/app/finance/accounting/0"}}
     }
 
     async function _probeMarkets(o, routes) {

@@ -589,8 +589,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/scrape-orchestrator/background-tab-pool.js (state object lines 50-67); modules/scrape-orchestrator/auto-driver.js (`_busy` flag line 32, `silentRunActive` storage flag lines 70/79); modules/scrape-orchestrator/host.js (auto-resume line 184-196)
 - Severity: P1
 - Found by: port-9226
-- Status: PARTIAL
-- Partial fix by: port-9223 — sub-fix #3 from the finding's plan. auto-driver.js now writes `aesAutoDrive:silentRunActiveAt: <ts>` companion to the boolean flag (set on entry, cleared in finally). host.js's `_autoResumeIfActive` reads both, treats the flag as stale when the timestamp is missing or older than `SILENT_RUN_MAX_MS = 15 * 60 * 1000`, and falls through to the normal `isRunning()` resume path. This unblocks the auto-resume modal after SW eviction without addressing the orphan-tabs / wedged plan-cursor sub-fixes (#1, #2, #4) — those need ScrapeTabPool persistence which is a deeper structural change. Still OPEN for those layers.
+- Status: FIXED (sub-fix #3 by port-9223 + sub-fixes #1/#2 by port-9226 in 55a5e56: pool now persists `scrapeOrchestrator:runState` on state mutations and `_recoverFromCrash()` IIFE on every SW boot closes orphan tabs + broadcasts synthetic `run-done` with reason `sw-evicted`. Sub-fix #4 host.js startedAt verification deferred — host.js has uncommitted concurrent work)
 - Repro: trigger Scrape Everything from /app/enterprise/dashboard with foundation+per-hub phases enabled. Mid-phase, force-evict the service worker (chrome://serviceworker-internals → "Stop" on the AES SW). The hidden tabs the pool opened remain visible in the chrome://tabs/ inspector; chrome.runtime.sendMessage from the dashboard (Status check) returns `{running: false}` because pool.state was wiped. New click on Scrape Everything starts a fresh run that opens a SECOND set of hidden tabs alongside the orphans.
 - Expected: pool persists enough run state (runId, plan cursor, activeTabIds) to chrome.storage.local that on SW boot it can either resume the run or clean up orphan tabs by closing them. The dashboard's auto-resume should also be able to detect a half-dead run and surface it.
 - Actual: state is a closure-local object (background-tab-pool.js:50-67). Nothing is persisted. When the SW restarts:
@@ -684,7 +683,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Severity: P2
 - Found by: port-9228 (code-static)
 - Status: FIXED
-- Fix by: port-9223 — added a lazy `_iso2ByName` reverse index built from `AesGeographyBase.COUNTRY_CONTINENT` × `Intl.DisplayNames(["en"], {type:"region"})`. `_guessIso2` checks NAME_TO_ISO2 first (handles known variants like "Russia" / "Russian Federation"), then falls back to the platform-canonical-name map (case-insensitive). Covers all ~250 ISO codes already enumerated in geography-base.js without re-embedding a parallel name table. Verified statically: `Intl.DisplayNames` is in MV3 service-worker + content-script contexts; the reverse-map build catches its constructor exception so missing-Intl environments simply fall through to the original null.
+- Fix: re-applied the lazy reverse-map approach (port-9229). `_buildIso2ByName` enumerates `AesGeographyBase.COUNTRY_CONTINENT` (250 entries) and resolves each via `Intl.DisplayNames("en", {type:"region"})`, indexed by a normalized form that folds `&`↔`and` so "Trinidad & Tobago" (Intl) matches "Trinidad and Tobago" (AS). NAME_TO_ISO2 still wins first, so platform-specific aliases ("Czech Republic", "Russia", "South Korea", …) are unaffected. Verified offline against the full COUNTRY_CONTINENT — 250/250 codes resolve and all but one of the audit's example countries hit (St. Vincent edge case still falls through to NAME_TO_ISO2 if added there). Commit: see git log for `geography-seeder` reverse map.
 - Repro: with a fleet that includes destinations in (say) "Côte d'Ivoire", "United Arab Emirates", "Saudi Arabia", "Trinidad and Tobago", or any of the ~190 countries not in the 18-entry hardcoded map; observe `byCountryId[<id>].iso2 === null` after seed, and the canopy/orgs/dna-fit-scorer downstream falls back to "continent-only" matching for those countries. [needs-mcp-verify]
 - Expected: the seeder cross-references against the comprehensive `AesGeographyBase.COUNTRY_CONTINENT` map (which already lists all ~250 ISO2 codes by continent — see modules/canopy/geography-base.js) to look up an ISO2 code by name match, not just the 18 special-case overrides.
 - Actual: `_guessIso2` at lines 54-62 only checks `NAME_TO_ISO2[k]`. The 18 entries handle name-vs-ISO disagreements (e.g. "United States" → "US"), but for any country whose AS-displayed name isn't in that table, it returns `null` immediately (line 61). Author comment at line 58-60 explicitly punts on broader matching ("not worth it; keep simple"). geography-base.js is loaded before geography-seeder per manifest.json but never consulted from the seeder.
@@ -695,8 +694,519 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Severity: P2
 - Found by: port-9228 (code-static)
 - Status: FIXED
-- Fix by: port-9223 — rewrote validation.js to anchor on stable markers verified against `CLAUDE/INVENTORY.html` fixture: `ul.nav-tabs > li :contains("All Flights Numbers")` for the tab; `input[name="settings:..."]` (airportPair / flightNumbers / returnAirportPair / returnFlightNumbers) for "Apply settings to"; `_fieldsetByLegend("Service Classes" | "Flight Status" | "Load")` for the data-panel fieldsets; `input[name="serviceClasses"]`, `input[name="flightStati"]` (filtered on value 1=inflight, 2=finished), and `select[name="loadMin" | "loadMax"]` for the inputs; `input[name="display"]` for "Group by flight". Helper `Validation._fieldsetByLegend(text)` walks every `<fieldset>` and returns the one whose `<legend>` text (case-insensitive, trimmed) matches — same shape as content_marketScan.js label-anchor pattern. Verified statically against the fixture's name= and legend= attributes; no positional `:eq()` left.
+- Fix: re-applied the rewrite (port-9229). Every `:eq(N)`/positional chain replaced with stable anchors: tab text-match for the "All Flight Numbers" tab, `name="settings:..."` for Apply-settings checkboxes, fieldset-by-legend lookup (`Validation._fieldsetByLegend(text)`) plus `name="serviceClasses"`/`name="flightStati"`/`name="loadMin"`/`name="loadMax"`/`name="display"` for the Data panel rules. Verified end-to-end against `CLAUDE/INVENTORY.html` via jsdom: pre-mutation only the 3 actually-unchecked Service Classes (C/F/Cargo) are flagged, post-mutation all 11 violations fire with correct human-readable label text.
 - Repro: trigger inventory validation when AS rearranges the inventory page panels (e.g. AS adds a new panel above "Current Inventory", shifts indexes); validator returns "valid: true" or fires wrong messages. [needs-mcp-verify]
 - Expected: selectors anchored on stable semantic markers (form name, fieldset legend text, role attributes) — survives panel reorderings the same way the route-assistant/markets-page-scraper handles label-based row matching.
 - Actual: every check uses positional `:eq(N)` chains: line 19 `'.col-md-10 > div > .as-panel:eq(1) > ul:eq(0) li:eq(0)'`, line 30 `'.col-md-10 > div > .as-panel:eq(1) > div > div > div:eq(0) fieldset:eq(2) > div input'`, lines 78, 99, 117, 144 same pattern. The `.col-md-10 > div > .as-panel:eq(1)` prefix recurs everywhere — any AS template change that adds, removes, or reorders an `.as-panel` shifts every `:eq` by one and the validator silently fires wrong messages or none at all. No fallback selector strategy. No tests against fixture HTML to catch drift.
 - Notes: Medium-high confidence as a latent bug (depends entirely on AS re-templating, which has happened historically per HANDOVER notes). Fix: replace each `:eq(N)` with a label-match selector using the panel `<legend>` or `<h3>` text — same pattern as content_marketScan.js lines 414-450 which scrapes by label, or modules/aircraft-type-specs.js's "walk every table row and pattern-match on the label" method.
+
+## F-DASH-301: strategy-backtest-tile never registers with CentralHubTileRegistry — tile is invisible in the hub
+- Area: modules/central-hub/tiles/strategy-backtest-tile.js (final block, ~line 306)
+- Severity: P1
+- Found by: dashboard-pass (Agent 3 — Strategy + Conductor)
+- Status: FIXED
+- Fix: appended a `CentralHubTileRegistry.register({id:"strategy-backtest", section:"tools", priority:7, factory:() => new CentralHubStrategyBacktestTile()})` block mirroring the pattern used by every other tile module (strategy-tile.js:1213, weekly-review-tile.js:228, conductor-tile.js:525, diagnostics-tile.js:412). Verified by `node --check`.
+- Repro: open `https://*.airlinesim.aero/app/enterprise/dashboard*`. Inspect `CentralHubTileRegistry.all().map(t => t.id)` — the array does not include `"strategy-backtest"` even though `modules/central-hub/tiles/strategy-backtest-tile.js` is loaded by the manifest dashboard block (line 434).
+- Expected: tile appears in section "tools" alongside strategy / conductor / weekly-review / diagnostics, lets the user click "Run backtest" to replay the last 12 weeks of accounting through current weights.
+- Actual: file only set `window.CentralHubStrategyBacktestTile = …`. The class definition was loaded but never registered, so the shell never asked for it and `AesStrategyBacktest.run()` had no UI surface anywhere.
+- Notes: pure registration-block omission. The class itself is well-formed, has `loadStatus`, `renderBody`, persistence to `aesStrategy:backtest:lastRun[:acct:<id>]`, and a working "Run backtest" button. Just the trailing register() call was missing.
+
+## F-DASH-302: conductor-tile footer only exposed "Clear signals" — no manual outcome-driver tick, no way to clear scenario fires or routine instances
+- Area: modules/central-hub/tiles/conductor-tile.js (`_buildFooter`, lines 498-522)
+- Severity: P2
+- Found by: dashboard-pass (Agent 3 — Strategy + Conductor)
+- Status: FIXED
+- Fix: rebuilt the footer action cluster. It now exposes (defensively, only when each module is loaded): "Tick outcomes" — calls `AesConductorOutcomeDriver.tickOnce({force:true})` to score open fires immediately instead of waiting for the next 5-minute interval; "Clear fires" — `AesConductorScenarioStore.clear(ctx)`; "Clear routines" — `AesConductorRoutineStore.clear(ctx)`; "Clear signals" — existing path. Each is gated behind a typeof check so the tile degrades gracefully on pages that don't load the conductor stack. Verified by `node --check`.
+- Repro: open the dashboard, expand the Conductor tile, scroll to the footer. Pre-fix: only one "Clear" button (signals only). The user could see fires, routines, signals — but only manipulate signals. No way to force an outcome re-score.
+- Expected: per the audit brief, "conductor-tile exposes scenario-store + routine-store + outcome-driver controls". The store APIs (`clear`, `tickOnce`) already exist in the module surface.
+- Actual: footer wired only `AesConductorSignalStore.clear`. Routine instances accumulated forever (CAP=100 then evicted by oldest); scenario fires accumulated forever (CAP=200 then evicted); outcome attribution waited on the 5-minute interval with no manual escape hatch.
+- Notes: per-scenario enable/disable is NOT added — the bundled `AesConductorScenarios.all()` returns a hard-coded `ALL` slice with no storage-backed enable flags. Adding that would require a new `aesConductor:scenarios:enabled` store + plumbing through `AesConductorScenarioEngine._activeScenarios()`, which is out of scope for a minimal patch. Per-fire dismiss/accept buttons (already present in `_buildScenarioRow`) cover the "act on a specific fire" case.
+
+## F-DASH-303: strategy-tile.js openHandler closes over panel module that may not be loaded yet — degrades silently but should match other tiles' pattern (no fix needed)
+- Area: modules/central-hub/tiles/strategy-tile.js (lines 74-86)
+- Severity: P3
+- Found by: dashboard-pass (Agent 3)
+- Status: WORKS
+- Notes: openHandler() returns a closure that checks `window.AesStrategyPanel && typeof open === "function"` before invoking; otherwise warns to console. Manifest order at lines 429-432 loads `modules/strategy/panel.js` before `modules/central-hub/tiles/strategy-tile.js` so by the time the user clicks Open the panel global is present. Logged as WORKS — no fix; just confirming the construction-safety check.
+
+## F-DASH-304: weekly-review-tile + diagnostics-tile have requiresAirline=false but call AES strategy/aggregator APIs that themselves require account context — degrades safely
+- Area: modules/central-hub/tiles/weekly-review-tile.js, diagnostics-tile.js
+- Severity: P3
+- Found by: dashboard-pass (Agent 3)
+- Status: WORKS
+- Notes: both tiles guard every backing-module call with `typeof window.X === "undefined"` checks (e.g. weekly-review-tile.js:67-78, diagnostics-tile.js:142-145, 60-71) so they render an empty/muted state instead of throwing when the dashboard is loaded without a fleet/airline scope. Verified all referenced globals (`AesChangeLogAggregator`, `AesServiceExperimentStore`, `AesStrategy`, `RouteAssistantPricingApplyLog`, `RouteAssistantServiceProfileApplyLog`, `RouteAssistantWaveOverlay`, `RouteAssistantWavePlanDiagnostics`, `SchedulePresets`) are loaded by the dashboard content_scripts block in `manifest.json`. No fix needed.
+
+## F-DASH-305: strategy-briefing-tile auto-opens a modal once per game-week boundary — but the guard key fallback when `__aesAccountId` is null collides across airlines on the same browser profile
+- Area: modules/central-hub/tiles/strategy-briefing-tile.js (`_maybeAutoOpen`, lines 776-783)
+- Severity: P3
+- Found by: dashboard-pass (Agent 3)
+- Status: FIXED
+- Fix (port-9229): `_maybeAutoOpen` now derives the guard key with a three-step fallback when `__aesAccountId` is unresolved — `acct:<id>` → `server:<server>:airline:<airline>` → `server:<server>` → bare global. Server/airline come from `this._mountCtx`, which is the same ctx the tile uses for `buildBriefing`. Cold-start / sign-out / multi-airline windows no longer share one global "briefing seen" bucket; only the truly contextless case still falls through to the bare key (and that path is short-lived because account-registry populates `__aesAccountId` shortly after page load).
+- Repro: load the dashboard on airline A (no account-id resolved yet), let the briefing auto-open and write `aesStrategy:briefingLastWeekId = <week>`. Switch to airline B (different server) before account-registry has populated `window.__aesAccountId`. The same global guard key blocks the auto-open even though airline B has never seen this briefing.
+- Expected: per-airline guard whenever airline identity is resolvable from `ctx`, falling back to per-server before falling back to global.
+- Actual: lines 778-780 use `acct:<id>` when `__aesAccountId` is a string; otherwise the bare key. Empty-account-id periods (cold-start, sign-out) blur all airlines into one bucket.
+- Notes: low severity — affects only the brief window before `__aesAccountId` populates from `AesAccountRegistry`. The bigger briefing flow works.
+
+## F-DASH-601: shell._buildSalienceContext reads HubFeed slice value from list() output, but list() returns metadata only — hubFeedUnread map never populates
+- Area: modules/central-hub/shell.js (lines 659-672)
+- Severity: P2
+- Found by: hub-shell-pass (Agent 6)
+- Status: FIXED
+- Fix: read the slice value via `window.HubFeed.read(s.name)` instead of `s.value`. `HubFeed.list()` returns `[{name, hasValue, error, computedAt, computedMs, ttlMs, isStale, ageMs}]` per modules/_shared/hub-feed.js:135-149 — there is no `value` field. The pre-fix code coerced `s.value` (always undefined) via `Number(undefined) → NaN` which never satisfied `isFinite && > 0`, so the salience scorer never saw any feed-driven unread signal.
+- Repro: declare a slice named `hub:tile:foo:unread` returning `{count: 7}`, then call shell._buildSalienceContext(). Pre-fix: ctx.hubFeedUnread.get("foo") → undefined. Post-fix: ctx.hubFeedUnread.get("foo") → 7.
+- Expected: salience scorer's `hubFeed` weight contributes when slices keyed `hub:tile:<id>:unread` carry positive counts.
+- Actual: the entire feed-unread input was dead wiring. Ranking degraded silently to priority + pin + recents + signals + pulse.
+- Notes: only matters once tiles begin emitting `hub:tile:<id>:unread` slices; today there are no producers, so the live blast radius is zero. Fixing now keeps the contract honest for upcoming tile-keyed feeds.
+
+## F-DASH-602: cascade-pane mount() host is row-flex without wrap; banner bands set flex:0 0 100% but never break the row, so banners squeeze alongside columns instead of closing the cascade
+- Area: modules/central-hub/cascade-pane.js (lines 200-206, 266-294)
+- Severity: P2
+- Found by: hub-shell-pass (Agent 6)
+- Status: FIXED
+- Fix: (a) added `flex-wrap:wrap` to the host's inline cssText so 100%-width children force a new row; (b) restructured `_layout` to clear the host on every layout pass and emit each cascade band as its own full-width row containing freshly-built per-column flex children (banner bands stay full-width siblings). Removed the dead `band._order` reference (always undefined → invalid `order:undefined` CSS).
+- Repro: switch settings.layoutMode to "cascade" with at least one tile flagged `cardKind:"marquee"` or one tile in `pinnedFullWidthTiles`. Pre-fix: marquee tile rendered as a 100%-width child inside a non-wrapping flex row, visually overflowing the cascade and pushing the columns off-axis. Reflows after a column-count change failed to clear stale banners (host.innerHTML was only cleared when columnCount changed, not on every layout).
+- Expected: marquee/full-width tiles close the current cascade band and emit a single full-width row before the next cascade band continues below.
+- Actual: bands share a single non-wrapping row; banner with flex-basis:100% gets clamped by surrounding flex:1 1 0 columns; reflows leak previous banners.
+- Notes: also dropped the `state.columnEls.length !== cc` short-circuit so column shells are rebuilt every layout — the band-per-row model means columns are scoped to their band, not the host.
+
+## F-DASH-603: cascade-pane.columnCountFor signature ignored its second arg; _resize read --aes-tile-min-col then passed it as the dropped arg
+- Area: modules/central-hub/cascade-pane.js (lines 167-173, 365-373)
+- Severity: P3
+- Found by: hub-shell-pass (Agent 6)
+- Status: FIXED
+- Fix: extended `columnCountFor(containerWidthPx, minColPx)` to honour the second argument, falling back to MIN_COL_WIDTH_FALLBACK on missing/invalid input. The `_resize` call site already passed the resolved CSS variable; previously it was silently dropped, so the column count derived from a hardcoded 280px floor regardless of the tile-min-col token.
+- Repro: set `--aes-tile-min-col:380px` on the cascade host. Pre-fix: column count still computed from the 280 fallback. Post-fix: the override drives the column count.
+- Expected: per the function's own docstring, the column count is derived from container width AND the current min-col token.
+- Actual: minCol arg dropped on the floor.
+- Notes: doc-comment in the signature now matches behaviour; pure fn, easy to test.
+
+
+## F-DASH-501: competitor-monitoring-tile didn't refresh on competitor-intel:diff bus signal — needed manual reload to mirror new snapshots
+- Area: modules/central-hub/tiles/competitor-monitoring-tile.js (mount, lines 36-52)
+- Severity: P2
+- Found by: dashboard-pass (Agent 5)
+- Status: FIXED
+- Fix: in `mount()`, subscribe to `data:competitor-intel:enterprise:diff` and `data:competitor-intel:enterprise:updated` (both emitted by `modules/competitor-intel/snapshot-store.js:134-147` after a successful save) and call `this.refresh()` on each. Disposers added to `this._busDisposers` so dispose() cleans up.
+- Repro: open the dashboard with N tracked competitors; trigger a competitor-intel scrape on another tab that produces a snapshot diff; observe the monitoring tile badge stays at the pre-scrape count + last-overview date until manual reload.
+- Expected: dataset-sourced bus events keep the tile in sync without polling chrome.storage.
+- Actual: the only reactive path was watchedStorageKeys=[server] which fires on every storage change matching the prefix — but enterprise snapshot writes to `competitorIntel:snapshots:<server>:<eid>` are not stamped with `<server><airline>` competitor monitoring keys, so the storage-change listener also missed them. Now both the bus events AND the existing storage listener cover the cases.
+- Notes: minor — covers the prompt's "verify monitoring tile receives them" requirement.
+
+## F-DASH-502: competitor-intel-hub-tile body lacked any user-facing actions (bulk scan, watchlist, drilldown) despite owning the dashboard entry point
+- Area: modules/central-hub/tiles/competitor-intel-hub-tile.js (renderBody)
+- Severity: P2
+- Found by: dashboard-pass (Agent 5)
+- Status: FIXED
+- Fix: appended an actions row to the body with three buttons — "Show watchlist (top 5)" calls `AesCompetitorWatchlist.derive({server, limit:5})` and renders the top items inline; "Drilldown enterprises →" opens `AesCompetitorIntelHost.open()` (the hub-shell modal); "Refresh stale enterprises" invokes `AesCompetitorOutlineRunner.runForServer({server})` (which already filters to past-TTL enterprises per F-9226-015). Each button is feature-detected — disabled with a tooltip when its global is absent. Also hardened the row-click handlers with `typeof === "function"` guards. Verified by `node --check`.
+- Repro: open the dashboard, expand the Competitor Hub tile; before fix the body was four read-only count rows + a footer note.
+- Expected: per the audit prompt — "let user run a bulk-scanner, view watchlist, drilldown enterprises".
+- Actual: rows opened the host on click but no other affordances. No watchlist preview. No bulk-scan trigger.
+- Notes: bulk-scanner.js itself isn't loaded on /app/enterprise/dashboard* (manifest.json:1040 — competitor-intel page block only), so the runner is the proper dashboard-side entry point.
+
+## F-DASH-503: competitor-outline-tile body had no in-tile actions — refresh + open required Open-button workflow
+- Area: modules/central-hub/tiles/competitor-outline-tile.js (renderBody)
+- Severity: P3
+- Found by: dashboard-pass (Agent 5)
+- Status: FIXED
+- Fix: after the top-3 preview rows, appended an actions row — "Open full outline →" reuses `AesCompetitorOutlinePanel.show()` and "Refresh stale rivals" invokes `AesCompetitorOutlineRunner.runForServer({server})`. Refresh button disables while running, displays the count, then re-runs `_cachedOutline = null; this.refresh()` so the badge + preview reflect the new state. Verified by `node --check`.
+- Notes: the existing Open button on the tile chrome was the only user surface — body was preview-only. This adds parity with other action-bearing tiles (fleet-command, route-assistant).
+
+## F-DASH-504: settings-tile unified-settings branch only exposed a single "Open Settings →" button — no per-tab quick-jump
+- Area: modules/central-hub/tiles/settings-tile.js (renderBody, unified branch)
+- Severity: P3
+- Found by: dashboard-pass (Agent 5)
+- Status: FIXED
+- Fix: under the "Open Settings →" CTA, added a 5-button row that calls `AesUnifiedSettings.open()` then `setActiveTab(tabId)` for each of customisation/modules/account/data/about. The unified-settings host already exposes `setActiveTab` (modules/unified-settings/host.js:46-52) but no caller in the codebase used it. Verified by `node --check`.
+- Notes: lower severity — the unified shell has its own tab strip — but the dashboard prompt explicitly said "Settings tile should expose the unified-settings shell directly from the hub."
+
+## F-DASH-505: tools-tile body was a pure-link list — no in-extension utility actions despite the section name
+- Area: modules/central-hub/tiles/tools-tile.js (renderBody)
+- Severity: P3
+- Found by: dashboard-pass (Agent 5)
+- Status: FIXED
+- Fix: prepended a utility-actions row before the link grid — "Open command palette" → `AESCommandPalette.open()`, "Run all cleanups" → `AesCleanup.runAll({reason:"manual-tools-tile"})`, "Clear bus history" → `AesDataBus.clearHistory()`, "Open options page →" → `chrome.runtime.openOptionsPage()`. Each button is feature-detected via `typeof === "function"` and disabled with a tooltip when the backing module is absent. Added a local `_actionBtn` helper mirroring the settings-tile pattern. Verified by `node --check`.
+- Notes: the doc-comment at the top of the tile said it "mirrors the Community + Support sections" — those links remain. The prompt expectation "tools-tile should expose utility actions as buttons" is now met.
+
+## F-DASH-506: competitor-monitoring-tile.openHandler dereferenced bare CentralHubLegacy instead of window.CentralHubLegacy — would throw on cold start if module missing
+- Area: modules/central-hub/tiles/competitor-monitoring-tile.js (openHandler, line 33)
+- Severity: P2
+- Found by: dashboard-pass (Agent 5)
+- Status: FIXED
+- Fix: wrapped in `if (window.CentralHubLegacy && typeof window.CentralHubLegacy.switchDropdownTo === "function")`. CentralHubLegacy is registered at `modules/central-hub/legacy-bridge.js:37` and loaded earlier in the dashboard block (manifest.json:223), but the bare reference would throw if for any reason the module didn't initialise (e.g. `'use strict'` non-strict-equal lookup is fine but a missing global would still ReferenceError when called). The guard makes the Open button a no-op instead of a throw.
+- Notes: defensive. The existing `if (typeof window.X === "undefined") return` pattern from competitor-outline-tile is the project convention — this matches.
+
+## F-DASH-101: used-aircraft-scanner stores never exposed on window — tile's preset/diff/session features dead
+- Area: modules/used-aircraft-scanner/presets-store.js, scan-session-store.js, scan-diff-store.js + modules/central-hub/tiles/used-aircraft-scanner-tile.js
+- Severity: P1
+- Found by: dashboard-pass (Agent 1, fleet+aircraft scope)
+- Status: FIXED
+- Fix: appended `if (typeof window !== "undefined") { window.UsedAircraftPresets = UsedAircraftPresets }` (and analogous lines for `MarketScanSession`, `MarketScanDiffStore`) to the three store files. The classes were declared at top level with `class` syntax, which in Chrome MV3 isolated-world content scripts goes to the script realm's lexical environment but NOT onto the global object — so `window.UsedAircraftPresets` was undefined. The tile's `typeof window.UsedAircraftPresets === "function"` guards (used-aircraft-scanner-tile.js lines 46, 77, 96, 162) all evaluated false, silently disabling preset-chip click activation, the BUILT_IN preset count in the badge, and the entire top-steals strip (which depended on `MarketScanDiffStore.loadAllDigests`). The active-session readback similarly fell through to a raw `chrome.storage.local.get` instead of `MarketScanSession.loadSession`. Other modules (scan-controller.js, market-panel/panel.js) that referenced the bare `UsedAircraftPresets` lexical kept working, masking the issue.
+- Repro: load a dashboard with `chrome.storage.local.set({"settings": {"usedAircraftScanner": {"presets":[{"id":"p1","name":"Test","types":["A320"]}], "lastScanId":null}}})` plus a finished `<server>marketScan:digest:p1` digest blob. Open the Used Scanner tile, click a preset chip — pre-fix it was a no-op (no badge update, no active highlight). Top-steals row never rendered.
+- Expected: preset chips activate, BUILT_IN_PRESETS counted in the badge, top-steals row renders with the best-3 dealScore rows from saved digests.
+- Actual: pre-fix all three pathways short-circuited at the `typeof window.X === "function"` guard. Tile rendered presets via the `block.presets` fallback (just user-saved, no built-ins) and never showed top-steals.
+- Notes: this is a recurring class — any tile using `window.X` for a class declared top-level in another module of the same content-script block needs explicit window exposure. Worth grepping the rest of the tiles in agent 2-6 scope for the same pattern.
+
+## F-DASH-102: aircraft-profitability-tile watched empty-string prefix → refresh on every storage change
+- Area: modules/central-hub/tiles/aircraft-profitability-tile.js (watchedStorageKeys, lines 26-28)
+- Severity: P2
+- Found by: dashboard-pass (Agent 1)
+- Status: FIXED
+- Fix: guard with `if (!server) return []` so the base-class storage listener doesn't subscribe to a thrash-prefix when ctx.server is missing. Also dropped the `+ ""` no-op tail.
+- Repro: load the hub on a page where `ctx.server` resolves to "" (rare but possible during a partial bootstrap); pre-fix the tile would `refresh()` on every chrome.storage write across the entire extension because `k.indexOf("") === 0` is unconditionally true.
+- Expected: tile only refreshes on changes whose key starts with the user's server prefix, or skips the listener entirely until server resolves.
+- Actual: tile's listener fired on every storage change. Behaviour observed by code inspection of base-class `_attachStorageListener` (modules/central-hub/tile.js:412-436) which does `k.indexOf(p) === 0` — empty `p` always matches.
+- Notes: same fix shape applied prophylactically to `fleet-optimizer-tile.watchedStorageKeys` (dropped the bare `server` from the prefix list when empty). `fleet-hub-tile` already guarded; `aircraft-flight-plan-tile` had a "::" suffix that prevented the false-match and was tightened to skip-when-empty for clarity.
+
+
+## F-DASH-401: Accounting tile keyed snapshots by airline CODE; finance scrapers + panel save by airline NAME — tile always shows zero rows even when snapshots exist
+- Area: modules/central-hub/tiles/accounting-tile.js (_airlineKey, line 36)
+- Severity: P0
+- Found by: dashboard-pass (Agent 4)
+- Status: FIXED
+- Fix: `_airlineKey()` now calls `AES.getAirlineIdentity()` (the top-nav airline name) instead of `AES.getAirlineCode().code`. Mirrors what `content_finance_accounting.js`, `content_finance_{leasing,capital,assets,cashflow}.js` (each `airline = AES.getAirlineIdentity()`) and `modules/accounting/panel.js:24` actually pass into `AccountingSnapshotStore.save{Tab,Sister}(server, airline, …)`. The cash-feed (`modules/central-hub/feed/cash-feed.js:108`) was already using the identity form; the tile was the odd one out.
+- Repro: scrape any of /app/finance/accounting{,/0,/1,/2} or any sister page, then open the dashboard. Accounting tile would render "No accounting snapshots yet."
+- Expected: tile lists the recently scraped weeks + lit-up sister pages.
+- Actual: empty tile because `<server><CODE>accounting:index` was never written; the real key is `<server><NAME>accounting:index`.
+- Notes: F-9223-012 covers a related multi-airline scoping issue; this finding is the orthogonal "wrong identifier kind" bug.
+
+## F-DASH-402: Accounting tile linked the cash-flow sister page to /app/finance/cashflow — that route 404s; AS hosts the cashflow view at /action/enterprise/schedule
+- Area: modules/central-hub/tiles/accounting-tile.js (sister page link map, line 137)
+- Severity: P2
+- Found by: dashboard-pass (Agent 4)
+- Status: FIXED
+- Fix: changed the cashflow link href to `/action/enterprise/schedule`, matching `modules/accounting/panel.js:914` (the canonical pages map) and the manifest entry at line 826 that wires `content_finance_cashflow.js` to that URL.
+- Repro: open the accounting tile, click the "Cash flow" pill.
+- Expected: navigates to the AS cashflow page; on first visit, content_finance_cashflow.js seeds the sister record.
+- Actual: AS 404; sister cell stays "—".
+- Notes: leasing/capital/assets links were already correct.
+
+## F-DASH-403: Accounting tile never subscribed to its HubFeed slice — fresh accounting writes from non-dashboard tabs didn't recompute the tile and the freshness dot never lit
+- Area: modules/central-hub/tiles/accounting-tile.js (feedSlices override missing)
+- Severity: P2
+- Found by: dashboard-pass (Agent 4)
+- Status: FIXED
+- Fix: added `feedSlices() { return ["hub:cash:weekly"] }`. The base class wires the subscription in `_attachFeedSubscriptions` (tile.js:438) and CentralHubTile._renderHeader paints the stale dot from the captured freshness. cash-feed.js already declares the slice with deps `[data:accounting:weekly:saved, data:account:bootstrapped]` and `feed/index.js` bridges accounting-key writes onto that bus topic.
+- Repro: scrape an accounting week from another tab while the dashboard is open. Tile didn't refresh.
+- Expected: the tile re-reads + re-renders within the slice's debounce window; stale dot disappears once a fresh value lands.
+- Actual: only direct chrome.storage.onChanged (account-scoped) fires the watch.
+- Notes: also tightened watchedStorageKeys to return [] when airline ctx is missing (was returning the bare server prefix, which the listener treats as "match every key" via the indexOf===0 path called out in F-9223-015).
+
+## F-DASH-404: Inventory tile called window.RouteAssistantToast.{warn,progress} but RouteAssistantToast is a top-level class binding, not a window property — quick-price form throws "Cannot read property … of undefined"
+- Area: modules/central-hub/tiles/inventory-tile.js (price-validation + apply progress paths, lines 396, 423)
+- Severity: P1
+- Found by: dashboard-pass (Agent 4)
+- Status: FIXED
+- Fix: switched to bare `RouteAssistantToast.warn(...)` / `RouteAssistantToast.progress(...)` (with `typeof RouteAssistantToast !== "undefined"` guard) — the rest of the codebase (route-assistant/panel.js, fleet-hub/command-center.js' `ns = window.RouteAssistantToast` is the rare exception) uses the bare-name form. `modules/route-assistant/toast-host.js` defines the class via `class RouteAssistantToast { … }` and ends with only `module.exports`; in MV3 content-script isolated worlds, top-level class declarations are global lexical bindings, not properties of `window`, so `window.RouteAssistantToast` resolves to `undefined`.
+- Repro: open Inventory tile → Set price → enter blank/negative price → Apply.
+- Expected: a "warn" toast pops, focus returns to the input.
+- Actual: TypeError, the apply form locks up.
+- Notes: the second hit was the apply-progress toast — same root cause; same fix shape. A wider sweep to add `if (typeof window !== "undefined") window.RouteAssistantToast = RouteAssistantToast` to toast-host.js would also fix it project-wide, but that file is owned by Agent 2 (Routes); leaving the tile-local fix in.
+
+## F-DASH-405: Alliance tile constructor set this.section="tools" while registry registered section:"operations" — bleed-strip accent painted from the wrong palette key, and the tile would have been wrong-section if anything ever read this.section as authoritative
+- Area: modules/central-hub/tiles/alliance-tile.js (constructor, line 19)
+- Severity: P3
+- Found by: dashboard-pass (Agent 4)
+- Status: FIXED
+- Fix: aligned the constructor field to "operations" (the section the tile is mounted under). CentralHubTile._buildRoot copies `this.section` into `dataset.section` and CentralHubTile._sectionAccent maps `operations → T.color.amber` (was falling through to `tools → slate`).
+- Repro: render alliance tile; left bleed strip is grey instead of amber.
+- Expected: amber bleed strip, matching the rest of the Operations section.
+- Actual: grey (tools accent).
+- Notes: low severity (purely cosmetic), but it was also a code-clarity hazard — anyone reading the tile would assume "tools" was the truthful section.
+
+## F-DASH-406: General tile watched the bare `<server>` prefix, which devolves to `""` when ctx.server is missing — chrome.storage.onChanged listener then matches every key and fires refresh() on every storage write, project-wide
+- Area: modules/central-hub/tiles/general-tile.js (watchedStorageKeys, line 27)
+- Severity: P1
+- Found by: dashboard-pass (Agent 4)
+- Status: FIXED
+- Fix: rewrote the function to return only the two concrete keys the tile actually reads (`<server><code>schedule`, `<server><name>personelManagement`). Returns `[]` when server or airline identity isn't available. The bare-string-prefix anti-pattern is the same shape as F-9223-015.
+- Repro: open the dashboard with the general tile mounted; inspect the storage listener with `chrome.storage.local.set({foo: 1})` and watch refresh() fire.
+- Expected: refresh() fires only when schedule/personnel writes land.
+- Actual: refresh() fires on every storage write across the whole extension.
+- Notes: also adds a "Game day YYYY-MM-DD · HH:MM UTC" greeting line at the top of the body when AES.getServerDate() is parseable, to match the Audit-spec "general should show greeting + last-game-date" requirement. AES.getServerDate() throws on pages without `.as-navbar-bottom`; wrapped in try/catch so cold-start is mount-safe.
+
+## F-DASH-201: route-assistant-tile "Open scheduling →" link concatenated the hub IATA twice — produced /app/com/scheduling/JFKJFK rather than /app/com/scheduling/JFK
+- Area: modules/central-hub/tiles/route-assistant-tile.js (_renderHub, line 200)
+- Severity: P1
+- Found by: dashboard-pass (Agent 2)
+- Status: FIXED
+- Fix: dropped the duplicated `encodeURIComponent(hubInfo.hub)`. The href now matches AS's documented format `/app/com/scheduling/<HUB>` (3 letters; the 6-letter form `<HUB><DEST>` is a different page).
+- Repro: render the route-assistant tile with at least one cached topRoutes hub. Hover the heading row's "Open scheduling →" link.
+- Expected: `/app/com/scheduling/JFK` (single hub IATA).
+- Actual: `/app/com/scheduling/JFKJFK` — AS interprets the trailing 3 chars as a destination IATA which doesn't exist, so the page renders an unrelated lookup or 404.
+- Notes: the same heading is the user's primary CTA back to the route assistant for that hub, so this had been silently routing every "open scheduling" click into the wrong route view.
+
+## F-DASH-202: route-management-tile read sched.flights but the legacy schedule schema stores legs under sched.date[<dateStr>].schedule[] — body always rendered "no flights" even when extracts were present
+- Area: modules/central-hub/tiles/route-management-tile.js (_loadSchedule, loadStatus, renderBody)
+- Severity: P1
+- Found by: dashboard-pass (Agent 2)
+- Status: FIXED
+- Fix: rewrote `_loadSchedule()` to walk `v.date` as the {<dateStr>: {schedule:[...]}} map content_fligthSchedule.js actually writes, picks the latest numeric date entry, and returns `{flights, dateStr}`. Status badge / body now render real leg/destination counts. Also tightened watchedStorageKeys to the exact `<server><airline>schedule` key instead of the bare-server prefix that fired refresh on every storage change. Open handler defensively checks window.CentralHubLegacy.
+- Repro: extract a schedule on /app/info/enterprises/<id>?tab=3, open dashboard, expand the route-management tile.
+- Expected: tile shows "<N> legs · <M> destinations · extracted <date>" and lists top route pairs.
+- Actual: tile shows "No schedule extracted." even though `<server><airline>schedule` is present and populated.
+- Notes: the schema mismatch is plain (`v.date` is an object, not a string; legs live under `v.date[<dateStr>].schedule`). Same shape route-assistant/panel.js iterates correctly at line 3013–3015, so the tile was diverging from the canonical reader. Bare-server watch dropped per F-DASH-406's pattern.
+
+## F-DASH-203: station-automation-tile watchedStorageKeys returned a prefix that doesn't match any real storage key — refresh never fires from queue/run writes
+- Area: modules/central-hub/tiles/station-automation-tile.js (watchedStorageKeys, line 21-22)
+- Severity: P1
+- Found by: dashboard-pass (Agent 2)
+- Status: FIXED
+- Fix: keys are `<server><airlineId>stationAutomationQueue` and `<server><airlineId>stationAutomationRun:<runId>...` per modules/station-automation/storage.js — feed those literal prefixes (resolving airlineId via AES.getAirlineIdentity() when ctx.airline is missing). Returns `[]` when server is unknown.
+- Repro: open the dashboard, run the station-automation legacy panel to enqueue a country (writes the queue key), watch the tile body — it doesn't recount.
+- Expected: tile refresh fires when the queue or active-run records change.
+- Actual: prefix `stationAutomation:<server>:` matches no key (storage uses `<server><airlineId>stationAutomation*` without a colon separator), so the listener never fires.
+- Notes: also synced this.section = "operations" to match the registry section so the bleed-strip accent uses the operations palette (was set to "routes" → cobalt instead of amber, mirrors F-DASH-405). The openHandler had already been wrapped with a window.CentralHubLegacy guard before this pass.
+
+## F-DASH-204: service-profile-tile constructor set this.section="routes" but registry registers under "operations" — visual bleed accent + section dataset diverged from where the tile actually mounts
+- Area: modules/central-hub/tiles/service-profile-tile.js (constructor, line 24)
+- Severity: P3
+- Found by: dashboard-pass (Agent 2)
+- Status: FIXED
+- Fix: changed this.section = "operations" to match the registry. CentralHubTile._buildRoot copies this.section into dataset.section and the bleed-color resolver maps operations → T.color.amber.
+- Repro: render the dashboard; inspect the service-profile tile's left border.
+- Expected: amber bleed strip, matching the operations section.
+- Actual: cobalt blue (routes accent).
+- Notes: identical pattern to F-DASH-405 (alliance) and F-DASH-203 (station-automation). The shell uses spec.section to bucket tiles into sections so placement is correct; the cosmetic divergence still misleads anyone reading the tile.
+
+## F-DASH-205: route-management / schedule-management openHandler dereferenced bare CentralHubLegacy — would throw on cold start if the legacy bridge were absent (matches F-DASH-506 fix shape)
+- Area: modules/central-hub/tiles/route-management-tile.js (openHandler) + modules/central-hub/tiles/schedule-management-tile.js (openHandler)
+- Severity: P3
+- Found by: dashboard-pass (Agent 2)
+- Status: FIXED
+- Fix: wrapped both in `if (window.CentralHubLegacy && typeof window.CentralHubLegacy.switchDropdownTo === "function")` before calling. flightsfrom-tile and station-automation-tile were already updated in earlier passes; route-launcher / world-view / route-assistant don't use the legacy bridge.
+- Repro: drop the legacy-bridge load order (e.g. manifest regression) and click Open on either tile.
+- Expected: silent no-op (legacy unavailable, tile still works).
+- Actual: ReferenceError: CentralHubLegacy is not defined — bubbles into `_buildOpenButton`'s console.warn and the click is dead.
+- Notes: legacy-bridge.js loads at manifest line 223 (well before the route tiles at 269/276) so production hasn't seen the throw, but the call-site convention should be consistent across tiles. Same fix applied earlier as F-DASH-506.
+
+
+## F-DASH-001: 28 module classes declared but never exported to window — silent dead-ends across hub tiles
+- Area: cross-cutting (28 files in modules/)
+- Severity: P1
+- Found by: dashboard-pass (Agent 1 + meta scan)
+- Status: FIXED
+- Repro: open the dashboard, expand any tile that consumes one of these via `if (typeof window.X === "function") X.method()` — the guard returns false silently, the feature dead-ends.
+- Expected: every class consumed via `window.X` is reachable via `window.X` after its defining script loads.
+- Actual: top-level `class Foo {}` in MV3 content-script files is lexical-scope only; without an explicit `window.Foo = Foo` assignment, `window.Foo` is undefined. 28 files had this gap — including `RouteAssistantToast`, `RouteAssistantSettings`, `RouteAssistantPanel`, `AccountingSnapshotStore`, `AccountingProjector`, `AccountingAggregator`, `ScheduleStore`, `SchedulePanel`, `SchedulePresets`, `ScheduleFactors`, `StationAutomationStorage`, `FlightsFromStore`, `AesCompetitorStore`, `RouteAssistantWavePlanDiagnostics`, `RouteAssistantWaveOverlay`, `RouteAssistantWaveEditor`, `RouteAssistantOrsScraper`, `RouteAssistantOrsModel`, `RouteAssistantMarketsPageScraper`, `RouteAssistantYieldHistoryStore`, `RouteAssistantTypeSpecsStore`, `RouteAssistantContractualPartnersScraper`, `RouteAssistantDemandStore`, `RouteAssistantRouteOverridesStore`, `RouteAssistantSandboxScenariosStore`, `RouteAssistantWatchlistStore`, `RouteAssistantDistanceResolver`, `RouteAssistantRouteNoteStore`. Verified by grep: any consumer in a different content-script block (e.g. dashboard tile referencing a route-assistant class) gating on `typeof window.X === "function"` saw `undefined`.
+- Fix: appended `if (typeof window !== "undefined") { window.X = X }` to each file (idempotent, no behavioural change for callers using bare names within the same block). Files patched (28): flightsfrom/data-store.js; accounting/{aggregator,snapshot-store,projector}.js; schedule-management/{schedule-store,schedule-panel,range-buckets,presets-store}.js; station-automation/storage.js; route-assistant/{contractual-partners-scraper,demand-store,route-overrides-store,sandbox-scenarios-store,watchlist-store,distance-resolver,panel,settings-store,route-note-store,ors-scraper,ors-model,markets-page-scraper,wave-overlay,wave-editor,toast-host,yield-history-store,wave-plan-diagnostics,type-specs-store}.js; competitor-intel/competitor-store.js. All 28 pass `node --check` post-edit.
+- Notes: This is the same root cause as F-DASH-101 (used-aircraft-scanner stores) and F-DASH-404 (toast-host). Bare-name consumers in the SAME content-script block still resolve via lexical scope (manifest load order guarantees that within a block) — but cross-block consumers (e.g. a dashboard tile reaching into a route-assistant store loaded only on the scheduling page, OR a tile using the `window.X` guard to avoid hard dependency) silently dead-end. The guard pattern `typeof window.X === "function"` is the safer one and is now universally honoured.
+
+<!-- port-9228 station-automation tile interaction audit (F-9228-100+) -->
+Audited 1 element; 3 bugs found.
+
+(Tile-side wiring bugs the prompt asked me to look for — watchedStorageKeys prefix mismatch and section/registry divergence — were already filed and FIXED as F-DASH-203 + F-DASH-001 before this pass. The tile's only interactive element is the inherited Open button driven by `openHandler()` at modules/central-hub/tiles/station-automation-tile.js:33, which now properly guards `window.CentralHubLegacy.switchDropdownTo("stationAutomation")`. Bugs below are in the surrounding station-automation surfaces — status-strip + storage GC — that the audit brief instructed me to grep for as producers/consumers.)
+
+## F-9228-100: status-strip "OPEN STATION AUTOMATION" link / compact badge drops the user on /app/enterprise/dashboard with no station-automation hash — label promises X, click delivers Y
+- Area: modules/station-automation/status-strip.js (_dashboardLink lines 303-322, _renderCompact lines 332-357, _navigateToDashboard lines 361-365)
+- Severity: P2
+- Found by: port-9228
+- Status: FIXED
+- Fix: `_navigateToDashboard` now in-tab-flips the legacy dropdown via `CentralHubLegacy.switchDropdownTo("stationAutomation")` when the dashboard is already mounted (the same path the hub tile uses). Otherwise it opens the dashboard with `#aes-section=stationAutomation`. content_dashboard.js parses the hash after building the dropdown and overrides the user's `defaultDashboard` so the click lands on the promised pane regardless of last preference.
+- Repro: per the file's own docstring (lines 6-12) the strip mounts in the Schedule Management panel and the Route Assistant header. With at least one queued country, click the "OPEN STATION AUTOMATION" link (full mode) or the compact badge. A new tab opens at `https://<host>/app/enterprise/dashboard`. The dashboard renders with whatever the user's last `settings.general.defaultDashboard` choice was (legacy-defaults.js seeds it from the dropdown they last picked); for any user whose default is e.g. "general" or "routeAssistant", the click LANDS THEM ON A DIFFERENT PANE and they have to manually pick "Station Automation" from the dropdown.
+- Expected: a link labelled "OPEN STATION AUTOMATION" lands on the Station Automation pane. Either pass `#aes-section=stationAutomation` on the URL and have content_dashboard.js read that hash post-render, or keep navigation in-tab and call `CentralHubLegacy.switchDropdownTo("stationAutomation")` after the dashboard is mounted. Cf. station-automation-tile.js:33-39 which already does the in-tab switch successfully when the user is already on the dashboard.
+- Actual: `_navigateToDashboard` at lines 361-365 builds `https://${host}/app/enterprise/dashboard` and calls `window.open(url, "_blank")`. No hash, no query, no post-nav handoff. content_dashboard.js has no listener that would honour an intent to switch to stationAutomation after a fresh load — its dropdown defaults to legacy-defaults.js's `defaultDashboard` (or the user's last-persisted choice). Same call drives the click handlers at line 320 (full link) and line 355 (compact badge), so both affordances fail identically.
+- Notes: Mirrors the affordance promise the legacy in-page Open button already keeps. Fix: navigate with `https://${host}/app/enterprise/dashboard#aes-section=stationAutomation`, and in content_dashboard.js's dashboard-render path, after the legacy dropdown is built, parse `window.location.hash` for `aes-section=` and call `CentralHubLegacy.switchDropdownTo` accordingly. Or, since the strip already runs on an AS app page (same origin), open the dashboard in-tab via `window.location.assign` to avoid the new-tab + dropdown-default round-trip entirely.
+
+## F-9228-101: status-strip queued-summary suppresses threshold-only countries whenever any whitelist entry is present — display undercounts the queue
+- Area: modules/station-automation/status-strip.js (_summarize lines 154-162, _renderFull lines 233-237, _renderCompact lines 337-340)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: `_summarize` now also returns `thresholdCountries` (queue entries with no airportWhitelist). _renderFull renders `<airports> + <thresholdCountries> threshold-only · across <countries>` when both populations are non-zero, and degrades gracefully to either-only otherwise. _renderCompact renders `<airports>+<tc> QUEUED` so the badge no longer hides threshold-only entries from the user.
+- Repro: enqueue two entries — one threshold-based country (`{countryName:"France", paxThreshold:5, cargoThreshold:0}` — no airportWhitelist) and one bulk-target whitelist country (`{countryName:"Germany", airportWhitelist:["FRA","MUC","TXL"]}`). Mount the strip. Full mode reads "3 AIRPORTS ACROSS 2 COUNTRIES"; compact reads "3 QUEUED". But France is threshold-mode and could resolve to 0 or 50 airports at run time; the count "3" silently excludes France's resolution.
+- Expected: when the queue mixes threshold and whitelist entries, the summary either reports both populations distinctly (e.g. "3 airports + 1 threshold-based country across 2 countries") or falls back to "2 countries queued" without an airport count to avoid an undercount. The compact badge has the same problem: `${s.airports || s.countries} QUEUED` shows "3 QUEUED" when the user-requested cardinality is "1 country (threshold) + 3 specific airports".
+- Actual: `_summarize` at lines 154-162 sums `airports` only over entries with `airportWhitelist.length > 0`; threshold-mode entries contribute nothing to the count. The display ternary at lines 233-236 picks the airports-mode string whenever `s.airports > 0`, swallowing the country-mode info entirely. Same thing for compact at line 339: `${s.airports || s.countries}` resolves to airports as soon as ANY whitelist entry exists, hiding threshold-only entries from the badge.
+- Notes: Mostly a UX/messaging bug, but since the strip's stated job (file docstring lines 6-12) is to surface queue cardinality without forcing a dashboard trip, an undercount is real and observable. Fix: in `_summarize`, also count `countriesThresholdOnly = queue.filter(e => !(e?.airportWhitelist?.length)).length`; render full mode as `"<airports> airport(s) + <countriesThresholdOnly> threshold-only · across <countries> countries"` when both are non-zero. Compact: `"<airports>+<countriesThresholdOnly> QUEUED"` or just `"<countries> QUEUED"` when mixed.
+
+## F-9228-102: StationAutomationStorage.cleanupOldRuns leaves per-airport result blobs orphaned in the same pass that deletes their parent run
+- Area: modules/station-automation/storage.js (cleanupOldRuns lines 167-187)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: split into two passes. The first pass identifies session records to drop and adds them to a `deletedSessions` Set. The second pass walks `:r:<idx>` blobs and removes any whose owner is already gone OR is in `deletedSessions`. Previously the orphan check tested the snapshot, which was still truthy in the same call — so blobs of deleted sessions leaked until the next cleanup invocation.
+- Repro: in DevTools on the dashboard tab, write an old session plus its result blobs:
+  ```
+  await chrome.storage.local.set({
+    "simworld_oneFLYNYstationAutomationRun:sr-old1": {runId:"sr-old1", server:"simworld_one", airlineId:"FLYNY", startedAt: Date.now() - 48*3600_000},
+    "simworld_oneFLYNYstationAutomationRun:sr-old1:r:0": {iata:"AAA", status:"ok"},
+    "simworld_oneFLYNYstationAutomationRun:sr-old1:r:1": {iata:"BBB", status:"ok"}
+  })
+  ```
+  Then `await StationAutomationStorage.cleanupOldRuns("simworld_one", "FLYNY", null, 24*3600_000)`. After the call, the session key is gone but the two `:r:0` / `:r:1` blobs survive. `chrome.storage.local.get(null)` confirms.
+- Expected: orphaning the results in the same call reaps both the session and its result blobs, so storage doesn't accumulate a half-deleted run between cleanup invocations.
+- Actual: `cleanupOldRuns` snapshots `all = await chrome.storage.local.get(null)` once (line 168). For each session key, if old, it pushes the session key to `toRemove` (line 180). For each result key (`:r:` substring), it checks `if (!all[owner]) toRemove.push(k)` (line 183) — but `all[owner]` is the snapshot, which still contains the (about-to-be-deleted) session record. The result keys are NOT pushed. So the single-pass cleanup deletes the session and leaks its results until the NEXT cleanup pass (which finally sees `all[owner]` undefined). Cleanup runs from content_dashboard.js:2867 only on dashboard render, so a user who runs the dashboard, GC's session A, then never reopens the dashboard will leave A's results in storage indefinitely.
+- Notes: Two-pass cleanup is observable in DevTools but the file's docstring at line 165 says "GC orphan/old run keys" implying single-pass. Fix shape (1 line): when adding a session key to toRemove, also iterate `all` for keys starting with `<sessionKey>:r:` and push each. OR refactor: build a `Set<string>` of toRemove first, then re-iterate result keys checking `toRemove.has(owner) || !all[owner]`. Mechanical fix, contained blast radius — hence P3.
+
+## F-9228-007: Inventory tile "Open" button sends user to /app/com/markets when no inventory is cached, contradicting the empty-state instruction
+- Area: modules/central-hub/tiles/inventory-tile.js (openHandler + loadStatus empty branch)
+- Severity: P2
+- Found by: port-9228
+- Status: FIXED
+- Fix: openHandler keeps the /app/com/markets fallback (markets is the route-discovery surface — user picks a market and AS surfaces inventory link), but the empty-state summary now reads "Click Open to pick a route, or visit /app/com/inventory/<HUB><DEST> to seed." so the button label and effect agree.
+- Repro: open the central-hub Inventory tile with no `routeAssistant:inventory:*` keys cached → click "Open →".
+- Expected: button effect matches summary text.
+- Actual (pre-fix): user landed on /app/com/markets while the summary instructed visiting /app/com/inventory/<HUB><DEST>.
+- Notes: paired with F-9228-008 (stale _lastTopRoute) — both touch the same closure.
+
+## F-9228-008: Inventory tile keeps stale `_lastTopRoute` after the cache is cleared — Open button navigates to a route that no longer has data
+- Area: modules/central-hub/tiles/inventory-tile.js (loadStatus, line ~44)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: empty branch in loadStatus now sets `this._lastTopRoute = null` before returning the muted status. The openHandler closure correctly reaches its fallback path on subsequent clicks.
+- Notes: one-line fix; previously _lastTopRoute was only assigned in the non-empty branch, so a cache-then-clear sequence left a stale {hub,dest}.
+
+## F-9228-009: Storage-triggered refresh wipes the open quick-price form mid-edit, losing the user's typed price
+- Area: modules/central-hub/tiles/inventory-tile.js (renderBody clobber + Set price / Cancel / Apply)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: track `this._editingPair` on Set-price click; clear on Cancel and on Apply finish. renderBody early-returns when editing and no focusFilter is in play, deferring the rerender until the user finishes the form. Apply/Cancel both trigger their own rerender so the deferred state isn't sticky.
+- Repro: expand Inventory tile, click "Set price" on a row, type a price but don't click Apply, then trigger any write to a routeAssistant:inventory:<HUB>-<DEST> key (e.g. visit the inventory page in another tab).
+- Notes: the storage→bus bridge in tile.js still fires; renderBody just becomes a no-op while editing.
+
+## F-9228-300: schedule-management-tile builds recent-schedule keys from index objects (REPORTED, NOT FIXED — already correct)
+- Area: modules/central-hub/tiles/schedule-management-tile.js
+- Severity: P1 (claimed)
+- Found by: port-9228
+- Status: WONTFIX
+- Notes: agent report described an older revision. Current code at lines 53-58 already maps each index entry through `(e && typeof e === "object") ? e.scheduleId : e`, producing valid keys. No change needed.
+
+## F-9228-301: schedule-panel `_handoffToAfp` references undefined `this._presets`, fallback always evaluates to null
+- Area: modules/schedule-management/schedule-panel.js (_handoffToAfp)
+- Severity: P2
+- Found by: port-9228
+- Status: FIXED
+- Fix: replaced `(this._presets || []).find(p => p)` (this._presets was never assigned anywhere) with the actual user-selected preset id `this.editingId`, plus fall-through to `this.block.presets[0].id` when nothing is selected. The hand-off now reaches AesHandoffStore.set with a real presetId and the early-return "Cannot hand off" toast no longer fires on a valid editor state.
+- Repro: in overlay mode, click "Apply all in AFP →" with `this.draft.presetId` null. Pre-fix: warning toast. Post-fix: handoff record written, AFP page opens.
+
+## F-9228-302: schedule-panel `_refreshHistory` injects user-controlled fields into innerHTML — XSS via preset name / hub
+- Area: modules/schedule-management/schedule-panel.js (_refreshHistory)
+- Severity: P2
+- Found by: port-9228
+- Status: FIXED
+- Fix: replaced the `tr.innerHTML = \`<td>...\``  template with a `mkCell(txt)` helper that creates `<td>` elements via document.createElement and assigns through textContent — neutralises any markup in `entry.presetName` (set via free-text Identity field) or `entry.hub` (free-text input). The Delete button is appended unchanged.
+- Repro: create a preset named `<img src=x onerror=alert(1)>`, build a schedule, open Schedule Management → Recent schedules. Pre-fix: alert fires. Post-fix: literal text rendered.
+
+## F-9228-303: schedule-panel `_legTextInput` instance method is dead code
+- Area: modules/schedule-management/schedule-panel.js
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: removed the unused `_legTextInput` instance method. The static `_mkLegTextInput` is the only caller path (used by `static buildLegRow`). Keeping two near-identical helpers invited drift.
+
+## F-9228-304: open-stations-modal seeded mode never renders "candidates" source chips
+- Area: modules/schedule-management/open-stations-modal.js (_renderAirportRow)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: appended `"candidates"` to the `ordered` array so seeded-mode rows render the chip declared in `OpenStationsModal.SOURCE_LABELS`. Previously the chip was unreachable.
+- Notes: cosmetic — selection/queueing already worked.
+
+## F-9228-305: schedule-panel `_buildScheduleDiffSummary` reference-equality cache never hits
+- Area: modules/schedule-management/schedule-panel.js (_buildScheduleDiffSummary)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: dropped the `_diffCacheLegs / _diffCacheProposed / _diffCacheResult` memo. `this.schedule.legs` and `this.draft.flights` are reloaded from chrome.storage on every render, so reference-equality compared on fresh array instances always missed. The compare itself is cheap; the dead memo was misleading and accumulated GC pressure.
+
+## F-9228-200: UAS tile triple-reads chrome.storage per refresh — orphan loadStatus digest fetch + bare "settings" watch amplification
+- Area: modules/central-hub/tiles/used-aircraft-scanner-tile.js (loadStatus, watchedStorageKeys)
+- Severity: P2
+- Found by: port-9228
+- Status: FIXED
+- Fix: (a) loadStatus only fetches digests inside the `session && session.finishedAt` branch where the result is consumed — running-scan and no-session paths used to orphan a `chrome.storage.local.get(null)` full scan. (b) F-9228-203 fix below scopes the settings watch so unrelated module writes don't fire UAS refreshes at all.
+- Notes: paired with F-9228-203.
+
+## F-9228-201: UAS tile latest.diffCounts.firstScan unguarded — TypeError when digest carries summary without diffCounts
+- Area: modules/central-hub/tiles/used-aircraft-scanner-tile.js (loadStatus)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: added `latest.diffCounts &&` guard before the `.firstScan` read. Today panel.js writes both fields atomically, but any future digest writer that sets `summary` without `diffCounts` would have crashed the loadStatus path.
+
+## F-9228-202: Top-steal link falls back to href="#" on missing offerUrl, navigates to current page in same tab
+- Area: modules/central-hub/tiles/used-aircraft-scanner-tile.js (_stealsList)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: when offerUrl is missing, render the row as a `<span>` (with a "URL unavailable" tooltip) instead of an `<a href="#">`. The same row reads identically to the surrounding clickable rows in the rail, but no longer navigates the user away on click.
+
+## F-9228-203: UAS tile watches bare "settings" — refreshes on every settings write across the entire extension
+- Area: modules/central-hub/tiles/used-aircraft-scanner-tile.js (watchedStorageKeys + mount/dispose)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: dropped the bare `"settings"` prefix from watchedStorageKeys. mount() now attaches a slice-aware chrome.storage.onChanged listener that fingerprints `settings.usedAircraftScanner` before/after and only triggers refresh when the slice itself changed. dispose() removes the listener so it doesn't leak across hub unmounts. marketScan:* watches still fire normally for scan events.
+
+## F-9228-204: UAS tile renderBody 3rd arg collides with base-class focusFilter contract
+- Area: modules/central-hub/tiles/used-aircraft-scanner-tile.js (renderBody, _activatePreset)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: renamed the 3rd parameter to `focusFilter` (matching tile.js doc + every sibling tile). _activatePreset no longer passes the merged block positionally — instead caches it on `this._pendingBlock`, which renderBody consumes once and clears. Cross-tile drill-in via focusFilter (a documented hub feature) no longer silently masquerades as a preloaded block.
+
+## F-9228-400: World-view wave-pane click handler reads wrong arg — focus-route never emits
+- Area: modules/central-hub/tiles/world-view-tile.js (wave-pane onFlightClick)
+- Severity: P1
+- Found by: port-9228
+- Status: FIXED
+- Fix: `RouteAssistantWaveOverlay.renderGantt` invokes `onFlightClick(flight, hubIata)` — the second arg is the hub IATA *string*, not a route object. The handler now reads the destination from the flight itself (`flight.destination` for outbound, `flight.origin` for inbound — chosen by comparing to the hub IATA) and emits focus-route with a real {hub, dest}. Pre-fix: `route.destination`/`route.dest` were both undefined, so the synthesised payload silently bailed at the !destIata guard in _emitFocusRoute.
+
+## F-9228-401: World-view subscribeBus("focus-route") persists invalid hub before validating against the snapshot
+- Area: modules/central-hub/tiles/world-view-tile.js (mount handler + render path)
+- Severity: P2
+- Found by: port-9228
+- Status: FIXED
+- Fix: deferred persist into the render pipeline. The handler now sets `this._pendingPersist = code`. After `_resolveFocusedHub` returns the actual focused hub (which falls back to hubs[0] if the requested hub isn't in the snapshot), we persist only when the request matched. Otherwise the pending value is dropped. settings storage no longer carries hubs the user can't pick.
+
+## F-9228-402: World-view storage-echo on focus-pick triggers a duplicate render
+- Area: modules/central-hub/tiles/world-view-tile.js (refresh override + onPick)
+- Severity: P2
+- Found by: port-9228
+- Status: FIXED
+- Fix: added an override of `refresh()` that consumes a one-shot `_suppressNextStorageRefresh` flag. onPick (and the deferred-persist path in F-9228-401) sets the flag right before writing settings, so the inevitable storage→bus echo refresh becomes a no-op. The user's direct re-render (already kicked off at onPick) is the only one that runs. Subsequent unrelated storage changes refresh as normal.
+
+## F-9228-403: World-view recommendations empty-state hint points at /app/info/airports/<IATA>, but that endpoint expects numeric airportId
+- Area: modules/world-view/views/recommendations-pane.js
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: changed the empty-state hint from `/app/info/airports/<IATA>` to `/app/com/scheduling/<IATA>` — the IATA-keyed surface every other hint in the tile uses. The previous URL led to a dead/404 page when pasted.
+
+## F-9228-404: World-view alliance member chip is clickable when enterpriseId is null — silent no-op on click
+- Area: modules/world-view/views/recommendations-pane.js (_allianceCard members)
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: extended the member filter from `m && m.name` to `m && m.name && m.enterpriseId` so chips that would silently bail at the focus-enterprise guard are no longer rendered. recommend-alliance.js explicitly maps missing ids to null in some paths; those records now drop from the chip strip.
+
+## F-9228-405: World-view _loadPartnerCache declares an unused `server` parameter
+- Area: modules/central-hub/tiles/world-view-tile.js
+- Severity: P3
+- Found by: port-9228
+- Status: FIXED
+- Fix: dropped the unused `server` arg from `_loadPartnerCache`. bulkLoadCache is server-agnostic (records carry .server but the cache fetch enumerates by ownIds). Both call sites updated. Removes the implicit "server-scoped" contract that would have misled future callers.
+
+
+## F-9227-011: Hub cash slice + accounting tile stuck on "no airline" / "no snapshots" — eager compute fires before AS navbar paints
+- Area: modules/central-hub/feed/index.js (bootstrap signal at line 76); modules/central-hub/feed/cash-feed.js (pickContext at line 93)
+- Severity: P1
+- Found by: port-9227 (live MCP at port 9227)
+- Status: FIXED
+- Repro: load /app/finance/accounting/{0,1,2} once so a snapshot lands in storage (verified at chrome.storage.local under `free1FLY NYON.accounting:index`). Hard-reload /app/enterprise/dashboard. Hero strip "CASH" card shows `— no airline`. Accounting tile body shows "No accounting snapshots yet. Visit /app/finance/accounting/{0,1,2}." Click Data Flow tile → "Recompute all views" → no change. Topics list never includes `data:accounting:weekly:saved`.
+- Expected: cash card shows the latest cashBalance; accounting tile lists the captured weeks. Hero stays muted only on pages where there really is no airline (login, etc).
+- Actual: hub:cash:weekly slice computes ONCE eagerly at content-script-load. At that moment AES.getAirlineIdentity() returns "" (the navbar hasn't been painted yet on document_idle). pickContext returns {airline: ""}. Slice value = `{value: null, label: "no airline"}` is cached. The slice's deps are `data:accounting:weekly:saved` and `data:account:bootstrapped`. The bootstrap signal fires at +50ms unconditionally (feed/index.js:76 `setTimeout(_emitAccountBootstrapped, 50)`); if the AS navbar still isn't in the DOM at +50ms, the recompute also returns "no airline" and the slice stays stuck. Subsequent storage echoes from sister tabs DO trigger `data:accounting:weekly:saved` only when the user visits /app/finance/accounting AGAIN with the dashboard open — first-load freshness is broken.
+- Notes: Two layered fixes:
+  1) feed/index.js — gate `_emitAccountBootstrapped` behind a poll that waits for `AES.getAirlineIdentity()` to return non-empty (cap at ~6s with fallback). This pushes the dep-fire to a moment when context is real, so every slice that depends on `data:account:bootstrapped` recomputes correctly.
+  2) cash-feed.js — the eager compute should retry pickContext for ~1.5s before settling on "no airline", so slice consumers that only react to view:hub:cash:weekly:computed don't latch a permanent muted value.
+
+
+## F-9227-012: Strategy modal "Open accounting →" link points to /app/accounting/income — 404
+- Area: modules/strategy/store-readiness.js (_probeRoutes empty-state action)
+- Severity: P3
+- Found by: port-9227 (live MCP)
+- Status: FIXED
+- Repro: Open the dashboard hub → click Strategy tile → OPEN STRATEGY MODAL. The Store readiness panel shows "Routes known: empty" with action "Open accounting →" pointing at https://free1.airlinesim.aero/app/accounting/income — the AS server has no such route (canonical is /app/finance/accounting/{0,1,2}).
+- Expected: /app/finance/accounting/0 (Income tab), matching every other accounting reference in the codebase (snapshot-store.js, balance-scraper.js, panel.js, central-hub accounting-tile.js, command palette, shortcuts).
+- Fix: changed url to "/app/finance/accounting/0".
