@@ -93,18 +93,16 @@ class AesBridgeCoalitionsPanel {
         const wrap = document.createElement("aside")
         wrap.className = "aes-bridge__coalitions-list"
 
+        const newSlot = document.createElement("div")
+        newSlot.className = "aes-bridge__coalitions-new-slot"
+
         const newBtn = document.createElement("button")
         newBtn.type = "button"
         newBtn.className = "aes-bridge__coalitions-new"
         newBtn.textContent = "+ New coalition"
-        newBtn.addEventListener("click", async () => {
-            const name = window.prompt("Coalition name:", "Asia Operations")
-            if (!name || !name.trim()) return
-            const org = await window.AesCanopyOrgsStore.create({name: name.trim()})
-            this._selectedId = org.id
-            await this._refresh()
-        })
-        wrap.appendChild(newBtn)
+        newBtn.addEventListener("click", () => this._showNewCoalitionForm(newSlot, newBtn))
+        newSlot.appendChild(newBtn)
+        wrap.appendChild(newSlot)
 
         if (!this._orgs.length) {
             const empty = document.createElement("p")
@@ -137,6 +135,53 @@ class AesBridgeCoalitionsPanel {
         }
         wrap.appendChild(list)
         return wrap
+    }
+
+    _showNewCoalitionForm(slot, newBtn) {
+        newBtn.style.display = "none"
+        const form = document.createElement("div")
+        form.className = "aes-bridge__coalitions-new-form"
+
+        const input = document.createElement("input")
+        input.type = "text"
+        input.maxLength = 80
+        input.placeholder = "Coalition name"
+        input.className = "aes-bridge__coalitions-name"
+
+        const createBtn = document.createElement("button")
+        createBtn.type = "button"
+        createBtn.className = "aes-bridge__btn aes-bridge__btn--primary"
+        createBtn.textContent = "Create"
+
+        const cancelBtn = document.createElement("button")
+        cancelBtn.type = "button"
+        cancelBtn.className = "aes-bridge__btn aes-bridge__btn--ghost"
+        cancelBtn.textContent = "Cancel"
+
+        const cancel = () => {
+            form.remove()
+            newBtn.style.display = ""
+            newBtn.focus()
+        }
+        const submit = async () => {
+            const name = input.value.trim()
+            if (!name) { input.focus(); return }
+            createBtn.disabled = true
+            const org = await window.AesCanopyOrgsStore.create({name})
+            this._selectedId = org.id
+            await this._refresh()
+        }
+
+        cancelBtn.addEventListener("click", cancel)
+        createBtn.addEventListener("click", submit)
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") { e.preventDefault(); submit() }
+            else if (e.key === "Escape") { e.preventDefault(); cancel() }
+        })
+
+        form.append(input, createBtn, cancelBtn)
+        slot.appendChild(form)
+        input.focus()
     }
 
     _buildDetail() {
@@ -179,12 +224,41 @@ class AesBridgeCoalitionsPanel {
         delBtn.type = "button"
         delBtn.className = "aes-bridge__btn aes-bridge__btn--ghost"
         delBtn.textContent = "Delete"
-        delBtn.addEventListener("click", async () => {
-            if (!window.confirm("Delete coalition \"" + org.name + "\"?")) return
-            await window.AesCanopyOrgsStore.remove(org.id)
-            this._selectedId = null
-            await this._refresh()
-        })
+        let confirmBtn = null
+        let cancelBtn = null
+        const exitConfirm = () => {
+            if (confirmBtn) { confirmBtn.remove(); confirmBtn = null }
+            if (cancelBtn) { cancelBtn.remove(); cancelBtn = null }
+            delBtn.style.display = ""
+            delBtn.focus()
+        }
+        const enterConfirm = () => {
+            if (confirmBtn) return
+            delBtn.style.display = "none"
+            confirmBtn = document.createElement("button")
+            confirmBtn.type = "button"
+            confirmBtn.className = "aes-bridge__btn aes-bridge__btn--danger"
+            confirmBtn.textContent = "Confirm delete?"
+            confirmBtn.addEventListener("click", async () => {
+                await window.AesCanopyOrgsStore.remove(org.id)
+                this._selectedId = null
+                await this._refresh()
+            })
+            cancelBtn = document.createElement("button")
+            cancelBtn.type = "button"
+            cancelBtn.className = "aes-bridge__btn aes-bridge__btn--ghost"
+            cancelBtn.textContent = "Cancel"
+            cancelBtn.addEventListener("click", exitConfirm)
+            cancelBtn.addEventListener("keydown", (e) => {
+                if (e.key === "Escape") { e.preventDefault(); exitConfirm() }
+            })
+            confirmBtn.addEventListener("keydown", (e) => {
+                if (e.key === "Escape") { e.preventDefault(); exitConfirm() }
+            })
+            headerRow.append(confirmBtn, cancelBtn)
+            confirmBtn.focus()
+        }
+        delBtn.addEventListener("click", enterConfirm)
         headerRow.append(nameInput, renameBtn, delBtn)
         detail.appendChild(headerRow)
 

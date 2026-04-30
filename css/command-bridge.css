@@ -611,6 +611,14 @@ html, body {
     transition: var(--aes-tr-fast);
 }
 .aes-bridge__coalitions-new:hover { background: var(--aes-rust); color: var(--aes-rust-fg); border-color: var(--aes-rust); }
+.aes-bridge__coalitions-new-slot { display: flex; flex-direction: column; gap: var(--aes-sp-1); }
+.aes-bridge__coalitions-new-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--aes-sp-1);
+    align-items: stretch;
+}
+.aes-bridge__coalitions-new-form .aes-bridge__coalitions-name { flex: 1 1 120px; min-width: 0; }
 .aes-bridge__coalitions-empty {
     margin: 0;
     padding: var(--aes-sp-3) var(--aes-sp-2);
@@ -710,6 +718,12 @@ html, body {
     border: var(--aes-bw-1) solid var(--aes-crimson);
 }
 .aes-bridge__btn--ghost:hover { background: var(--aes-crimson-soft); }
+.aes-bridge__btn--danger {
+    background: var(--aes-crimson);
+    color: var(--aes-bone);
+    border: var(--aes-bw-2) solid var(--aes-crimson);
+}
+.aes-bridge__btn--danger:hover { background: var(--aes-rust-deep); border-color: var(--aes-rust-deep); }
 .aes-bridge__coalition-members {
     list-style: none;
     margin: 0;
