@@ -41,10 +41,14 @@ class AES {
     static getServerName() {
         const hostname = window.location.hostname
         const servername = hostname.split(".")[0]
-        
+
         return servername
     }
-    
+
+    static getServer() {
+        return AES.getServerName()
+    }
+
     /**
      * Formats a currency value local standards
      * @param {integer} currency value
