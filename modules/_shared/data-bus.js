@@ -83,6 +83,13 @@
     const STORAGE_ECHO_SUPPRESS_MS = 200
     const HISTORY_GLOBAL_MAX       = 500   // total events kept across all topics
     const HISTORY_PER_TOPIC_MAX    = 50    // per-topic ringbuffer for inspector drill-in
+    // Soft cap on distinct topics tracked. Existing producers all use small
+    // enums for the kind suffix, so crossing this is an early signal that
+    // some new producer is encoding per-route / per-aircraft ids in the
+    // topic name — a leak shape that grows lastEmit / counts / historyByTopic
+    // unbounded. Warn once and point the user at clearTopic() / clearHistory().
+    const TOPIC_CARDINALITY_SOFT_MAX = 500
+    let   _cardinalityWarned       = false
 
     const subs            = new Map()  // topic → Set<cb>
     const lastEmit        = new Map()  // topic → last record
@@ -117,6 +124,13 @@
         if (window.__aesBusStrict && !warnedDrift.has(topic)) {
             warnedDrift.add(topic)
             console.warn("[AES data-bus] topic '" + topic + "' emitted but not registered — add it to modules/_shared/data-bus-topics.js")
+        }
+        if (!_cardinalityWarned
+                && (discovered.size + registered.size) > TOPIC_CARDINALITY_SOFT_MAX) {
+            _cardinalityWarned = true
+            console.warn("[AES data-bus] topic cardinality crossed soft limit (" + TOPIC_CARDINALITY_SOFT_MAX
+                + "). Likely a producer is encoding per-instance ids in topic names — call AesDataBus.clearTopic(topic) for transient topics, "
+                + "or AesDataBus.clearHistory({counts: true, discovered: true}) for a full reset.")
         }
     }
 
@@ -308,10 +322,56 @@
         return out
     }
 
-    function clearHistory() {
+    /**
+     * Drop history. By default clears only the historyGlobal/historyByTopic
+     * ringbuffers — counts and lastEmit stay because they're useful even
+     * after a reset.
+     *
+     * `opts.counts: true` also clears counts/lastEmit/lastValue/recentLocalEmit
+     * so a long-lived tab can release per-topic Map entries that have piled up.
+     * `opts.discovered: true` also clears the discovered/warnedDrift sets and
+     * re-arms the cardinality warning. Use both together for a full reset.
+     */
+    function clearHistory(opts) {
         historyGlobal.length = 0
         historyByTopic.clear()
-        // Don't clear counts or lastEmit — those are useful even after a reset.
+        if (opts && opts.counts) {
+            counts.clear()
+            lastEmit.clear()
+            lastValue.clear()
+            recentLocalEmit.clear()
+        }
+        if (opts && opts.discovered) {
+            discovered.clear()
+            warnedDrift.clear()
+            _cardinalityWarned = false
+        }
+    }
+
+    /**
+     * Drop ALL per-topic state for a single topic — lastEmit, lastValue,
+     * counts, recentLocalEmit, historyByTopic, discovered, warnedDrift.
+     * Subscribers and `registered` descriptors stay (subscribers chose
+     * this topic explicitly; registration is intentional).
+     *
+     * Returns `true` if any per-topic state was actually removed.
+     *
+     * Use case: a producer that intentionally encodes per-instance ids in
+     * topic names (e.g. transient per-route signals) should call
+     * `AesDataBus.clearTopic(topic)` once the instance is gone, so the
+     * Maps don't grow unbounded.
+     */
+    function clearTopic(topic) {
+        if (typeof topic !== "string" || !topic) return false
+        let removed = false
+        if (lastEmit.delete(topic))        removed = true
+        if (lastValue.delete(topic))       removed = true
+        if (recentLocalEmit.delete(topic)) removed = true
+        if (counts.delete(topic))          removed = true
+        if (historyByTopic.delete(topic))  removed = true
+        if (discovered.delete(topic))      removed = true
+        if (warnedDrift.delete(topic))     removed = true
+        return removed
     }
 
     function register(topic, descriptor) {
@@ -378,6 +438,7 @@
         history:       history,
         stats:         stats,
         clearHistory:  clearHistory,
+        clearTopic:    clearTopic,
         register:      register,
         isRegistered:  isRegistered,
         setStrict:     setStrict,

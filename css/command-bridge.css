@@ -854,3 +854,79 @@ a.aes-bridge__opps-row-name:hover { color: var(--aes-rust-deep); }
     color: var(--aes-rust-deep);
     border-bottom-color: var(--aes-rust);
 }
+
+/* ----- Picker (2A) ----------------------------------------- */
+.aes-bridge__picker {
+    display: flex;
+    gap: var(--aes-sp-2);
+    flex-wrap: wrap;
+}
+.aes-bridge__picker-chip {
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+    background: transparent;
+    color: var(--aes-slate);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+}
+.aes-bridge__picker-chip--active {
+    background: var(--aes-oxide-2);
+    color: var(--aes-bone);
+    border-color: var(--aes-oxide-2);
+}
+
+/* ----- Generic pane shell (2A/2B/2C) ---------------------- */
+.aes-bridge__pane {
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+    padding: var(--aes-sp-4);
+}
+.aes-bridge__pane-title {
+    margin: 0 0 var(--aes-sp-3) 0;
+    font-size: var(--aes-fs-h3);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-h);
+}
+.aes-bridge__pane-empty {
+    color: var(--aes-slate);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+}
+.aes-bridge__pane-column-title {
+    font-size: var(--aes-fs-small);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    margin: 0 0 var(--aes-sp-2) 0;
+    color: var(--aes-slate);
+}
+.aes-bridge__pane-row {
+    display: flex;
+    flex-direction: column;
+    padding: var(--aes-sp-2) 0;
+    border-bottom: var(--aes-bw-1) dotted var(--aes-paper-rule);
+}
+.aes-bridge__pane-row--warn { border-left: 3px solid var(--aes-rust); padding-left: var(--aes-sp-2); }
+.aes-bridge__pane-row--ok   { border-left: 3px solid var(--aes-oxide-2); padding-left: var(--aes-sp-2); }
+.aes-bridge__pane-row--muted{ opacity: 0.6; }
+.aes-bridge__pane-subtitle {
+    color: var(--aes-slate);
+    font-size: var(--aes-fs-micro);
+}
+.aes-bridge__pane-stamp {
+    color: var(--aes-slate);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    margin-top: var(--aes-sp-1);
+}
+.aes-bridge__conductor-grid,
+.aes-bridge__strategy-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--aes-sp-4);
+}
+@media (max-width: 900px) {
+    .aes-bridge__conductor-grid,
+    .aes-bridge__strategy-grid { grid-template-columns: 1fr; }
+}
