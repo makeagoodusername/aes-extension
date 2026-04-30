@@ -17,7 +17,7 @@
         oxide2: "#5A4F45",
         slate:  "#7A6F66",
         rule:   "#C9C0B0",
-        rust:   "#B8862E"
+        rust:   "#B8472A"
     };
 
     function header(label, sub) {
