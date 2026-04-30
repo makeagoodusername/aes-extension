@@ -654,18 +654,10 @@ class AesCompetitorOutlinePanel {
         // Best UX: navigate the user to where they can actually create the
         // counter flight. If we have a suggested existing tail, jump to its
         // Aircraft Flight Plan page; otherwise jump to the hub's scheduling
-        // page. We also persist a tiny handoff payload so the destination
-        // page can read the suggested route + tail and prefill its UI.
-        const handoff = {
-            source:    "competitor-outline",
-            hub:       r.hub,
-            dest:      r.dest,
-            counter:   r.counter || null,
-            createdAt: Date.now()
-        }
-        try {
-            chrome.storage.local.set({"competitorIntel:assignHandoff": handoff})
-        } catch (e) { /* best-effort */ }
+        // page. The destination-page prefill consumer was never shipped
+        // (audit/pathway-storage.md H-002), so the previous storage write
+        // to `competitorIntel:assignHandoff` was dead infrastructure — drop
+        // it rather than leave an orphan key accumulating in storage.
 
         // Emit bus events for any tile already listening on this page.
         if (window.CentralHubBus && typeof window.CentralHubBus.emit === "function") {
