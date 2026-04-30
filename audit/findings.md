@@ -283,7 +283,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/scrape-orchestrator/orchestrator.js (_runPhaseJobs lines 185-232)
 - Severity: P2
 - Found by: port-9226
-- Status: OPEN
+- Status: FIXED
 - Repro: kill the service worker mid-phase via chrome://extensions developer-tools "Inspect" → close (or use chrome.runtime.reload from the SW console). The background-tab-pool that owns the active phase is gone; no `run-done` event will be relayed.
 - Expected: the orchestrator detects the broken pipe, resolves the phase Promise with `haltReason: "background-disconnect"` (or similar), and removes its message listener.
 - Actual: `_runPhaseJobs` returns a Promise that resolves only inside `if (event.type === "run-done")`. The handler stays registered on `chrome.runtime.onMessage` and the await on line 73 (`await this._runPhaseJobs(phase, jobs)`) never returns. The caller (`start()`) is wedged; the auto-driver's `_busy = true` flag (auto-driver.js:68) stays true until the tab is closed; `aesAutoDrive:silentRunActive` storage flag stays true. Subsequent ticks short-circuit at `out.skipped = "busy"`.
