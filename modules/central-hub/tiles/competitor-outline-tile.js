@@ -140,7 +140,7 @@ class CentralHubCompetitorOutlineTile extends window.CentralHubTile {
         const stats = document.createElement("span")
         stats.style.cssText = "color:" + T.color.slate + ";flex:1 1 auto;"
         const partsStats = []
-        partsStats.push("threat " + c.summary.threatScore)
+        partsStats.push("lead " + c.summary.threatScore)
         partsStats.push(c.summary.totalRoutes + " routes")
         partsStats.push(c.summary.totalWeeklyFlights + " flights/wk")
         if (c.summary.counterableRoutes > 0)  partsStats.push(c.summary.counterableRoutes + " counterable")

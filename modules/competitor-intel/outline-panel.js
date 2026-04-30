@@ -305,7 +305,7 @@ class AesCompetitorOutlinePanel {
             name.style.cssText = "font-size:" + T.fs.body + ";"
             const sub = document.createElement("span")
             sub.style.cssText = "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";"
-            sub.textContent = "threat " + c.summary.threatScore
+            sub.textContent = "lead " + c.summary.threatScore
                 + " · " + c.summary.totalRoutes + " routes"
                 + (c.summary.counterableRoutes > 0
                     ? " · " + c.summary.counterableRoutes + " counter"
@@ -360,7 +360,7 @@ class AesCompetitorOutlinePanel {
             head.append(name, code)
             const sub = document.createElement("div")
             sub.style.cssText = "color:" + T.color.slate + ";font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";margin-top:2px;"
-            sub.textContent = "threat " + c.summary.threatScore
+            sub.textContent = "lead " + c.summary.threatScore
                 + " · " + c.summary.totalRoutes + " routes"
                 + " · " + c.summary.totalWeeklyFlights + " flights/wk"
             row.append(head, sub)
