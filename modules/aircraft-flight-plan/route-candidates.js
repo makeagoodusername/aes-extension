@@ -1281,8 +1281,19 @@
             }
             const spec = (window.AesAfpSpecResolver && AesAfpSpecResolver.last) || null
             if (!spec) {
-                _renderPlaceholder(slot, "Waiting for aircraft spec…",
-                    "Slice B is still resolving the aircraft type. Candidates will appear after spec:resolved fires.")
+                // Distinguish "still resolving" from "resolved as null". The
+                // resolver sets `attempted=true` once `_doResolve` has run
+                // through (success OR null). Without this, every null-spec
+                // outcome still showed "Slice B is still resolving" forever
+                // — telling the user to wait for an event that already fired.
+                const attempted = !!(window.AesAfpSpecResolver && AesAfpSpecResolver.attempted)
+                if (attempted) {
+                    _renderPlaceholder(slot, "Aircraft spec unavailable.",
+                        "Slice B couldn't resolve the type — see the Spec card above and click Retry.")
+                } else {
+                    _renderPlaceholder(slot, "Waiting for aircraft spec…",
+                        "Slice B is still resolving the aircraft type. Candidates will appear after spec:resolved fires.")
+                }
                 return
             }
             if (typeof RouteAssistantSettings === "undefined") {

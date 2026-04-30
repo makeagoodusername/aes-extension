@@ -85,6 +85,11 @@
     }
 
     function _emit(spec) {
+        // Flag every attempt so downstream slices (route-candidates,
+        // wave-applier) can distinguish "still resolving" from
+        // "resolved as null / unavailable" — they look identical via
+        // `last` alone but call for different placeholder copy.
+        AesAfpSpecResolver.attempted = true
         if (window.AesAfp && AesAfp.bus) {
             try { AesAfp.bus.emit("spec:resolved", {spec}) }
             catch (e) { console.warn("[AFP-B] bus emit failed", e) }
@@ -267,6 +272,7 @@
         resolveForCurrent,
         last: null,
         lastTypeId: null,
+        attempted: false,   // true after first resolve attempt completes (success OR null)
         renderSummaryCard
     }
 
