@@ -293,7 +293,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/competitor-intel/enterprise-scraper.js (parseFleetCounts lines 282-305)
 - Severity: P2
 - Found by: port-9226
-- Status: OPEN
+- Status: FIXED
 - Repro: by code review — the labelled-row pass at lines 258-281 captures any matched fields. When `matched === 0` (no labelled rows found), the fallback at 282-303 assumes a fixed row order under `.layout-col-md-4 > .as-fieldset table tbody[1]`: row 0 → paxCarried, row 1 → cargoCarried, row 2 → stationsCount, row 3 → aircraftCount, row 4 → employeeCount. AS's enterprise Information page layout has shifted in past versions (the comment on lines 232 already calls out "fall back to legacy positional"). If AS reorders the right-column tbody, every cached enterprise record gets wrong values for these five fields, with no parserNote signalling the mismatch (the fallback bumps `matched=1` and returns success).
 - Expected: a positional fallback either validates the layout (e.g. checks the row label still contains the expected keyword) or attaches a parserNote tagging the result as positional-only.
 - Actual: the fallback writes positionally-mapped fields with no validation, no labels checked, no parserNote ("positional-fallback"). Downstream snapshot-store records, threat-scorer fleet/network components, and watchlist priority all inherit the misassigned values silently.
@@ -514,7 +514,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/_shared/fleet-roster.js, modules/accounting/snapshot-store.js, modules/central-hub/tiles/{fleet-hub,accounting,competitor-monitoring}-tile.js
 - Severity: P1
 - Found by: port-9223
-- Status: OPEN
+- Status: FIXED
+- Note (port-9224): commit 50cdd1d implements the two cheap mitigations from the Notes section — fleet-hub-tile._findFleetRecord and competitor-monitoring._loadCompetitors now filter by ctx.airline when supplied (single-key get / prefix-filtered scan), and watchedStorageKeys for all three tiles narrows from "<server>" to "<server><airline><domain>" so cross-airline writes no longer trigger spurious refreshes. Class-B/C/D account-scoping (HANDOVER §10) remains the durable fix for the storage shape itself.
 - Repro: enumerate writers of fleet keys — `content_fleetManagement.js` writes `<server><airlineCode>aircraftFleet`. Account-registry's `acctKey()` framework is documented in modules/_shared/account-scoped-key.js, and migrate-legacy.js's `SETTINGS_AREAS` covers only `routeAssistant` + `aircraftFlightPlan`. Fleet, accounting, and competitor-monitoring (`type:"competitorMonitoring"` storage records) are NEVER scoped per account. With two airlines on the same server: scrape airline A's fleet, switch to airline B (top-nav switch), open the dashboard hub — fleet-hub-tile's `_findFleetRecord` returns "the freshest aircraftFleet entry on this server" which is still A's record until B's fleet is also scraped. accounting-tile reads `<server>+AES.getAirlineCode().code+accounting:index` — the AS top-nav airline code drives which records load, but the *records* under the OTHER airline's key are silently shadow data: the user thinks they have no accounting history when they actually have a previous airline's data sitting at a sibling key.
 - Expected: switching airlines changes which fleet/accounting/competitor records the panels surface; no cross-airline contamination.
 - Actual: fleet-hub-tile picks "newest by max(a.time)" across all `*aircraftFleet` keys on the server (fleet-hub-tile.js:82-88) — purely temporal heuristic, doesn't filter by current account. competitor-monitoring-tile reads `chrome.storage.local.get(null)` and filters only by `v.type==="competitorMonitoring" && v.tracking && v.server===server` — no account filter at all (so airline A's tracked competitors leak into airline B's view). accounting-tile depends on `AES.getAirlineCode().code` which throws on non-dashboard pages (the `.facts table` only exists on /app/enterprise/dashboard) — falls back to ctx.airline which is set by the shell once on dashboard mount; navigating to a sister account post-mount doesn't update.
@@ -546,7 +547,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/central-hub/tile.js (lines 436-444 legacy storage listener + 425-433 bus-bridge path)
 - Severity: P3
 - Found by: port-9223
-- Status: OPEN
+- Status: FIXED
+- Fix by: port-9223 — narrowed `watchedStorageKeys` in fleet-hub-tile.js (`<server><airline>aircraftFleet`), accounting-tile.js (`<server><airline>accounting:`), and competitor-monitoring-tile.js (`<server><airline>competitorMonitoring`). Each falls back to `[server]` when airline isn't yet resolved on first ctx pass (login pages, non-dashboard surfaces with empty top-nav). tile.js's storage listener / bridgeStorage path is unchanged — the narrower prefixes pass straight through and dedup naturally per-tile. Verified statically: each new prefix matches the writer's exact key-shape for that data type (fleet records: `<server><airline>aircraftFleet`; competitor records: `<server><airlineId>competitorMonitoring` per content_enterpriceOverview.js:10; accounting records: `<server><airline>accounting:<sub>:<week>` per cash-feed.js:47, accounting-tile._loadIndexAndSisters).
 - Repro: fleet-hub-tile, accounting-tile, competitor-monitoring-tile all return `[ctx.server]` from `watchedStorageKeys` (e.g. `["zb"]`). Any storage key starting with "zb" fires every one of these tiles' refresh — including unrelated writes like `zbXX1234aircraftFleet`, `zbXX1234accounting:income:1739`, `zbXX1234competitor:5678`, etc. With three tiles all listening on the bare server prefix and storage events typically batched, every storage write fans out to ~3 redundant refreshes, each running its own full storage scan (`get(null)`) per the fallback logic.
 - Expected: a tile only refreshes when its own data changes.
 - Actual: cross-tile refresh storm. With `_findFleetRecord` doing `chrome.storage.local.get(null)`, fleet-hub-tile alone re-scans the entire storage on EVERY accounting write to the same server. The legacy storage listener path (line 436-444) iterates every changed key × every prefix → O(N×M).
@@ -586,7 +588,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/scrape-orchestrator/background-tab-pool.js (state object lines 50-67); modules/scrape-orchestrator/auto-driver.js (`_busy` flag line 32, `silentRunActive` storage flag lines 70/79); modules/scrape-orchestrator/host.js (auto-resume line 184-196)
 - Severity: P1
 - Found by: port-9226
-- Status: OPEN
+- Status: PARTIAL
+- Partial fix by: port-9223 — sub-fix #3 from the finding's plan. auto-driver.js now writes `aesAutoDrive:silentRunActiveAt: <ts>` companion to the boolean flag (set on entry, cleared in finally). host.js's `_autoResumeIfActive` reads both, treats the flag as stale when the timestamp is missing or older than `SILENT_RUN_MAX_MS = 15 * 60 * 1000`, and falls through to the normal `isRunning()` resume path. This unblocks the auto-resume modal after SW eviction without addressing the orphan-tabs / wedged plan-cursor sub-fixes (#1, #2, #4) — those need ScrapeTabPool persistence which is a deeper structural change. Still OPEN for those layers.
 - Repro: trigger Scrape Everything from /app/enterprise/dashboard with foundation+per-hub phases enabled. Mid-phase, force-evict the service worker (chrome://serviceworker-internals → "Stop" on the AES SW). The hidden tabs the pool opened remain visible in the chrome://tabs/ inspector; chrome.runtime.sendMessage from the dashboard (Status check) returns `{running: false}` because pool.state was wiped. New click on Scrape Everything starts a fresh run that opens a SECOND set of hidden tabs alongside the orphans.
 - Expected: pool persists enough run state (runId, plan cursor, activeTabIds) to chrome.storage.local that on SW boot it can either resume the run or clean up orphan tabs by closing them. The dashboard's auto-resume should also be able to detect a half-dead run and surface it.
 - Actual: state is a closure-local object (background-tab-pool.js:50-67). Nothing is persisted. When the SW restarts:
@@ -649,7 +652,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/aircraft-flights/scheduled-decorator.js (lines 78-90)
 - Severity: P3
 - Found by: port-9228 (code-static)
-- Status: OPEN
+- Status: FIXED
 - Repro: visit `/app/fleets/aircraft/<id>/1` after the schedule has at least one matching flight number; observe the blue "scheduled" pill. [needs-mcp-verify]
 - Expected: pill colors come from `--aes-accent` / `--aes-paper` (or equivalent tokens) so theme switches and skin overrides flow through.
 - Actual: `scheduled-decorator.js:81-83` sets `style.cssText = "...background:#1d4ed8;color:#f8fafc;font-size:10px;font-weight:600;..."` — Tailwind blue-700 hex hardcoded, near-white hardcoded, untokenised font size. The bridge.html cubist skin also bypasses tokens for this element since the inline style wins specificity. Comparable F-9224 findings flag the same pattern in command-bridge.
@@ -679,7 +682,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/canopy/geography-seeder.js (lines 31-52, 54-62)
 - Severity: P2
 - Found by: port-9228 (code-static)
-- Status: OPEN
+- Status: FIXED
+- Fix by: port-9223 — added a lazy `_iso2ByName` reverse index built from `AesGeographyBase.COUNTRY_CONTINENT` × `Intl.DisplayNames(["en"], {type:"region"})`. `_guessIso2` checks NAME_TO_ISO2 first (handles known variants like "Russia" / "Russian Federation"), then falls back to the platform-canonical-name map (case-insensitive). Covers all ~250 ISO codes already enumerated in geography-base.js without re-embedding a parallel name table. Verified statically: `Intl.DisplayNames` is in MV3 service-worker + content-script contexts; the reverse-map build catches its constructor exception so missing-Intl environments simply fall through to the original null.
 - Repro: with a fleet that includes destinations in (say) "Côte d'Ivoire", "United Arab Emirates", "Saudi Arabia", "Trinidad and Tobago", or any of the ~190 countries not in the 18-entry hardcoded map; observe `byCountryId[<id>].iso2 === null` after seed, and the canopy/orgs/dna-fit-scorer downstream falls back to "continent-only" matching for those countries. [needs-mcp-verify]
 - Expected: the seeder cross-references against the comprehensive `AesGeographyBase.COUNTRY_CONTINENT` map (which already lists all ~250 ISO2 codes by continent — see modules/canopy/geography-base.js) to look up an ISO2 code by name match, not just the 18 special-case overrides.
 - Actual: `_guessIso2` at lines 54-62 only checks `NAME_TO_ISO2[k]`. The 18 entries handle name-vs-ISO disagreements (e.g. "United States" → "US"), but for any country whose AS-displayed name isn't in that table, it returns `null` immediately (line 61). Author comment at line 58-60 explicitly punts on broader matching ("not worth it; keep simple"). geography-base.js is loaded before geography-seeder per manifest.json but never consulted from the seeder.
@@ -689,7 +693,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/inventory/validation.js (lines 17-160)
 - Severity: P2
 - Found by: port-9228 (code-static)
-- Status: OPEN
+- Status: FIXED
+- Fix by: port-9223 — rewrote validation.js to anchor on stable markers verified against `CLAUDE/INVENTORY.html` fixture: `ul.nav-tabs > li :contains("All Flights Numbers")` for the tab; `input[name="settings:..."]` (airportPair / flightNumbers / returnAirportPair / returnFlightNumbers) for "Apply settings to"; `_fieldsetByLegend("Service Classes" | "Flight Status" | "Load")` for the data-panel fieldsets; `input[name="serviceClasses"]`, `input[name="flightStati"]` (filtered on value 1=inflight, 2=finished), and `select[name="loadMin" | "loadMax"]` for the inputs; `input[name="display"]` for "Group by flight". Helper `Validation._fieldsetByLegend(text)` walks every `<fieldset>` and returns the one whose `<legend>` text (case-insensitive, trimmed) matches — same shape as content_marketScan.js label-anchor pattern. Verified statically against the fixture's name= and legend= attributes; no positional `:eq()` left.
 - Repro: trigger inventory validation when AS rearranges the inventory page panels (e.g. AS adds a new panel above "Current Inventory", shifts indexes); validator returns "valid: true" or fires wrong messages. [needs-mcp-verify]
 - Expected: selectors anchored on stable semantic markers (form name, fieldset legend text, role attributes) — survives panel reorderings the same way the route-assistant/markets-page-scraper handles label-based row matching.
 - Actual: every check uses positional `:eq(N)` chains: line 19 `'.col-md-10 > div > .as-panel:eq(1) > ul:eq(0) li:eq(0)'`, line 30 `'.col-md-10 > div > .as-panel:eq(1) > div > div > div:eq(0) fieldset:eq(2) > div input'`, lines 78, 99, 117, 144 same pattern. The `.col-md-10 > div > .as-panel:eq(1)` prefix recurs everywhere — any AS template change that adds, removes, or reorders an `.as-panel` shifts every `:eq` by one and the validator silently fires wrong messages or none at all. No fallback selector strategy. No tests against fixture HTML to catch drift.
