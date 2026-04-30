@@ -775,9 +775,19 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         } catch (_) { /* fall through */ }
 
         const accountId = (typeof window.__aesAccountId === "string" ? window.__aesAccountId : null)
+        const ctx = this._mountCtx || {}
+        const server = ctx.server || null
+        const airline = ctx.airline || null
+        // Per-airline fallback when account-registry hasn't populated
+        // `__aesAccountId` yet — keeps cold-start / sign-out / multi-airline
+        // sessions from sharing one global `briefingLastWeekId` bucket.
         const guardKey = accountId
             ? "aesStrategy:briefingLastWeekId:acct:" + accountId
-            : "aesStrategy:briefingLastWeekId"
+            : (server && airline)
+                ? "aesStrategy:briefingLastWeekId:server:" + server + ":airline:" + airline
+                : server
+                    ? "aesStrategy:briefingLastWeekId:server:" + server
+                    : "aesStrategy:briefingLastWeekId"
 
         if (!this._briefing && window.AesStrategyBriefing) {
             try {
