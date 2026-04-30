@@ -78,6 +78,16 @@ class CentralHubAllianceTile extends window.CentralHubTile {
         const members = Array.isArray(rec.members) ? rec.members : []
         const pending = Number(rec.pendingApplications) || 0
         const name = rec.allianceName || "Alliance"
+        // When the scrape succeeded but the page had no `table.members`, the
+        // airline is not in an alliance — surface that as MUTED so the badge
+        // doesn't look like an alliance with zero members. F-9231-004.
+        if (!members.length) {
+            return {
+                badge:     "—",
+                badgeKind: KIND.MUTED,
+                summary:   "Not in an alliance — visit /app/alliance to join."
+            }
+        }
         let summary = name + " · " + members.length + " member" + (members.length === 1 ? "" : "s")
         if (pending > 0) summary += " · " + pending + " pending"
         return {
