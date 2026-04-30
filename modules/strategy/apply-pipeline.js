@@ -162,8 +162,13 @@
             const ring = Array.isArray(cur[readKey]) ? cur[readKey].slice() : []
             ring.unshift(entry)
             if (ring.length > AUDIT_RING) ring.length = AUDIT_RING
-            const writes = {[AUDIT_KEY]: ring}
-            if (scopedKey) writes[scopedKey] = ring
+            // F-9227-008: when scoping is active the scoped key is the source
+            // of truth — DON'T trample the legacy AUDIT_KEY with this
+            // account's ring (every cross-account apply would clobber it).
+            // Legacy installs without an accountId still write AUDIT_KEY.
+            const writes = scopedKey
+                ? {[scopedKey]: ring}
+                : {[AUDIT_KEY]: ring}
             await chrome.storage.local.set(writes)
         } catch (e) {
             console.warn("[AES strategy/apply] audit persist failed", e)
@@ -172,9 +177,13 @@
 
     async function _persistApplied(envelope, accountId) {
         try {
-            const writes = {[APPLIED_KEY]: envelope}
+            // F-9227-008: see _persistAudit. Scoped key is source of truth
+            // when accountId resolves; don't trample the legacy APPLIED_KEY
+            // on every cross-account apply.
             const scopedKey = _scopedKey(APPLIED_KEY, accountId)
-            if (scopedKey) writes[scopedKey] = envelope
+            const writes = scopedKey
+                ? {[scopedKey]: envelope}
+                : {[APPLIED_KEY]: envelope}
             await chrome.storage.local.set(writes)
         } catch (e) { console.warn("[AES strategy/apply] applied persist failed", e) }
     }
