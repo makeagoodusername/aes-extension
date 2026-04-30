@@ -57,16 +57,23 @@
             () => window.AesWavePresetMetaStore && window.AesWavePresetMetaStore.load(),
             null
         )
+        const favBlock = await _safe(
+            () => window.RouteAssistantWaveFavoritesStore && window.RouteAssistantWaveFavoritesStore.load(),
+            null
+        )
         const presets = (presetsBlock && Array.isArray(presetsBlock.presets))
             ? presetsBlock.presets : []
         const byPresetId = (metaBlock && metaBlock.byPresetId) || {}
+        const favByPresetId = (favBlock && favBlock.byPresetId) || {}
 
         const enriched = presets.map(p => {
             const meta = byPresetId[p.id] || {}
+            const fav  = favByPresetId[p.id] || {}
             return Object.assign({}, p, {
                 tags:     Array.isArray(meta.tags)    ? meta.tags    : [],
                 role:     typeof meta.role === "string" ? meta.role  : "",
                 colorToken: meta.colorToken || "",
+                starredAt: (fav.starredAt != null) ? fav.starredAt : null,
                 pinnedTo: (meta.pinnedTo && typeof meta.pinnedTo === "object")
                     ? {
                         orgs:    Array.isArray(meta.pinnedTo.orgs)    ? meta.pinnedTo.orgs.slice()    : [],
@@ -157,13 +164,18 @@
             () => (typeof SchedulePresets !== "undefined") ? SchedulePresets.load() : null, null)
         const b = await _safe(
             () => window.AesWavePresetMetaStore && window.AesWavePresetMetaStore.load(), null)
+        const c = await _safe(
+            () => window.RouteAssistantWaveFavoritesStore && window.RouteAssistantWaveFavoritesStore.load(), null)
         const presetsSig = a && Array.isArray(a.presets)
             ? a.presets.length + ":" + a.presets.map(p => (p.id || "?") + "@" + (p.templateRevision || 0)).join(",")
             : "0"
         const metaSig = b && b.byPresetId
             ? Object.keys(b.byPresetId).sort().join(",")
             : "0"
-        return presetsSig + "|" + metaSig
+        const favSig = c && c.byPresetId
+            ? Object.keys(c.byPresetId).sort().map(id => id + "@" + ((c.byPresetId[id] || {}).starredAt || 0)).join(",")
+            : "0"
+        return presetsSig + "|" + metaSig + "|" + favSig
     }
 
     function invalidate() { _cache = null }
@@ -171,7 +183,10 @@
     if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged) {
         chrome.storage.onChanged.addListener((changes, area) => {
             if (area !== "local") return
-            if (changes.settings || changes["aesCanopy:wavePresetMeta"]) _cache = null
+            if (changes.settings || changes["aesCanopy:wavePresetMeta"]) { _cache = null; return }
+            for (const k in changes) {
+                if (k.indexOf("routeAssistant:waveFavorites") === 0) { _cache = null; return }
+            }
         })
     }
 
