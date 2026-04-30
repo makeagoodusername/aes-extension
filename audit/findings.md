@@ -503,8 +503,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/central-hub/feed/index.js + manifest.json (dashboard content_scripts block) + central-hub/shell.js:53
 - Severity: P2
 - Found by: port-9223
-- Status: OPEN
-- Note: port-9223 attempted manifest move (feed/index.js, cash-feed.js, strategy-feed.js dashboard-block → wildcard `_shared` block) plus matching bootstrap-signal emit in feed/index.js. Manifest move was reverted by linter/external agent (intentional). Releasing claim.
+- Status: FIXED
+- Note: re-applied the manifest move + bootstrap-signal mirror in commit 0da8172 (port-9224). Both edits committed atomically before the working tree could be reset; shell.js gated on __aesAccountBootstrapEmitted to keep the dashboard surface emit-once.
 - Repro: read manifest.json — `modules/central-hub/feed/index.js` is in the `/app/enterprise/dashboard` block (around line 243), not the `/app/* + /action/*` wildcard block. shell.js (line 53) emits `data:account:bootstrapped` in `mount()` — the shell only mounts on `/app/enterprise/dashboard*`. Three HubFeed slices (`hub:cash:weekly`, `hub:strategy:applied`, `hub:strategy:settings`) declare deps that include `data:account:bootstrapped` and topics that come from feed/index.js bridges — neither flows on non-dashboard pages.
 - Expected: any tab that mounts CentralHubTiles (the same tile classes can render on bridge.html or via fleet-overlay) gets fresh values when the underlying storage changes.
 - Actual: on non-dashboard pages, none of the three feed/index.js bridges install (so storage writes don't translate to bus topics) and `data:account:bootstrapped` never fires. Slices fall through to their eager initial compute, then silently stay stuck — the `feedSlices()` subscription on tiles never fires after first paint. Tiles that bypass via `watchedStorageKeys()` still update; tiles that committed to feedSlices (e.g. strategy-tile uses both — its feedSlices side stays frozen but watchedStorageKeys keeps it half-alive) end up showing mixed-freshness state.
@@ -565,7 +565,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/competitor-intel/counter-aircraft.js (_scoreExistingTails line 179, _scorePurchaseTypes line 226)
 - Severity: P2
 - Found by: port-9226
-- Status: OPEN
+- Status: FIXED
 - Repro: pick any high-demand route in the user's competitive landscape (e.g. JFK-LHR, expected paxScore ~8-9 in RA's topRoutes data). Open the outline panel; click into a competitor that flies that lane. Inspect `counter` in the DOM/dev console — `bestExistingTail.projectedProfitPerWeek` for any candidate is computed against `paxScore: 5` regardless of the lane's actual demand.
 - Expected: counter-aircraft scores our candidates against the same demand-driven economics that the competitor's `theirs.estProfitPerWeek` uses. Either both use observed market share/paxScore, or both use a neutral default — but they must match.
 - Actual: the competitor's profit estimate (built at outline-aggregator.js:486-495) uses `observedSharePct` from RA's `marketShare:<pair>` data — i.e. real demand. Our candidates are ALL scored with `paxScore: 5` (counter-aircraft.js:179, 226), which RA's profit-estimator interpolates as load factor `paxLfMin + 0.5 * (paxLfMax - paxLfMin)` and yieldDemandMult≈1.0 (profit-estimator.js:128-129, 192-193). On a true paxScore-9 lane, our candidates undershoot their realistic profit by ~15–25%. The asymmetric scoring biases the verdict toward `buy-needed` even when an existing tail would in fact win at the actual demand level.
@@ -638,7 +638,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/used-aircraft-scanner/deal-classifier.js + content_marketScan.js
 - Severity: P1
 - Found by: port-9228 (code-static)
-- Status: OPEN
+- Status: FIXED
 - Repro: run a market scan, wait ~6 hours without rescanning, reopen the scanner panel; offers that were "Closing soon" 6h ago still score with `expiry: 1.0` and the "Closing soon" reason. [needs-mcp-verify]
 - Expected: expiry urgency reflects time remaining as of *now*, not as of scrape time.
 - Actual: `content_marketScan.js:443` parses `bidIntervalMs` from the AS deadline span at scrape time (e.g. `"3:30:00"` → 12,600,000 ms). The row carries this static value through scan-session-store and into `MarketScanDealClassifier.scoreRow`. At `deal-classifier.js:288-300` the classifier reads `row.bidIntervalMs` directly — no `Date.now() - row.scrapedAt` adjustment. The row also lacks an `observedAt` timestamp (the scrape's `observedAt` lives only on price-history-store entries, not on the row itself). So a 12-hour-old scan record still claims "6h to expiry" and pushes Steal/Great rankings on offers that have actually closed.
