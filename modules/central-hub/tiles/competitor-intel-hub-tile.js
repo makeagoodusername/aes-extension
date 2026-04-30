@@ -230,7 +230,7 @@ class CentralHubCompetitorIntelHubTile extends window.CentralHubTile {
                     left.textContent = (it.code ? "[" + it.code + "] " : "") + (it.name || it.id)
                     const right = document.createElement("span")
                     right.style.cssText = "font-family:ui-monospace,monospace;color:var(--aes-cobalt);"
-                    right.textContent = "score " + (it.score != null ? it.score.toFixed(2) : "?")
+                    right.textContent = "score " + (it.priority != null ? Number(it.priority).toFixed(0) : "?")
                     row.append(left, right)
                     wrap.append(row)
                 }
