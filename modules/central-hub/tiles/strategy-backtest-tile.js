@@ -41,6 +41,35 @@ class CentralHubStrategyBacktestTile extends window.CentralHubTile {
             : CentralHubStrategyBacktestTile.KEY_BASE
     }
 
+    /**
+     * BacktestResult shape: {perWeek[], actualCum[], hypotheticalCum?,
+     * cumulativeDelta?, summary:{weeksWithData,…notes[]}, durationMs}.
+     * No `ok` flag is present — the run() function returns _empty() with
+     * notes when the bundle can't be loaded. Treat presence of any
+     * weeks-with-data (or a non-empty actualCum) as success.
+     */
+    static _hasBacktestData(rec) {
+        if (!rec || typeof rec !== "object") return false
+        const w = rec.summary && Number(rec.summary.weeksWithData)
+        if (isFinite(w) && w > 0) return true
+        if (Array.isArray(rec.actualCum) && rec.actualCum.length) return true
+        if (Array.isArray(rec.perWeek)   && rec.perWeek.length)   return true
+        return false
+    }
+
+    /**
+     * Best-effort one-line reason from a backtest record's notes — used
+     * when the badge needs to explain *why* there's no data without
+     * ballooning into a full body render.
+     */
+    static _noteSummary(rec) {
+        const notes = rec && rec.summary && Array.isArray(rec.summary.notes)
+            ? rec.summary.notes
+            : (rec && Array.isArray(rec.notes) ? rec.notes : [])
+        if (!notes || !notes.length) return null
+        return "Last run · " + notes[0]
+    }
+
     async _loadLast() {
         try {
             const id = window.__aesAccountId || null
@@ -70,9 +99,15 @@ class CentralHubStrategyBacktestTile extends window.CentralHubTile {
                     summary: "AesStrategyBacktest not loaded — open the dashboard."}
         }
         const last = await this._loadLast()
-        if (!last || !last.ok) {
+        // BacktestResult shape doesn't carry an `ok` flag (only RecommendResult
+        // does). Treat presence of weeks-with-data OR a populated cumulative
+        // series as "we have a real backtest", and surface the engine's notes
+        // when the run completed with zero weeks (e.g. missing-server-or-airline,
+        // no-accounting-history). See modules/strategy/backtest.js _empty().
+        if (!last || !CentralHubStrategyBacktestTile._hasBacktestData(last)) {
+            const hint = CentralHubStrategyBacktestTile._noteSummary(last)
             return {badge: "—", badgeKind: KIND ? KIND.MUTED : "muted",
-                    summary: "No backtest run yet — open the tile to run one."}
+                    summary: hint || "No backtest run yet — open the tile to run one."}
         }
         const cumulative = Number(last.cumulativeDelta) || 0
         const sign = cumulative > 0 ? "+" : (cumulative < 0 ? "−" : "")
@@ -118,7 +153,12 @@ class CentralHubStrategyBacktestTile extends window.CentralHubTile {
         host.appendChild(body)
 
         const last = await this._loadLast()
-        if (last && last.ok) {
+        if (last && CentralHubStrategyBacktestTile._hasBacktestData(last)) {
+            this._renderResult(T, body, last)
+        } else if (last && Array.isArray(last.summary && last.summary.notes) && last.summary.notes.length) {
+            // Last run completed but produced no per-week data. Show the
+            // engine's notes so the user understands why (e.g.
+            // no-accounting-history, missing-server-or-airline).
             this._renderResult(T, body, last)
         } else {
             const hint = document.createElement("div")
@@ -167,11 +207,15 @@ class CentralHubStrategyBacktestTile extends window.CentralHubTile {
     async _resolveCtx() {
         const out = {server: null, airlineCode: null, accountId: null}
         try {
-            if (window.AES && typeof window.AES.getServerName === "function") {
-                out.server = window.AES.getServerName()
+            // `AES` is a script-scoped binding from helpers.js (MV3 content
+            // scripts don't attach top-level `class` declarations to window),
+            // so bare references resolve while window.AES is undefined.
+            // Mirrors the pattern used by accounting-tile.js / cash-feed.js.
+            if (typeof AES !== "undefined" && typeof AES.getServerName === "function") {
+                out.server = AES.getServerName()
             }
-            if (window.AES && typeof window.AES.getAirlineIdentity === "function") {
-                const id = await window.AES.getAirlineIdentity()
+            if (typeof AES !== "undefined" && typeof AES.getAirlineIdentity === "function") {
+                const id = AES.getAirlineIdentity()
                 if (id) out.airlineCode = id.airline || id.code || id
             }
             out.accountId = window.__aesAccountId || null
@@ -186,11 +230,20 @@ class CentralHubStrategyBacktestTile extends window.CentralHubTile {
 
     _renderResult(T, host, result) {
         host.textContent = ""
-        if (!result.ok) {
+        // BacktestResult has no `ok` flag — treat "no per-week data" as the
+        // failure path, surfacing the engine's `summary.notes` so the user
+        // sees the real cause (missing-server-or-airline, no-accounting-
+        // history, income-bulk-read-failed, …) instead of the literal
+        // word "unknown".
+        if (!CentralHubStrategyBacktestTile._hasBacktestData(result)) {
+            const notes = (result && result.summary && Array.isArray(result.summary.notes))
+                ? result.summary.notes
+                : (Array.isArray(result && result.notes) ? result.notes : [])
+            const reason = (notes && notes.length) ? notes.join("; ")
+                : (result && result.errorNote) || "no per-week data"
             const err = document.createElement("div")
             err.style.cssText = "color:" + T.color.slate + ";"
-            err.textContent = "Backtest could not run: " + (result.errorNote || "unknown")
-                + (result.notes ? " · " + result.notes.join("; ") : "")
+            err.textContent = "Backtest could not run: " + reason
             host.appendChild(err)
             return
         }
@@ -305,4 +358,13 @@ class CentralHubStrategyBacktestTile extends window.CentralHubTile {
 
 if (typeof window !== "undefined") {
     window.CentralHubStrategyBacktestTile = CentralHubStrategyBacktestTile
+}
+
+if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
+    window.CentralHubTileRegistry.register({
+        id:       "strategy-backtest",
+        section:  "tools",
+        priority: 7,
+        factory:  () => new CentralHubStrategyBacktestTile()
+    })
 }
