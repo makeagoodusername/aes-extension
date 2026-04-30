@@ -97,8 +97,8 @@
         for (const buf of snapshotBufs) {
             const meta = enterpriseMeta.get(_metaKey(buf.server, buf.enterpriseId)) || null
             const snaps = buf.snapshots
-            for (let i = 1; i < snaps.length; i++) {
-                const prev = snaps[i - 1]
+            for (let i = 0; i < snaps.length; i++) {
+                const prev = i === 0 ? null : snaps[i - 1]
                 const curr = snaps[i]
                 if (!curr || !isFinite(curr.at)) continue
                 if (since > 0 && curr.at < since) continue
