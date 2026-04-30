@@ -17,6 +17,7 @@
     function buildCrumbs() {
         const path = location.pathname;
         const m = (re) => path.match(re);
+        let r;
 
         // Format: ordered list of crumb strings, last one is treated as the leaf.
         if (m(/^\/app\/finance\/accounting/))   return ["FINANCE", "ACCOUNTING"];
@@ -30,13 +31,13 @@
             return ["FLEET", "AIRCRAFT", reg.toUpperCase()];
         }
         if (m(/^\/app\/fleets/))                return ["FLEET"];
-        if (m(/^\/app\/com\/scheduling\/([^/?#]+)/)) return ["SCHEDULING", RegExp.$1.toUpperCase()];
-        if (m(/^\/app\/com\/inventory\/([^/?#]+)/))  return ["INVENTORY", RegExp.$1.toUpperCase()];
-        if (m(/^\/app\/com\/markets\/([^/?#]+)/))    return ["MARKETS", RegExp.$1.toUpperCase()];
+        if ((r = m(/^\/app\/com\/scheduling\/([^/?#]+)/))) return ["SCHEDULING", r[1].toUpperCase()];
+        if ((r = m(/^\/app\/com\/inventory\/([^/?#]+)/)))  return ["INVENTORY", r[1].toUpperCase()];
+        if ((r = m(/^\/app\/com\/markets\/([^/?#]+)/)))    return ["MARKETS", r[1].toUpperCase()];
         if (m(/^\/app\/com\/markets/))               return ["MARKETS"];
         if (m(/^\/app\/aircraft\/market/))           return ["AIRCRAFT", "MARKET"];
-        if (m(/^\/app\/info\/airports\/([^/?#]+)/))  return ["INFO", "AIRPORT", RegExp.$1.toUpperCase()];
-        if (m(/^\/app\/info\/enterprises\/([^/?#]+)/)) return ["INFO", "ENTERPRISE", RegExp.$1.toUpperCase()];
+        if ((r = m(/^\/app\/info\/airports\/([^/?#]+)/)))  return ["INFO", "AIRPORT", r[1].toUpperCase()];
+        if ((r = m(/^\/app\/info\/enterprises\/([^/?#]+)/))) return ["INFO", "ENTERPRISE", r[1].toUpperCase()];
         if (m(/^\/app\/ops\/stations/))              return ["OPS", "STATIONS"];
         if (m(/^\/app\/ops\//))                       return ["OPS"];
         if (m(/^\/app\/enterprise\/dashboard/))      return ["DASHBOARD"];

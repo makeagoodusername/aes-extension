@@ -179,7 +179,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/command-bridge/coalitions-panel.js (lines 101 prompt, 183 confirm)
 - Severity: P2
 - Found by: port-9224
-- Status: OPEN
+- Status: FIXED
 - Repro: open chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/bridge.html → "+ NEW COALITION" button. The browser's native prompt opens (also blocks any further MCP `evaluate_script` / `take_snapshot` until handled — confirmed in this audit: `take_snapshot` returned "Open dialog: prompt: Coalition name: (default 'Asia Operations')"). Same for delete: clicking Delete on an existing coalition triggers `window.confirm("Delete coalition \"X\"?")`.
 - Expected: a brutalist inline dialog (e.g. `.aes-modal` from components.css) that matches the rest of the bridge — keyboard focus trap, Esc to dismiss, design-token typography, no thread-blocking dialog.
 - Actual: a Chrome-rendered grey box with the system font, default chrome typography, and synchronous blocking semantics. Steals focus from the page, can't be styled, and behaves differently per OS/browser. The bridge already has its own coalition rename input (`.aes-bridge__coalitions-name` — line 161) that demonstrates the inline-input pattern; create just needs the same.
@@ -189,7 +189,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/site-skin/breadcrumb.js (lines 33–35)
 - Severity: P3
 - Found by: port-9224
-- Status: OPEN
+- Status: FIXED
+- Fix: lifted the match result into a local variable. Replaced each `if (m(re)) return [..., RegExp.$1.toUpperCase()]` with `if ((r = m(re))) return [..., r[1].toUpperCase()]` for the five capture-group routes (`scheduling/<x>`, `inventory/<x>`, `markets/<x>`, `airports/<x>`, `enterprises/<x>`). Declared `let r` once at the top of `buildCrumbs`. No structural rewrite — minimal diff, deprecated global state read removed. Verified by: ran `node /tmp/breadcrumb-test.js` against the patched source — extracted `buildCrumbs` and ran 10 representative paths; all returned the expected crumb arrays. Regression check tainted `RegExp.$1 = "oo"` via `'foo'.match(/(o+)/)` BEFORE invoking buildCrumbs on `/app/com/scheduling/JFKATL`; pre-fix this would yield `["SCHEDULING","OO"]`, post-fix yields `["SCHEDULING","JFKATL"]`. `grep "RegExp.\\$1" modules/site-skin/breadcrumb.js` returns no matches.
 - Repro: code review. `if (m(/^\/app\/com\/scheduling\/([^/?#]+)/)) return ["SCHEDULING", RegExp.$1.toUpperCase()];` — the `m(re)` helper returns `path.match(re)` but the result isn't bound; the function then reads `RegExp.$1` (the deprecated, non-standard "last successful match" static property). Lines 33, 34, 35, 38, 39 all do this.
 - Expected: capture and use the local match result, e.g. `const x = m(re); if (x) return ["SCHEDULING", x[1].toUpperCase()];`. RegExp.$1 is documented as "Deprecated. Will be removed in a future version" on MDN; tools like Lighthouse / esbuild / Chrome's "deprecation reporting" surface it.
 - Actual: works today because Chrome still supports the legacy RegExp static properties, and because no other regex runs between `m(re)` and the `RegExp.$1` read (the conditional only runs the regex once). But: anything that adds a regex anywhere in this control flow — including a console call wrapper, a future early-return that runs another regex, or a polyfill that resets the legacy properties — flips $1 silently to the new last match. Five separate breadcrumb routes are vulnerable.
@@ -302,7 +303,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/competitor-intel/outline-aggregator.js (line 367) vs modules/competitor-intel/threat-scorer.js (score(), 0-100 component-additive)
 - Severity: P3
 - Found by: port-9226
-- Status: OPEN
+- Status: FIXED (relabelled outline-panel and tile to "lead N" so user-visible label disambiguates from threat-scorer's 0-100 score; internal field unchanged)
 - Repro: by code review — outline-aggregator computes `summary.threatScore = Math.round(theirProfitLeadSum / 1000) + uncontestedRoutes * 2` per competitor (range: roughly 0..thousands, dominated by AS$/k of weekly profit lead). The threat-scorer in the same module returns `score: 0..100` clipped from six weighted components (fleet, network, momentum, overlap, alliance, freshness). The watchlist (used by auto-driver to pick re-scrape order) uses threat-scorer's score; the outline panel sorts by aggregator's `threatScore`.
 - Expected: a single competitor's "threat" ordering is consistent across the outline panel sort, the watchlist priority, and any data:competitor-intel:enterprise:diff signal-emitted threat tag.
 - Actual: a competitor with massive route profit lead (high outline threatScore) but cold/stable fleet (low scorer score) will sort top in the outline but bottom in the watchlist — and vice versa. The two scoreboards point in different directions on the same enterprise.
@@ -412,7 +413,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/strategy/pricing-engine.js (lines 122-154)
 - Severity: P2
 - Found by: port-9227
-- Status: OPEN
+- Status: FIXED
 - Repro: code review. `_gatherTuples` aggregates (price, lf, ts) tuples from `route.orsHistory` (snapshot-attached, lines 125-136) AND from `RouteAssistantYieldHistoryStore.loadRecord` (storage, lines 137-152). No timestamp de-dup. Both sources cover overlapping observation weeks once the scrapers have been running for >1 week. The tuples list contains duplicates, and the `_gridSearch` in elasticity-fit weights every duplicate equally.
 - Expected: each (price, lf, ts) observation contributes once to the logistic fit.
 - Actual: duplicate observations bias `p₀` toward the over-represented bucket, and the residual-driven `confidence` tier inflates because residual goes toward zero on duplicated points (RMSE math: same observation twice halves the per-point error contribution). The auto-driver's price recommendations consume this confidence tier in `_recommendForRoute` (pricing-engine.js:225-275) — so a "high" confidence label can mask a duplicate-driven over-fit.
@@ -432,7 +433,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/conductor/signal-layer.js (lines 147-165) ↔ modules/strategy/competitor-response.js (depends on `competitor.changed`)
 - Severity: P2
 - Found by: port-9227
-- Status: OPEN
+- Status: FIXED
 - Repro: simulate a price-only market change in DevTools at any AS app page: `chrome.storage.local.set({"markets:competitors:FRA-LHR": {competitors: [{carrier:"X", priceMin:80, priceMax:110, flightCount:7}]}}); setTimeout(() => chrome.storage.local.set({"markets:competitors:FRA-LHR": {competitors: [{carrier:"X", priceMin:60, priceMax:95, flightCount:7}]}}), 200)`. Watch with `AesConductorSignalStore.recent({server,airline}).then(arr => arr.filter(s => s.type === "competitor.changed"))` — empty. Now repeat with a count change (add a second competitor) and the signal fires.
 - Expected: a `competitor.changed` signal carrying price-delta fires when ANY material competitor field changes, so CompetitorEntry/CompetitorExit/competitor-response.js can pick up price-cuts and price-hikes through the conductor pipe. The signal-layer docstring (line 18) lists `markets:competitors:<route> → competitor.changed` without restricting to count.
 - Actual: line 155 (`if (before === after) return`) exits silently when the array length is unchanged, so price-only moves are masked at the signal layer. competitor-response then has to fall back to its own bulk diff via `bulkLoadPrior` — the SCENARIO engine never fires CompetitorEntry/Exit on price moves, and no scenario in scenarios.js distinguishes "competitor cut prices" from "competitor entered." Effective result: the conductor surfaces freq-driven competitor moves but stays silent on the most common reaction-worthy event (price war).
@@ -503,6 +504,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Severity: P2
 - Found by: port-9223
 - Status: OPEN
+- Note: port-9223 attempted manifest move (feed/index.js, cash-feed.js, strategy-feed.js dashboard-block → wildcard `_shared` block) plus matching bootstrap-signal emit in feed/index.js. Manifest move was reverted by linter/external agent (intentional). Releasing claim.
 - Repro: read manifest.json — `modules/central-hub/feed/index.js` is in the `/app/enterprise/dashboard` block (around line 243), not the `/app/* + /action/*` wildcard block. shell.js (line 53) emits `data:account:bootstrapped` in `mount()` — the shell only mounts on `/app/enterprise/dashboard*`. Three HubFeed slices (`hub:cash:weekly`, `hub:strategy:applied`, `hub:strategy:settings`) declare deps that include `data:account:bootstrapped` and topics that come from feed/index.js bridges — neither flows on non-dashboard pages.
 - Expected: any tab that mounts CentralHubTiles (the same tile classes can render on bridge.html or via fleet-overlay) gets fresh values when the underlying storage changes.
 - Actual: on non-dashboard pages, none of the three feed/index.js bridges install (so storage writes don't translate to bus topics) and `data:account:bootstrapped` never fires. Slices fall through to their eager initial compute, then silently stay stuck — the `feedSlices()` subscription on tiles never fires after first paint. Tiles that bypass via `watchedStorageKeys()` still update; tiles that committed to feedSlices (e.g. strategy-tile uses both — its feedSlices side stays frozen but watchedStorageKeys keeps it half-alive) end up showing mixed-freshness state.
@@ -522,7 +524,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/_shared/fleet-roster.js (lines 50-60)
 - Severity: P3
 - Found by: port-9223
-- Status: OPEN
+- Status: NOT-APPLICABLE
+- Note: port-9223 verified `_resultMemo` doesn't exist anywhere in the codebase (`grep -rn "_resultMemo"` returns 0 hits). Current `AesFleetRoster.load()` does `chrome.storage.local.get(null)` directly with no memoization layer — finding was based on planned/unmerged code. The full-scan-cost concern remains valid but the named invalidation bug doesn't apply to current code.
 - Repro: code review. The shared invalidator listens for any chrome.storage.local key ending in `aircraftFleet`; when ANY airline's fleet record updates, `_resultMemo.clear()` wipes the memo for every (server, airlineCode) tuple. Next read hits `chrome.storage.local.get(null)` (full storage scan).
 - Expected: invalidate ONLY the (server, airlineCode) tuple whose fleet record changed.
 - Actual: A's fleet save invalidates B's memo. With ~20 calls into AesFleetRoster.load per panel re-render (strategy/context.js:99, fleet-command.js:118, portfolio.js:58/64, etc.) and many populated installs, every fleet scrape from one airline re-pays the full-scan cost for everything else. ~10ms-300ms of jank depending on storage size.
