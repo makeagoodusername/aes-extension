@@ -44,7 +44,9 @@ class ScheduleBuilder {
                 if (isNaN(arr) || arr < 0) errs.push(`wave ${i+1}: arrival window is invalid`)
                 if (isNaN(dep) || dep < 0) errs.push(`wave ${i+1}: departure window is invalid`)
                 const gap = ScheduleFactors.minutesBetween(w.arrivalWindow.end, w.departureWindow.start)
-                if (gap < (p.factors.minTransferMinutes || 0)) {
+                if (gap < 0) {
+                    errs.push(`wave ${i+1}: arrival end (${w.arrivalWindow.end}) is after departure start (${w.departureWindow.start}); wave windows must be same-day`)
+                } else if (gap < (p.factors.minTransferMinutes || 0)) {
                     errs.push(`wave ${i+1}: connection gap (${gap}m) is below minTransferMinutes (${p.factors.minTransferMinutes}m)`)
                 }
                 for (const bucket in w.composition) {
