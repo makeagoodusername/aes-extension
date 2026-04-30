@@ -53,9 +53,16 @@
 
     async function load(ctx) {
         const key = _scopedKey(ctx)
+        // F-9227-002: only fall back to the legacy KEY_BASE when the caller
+        // has NO accountId hint. With an accountId hint, a missing scoped
+        // record must surface as null — the legacy global may belong to a
+        // different account that hand-seeded without registry mapping.
+        const allowLegacyFallback = !(ctx && ctx.accountId)
         try {
             const got = await chrome.storage.local.get([key, KEY_BASE])
-            return got[key] || got[KEY_BASE] || null
+            if (got[key] !== undefined) return got[key]
+            if (allowLegacyFallback && got[KEY_BASE] !== undefined) return got[KEY_BASE]
+            return null
         } catch (e) {
             console.warn("[AesMarketingBudgetStore] load failed", e)
             return null
