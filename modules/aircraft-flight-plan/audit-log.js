@@ -321,7 +321,19 @@ if (typeof window !== "undefined") {
         const slot = window.AesAfp.slot("audit")
         if (!slot) return
         const settings  = await window.AesAfpSettings.load()
-        const recent    = await _aesAfpAuditLog.getRecent(10)
+        // Recent-activity preview lives in the per-aircraft sidebar — scope
+        // the read to THIS aircraft's ring so flying N001LL at JFK doesn't
+        // show form-fills logged against a different aircraft (or the same
+        // aircraft when it was based at a different hub). The per-aircraft
+        // ring is written atomically alongside the global timeline by
+        // `add()` so the data is always available; the legacy global read
+        // surfaced cross-aircraft noise. Falls back to the global timeline
+        // only when ctx hasn't resolved an aircraftId yet (first paint
+        // before mount() finishes).
+        const _ctx = (window.AesAfp && window.AesAfp.ctx) || {}
+        const recent = (_ctx.server && _ctx.aircraftId)
+            ? await _aesAfpAuditLog.getForAircraft(_ctx.server, _ctx.aircraftId, 10)
+            : await _aesAfpAuditLog.getRecent(10)
 
         const html = []
         html.push('<details class="aes-afp-settings-expander" style="margin-top:6px;">')
