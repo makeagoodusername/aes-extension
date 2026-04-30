@@ -52,6 +52,26 @@
         topic:  "data:strategy:settings:saved"
     })
 
-    // The `data:account:bootstrapped` signal is emitted by the shell once
-    // AesAccountRegistry resolves. It's a local emit; no storage bridge.
+    // `data:account:bootstrapped`: the central-hub shell emits this once
+    // AesAccountRegistry resolves, but the shell only mounts on
+    // /app/enterprise/dashboard. Tabs that mount tile-style panels on
+    // bridge.html or under /app/* (fleet-overlay, accounting-pane, etc.)
+    // still need the signal so account-scoped feed slices recompute. Mirror
+    // the shell's emit here, gated on a one-time flag (__aesAccountBootstrapEmitted)
+    // so we don't double-fire when the shell ALSO mounts.
+    function _emitAccountBootstrapped() {
+        if (window.__aesAccountBootstrapEmitted) return
+        window.__aesAccountBootstrapEmitted = true
+        try {
+            AesDataBus.emit("data:account:bootstrapped", {
+                accountId: window.__aesAccountId || null,
+                at:        Date.now()
+            })
+        } catch (_) { /* bus is best-effort */ }
+    }
+
+    // helpers.js bootstraps __aesAccountId on a setTimeout(0). Wait two
+    // microticks to let it land, then emit even if it didn't (callers
+    // already handle a null accountId).
+    setTimeout(_emitAccountBootstrapped, 50)
 })()

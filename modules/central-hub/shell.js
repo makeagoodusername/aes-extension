@@ -49,7 +49,10 @@ class CentralHubShell {
         // HubFeed: tiles attached their feedSlices subscriptions in mount().
         // The account bootstrap signal lets account-scoped slices recompute
         // now that __aesAccountId has resolved (or remains null on legacy).
-        if (typeof window.AesDataBus !== "undefined") {
+        // feed/index.js fires the same signal universally on a 50ms timer;
+        // gate on __aesAccountBootstrapEmitted so we don't double-fire.
+        if (typeof window.AesDataBus !== "undefined" && !window.__aesAccountBootstrapEmitted) {
+            window.__aesAccountBootstrapEmitted = true
             window.AesDataBus.emit("data:account:bootstrapped", {
                 accountId: window.__aesAccountId || null,
                 server:    this.server || null,
