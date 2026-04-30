@@ -48,6 +48,11 @@ class AesAfpActiveDraftStore {
             presetId:      null,
             generatedAt:   null,
             flights:       [],
+            // Track-3 build.metadata snapshot — preserves budgetUsedHours /
+            // totalScore / algo so the auto-preview's WEEKLY / SCORE cells
+            // can survive a page reload. null when nothing has been built
+            // yet, or for non-allocator-sourced drafts.
+            metadata:      null,
             perLegEdits:   {},
             appliedLegs:   {},
             dismissedLegs: {},
@@ -81,6 +86,8 @@ class AesAfpActiveDraftStore {
             presetId:      asString(rec.presetId),
             generatedAt:   asFinite(rec.generatedAt),
             flights:       asArray(rec.flights),
+            metadata:      (rec.metadata && typeof rec.metadata === "object" && !Array.isArray(rec.metadata))
+                ? rec.metadata : null,
             perLegEdits:   asMap(rec.perLegEdits),
             appliedLegs:   asMap(rec.appliedLegs),
             dismissedLegs: asMap(rec.dismissedLegs),
@@ -108,6 +115,10 @@ class AesAfpActiveDraftStore {
             generatedAt:   has("generatedAt")   ? (p.generatedAt || null)     : existing.generatedAt,
             flights:       has("flights")       ? (Array.isArray(p.flights) ? p.flights.slice() : [])
                                                 : existing.flights,
+            metadata:      has("metadata")
+                ? ((p.metadata && typeof p.metadata === "object" && !Array.isArray(p.metadata))
+                    ? p.metadata : null)
+                : existing.metadata,
             perLegEdits:   has("perLegEdits")   ? Object.assign({}, p.perLegEdits || {})   : existing.perLegEdits,
             appliedLegs:   has("appliedLegs")   ? Object.assign({}, p.appliedLegs || {})   : existing.appliedLegs,
             dismissedLegs: has("dismissedLegs") ? Object.assign({}, p.dismissedLegs || {}) : existing.dismissedLegs,
@@ -132,6 +143,10 @@ class AesAfpActiveDraftStore {
             presetId:      o.presetId || null,
             generatedAt:   o.generatedAt || Date.now(),
             flights:       Array.isArray(o.flights) ? o.flights : [],
+            // Pass-through Track-3 build.metadata when supplied so the
+            // auto-preview can repaint WEEKLY/SCORE without a re-run.
+            // Coerced to null in save() if shape isn't an object.
+            metadata:      (o.metadata && typeof o.metadata === "object") ? o.metadata : null,
             perLegEdits:   {},
             appliedLegs:   {},
             dismissedLegs: {}

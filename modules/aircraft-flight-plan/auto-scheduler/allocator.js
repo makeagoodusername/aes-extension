@@ -561,7 +561,13 @@
                     await AesAfpActiveDraftStore.setFlights(ctx.server || "", String(aircraftId), {
                         hub:      hub,
                         presetId: preset.id,
-                        flights:  build.flights
+                        flights:  build.flights,
+                        // Persist the metadata snapshot so a returning user
+                        // sees WEEKLY (budgetUsedHours) + SCORE (totalScore)
+                        // immediately on page load — without it the preview
+                        // shows LEGS=N but WEEKLY/SCORE=— until the user
+                        // re-runs Auto-build.
+                        metadata: build.metadata
                     })
                 }
             } catch (e) {

@@ -1779,6 +1779,14 @@
             // Adopt the persisted flights when our in-memory build is empty —
             // the user might have generated on a previous session and is
             // returning to the page; otherwise keep the live build.
+            //
+            // F-9232-002: pull the metadata snapshot too (allocator now
+            // persists `build.metadata` alongside flights). Without it the
+            // WEEKLY (budgetUsedHours) and SCORE (totalScore) cells read as
+            // "—" until the user re-runs Auto-build, even though both
+            // values are deterministic from the very build that was
+            // persisted. Falls back to null when an older draft (written
+            // before this fix) has no metadata field.
             if (!_state.lastBuild && _state.draft
                     && Array.isArray(_state.draft.flights)
                     && _state.draft.flights.length) {
@@ -1788,7 +1796,9 @@
                     flights:  _state.draft.flights.slice(),
                     warnings: [],
                     preset:   null,
-                    metadata: null
+                    metadata: (_state.draft.metadata && typeof _state.draft.metadata === "object")
+                        ? _state.draft.metadata
+                        : null
                 }
             }
         } catch (err) {
