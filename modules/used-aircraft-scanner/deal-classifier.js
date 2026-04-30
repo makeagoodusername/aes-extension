@@ -287,16 +287,23 @@ class MarketScanDealClassifier {
 
         const bidMs = numOrNull(row && row.bidIntervalMs)
         if (this._isEnabled("expiry") && bidMs !== null && bidMs >= 0) {
-            const hours = bidMs / (60 * 60 * 1000)
-            let norm
-            if (hours <= MarketScanDealClassifier.EXPIRY_HARD_HOURS) norm = 1
-            else {
-                const days = hours / 24
-                norm = Math.max(0, 1 - (days / MarketScanDealClassifier.EXPIRY_SOFT_DAYS))
+            // bidIntervalMs is captured at scrape time. Subtract elapsed since
+            // then so a re-viewed scan reflects time-to-expiry as of *now*.
+            const observedAt = numOrNull(row && row.observedAt)
+            const elapsedMs  = (observedAt !== null) ? Math.max(0, Date.now() - observedAt) : 0
+            const remainingMs = bidMs - elapsedMs
+            if (remainingMs > 0) {
+                const hours = remainingMs / (60 * 60 * 1000)
+                let norm
+                if (hours <= MarketScanDealClassifier.EXPIRY_HARD_HOURS) norm = 1
+                else {
+                    const days = hours / 24
+                    norm = Math.max(0, 1 - (days / MarketScanDealClassifier.EXPIRY_SOFT_DAYS))
+                }
+                components.push({field: "expiry", weight: this.weights.expiry,
+                                 norm: norm, raw: hours})
+                if (hours <= MarketScanDealClassifier.EXPIRY_HARD_HOURS) reasons.push("Closing soon")
             }
-            components.push({field: "expiry", weight: this.weights.expiry,
-                             norm: norm, raw: hours})
-            if (hours <= MarketScanDealClassifier.EXPIRY_HARD_HOURS) reasons.push("Closing soon")
         }
 
         // Fleet synergy reads `row.fleetOwned` populated by

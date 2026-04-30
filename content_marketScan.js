@@ -441,6 +441,7 @@ function extractOffer(offerEl, ctx) {
         bidInterval:       bidInterval,
         bidIntervalStatus: bidIntervalStatus,
         bidIntervalMs:     parseBidIntervalMs(bidInterval),
+        observedAt:        Date.now(),
         owner:             owner,
         registration:      registration,
         age:               ageText,
