@@ -25,7 +25,7 @@ class AboutDialog {
 
     #createContainer() {
         const container = document.createElement("div")
-        container.class = "modal"
+        container.className = "modal"
         container.id = "aes-about-dialog"
         container.setAttribute("role", "dialog")
         container.setAttribute("aria-modal", "true")
