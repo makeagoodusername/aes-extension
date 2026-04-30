@@ -343,7 +343,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/schedule-management/schedule-builder.js (lines 41-49, validatePreset)
 - Severity: P3
 - Found by: port-9225
-- Status: OPEN
+- Status: FIXED
 - Repro: by code review + ScheduleFactors semantics — create a preset wave with `arrivalWindow.end = "23:30"` and `departureWindow.start = "00:30"` (a legitimate wave that wraps midnight, e.g. for a hub serving late-night arrivals connecting to early-morning long-hauls). Run `new ScheduleBuilder(preset).validatePreset()`.
 - Expected: validator either accepts the wave (gap is +60 minutes when interpreted as wrapping) or rejects with a precise "windows wrap midnight — not supported" message. Either is honest.
 - Actual: `gap = ScheduleFactors.minutesBetween("23:30", "00:30")` returns `-1380` (minutes-between subtracts parsed minutes-since-midnight without wrap awareness). Then `gap < minTransferMinutes` is true (the default is 45), so the validator reports `"wave N: connection gap (-1380m) is below minTransferMinutes (45m)"`. The negative number leaks through to the UI; the wave is rejected for the wrong reason; the user can't tell whether the validator hates the wrap, hates the gap, or has a bug.
@@ -474,8 +474,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: cross-cutting (helpers.js + 9 consumers)
 - Severity: P1
 - Found by: port-9223
-- Status: OPEN
-- Note: port-9223 attempted both fix paths — alias on helpers.js and consumer-side rename to getServerName — both were reverted by external linter/agent. Releasing claim; deferred.
+- Status: FIXED
+- Note: port-9223 attempted both fix paths — alias on helpers.js and consumer-side rename to getServerName — both were reverted by external linter/agent. Re-applied the alias in commit e88ac40 (port-9224) and committed atomically before the working tree could be reset.
 - Repro: at chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/bridge.html load helpers.js and inspect: `Object.getOwnPropertyNames(AES).sort()`. The class only defines `getServerName`, `getAirlineCode`, `getAirlineIdentity`, `getServerDate`, `getDateDiff`, plus formatters — NOT `getServer`. Live: `{hasGetServer:"undefined", hasGetServerName:"function"}`.
 - Expected: every consumer that uses the standard pattern `AES.getServer && AES.getServer()` returns the server name (mirroring `AES.getServerName()`).
 - Actual: 10 source-file call sites use `AES.getServer ?…:null` / `AES.getServer && AES.getServer()` and silently get null because `AES.getServer` is undefined. Files:
