@@ -27,6 +27,35 @@
  */
 
 class ScrapeOrchestratorPhases {
+    // Single source of truth for foundation-phase targets. Both
+    // `estimate()` and `_foundation().buildJobs()` derive from this list
+    // so the ToS modal count cannot drift from the actual dispatch.
+    // Substring fragments — see background-tab-pool.js:_snapshotStorageKeys
+    // for why we use canonical suffixes instead of `<server><airline>` prefixes.
+    // Excluded by design:
+    //   /app/alliance?tabs=1 — the alliance scraper visits this URL
+    //     internally on /app/alliance, so a separate job duplicates work.
+    //   /action/info/countries — no content script matches that path; the
+    //     countries list is fetched lazily by callers (open-stations-modal,
+    //     parallel-scanner) via CountryScraper.loadCountriesList.
+    //   /app/aircraft/market — passive visit only mounts MarketPanel and
+    //     never writes a `marketScan:` key (those land only during an
+    //     active scan session driven by ScanController).
+    //   /app/finance/cashflow — AS returns 404 on this path (the cashflow
+    //     view was retired); the other /app/finance/* siblings still exist.
+    static FOUNDATION_TARGETS = [
+        {path: "/app/fleets",                       key: "aircraftFleet"},
+        {path: "/app/finance/accounting/0",         key: "accounting:income:"},
+        {path: "/app/finance/accounting/1",         key: "accounting:balance:"},
+        {path: "/app/finance/accounting/2",         key: "accounting:bank:"},
+        {path: "/app/finance/leasing",              key: "accounting:leasing"},
+        {path: "/app/finance/capital",              key: "accounting:capital"},
+        {path: "/app/finance/assets",               key: "accounting:assets"},
+        {path: "/app/alliance",                     key: "alliance:overview"},
+        {path: "/action/enterprise/staffPilots",    key: "crewMgmt:pilots"},
+        {path: "/action/enterprise/staffOverview",  key: "crewMgmt:staffOverview:latest"}
+    ]
+
     static all() {
         return [
             ScrapeOrchestratorPhases._foundation(),
@@ -50,7 +79,7 @@ class ScrapeOrchestratorPhases {
         const competitors = await E.enumerateCompetitorIds()
         const airports    = await E.enumerateAirportsForFlightsFrom(hubs, routes)
         return {
-            foundation:   9,
+            foundation:   ScrapeOrchestratorPhases.FOUNDATION_TARGETS.length,
             perHub:       hubs.length,
             perAircraft:  aircraft.length * 2,
             perRoute:     routes.length * 2,    // markets + inventory per route
@@ -73,35 +102,10 @@ class ScrapeOrchestratorPhases {
             staggerMs:   1500,
             buildJobs:   async (host) => {
                 const o = host.origin
-                // Substring fragments — see background-tab-pool.js:_snapshotStorageKeys
-                // for why we use canonical suffixes instead of `<server><airline>` prefixes.
-                // Excluded by design:
-                //   /app/alliance?tabs=1 — the alliance scraper visits this URL
-                //     internally on /app/alliance, so a separate job duplicates work.
-                //   /action/info/countries — no content script matches that path; the
-                //     countries list is fetched lazily by callers (open-stations-modal,
-                //     parallel-scanner) via CountryScraper.loadCountriesList.
-                //   /app/aircraft/market — passive visit only mounts MarketPanel and
-                //     never writes a `marketScan:` key (those land only during an
-                //     active scan session driven by ScanController).
-                //   /app/finance/cashflow — AS returns 404 on this path (the cashflow
-                //     view was retired); the other /app/finance/* siblings still exist.
-                const targets = [
-                    {url: o + "/app/fleets",                       key: "aircraftFleet"},
-                    {url: o + "/app/finance/accounting/0",         key: "accounting:income:"},
-                    {url: o + "/app/finance/accounting/1",         key: "accounting:balance:"},
-                    {url: o + "/app/finance/accounting/2",         key: "accounting:bank:"},
-                    {url: o + "/app/finance/leasing",              key: "accounting:leasing"},
-                    {url: o + "/app/finance/capital",              key: "accounting:capital"},
-                    {url: o + "/app/finance/assets",               key: "accounting:assets"},
-                    {url: o + "/app/alliance",                     key: "alliance:overview"},
-                    {url: o + "/action/enterprise/staffPilots",    key: "crewMgmt:pilots"},
-                    {url: o + "/action/enterprise/staffOverview",  key: "crewMgmt:staffOverview:latest"}
-                ]
-                return targets.map((t, i) => ({
+                return ScrapeOrchestratorPhases.FOUNDATION_TARGETS.map((t, i) => ({
                     jobId:                  "foundation-" + i,
                     phaseId:                "foundation",
-                    url:                    t.url,
+                    url:                    o + t.path,
                     expectStorageKeyPrefix: t.key,
                     settleMs:               1500
                 }))
