@@ -88,6 +88,12 @@ class AesCompetitorOutlineAggregator {
         const distanceByPair = await AesCompetitorOutlineAggregator
             ._loadDistances(pairKeys)
 
+        // 5b. Per-route paxScore (from RA's topRoutes cache) so the counter
+        //     recommender can score candidates against the lane's actual
+        //     demand instead of the neutral default.
+        const paxScoreByPair = await AesCompetitorOutlineAggregator
+            ._loadPaxScoreByPair(pairKeys)
+
         // 6. Our fleet (for the counter scorer's existing-tail pass).
         const ourFleetEnriched = Array.isArray(args && args.ourFleet)
             ? args.ourFleet
@@ -107,6 +113,7 @@ class AesCompetitorOutlineAggregator {
                 storageBundle,
                 specsByTypeId,
                 distanceByPair,
+                paxScoreByPair,
                 ourFleetEnriched,
                 economics
             })
@@ -338,6 +345,7 @@ class AesCompetitorOutlineAggregator {
                 storageBundle: input.storageBundle,
                 specsByTypeId: input.specsByTypeId,
                 distanceByPair: input.distanceByPair,
+                paxScoreByPair: input.paxScoreByPair,
                 ourFleetEnriched: input.ourFleetEnriched,
                 economics:     input.economics
             })
@@ -517,6 +525,9 @@ class AesCompetitorOutlineAggregator {
                     theirFreq:     observedFreq,
                     theirHasMarketsData: theirFlights.length > 0,
                     sharePct:      sharePct,
+                    paxScore:      (input.paxScoreByPair && input.paxScoreByPair[pk] != null)
+                        ? input.paxScoreByPair[pk]
+                        : null,
                     ourFleetEnriched: input.ourFleetEnriched,
                     specsByTypeId: input.specsByTypeId,
                     economics:     input.economics,
@@ -747,6 +758,31 @@ class AesCompetitorOutlineAggregator {
         }
         return oldest
     }
+
+    static async _loadPaxScoreByPair(pairKeys) {
+        const out = {}
+        if (!pairKeys || !pairKeys.size) return out
+        const hubs = new Set()
+        for (const pk of pairKeys) {
+            const idx = pk.indexOf("-")
+            if (idx > 0) hubs.add(pk.slice(0, idx))
+        }
+        if (!hubs.size) return out
+        const keys = Array.from(hubs).map(h => "routeAssistant:topRoutes:" + h)
+        const data = await chrome.storage.local.get(keys)
+        for (const hub of hubs) {
+            const blob = data["routeAssistant:topRoutes:" + hub]
+            if (!blob || !Array.isArray(blob.rows)) continue
+            for (const row of blob.rows) {
+                if (!row || !row.destIata) continue
+                if (!isFinite(row.paxScore)) continue
+                const pk = hub + "-" + String(row.destIata).toUpperCase()
+                if (!(pk in out)) out[pk] = Number(row.paxScore)
+            }
+        }
+        return out
+    }
+
 }
 
 function _pairKey(hub, dest) {

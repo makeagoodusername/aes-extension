@@ -41,6 +41,7 @@ class AesCounterAircraft {
      * @param {object} input.economics
      * @param {boolean} [input.oursHasFlights]      we already operate this lane
      * @param {number}  [input.oursEstProfit]       our current projected weekly profit
+     * @param {number}  [input.paxScore]            route paxScore (0-9); falls back to 5 (neutral)
      */
     static recommend(input) {
         if (!input || !input.distanceKm || input.distanceKm <= 0) {
@@ -48,6 +49,7 @@ class AesCounterAircraft {
         }
         const distanceKm = Number(input.distanceKm)
         const economics = input.economics || {}
+        const paxScore = isFinite(input.paxScore) ? Number(input.paxScore) : 5
 
         // Frequency to score against — match the competitor when known,
         // otherwise pick a sensible default (daily round-trips).
@@ -82,7 +84,8 @@ class AesCounterAircraft {
             ourFleet:      input.ourFleetEnriched || [],
             specsByTypeId: input.specsByTypeId,
             economics:     economics,
-            hub:           input.hub
+            hub:           input.hub,
+            paxScore:      paxScore
         })
 
         const theirEstProfit = isFinite(input.theirEstProfit) ? input.theirEstProfit : null
@@ -127,7 +130,8 @@ class AesCounterAircraft {
             yieldPerKm:    yieldPerKm,
             specsByTypeId: input.specsByTypeId,
             economics:     economics,
-            theirSpec:     input.theirSpec
+            theirSpec:     input.theirSpec,
+            paxScore:      paxScore
         })
         if (purchaseResult && beatsTheirs(purchaseResult.projectedProfitPerWeek)) {
             return {
@@ -176,7 +180,7 @@ class AesCounterAircraft {
                 distanceKm: input.distanceKm,
                 spec:       spec,
                 frequency:  input.targetFreq,
-                paxScore:   5,
+                paxScore:   input.paxScore,
                 economics:  input.economics,
                 override:   override
             })
@@ -223,7 +227,7 @@ class AesCounterAircraft {
                 distanceKm: input.distanceKm,
                 spec:       spec,
                 frequency:  input.targetFreq,
-                paxScore:   5,
+                paxScore:   input.paxScore,
                 economics:  input.economics,
                 override:   override
             })
