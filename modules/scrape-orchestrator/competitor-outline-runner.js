@@ -42,10 +42,20 @@ class AesCompetitorOutlineRunner {
             return {success: true, refreshed: 0, mode: "cache-only"}
         }
 
-        // Walk cached enterprises and refresh in bulk.
-        const ids = (args && Array.isArray(args.enterpriseIds) && args.enterpriseIds.length)
-            ? args.enterpriseIds
-            : await AesCompetitorOutlineRunner._listEnterpriseIds(server)
+        // Walk cached enterprises and refresh in bulk. When the caller
+        // passes explicit ids that's a force-refresh; when we discover ids
+        // ourselves, only re-scrape records past the deep TTL so a refresh
+        // click on a fresh dataset doesn't replay every fetch.
+        let ids
+        if (args && Array.isArray(args.enterpriseIds) && args.enterpriseIds.length) {
+            ids = args.enterpriseIds
+        } else {
+            const settings = (typeof AesCompetitorSettings !== "undefined")
+                ? await AesCompetitorSettings.load() : null
+            const ttlMs = (typeof AesCompetitorSettings !== "undefined")
+                ? AesCompetitorSettings.enterpriseDeepTtlMs(settings) : 0
+            ids = await AesCompetitorOutlineRunner._listEnterpriseIds(server, ttlMs)
+        }
         if (!ids.length) return {success: true, refreshed: 0, mode: "no-cache"}
 
         const scraper = new AesCompetitorEnterpriseScraper(server)
@@ -68,14 +78,17 @@ class AesCompetitorOutlineRunner {
         return {success: true, refreshed: refreshed || ids.length, mode: "deep"}
     }
 
-    static async _listEnterpriseIds(server) {
+    static async _listEnterpriseIds(server, staleTtlMs) {
         const all = await chrome.storage.local.get(null)
         const prefix = "competitorIntel:enterprise:" + server + ":"
         const out = []
+        const filterStale = staleTtlMs > 0 && typeof AesCompetitorStore !== "undefined"
         for (const k in all) {
             if (k.indexOf(prefix) !== 0) continue
             const id = k.substring(prefix.length)
-            if (id) out.push(id)
+            if (!id) continue
+            if (filterStale && !AesCompetitorStore.isExpired(all[k], staleTtlMs)) continue
+            out.push(id)
         }
         return out
     }
