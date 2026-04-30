@@ -25,7 +25,10 @@ class CentralHubAccountingTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys(ctx) {
-        return [String(ctx && ctx.server || "") + ""]
+        const server = String(ctx && ctx.server || "")
+        const airline = String(ctx && ctx.airline || "")
+        if (server && airline) return [server + airline + "accounting:"]
+        return server ? [server] : []
     }
 
     openHref() { return "/app/finance/accounting" }

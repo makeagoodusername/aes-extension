@@ -24,7 +24,10 @@ class CentralHubFleetHubTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys(ctx) {
-        return [String(ctx && ctx.server || "") + ""]
+        const server = String(ctx && ctx.server || "")
+        const airline = String(ctx && ctx.airline || "")
+        if (server && airline) return [server + airline + "aircraftFleet"]
+        return server ? [server] : []
     }
 
     openHref() { return "/app/fleets" }
@@ -42,7 +45,20 @@ class CentralHubFleetHubTile extends window.CentralHubTile {
 
     async _findFleetRecord() {
         const server = (this.ctx && this.ctx.server) || ""
+        const airline = (this.ctx && this.ctx.airline) || ""
         if (!server) return null
+        // Prefer the exact (server, airline) key when ctx supplies an airline;
+        // otherwise fall back to the legacy "newest by max time on this server"
+        // heuristic so single-airline users still see their fleet.
+        if (airline) {
+            const key = server + airline + "aircraftFleet"
+            const blob = await chrome.storage.local.get(key)
+            const rec = blob && blob[key]
+            if (rec && Array.isArray(rec.fleet) && rec.fleet.length) {
+                return {key, record: rec}
+            }
+            return null
+        }
         const all = await chrome.storage.local.get(null)
         let best = null
         let bestTime = ""

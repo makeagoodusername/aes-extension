@@ -23,7 +23,10 @@ class CentralHubCompetitorMonitoringTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys(ctx) {
-        return [String(ctx && ctx.server || "") + ""]
+        const server = String(ctx && ctx.server || "")
+        const airline = String(ctx && ctx.airline || "")
+        if (server && airline) return [server + airline + "competitorMonitoring"]
+        return server ? [server] : []
     }
 
     openHandler() {
@@ -50,10 +53,16 @@ class CentralHubCompetitorMonitoringTile extends window.CentralHubTile {
 
     async _loadCompetitors() {
         const server = (this.ctx && this.ctx.server) || ""
+        const airline = (this.ctx && this.ctx.airline) || ""
         if (!server) return []
+        // Scope to <server><airline> when ctx supplies an airline so the user
+        // doesn't see sibling-airline tracked competitors. Falls back to the
+        // legacy server-wide scan when only the server is known.
         const all = await chrome.storage.local.get(null)
         const out = []
+        const expectedPrefix = airline ? (server + airline) : server
         for (const k in all) {
+            if (k.indexOf(expectedPrefix) !== 0) continue
             const v = all[k]
             if (!v || typeof v !== "object") continue
             if (v.type !== "competitorMonitoring") continue
