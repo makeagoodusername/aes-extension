@@ -500,8 +500,16 @@
                 tone: "warn"
             }
         }
-        if (!_state.spec)
-            return {text: "Waiting for aircraft spec…", tone: "info"}
+        if (!_state.spec) {
+            // After spec-resolver attempted (success OR null), don't keep
+            // saying "Waiting…" forever — that misroutes the user toward
+            // hoping the system loads. The Spec card surfaces the real
+            // remediation (Retry / open type page).
+            const attempted = !!(window.AesAfpSpecResolver && AesAfpSpecResolver.attempted)
+            return attempted
+                ? {text: "Aircraft spec unavailable — see the Spec card.", tone: "warn"}
+                : {text: "Waiting for aircraft spec…", tone: "info"}
+        }
         if (!_state.candidates || !_state.candidates.length)
             return {text: "Waiting for route candidates…", tone: "info"}
         if (!_state.selectedPresetId)
