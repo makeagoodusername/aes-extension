@@ -253,7 +253,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/scrape-orchestrator/enumerators.js (enumerateAllRoutes lines 87-110); writer at modules/route-assistant/panel.js:10322
 - Severity: P2
 - Found by: port-9226
-- Status: OPEN
+- Status: FIXED
 - Repro: play on free1, scrape everything (per-route phase populates `routeAssistant:topRoutes:<HUB>`). Switch the airline picker to free2 (or just open free2 in another tab while extension is shared). Open the dashboard on free2 and click Scrape Everything. The per-route phase fan-out includes hub IATAs from free1's network even when free2's airline operates a disjoint hub list.
 - Expected: enumerateAllRoutes returns only routes that exist on `host.server` so the per-route phase scrapes only relevant pages.
 - Actual: the storage key `routeAssistant:topRoutes:<HUB>` (panel.js line 10322 — `"routeAssistant:topRoutes:" + hubU`) carries no server prefix, and enumerators.js:87-110 reads every key matching that prefix without ANY server filter. A topRoutes blob persisted from a prior server is treated as live for the current server; the orchestrator builds `https://<currentServer>.airlinesim.aero/app/com/markets/<HUB><DEST>` URLs that 404 (or — worse — hit the right-shaped page on the wrong server).
@@ -363,7 +363,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/canvas/canvas-shell.js (line 460, inside _renderCurrentView)
 - Severity: P1
 - Found by: port-9225
-- Status: OPEN
+- Status: FIXED
 - Repro: open `/app/fleets`, click "▦ Open Schedule Canvas". (`AesCanvasStateStore`'s default is `view: "waves"`, so a first-time / freshly-cleared user lands on the wave branch.) Watch the page console.
 - Expected: the canvas modal mounts cleanly — header, hub picker, view toggle, wave spine, destinations dock, assistant rail, first-run overlay all rendered.
 - Actual: console emits `[AES Schedule Canvas] open failed ReferenceError: T is not defined` (verified live at chrome-devtools MCP port 9225 on /app/fleets — see msgid=39 in the page console). The throw originates at `canvas-shell.js:460` — `this._mountDestinationsDock(inner, T)` — where `T` is referenced but never bound in `_renderCurrentView()`'s scope. (`T` is bound locally in `mount()` at line 67 and `_renderHeader()` at line 405, but those locals don't survive into `_renderCurrentView()`.) The callee `_mountDestinationsDock(parentEl, T)` at line 467 correctly takes T as a parameter; the caller at 460 is the bug. Git blame: line 460 was added in commit 911baa4d on 2026-04-29.
