@@ -80,7 +80,17 @@
     if (typeof window === "undefined") return
     if (window.AesDataBus) return
 
-    const STORAGE_ECHO_SUPPRESS_MS = 200
+    // Per-emit echo suppress: each local emit() / publish() increments a
+    // pending-echo counter for the topic; the storage echo (this tab's own
+    // chrome.storage.onChanged) consumes one counter when it arrives. The
+    // 2s `at` fallback handles producers that emitted without writing
+    // (counter never gets consumed) and guards against drift while still
+    // letting a peer-tab write on the same topic surface as a real echo
+    // once our own pending counter is drained. Counter-driven dedup means
+    // a same-tab burst of N emits eats exactly N echoes — covering slow-
+    // commit cases (chrome.storage commit lands > old 200ms ago but < the
+    // bumped 2s window) that were the F-9223-004 repro.
+    const STORAGE_ECHO_SUPPRESS_MS = 2000
     const HISTORY_GLOBAL_MAX       = 500   // total events kept across all topics
     const HISTORY_PER_TOPIC_MAX    = 50    // per-topic ringbuffer for inspector drill-in
     // Soft cap on distinct topics tracked. Existing producers all use small
@@ -94,8 +104,36 @@
     const subs            = new Map()  // topic → Set<cb>
     const lastEmit        = new Map()  // topic → last record
     const lastValue       = new Map()  // topic → {value, at, source}  (publish/extractValue)
-    const recentLocalEmit = new Map()  // topic → epoch-ms of last local emit
+    const recentLocalEmit = new Map()  // topic → {at, count}  (count = pending echoes)
     const bridges         = []         // [{prefix, topic, makePayload, single, extractValue}]
+
+    function _bumpRecentLocal(topic, at) {
+        const prev = recentLocalEmit.get(topic)
+        recentLocalEmit.set(topic, {
+            at:    at,
+            count: ((prev && prev.count) || 0) + 1
+        })
+    }
+
+    function _consumeRecentLocal(topic, now) {
+        const rec = recentLocalEmit.get(topic)
+        if (!rec) return false
+        if (now - rec.at >= STORAGE_ECHO_SUPPRESS_MS) {
+            // Past the fallback window — treat any leftover counter as stale
+            // (the corresponding chrome.storage commit was lost, or the
+            // producer never wrote). Drop the entry so a real peer-tab echo
+            // surfaces normally.
+            recentLocalEmit.delete(topic)
+            return false
+        }
+        if (rec.count <= 0) {
+            // Within window but counter drained — this echo isn't ours.
+            return false
+        }
+        rec.count -= 1
+        if (rec.count <= 0) recentLocalEmit.delete(topic)
+        return true
+    }
     const counts          = new Map()  // topic → emit count (lifetime of this tab)
     const historyGlobal   = []         // [record, …]  newest at end
     const historyByTopic  = new Map()  // topic → [record, …]  newest at end
@@ -167,7 +205,7 @@
             {at: Date.now(), topic: topic, source: "local"},
             payload || {}
         )
-        recentLocalEmit.set(topic, record.at)
+        _bumpRecentLocal(topic, record.at)
         dispatch(topic, record)
         return record
     }
@@ -186,7 +224,7 @@
             {at: at, topic: topic, source: "local"},
             hint || {}
         )
-        recentLocalEmit.set(topic, at)
+        _bumpRecentLocal(topic, at)
         dispatch(topic, record)
         return record
     }
@@ -265,8 +303,13 @@
                     ? (key === b.prefix)
                     : (key.indexOf(b.prefix) === 0)
                 if (!matches) continue
-                const lastLocal = recentLocalEmit.get(b.topic) || 0
-                if (now - lastLocal < STORAGE_ECHO_SUPPRESS_MS) {
+                // Counter-driven echo suppress (F-9223-004): each local
+                // emit/publish increments a pending-echo counter; this
+                // matching onChanged consumes one counter when within the
+                // 2s fallback window. Once the counter is drained, a peer-
+                // tab write on the same topic surfaces normally rather than
+                // being eaten by a stale time-based suppress.
+                if (_consumeRecentLocal(b.topic, now)) {
                     fired.add(b.topic)  // suppress the echo for this batch too
                     continue
                 }

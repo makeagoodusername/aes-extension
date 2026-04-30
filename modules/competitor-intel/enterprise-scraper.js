@@ -232,6 +232,7 @@ function parseEnterpriseTab0(html) {
     // Counts — try labelled rows first, fall back to legacy positional.
     const fleet = parseFleetCounts(doc)
     if (!fleet) notes.push("fleet counts not parsed")
+    else if (fleet._via === "positional") notes.push("fleet counts via positional fallback (trust degraded — re-scrape if AS layout changed)")
     if (!alliance) notes.push("alliance not parsed")
     if (!baseCountry) notes.push("baseCountry not parsed")
 
@@ -299,6 +300,11 @@ function parseFleetCounts(doc) {
                 if (v2 != null) out.stationsCount = v2
                 if (v3 != null) out.aircraftCount = v3
                 if (v4 != null) out.employeeCount = v4
+                // Stamp the parse source so callers can surface a "trust
+                // degraded" hint — the positional fallback assumes a fixed
+                // row order that AS has shifted before, and the labelled
+                // path is the validated one.
+                out._via = "positional"
                 matched = 1
             }
         }
