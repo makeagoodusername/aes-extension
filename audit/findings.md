@@ -115,7 +115,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: modules/command-palette/host.js (lines 137–219, _ensureStyle)
 - Severity: P1
 - Found by: port-9224
-- Status: CLAIMED:9224
+- Status: FIXED
 - Repro: any AS app page, Cmd-K (Mac) / Ctrl-K (Win/Linux). Or, programmatically, `window.AESCommandPalette.open()` after the page-bound content scripts have loaded.
 - Expected: same brutalist treatment as the unified-settings shell, AES menu dropdown, and about-dialog: bone bg (`#F4F1EA`) / oxide text (`#2B2520`) / 2px oxide border / `--aes-radius: 0` (sharp corners) / Inter Tight display font / `--aes-z-modal` / token-driven kbd chips. The palette is the highest-traffic AES UI surface; everything else in the brutalist redesign treats sharp corners and the bone/oxide pair as non-negotiable.
 - Actual: the entire palette is hardcoded dark mode in the IIFE-injected stylesheet. Verbatim from host.js:154-156 — `background: #181a1f; color: #d8dde6; border: 1px solid #2c313a; border-radius: 10px; box-shadow: 0 20px 50px -12px rgba(0,0,0,0.55) …`; rows highlight on `#232730` with a `#5fa8ff` (cobalt-ish blue) accent left-border; recent-tag chip is `#d3a04c` on `rgba(211,160,76,0.12)`; kbd chips at `#232730` with `border-radius: 4px`. Font: `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif` (system) instead of `Inter Tight`. Z-index: `2147483646/2147483647` (signed-int max) instead of the design-token ceiling `var(--aes-z-modal)` (10000). 14 hardcoded hex values + 1 hardcoded rgba.
@@ -158,7 +158,7 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: css/command-bridge.css (`.aes-bridge__picker-chip`, `.aes-bridge__ribbon-chip`, `.aes-bridge__card`, `.aes-bridge__btn`)
 - Severity: P3
 - Found by: port-9224
-- Status: OPEN
+- Status: CLAIMED:9225
 - Repro: open chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/bridge.html → tab through the page (or focus a chip via DevTools). Verified by querying every stylesheet rule whose selectorText contains "picker-chip" + ":focus" — zero matches. The chip is in normal tab flow (`tabIndex === 0`) so users do reach it via keyboard, but only the browser-default outline shows.
 - Expected: tracked, high-contrast focus ring matching the rest of the brutalist UI (cf. `.aes-btn:focus-visible { outline: var(--aes-bw-2) solid var(--aes-rust); outline-offset: 2px }` in css/components.css and `.aes-bridge__adder-title:focus { outline: var(--aes-bw-2) solid var(--aes-rust); outline-offset: -2px }` in command-bridge.css for adder inputs).
 - Actual: the only `:focus`/`:focus-visible` rules in command-bridge.css cover the adder inputs (`.aes-bridge__adder-title`, `.aes-bridge__adder-lane`, `.aes-bridge__adder-bind`, `.aes-bridge__coalitions-name`). All chip / button / card / lane / ribbon-chip surfaces inherit only the browser default outline, which on the bone background is a thin blue ring barely visible against the brutalist palette.
@@ -472,7 +472,8 @@ Append new findings below using the format from `audit/README.md`. Status transi
 - Area: cross-cutting (helpers.js + 9 consumers)
 - Severity: P1
 - Found by: port-9223
-- Status: CLAIMED:9223
+- Status: OPEN
+- Note: port-9223 attempted both fix paths — alias on helpers.js and consumer-side rename to getServerName — both were reverted by external linter/agent. Releasing claim; deferred.
 - Repro: at chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/bridge.html load helpers.js and inspect: `Object.getOwnPropertyNames(AES).sort()`. The class only defines `getServerName`, `getAirlineCode`, `getAirlineIdentity`, `getServerDate`, `getDateDiff`, plus formatters — NOT `getServer`. Live: `{hasGetServer:"undefined", hasGetServerName:"function"}`.
 - Expected: every consumer that uses the standard pattern `AES.getServer && AES.getServer()` returns the server name (mirroring `AES.getServerName()`).
 - Actual: 10 source-file call sites use `AES.getServer ?…:null` / `AES.getServer && AES.getServer()` and silently get null because `AES.getServer` is undefined. Files:
