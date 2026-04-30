@@ -150,10 +150,15 @@ class CentralHubRouteLauncherTile extends window.CentralHubTile {
             server:      c.server,
             airlineCode: c.airlineCode,
             activeId:    a && a.aircraftId,
+            // F-9229-001: don't re-render here. setActive synchronously fires
+            // onActiveChange, whose listener (attached in _attachListeners)
+            // already runs `await _renderRanker()` + `await refresh()`. The
+            // previous double call raced the listener: both started clearing
+            // _destHost then both appended their own copy of the top-25
+            // destination rows, briefly showing 50 rows until the next
+            // refresh tick caught up.
             onPick:      async (sel) => {
                 await c.setActive(sel)
-                await this._renderRanker()
-                this.refresh()
             }
         })
         await this._picker.render(this._pickerHost)
