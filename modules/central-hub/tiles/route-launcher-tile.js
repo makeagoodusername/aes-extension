@@ -292,14 +292,30 @@ class CentralHubRouteLauncherTile extends window.CentralHubTile {
         await this._feed.render(this._feedHost)
     }
 
+    // F-9230-002: setActive's _persistActive write echoes back through the
+    // bridgeStorage subscription on `routeLauncher:activeAircraft:<server>`.
+    // The active-change listener already re-renders, so swallow the next
+    // storage refresh to avoid a duplicate full renderBody. One-shot.
+    async refresh() {
+        if (this._suppressNextStorageRefresh) {
+            this._suppressNextStorageRefresh = false
+            return
+        }
+        return super.refresh()
+    }
+
     _attachListeners() {
         if (this._unsubStatus) { this._unsubStatus(); this._unsubStatus = null }
         if (this._unsubActive) { this._unsubActive(); this._unsubActive = null }
         this._unsubStatus = window.RouteLauncher.onStatus(() => this._renderFeed())
         this._unsubActive = window.RouteLauncher.onActiveChange(async () => {
             if (this._picker) this._picker.setActive(window.RouteLauncher.getActive() && window.RouteLauncher.getActive().aircraftId)
-            await this._renderRanker()
-            await this.refresh()
+            // The pending storage echo from _persistActive will trigger an
+            // extra refresh through the bridgeStorage path; mark it before we
+            // run our own refresh so the override above bails the echo.
+            // Use super.refresh so our own call isn't suppressed.
+            this._suppressNextStorageRefresh = true
+            await super.refresh()
         })
     }
 
