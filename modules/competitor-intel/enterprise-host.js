@@ -39,14 +39,12 @@ class AesCompetitorEnterpriseHost {
             try {
                 cached = await this._scrapeAndSave()
             } catch (err) {
+                // Don't write a stub: a `{hubs: [], routeFootprint: []}`
+                // record stamped with a fresh `scrapedAt` would survive the
+                // deep TTL and suppress every retry until then. Leaving
+                // `cached` null lets the next visit retry; the aggregator's
+                // null-safe profile is already what the panel renders here.
                 console.warn("[AES competitor-intel] enterprise scrape failed:", err)
-                if (!cached) {
-                    cached = await AesCompetitorStore.saveEnterprise(this._server, this._enterpriseId, {
-                        hubs: [],
-                        routeFootprint: [],
-                        parserNotes: "scrape failed: " + (err && err.message || String(err))
-                    })
-                }
             }
         }
 

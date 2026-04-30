@@ -45,13 +45,12 @@ class AesCompetitorAirportHost {
             try {
                 cached = await AesCompetitorAirportHost._scrapeAndSave(this._server, this._airportId)
             } catch (err) {
+                // Don't write a stub: a `{carriers: []}` record stamped with
+                // a fresh `scrapedAt` would survive the airport TTL (7d) and
+                // suppress every retry until then. Leaving `cached` null lets
+                // the next visit retry the scrape; the aggregator's
+                // null-safe view is already what the panel renders here.
                 console.warn("[AES competitor-intel] airport scrape failed:", err)
-                if (!cached) {
-                    cached = await AesCompetitorStore.saveAirport(this._server, this._airportId, {
-                        carriers: [],
-                        parserNotes: "scrape failed: " + (err && err.message || String(err))
-                    })
-                }
             }
         }
 
