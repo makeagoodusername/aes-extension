@@ -51,7 +51,7 @@
     if (typeof window === "undefined") return
     if (window.AESCommandRegistry) return
 
-    const RECENT_CAP = 20
+    const RECENT_CAP = 8
     const RECENT_KEY_BASE = "commandPalette:recent"
 
     const byId = new Map()         // id → command
