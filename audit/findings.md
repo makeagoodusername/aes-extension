@@ -1320,7 +1320,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/aircraft-flight-plan/drag-to-schedule.js (_findStripRoot lines 77-86; _arbDrop lines 114-136)
 - Severity: P1
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: drag-to-schedule.js:85 now queries `[data-aes-wave-strip="1"]` (the wrap), with a back-compat parentElement.parentElement walk for older builds. wave-strip.js:250 stamps `wrap.dataset.aesWaveStrip = "1"`. Verified live on chrome-aes-6 (port 9228) AFP page: `window.AesAfpDragToSchedule` is loaded and `_findStripRoot()` returns the wrap when present.
 - Repro: On the AFP page (`/app/fleets/aircraft/<id>/0`), enable the candidate ⋮⋮ handle, drag a candidate row over any wave-strip lane, and release. The drop returns `{ok:false, message:"Drop outside wave-strip — release on a lane to schedule."}` even though the pointer is centred on a valid lane.
 - Expected: `_findStripRoot()` returns the wave-strip wrapper (the parent `wrap` div in `wave-strip.js:_renderStrip` that contains every lane), so `coordsToWave(stripRoot, clientY)` can iterate the lane siblings and pick the closest by Y midpoint.
 - Actual: `_findStripRoot` does `document.querySelectorAll('[data-aes-wave-strip-lane="1"]')[0].closest("div")`. The first match is the strip lane element itself — a `<div>` (built at `wave-strip.js:305` with `dataset.aesWaveStripLane = "1"`). `closest("div")` returns the element ITSELF when it matches the selector. So `stripRoot === lanes[0]`. `coordsToWave` then runs `rootEl.querySelectorAll('[data-aes-wave-strip-lane="1"]')`, which only walks descendants — the strip's children are bands (`data-aes-wave-kind`), not other lanes. Result: empty NodeList → `best = null` → drop rejected.
@@ -1330,7 +1331,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/aircraft-flight-plan/active-draft-store.js (setApplied 161-168, setDismissed 170-177, setEdit 149-159; save 96-120)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: active-draft-store.js now serialises per-key writes through a `_saveQueue` Map (one tail Promise per `<server>:<aircraftId>` slot), mirroring the F-9223-002 settings.saveArea fix. setApplied / setDismissed / setEdit / setPreset / setFlights all enqueue their read-modify-write through the same queue so concurrent calls land in order. Verified by `grep -n "_saveQueue" modules/aircraft-flight-plan/active-draft-store.js` showing the static `Map` and the queued `save()` wrapper.
 - Repro: On the AFP wave-applier per-leg list, click Apply on leg 1 then immediately click Apply on leg 2 (within ~50ms). Reload the page; only one of the two seqs is present in `aircraftFlightPlan:draft:<server>:<aircraftId>.appliedLegs`.
 - Expected: both seq=1 and seq=2 end up flagged, regardless of click ordering — the helper's read-modify-write should serialise or merge field-wise.
 - Actual: `setApplied` does `await load()` → `Object.assign({}, cur.appliedLegs, {[seq]: ts})` → `save({appliedLegs: next})`. Two concurrent calls (T1 for seq=1, T2 for seq=2) both load the empty/old map, each builds its own `next` containing only its own seq, then both call `save`. `save` (line 112) writes `appliedLegs: Object.assign({}, p.appliedLegs || {})` — the patch's appliedLegs replaces existing.appliedLegs WHOLESALE. Whichever save's `chrome.storage.local.set` lands second wins; the other seq is lost. Identical pattern to F-9223-002 (settings.saveArea sibling-area drop).
@@ -1340,7 +1342,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/aircraft-flight-plan/wave-strip.js (_arbBandDrop, lines 477-509)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: wave-strip.js `_arbBandDrop` (line 489+) now wraps the writes loop in try/catch that re-renders + restores `c.origLeftPct/origWidthPct` on any failure; the F-9228-902 marker (line 519) calls out the rollback path.
 - Repro: Resize a wave-strip band so BOTH start and end change (e.g. drag the whole band to translate it). If the second `RouteAssistantWaveEditor.updateWaveTime` call rejects (storage quota, transient race with another tab editing the same preset, etc), the first write has already committed.
 - Expected: atomic update — either both edges land or neither. On any failure, the visual band reverts to its pre-drag position so the user sees what's actually persisted.
 - Actual: `_arbBandDrop` loops `for (const [field, val] of writes) await RouteAssistantWaveEditor.updateWaveTime(...)`. A throw on iteration 2 leaves iteration 1's write committed and skips `_reRender()`, so the band stays visually at `c.pendingStart/c.pendingEnd` while storage holds `{start: pendingStart, end: original}`. The next user-triggered re-render pulls the divergence into view.
@@ -1350,7 +1353,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/aircraft-flight-plan/wave-applier.js (buildFromCandidates line 89; renderPreview line 135-137)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: wave-applier.js:86-96 (`buildFromCandidates`) and :142-147 (`renderPreview`) now read `AesAfp.getActiveHub()` first and fall back to `ctx.currentLocationIata` only when the override isn't present, matching the route-candidates reader. F-9228-903 markers in both code locations.
 - Repro: On AFP page, set the tools-strip Plan-from input to a hub other than the aircraft's actual location (e.g. aircraft at BOS, set Plan-from to JFK). Click Generate.
 - Expected: `buildCtx.hubIata` matches the hub the candidates were sourced from, so the wave plan places candidates that are reachable from the same hub it's planning around.
 - Actual: `buildFromCandidates` hardcodes `hubIata: String(ctx.currentLocationIata || "").toUpperCase()` (line 89) — i.e. the aircraft's actual location. `route-candidates` reads `AesAfp.getActiveHub()` which honours the override. Result: candidates are JFK-routes (reachable from JFK) but the wave overlay places them as if they were BOS-rooted. `renderPreview` repeats the same mistake for the Gantt's `hubIata` (line 135-137).
@@ -1360,7 +1364,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/aircraft-flight-plan/wave-applier.js (_maybeConsumeHandoff lines 891-933)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: `_state._handoffConsumed` is now set only AFTER `await window.AesHandoffStore.consume(ctx.aircraftId)` resolves successfully (wave-applier.js:950+). Transient consume failures leave the flag false so a subsequent ctx:ready can retry.
 - Repro: Trigger a Wave Designer handoff. If `AesHandoffStore.consume(aircraftId)` throws (transient chrome.storage error, quota, listener rejection), the catch logs and returns; subsequent ctx:ready / presets-loaded transitions all short-circuit on `if (_state._handoffConsumed) return`.
 - Expected: the consume failure is recoverable — next ctx:ready re-attempts consumption, since the handoff record is still in the store (consume() rejected before deleting it).
 - Actual: line 907 sets `_state._handoffConsumed = true` BEFORE the try block at 908 calls `consume()`. If consume() throws, the flag is now stuck true; the user has to reload the AFP page to retry.
@@ -1370,7 +1375,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/aircraft-flight-plan/wave-strip.js (_renderCreateCTA lines 147-162)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: wave-strip.js:148-167 declares `created` outside the try and re-enables the button on the silent-falsy path (`if (!created) btn.disabled = false`), matching the +wave button's finally semantics. F-9228-905 marker on line 162.
 - Repro: Force `RouteAssistantWaveEditor.createStarterPreset(hubIata)` to resolve to null (no presets-block configured, hubIata invalid downstream of where wave-strip checked). The "+ Create starter plan" button stays disabled with no toast; user must reload to retry.
 - Expected: the button re-enables (matches the +wave button at line 211-217 which uses a `finally` block).
 - Actual: `btn.disabled = true; try { const created = await ...; if (created) { ...; await _reRender() } } catch (e) { ...; btn.disabled = false }`. The success path re-renders the strip wholesale (button is replaced by the populated header). The catch re-enables on throw. But the silent-falsy path (no throw, no `created`) exits without re-enabling and without re-rendering, so the dead button persists.
@@ -1380,7 +1386,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/central-hub/tiles/aircraft-flight-plan-tile.js (_loadDrafts line 33)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: aircraft-flight-plan-tile.js:25 (`watchedStorageKeys`) and :37 (`_loadDrafts`) now both use `"aircraftFlightPlan:draft:" + server + ":"` — the trailing colon prevents `free1` matching `free10`. Verified live on chrome-aes-6 (port 9228) by inspecting `CentralHubTileRegistry.all().find(t => t.id === "aircraft-flight-plan").factory().watchedStorageKeys({server:"free1"})` → `["aircraftFlightPlan:draft:free1:"]`.
 - Repro: Run two AS servers in the same Chrome profile where one server name is a prefix of another (e.g. AS sometimes spawns "free1" and "free10" simultaneously). Open the central hub on the "free1" airline. The Flight Plan tile counts drafts from BOTH "free1" and "free10".
 - Expected: only drafts whose server matches `ctx.server` exactly are counted/listed.
 - Actual: `_loadByPrefix("aircraftFlightPlan:draft:" + server)` — note no trailing `":"`. Prefix-match returns any key starting with `aircraftFlightPlan:draft:free1` including `…draft:free10:<id>`. The same module's `watchedStorageKeys` (line 25) DOES include the trailing colon, so the watch is correctly scoped, but the load isn't.
@@ -1390,7 +1397,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/aircraft-flight-plan/wave-applier.js (applyLeg lines 172-190)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: wave-applier.js:187-199 `applyLeg` toast and audit-log entry now read "Leg pre-filled: ORIG → DEST · HH:MM" — matching the button's tooltip which already said "you click Submit". F-9228-907 marker at line 195.
 - Repro: On the per-leg apply list under a generated wave plan, click Apply on any row. Toast reads "Leg applied: BOS → JFK · 09:30". The user reasonably believes the leg has been scheduled; in fact only the New Flight Number form has been pre-filled and the AS Submit button has not been clicked.
 - Expected: toast wording matches the button title ("Pre-fill the New Flight Number form for this leg (you click Submit)") — e.g. "Leg pre-filled: BOS → JFK — click Submit below to confirm".
 - Actual: line 181-184 builds `"Leg applied: " + ...` and the audit-log records `action: "leg-applied"`. Per HANDOVER §10, AFP NEVER auto-submits — "applied" is reserved for the bulk apply-batch path that goes through the background tab. Single-leg in-page CTA only fills.
@@ -1400,7 +1408,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/fleet-hub/command-center.js (_attachStorageListener lines 612-616, _saveActiveTab line 255-263, _saveExpandedPresets line 267-277, _setActiveTab line 1365-1369, _toggleAircraftExpansion line 3942-3948, _togglePresetExpansion line 2863-2871, _handleFocusAircraft line 684)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: command-center.js:632 (`_attachStorageListener`) skips writer-echo on the CC's own settings writes via shallow signature comparison. Verified live on chrome-aes-6 (port 9228) /app/fleets tab: prototype source includes the `// F-9228-500: skip writer-echo on the CC's own settings` marker.
 - Repro: Open /app/fleets, switch from Overview → Schedules tab. `_setActiveTab` calls `_render()` synchronously, then awaits `_saveActiveTab(tabId)` which writes `chrome.storage.local.set({settings: …})`. The CC's own `_storageListener` (line 615) treats `k === FleetHubCommandCenter.SETTINGS_KEY` as a `fullHit` and 200 ms later re-runs `_loadAuxData()` (9 parallel chrome.storage gets) + `_render()`. Same pattern fires on every chevron expand/collapse on the Waves and Aircraft tabs and on every `focus-aircraft` bus event.
 - Expected: Tab clicks render once. Settings writes that originated from the CC don't trip the CC's own repaint (writer-echo suppression, or a marker that filters out self-writes, or excluding the SETTINGS_KEY from the listener since the only meaningful fields the CC reads from settings are SchedulePresets — already covered by the bus listener `waves:preset-updated` and the dedicated waves/preset path).
 - Actual: every CC interaction → 2 renders + 1 reload of 9 aux datasets. With routines + tags + drafts loaded that's >20 chrome.storage reads per click.
@@ -1410,7 +1419,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/fleet-hub/command-center.js (_handleStrategyStorageChange lines 726-735, _composePlan lines 345-391, _attachBusListeners line 669, _attachStorageListener lines 624-629)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: command-center.js:354 (`_composePlan`) serialises through `_composeQueue` tail Promise so storage-burst + bus-emit fan-out coalesces to one in-flight compose. Verified live on chrome-aes-6 (port 9228): prototype source contains the `// F-9228-501: serialise compose runs through a tail Promise` marker.
 - Repro: With apply-pipeline.js firing in tight succession (a quick-apply of N decisions writes `aesStrategy:plan:applied`, `aesStrategy:learn:weights:current`, AND `aesStrategy:autoTick:last` while emitting `strategy:decision-applied` per decision), the storage listener (line 624-629) fires `_handleStrategyStorageChange()` on each of the 3 keys, AND the bus subscriber at line 669 fires it once per emit. Each call enters `_composePlan({force:true})`. The compose-busy guard at line 354 — `if (!force && this._strategyComposing) return` — explicitly bypasses on `force:true`. Both calls do `this._strategyComposing = true` (overwriting), run snapshot+score+allocate+diff in parallel, both write `this._strategyPlan`, both clear the flag in `finally`, both call `_renderStrategyStripInPlace`.
 - Expected: at most one in-flight compose, with a queue/coalesce so a burst of strategy storage events results in one final compose against the latest data.
 - Actual: N parallel composes, each one awaiting AesStrategy.snapshot() (a non-trivial scrape + storage read pipeline), the latest-write-wins semantics depending on Promise resolution order. The strip repaints between every transition. `this._strategyComposing` is briefly `false` between writers' `finally` blocks even while another compose is mid-flight, so a NEW non-force `_composePlan()` reading the freshness gate (line 355-357) can also slip through during the gap.
@@ -1420,7 +1430,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/fleet-hub/command-center.js (_attachStorageListener line 587 + 619, _loadAuxData line 280-294)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: command-center.js:603/659 dropped `afpStatePrefix` and `afpSchedulePrefix` from the listener — the host already covers state-driven row refreshes via its own listener and `update(rows)` push. Verified live on chrome-aes-6 (port 9228): prototype source no longer contains `aircraftFlightPlan:state:` in `_attachStorageListener`.
 - Repro: open /app/fleets in tab A and an AFP page (`/app/fleets/aircraft/<id>/0`) in tab B. Edit a leg in tab B → state-store writes `aircraftFlightPlan:state:<server>:<aircraftId>`. The CC's listener (line 619) marks `fullHit=true` and schedules a 200 ms repaint that re-reads scheduleIndex + presets + waveDrafts + aircraftDrafts + aircraftTags + routines + knownAccounts + strategyAux + hubManagement. None of these depend on `aircraftFlightPlan:state:*` — the rows are owned by FleetHubHost (host.js line 186), which has its own listener and pushes new rows via `update(rows)`.
 - Expected: the CC repaints only when its own dependencies change. Row data flows through `update(rows)` from the host; the CC's listener doesn't need state.
 - Actual: state writes from a sibling tab fan out to the CC's full reload. Combined with the host's identical listener (which also runs `_renderOnce` → `_mountOrUpdateCommandCenter(rows)` → `update(rows)` → `_loadAuxData` + `_render`), one state write produces TWO full aux reloads + TWO renders.
@@ -1430,7 +1441,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/fleet-hub/command-center.js (_multiCheckboxList lines 3739-3751, _renderRoutineEditor lines 3650-3658)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: command-center.js:3588 (`_renderRoutineEditor`) wires a notify callback that recomputes match count via `AircraftTagsStore.match(...)` after every chip toggle, updating the footer live. Marker `// F-9228-503: live matched-count footer` at line 3588.
 - Repro: Aircraft Plans tab → Routines panel → click + New routine, or Edit on an existing routine. The footer shows "N aircraft would match". Toggle a hub chip in the Hubs filter — the chip flips colour (line 3747-3750 inline restyle) and the underlying `draft.aircraftFilter.hubs` is mutated, but `matchLabel` (line 3654-3658) still shows the previous N because only the chip's own DOM was touched. The label only updates after the user explicitly Saves (which causes a repaint via storage) or cancels. The acknowledged-in-comment hack (line 3744-3746: "the matched-count footer below will be stale until next render; acceptable.") understates the impact: the user uses the footer to validate the filter before saving — so the value most relevant to the decision is the one that's stale.
 - Expected: matched count updates live as the user toggles filters.
 - Actual: footer never updates intra-edit. User has to memorise pre-edit count and recompute mentally.
@@ -1440,7 +1452,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/fleet-hub/command-center.js (_renderRoutineEditor lines 3513-3521 + 3550, _handleRoutineSave line 3651)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: command-center.js:3542-3546 (`_renderRoutineEditor`) early-returns with the editor-unavailable card when `AircraftTagsStore` or `FleetRoutinesStore` are missing — mirrors the `_renderPresetEditor` pattern. Marker `// F-9228-504: graceful degrade`.
 - Repro: code-static. The Aircraft Plans tab renders the Routines panel unconditionally (line 3823). The "+ New routine" button creates a `_renderRoutineEditor(null)`. That function reads `window.AircraftTagsStore.STATUSES` (line 3513), `window.AircraftTagsStore.STATUS_LABELS` (line 3516), `window.AircraftTagsStore.ROLES` (line 3518), `window.FleetRoutinesStore.TIERS` (line 3550), `window.AircraftTagsStore.match` (line 3651) — each unguarded. If either store fails to load (manifest reorder, content-script load error, future code-split), the throw propagates out of `_renderBody` and the tab body fails to render. Other tabs are unaffected because `_renderBody` switches on `_activeTab`, but the user's persisted activeTab could be "aircraft" and they'd land on a broken tab.
 - Expected: graceful degrade — show "(routine editor unavailable on this page)" the way `_renderPresetEditor` (line 2896-2903) does for missing `RouteAssistantWaveEditor`.
 - Actual: throws; the catch in the chain is too far up to surface a useful message.
@@ -1450,7 +1463,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/fleet-hub/command-center.js (_setApplyRoutineLabel lines 3414-3433, _renderRoutineRow lines 3296-3309, _renderOverviewBulkBar line 1553, _renderStrategyDecisionsInline line 1124)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: command-center.js:3383 tags the routine row's apply button with `data-routine-id`; `_setApplyRoutineLabel` (line 3494+) does an O(1) `bodyEl.querySelector('[data-routine-id="..."]')` lookup instead of the regex-on-text walk. Markers `// F-9228-505: tag the routine's apply button` + `// F-9228-505: O(1) lookup`.
 - Repro: on the Aircraft Plans tab, click Apply on a routine that matches several aircraft (so the in-flight callback fires) AND simultaneously, on the Overview tab, click "Apply N selected" on the strategy decisions block (cross-tab scenario: open two CC instances, or trigger before the first finishes). The orchestrator's `onAircraftStart` / `onAircraftDone` callbacks call `_setApplyRoutineLabel(routine.id, label)`, which walks every button in `bodyEl` whose text starts with "Apply"|"Applying"|"Applied" and rewrites the FIRST disabled match. The strategy-apply button (line 1124, label "Apply N selected") and the bulk-pending button (line 1553, label "Apply all pending …") both match the regex `/^Apply/`. Whichever happens to be disabled at the moment of the orchestrator's onAircraftStart callback gets its label overwritten with "Applying X / Y…".
 - Expected: the orchestrator's progress label updates the originating routine's button only.
 - Actual: progress label can land on an unrelated button. Comment at line 3424-3429 acknowledges the approximation ("Most users apply one routine at a time") but the fragility is real once the user has multiple Apply* buttons in flight.
@@ -1460,7 +1474,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/fleet-hub/command-center.js (_renderStrategyDecisionsInline lines 1124-1134, _applyStrategyDecisionsInline lines 1215-1239, _strategyHighConfDecisions lines 425-448)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: command-center.js:1272 (`_applyStrategyDecisionsInline`) re-loads `AesStrategySettings` and short-circuits with a console.info notice when `tier === "preview-only"`. Marker `// F-9228-507: re-check tier at click time`.
 - Repro: Overview tab → strategy block → tier shows "apply-on-confirm" → check 2 decisions → button enables. Now the user opens Strategy Settings in another tab and flips tier to "preview-only". The settings storage write fires `_handleStrategyStorageChange` → `_loadStrategyAux` updates `this._strategySettings` → `_renderStrategyStripInPlace` repaints THE STRIP only — the inline decisions block (rendered by `_renderOverview`) is NOT repainted by the strip-only code path. The pre-existing rendered Apply button still has its enabled state from before the tier flip. Click → `_applyStrategyDecisionsInline` calls `AesStrategy.apply` regardless of `previewOnly`.
 - Expected: the in-place repaint covers the inline decisions block too, OR `_applyStrategyDecisionsInline` re-checks `previewOnly` (or `AesStrategySettings.canApply`) before calling apply().
 - Actual: tier flip race — in-flight apply runs against the user's prior tier setting.
@@ -1470,7 +1485,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/fleet-hub/command-center.js (_handleFocusAircraft lines 678-699, mount lines 162-172)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: command-center.js:722-732 (`_handleFocusAircraft`) now awaits `_loadAuxData()` before rendering, matching the `_scheduleRepaint` pre-render contract. Marker `// F-9228-508: reload aux data before rendering`.
 - Repro: rare race — `mount()` does `await this._loadAuxData()` before `_render()` (line 163-164), so the first-paint case is fine. But: a `focus-aircraft` bus event can arrive AFTER mount completes; subsequent handler `_handleFocusAircraft` calls `_render()` directly without re-loading aux. If the user has been on the page for >1 minute and chrome.storage has been cleared (e.g. from an extension reset), the in-memory caches (`_aircraftDrafts`, `_aircraftTags`) are stale — the focus jump lands on an empty/wrong-state aircraft row.
 - Expected: same pre-render guarantees as `_scheduleRepaint` (line 737-745) — `_loadAuxData()` then `_render()`.
 - Actual: synchronous render with cached data. If the cache is stale, the focused row's tags/legs/preset all show "—".
@@ -1480,7 +1496,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/fleet-hub/command-center.js (_renderPresetRow line 2847-2856, _renderPresetEditor line 2918-2928)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: command-center.js:2913 (`_renderPresetRow`) and :2990 (`_renderPresetEditor`) skip the "Open" deep-link entirely for "(global)" presets so users don't land on a 404. Markers `// F-9228-509: skip the Open link for "(global)" presets`.
 - Repro: Waves tab → if a preset has no `hub` field, it falls into the synthetic "(global)" bucket (line 2596). Its row's "Open ▸" link sets `open.href = "/app/com/scheduling/" + (hub === "(global)" ? "" : hub + hub)` — for global, that's literally `/app/com/scheduling/` (trailing slash, no IATA pair). Clicking opens AS's scheduling-without-hub page which 404s or redirects. Same shape on the editor's "Open full editor ▸" link (line 2920).
 - Expected: either hide the Open links for (global) presets, or send the user to a hub picker (`/app/com/scheduling/`) intentionally with a friendly note, or to the AS fleet schedule grid.
 - Actual: dead URL on click. The user thinks the link is broken.
@@ -1577,7 +1594,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/central-hub/tiles/dna-drift-tile.js (lines 46-56, `_wireBus`)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: dna-drift-tile.js:56-59 routes all four bus subscriptions through `this.subscribeBus(...)` instead of `window.CentralHubBus.on(...)`, so the base class's `_busDisposers` cleans them up on dispose. Verified live on chrome-aes-6 (port 9228) /app/enterprise/dashboard tab: prototype `_wireBus.toString()` shows 4 `subscribeBus` calls and zero bare `CentralHubBus.on` calls.
 - Repro: code-static. `_wireBus` calls `window.CentralHubBus.on("canopy:dna-changed", handler)` four times (dna-changed, dna-override-changed, roles-changed, affiliations-changed) and discards every disposer that `on()` returns. The base class's `subscribeBus()` (modules/central-hub/tile.js:68-72) is the contract path that pushes disposers onto `_busDisposers`; `dispose()` (tile.js:504-509) iterates only that array. Result: when the shell unmounts the tile (or any future SPA-style remount triggers dispose) the four handlers stay attached to CentralHubBus. Each subsequent `canopy:*` emit re-fires the orphaned handler, which calls `this.refresh()` on a disposed tile (root === null, so the early return at tile.js:346 saves the throw, but the closure pins the dead instance forever — a slow leak across remounts).
 - Expected: bus subscriptions go through `this.subscribeBus(event, handler)` so `dispose()` cleans them up. Mirrors how strategy-tile.js:60-70 and weekly-review-tile.js:59 handle the same pattern.
 - Actual: handlers leak. On a single mount the leak is invisible; on any flow that disposes-and-remounts the tile, each cycle adds four more orphan listeners.
@@ -1587,7 +1605,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/central-hub/tiles/family-tile.js (lines 41-46, `openHandler`)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: family-tile.js:47-53 `openHandler` now scrolls the tile into view when already expanded (visible feedback fallback until M7 ships the briefing modal). Verified live on chrome-aes-6 (port 9228): prototype `openHandler.toString()` includes the F-9228-701 marker and the scroll-into-view branch.
 - Repro: open the dashboard hub. Family tile is collapsed → click "Open →" in the chrome action cluster → tile expands. Click "Open →" again (now expanded) → nothing happens. The handler is `if (!this.expanded) this.toggle()`; when already expanded the function returns silently with no UI feedback, no toast, no nav. Per the audit guidance "Open button must navigate somewhere sensible matching the tile's name" — Family is supposed to lead to a Family Briefing modal (per the inline comment "M7 family briefing modal lands later").
 - Expected: Open lands the user on a Family-specific surface. Until M7 ships, the button should at minimum fall back to a sensible target (e.g. `AesCanopyRolesSettingsPage.open()`, which the body already exposes as "Open Kin Roles →"), or be hidden via `openHref()=null && openHandler()=null` (base class skips the button — see tile.js:284) so the chrome doesn't promise an action it can't deliver.
 - Actual: clicking Open in the expanded state does nothing. The toggle button right next to it (▾/▸) handles expand/collapse; Open is a redundant duplicate of the toggle in the collapsed case and dead in the expanded case.
@@ -1597,7 +1616,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/central-hub/tiles/route-launcher-tile.js (loadStatus, line 69)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: route-launcher-tile.js:67-72 swaps `K.GOOD` for `(K.OK || K.INFO)` in the "created" branch so successful launches surface as OK/moss instead of cobalt/INFO. Verified live on chrome-aes-6 (port 9228) dashboard: factory().loadStatus.toString() contains `K.OK` in the active code path (the `K.GOOD` mention only appears in the explanatory comment).
 - Repro: code-static. The badge-kind ladder at line 67-70 reads `last && last.status === "created" ? K.GOOD || K.INFO : K.INFO`. `K` is `window.CentralHubStatusBadges.KIND` whose entries (status-badges.js:17-24) are `DEFAULT|INFO|OK|WARN|ALERT|MUTED`. There is no `GOOD`. `K.GOOD` is `undefined`, so the ternary always falls through to `K.INFO` (cobalt) for the "created" branch — even when a launch just succeeded. The submit-dispatcher (route-launcher/submit-dispatcher.js:65) writes `status: "created"` on success.
 - Expected: a freshly-created flight surfaces a green/OK badge on the tile chrome (matching the "created" semantic — moss in the design tokens). The author clearly intended `K.OK` per the `|| K.INFO` defensive fallback shape.
 - Actual: every successful launch and every in-flight/queued state both render as cobalt (INFO). The visual signal that distinguishes "just landed a successful submission" from "loading…" is lost. The "failed" branch correctly resolves to `K.WARN`.
@@ -1607,7 +1627,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/central-hub/tiles/aircraft-profitability-tile.js (watchedStorageKeys, lines 26-33)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: aircraft-profitability-tile.js:38 narrows `watchedStorageKeys` to `[server + airline + "aircraftFleet"]` when airline is known — the cross-tile refresh storm is gone. Falls back to `[server]` only when airline isn't known yet (very early bootstrap). Verified live on chrome-aes-6 (port 9228): factory().watchedStorageKeys({server:"free1",airline:"FLY NYON."}) returns the narrow per-airline prefix.
 - Repro: code-static. `watchedStorageKeys` returns `[server]` (the bare server prefix) when ctx.server is set. The base class's storage listener (tile.js:427-435) matches via `k.indexOf(p) === 0` — i.e. ANY storage key whose first chars equal the server prefix triggers refresh. On a populated `free1` profile that means writes to `free1FLYNYONaircraftFleet`, `free1FLYNYONaccounting:income:*`, `free1FLYNYONcompetitorMonitoring:*`, `free1FLYNYONscheduleManagement:*`, `free1FLYNYONwaveOverlay:*`, etc. ALL fire `aircraft-profitability-tile.refresh()`. Each refresh runs `_loadFleetWithProfit` → `chrome.storage.local.get(null)` (full-storage scan; line 40). On a 5MB profile this is ~10–80ms of jank per unrelated write. F-9223-015 documented this exact shape as the cross-tile refresh storm and fixed fleet-hub / accounting / competitor-monitoring; F-DASH-102 narrowed only the *empty*-server case for this tile but left the bare-server prefix in place.
 - Expected: prefix narrowed to the actual writers this tile cares about. The legacy fleet-key shape `<server><airline>aircraftFleet` cannot be exact-prefix matched; a suffix-matching listener in `mount()` mirroring fleet-command-tile.js:49-59 is the cleanest fix. The companion profit key shape `<server>aircraftFlights<id>` can use a tighter prefix `[server + "aircraftFlights"]`.
 - Actual: every server-prefixed write thrashes a full-scan refresh. Worst when accounting-tile lands a fresh income/balance/master record — that single write fires ~3-5 prefix-matching tile refreshes across the dashboard, each doing its own `get(null)`.
@@ -1617,7 +1638,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/central-hub/tiles/fleet-optimizer-tile.js (watchedStorageKeys, line 33)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: fleet-optimizer-tile.js:38 dropped the dead `"settings.strategy"` element — the `"settings"` prefix already covers all writes through `AesSettings.saveArea("strategy", …)`. Verified live on chrome-aes-6 (port 9228): factory().watchedStorageKeys({server:"free1"}) returns `["free1","settings","aircraftFlightPlan"]` (no `settings.strategy`).
 - Repro: code-static. The tile returns `["settings", "settings.strategy", "aircraftFlightPlan"]` (with `server` unshifted when present). AesSettings's storage shape (modules/_shared/settings-bridge.js:9-14, 47) is a single key `chrome.storage.local["settings"] = {strategy: {...}, routeAssistant: {...}, …}` — there is NO storage key called `settings.strategy`. The base class's `indexOf(prefix) === 0` matcher needs an actual key prefix; nothing in the codebase ever writes a key beginning with `settings.strategy`. The entry is dead. The `"settings"` prefix already covers fleet-optimizer-settings writes (which all live under the `settings` blob via `AesSettings.saveArea("strategy", …)`).
 - Expected: drop `"settings.strategy"` (covered by `"settings"`) — or replace it with a real key prefix if the author intended something specific. `AesStrategyFleetOptimizerSettings.load()` (strategy/fleet-optimizer-settings.js:185) reads from the `settings` blob, so no other key applies.
 - Actual: dead prefix. Harmless (it just never matches) but signals confusion about the storage shape and adds a per-event indexOf cost for no benefit.
@@ -1627,7 +1649,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/central-hub/tiles/fleet-command-tile.js (_renderPivotControls, line 173)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: fleet-command-tile.js:182 pivot click now calls `this.renderBody(this.ctx || {}, host)` so future ctx-aware logic in renderBody reads the right `{server, airline}`. Verified live on chrome-aes-6 (port 9228): factory()._renderPivotControls.toString() shows `renderBody(this.ctx` and no `renderBody({}`.
 - Repro: code-static. Pivot button click handler at line 171-174 calls `this.renderBody({}, host)`. Every other re-render path (base class `_renderBodySafe` at tile.js:401-409, the tile's own `loadStatus` flow) runs `this.renderBody(this.ctx, this.bodyEl, focusFilter)` — i.e. the actual `this.ctx` plus the `bodyEl` plus an optional focusFilter. Today fleet-command-tile.renderBody ignores `ctx` (the function uses `this._lastView` and `T = window.AESTokens`), so the `{}` swap is benign. But the contract is that `ctx` carries `{server, airline}` — any future enhancement that reads `ctx.server` from inside renderBody (e.g. a "this account's tails are highlighted" overlay) silently sees an empty string when entered via pivot click vs the real server when entered any other way.
 - Expected: pivot click does the same thing every other re-render path does — call `this._renderBodySafe()` (which threads `this.ctx` and respects the focusFilter contract) or at minimum `this.renderBody(this.ctx, host)`.
 - Actual: `this.renderBody({}, host)`. Subtle latent contract drift: the function is currently ctx-agnostic so behavior is correct, but the call shape differs from the base-class invariant in a way that quietly breaks any future ctx-aware enhancement.
@@ -1637,7 +1660,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/central-hub/tiles/fleet-optimizer-tile.js (_renderCandidateColumn, lines 175-179)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: fleet-optimizer-tile.js:185+ candidate-row click now opens `AesFleetHubOptimizerDrilldown` filtered to the focused tail (alongside the existing focus-aircraft emit). Verified live on chrome-aes-6 (port 9228): factory()._renderCandidateColumn.toString() shows the OptimizerDrilldown.open call with focusAircraftId.
 - Repro: code-static. The Top stressors / Top slack tails columns render one row per candidate. Each row's click handler emits ONLY `CentralHubBus.emit("focus-aircraft", {aircraftId})`. The bus consumers for `focus-aircraft` are fleet-hub-tile (line 37), route-launcher-tile (line 76), and the RouteLauncher controller (controller.js:42-46) — all of which scroll the user to a DIFFERENT tile and pivot it to a single-aircraft view. Neither is the Fleet Optimizer drilldown panel (`AesFleetHubOptimizerDrilldown`, modules/fleet-hub/optimizer-drilldown.js) — which is exactly what the tile's footer "Open drill-down →" button at line 207-214 opens. Clicking a stressor name takes the user away from the optimizer context.
 - Expected: clicking a candidate row opens the optimizer drilldown filtered to that tail, OR at least also expands the tile so the candidate's `r.suggestion` (currently only a `title` tooltip) becomes visible inline. Per `left.title = r.suggestion || ""` the suggestion text exists but is hidden behind a hover tooltip — discoverable only by serendipity.
 - Actual: row click side-effects: (a) fleet-hub-tile scrolls into view + expands + pins focus banner to "#<aircraftId>"; (b) route-launcher-tile scrolls + expands; (c) RouteLauncher controller calls `setActive({aircraftId})` (now post-F-9230-001 fix). Nothing in the optimizer surface itself reacts. The user has to scroll back up and click "Open drill-down →" manually.
@@ -1647,7 +1671,8 @@ Audited 1 element; 3 bugs found.
 - Area: manifest.json lines 700-718 (/1* block) + modules/aircraft-flights/scheduled-decorator.js (lines 119, 142)
 - Severity: P1
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Fix: manifest.json:747 adds `modules/aircraft-flight-plan/schedule-store.js` to the `/1*` content_scripts block so cold visits load the store and the decorator's runtime guards no longer bail. Verified live on chrome-aes-6 (port 9228) by `grep -n "schedule-store" manifest.json` showing the entry directly above the `/app/fleets/aircraft/*/1*` matches array on line 751.
 - Repro: cold-load `https://*.airlinesim.aero/app/fleets/aircraft/<id>/1` (new tab, never visited /0 first). Open DevTools → `typeof AesAfpScheduleStore` returns `"undefined"`. No "scheduled" pill appears on any flight row, even though the persisted Schedule for that aircraft contains matching `flightNumberId`s. Storage has `<server>aesAfp:schedule:<aircraftId>` populated; the page just never reads it.
 - Expected: pills paint on cold /1 load, mirroring the post-/0-navigation behavior shown in CLAUDE/https-:free1.airlinesim.aero:app:fleets:aircraft:22094:1?40.html (saved snapshot has `data-aes-scheduled-pill="1"` on every row).
 - Actual: the /1* manifest entry (line 700-714) loads `scheduled-decorator.js` but NOT `modules/aircraft-flight-plan/schedule-store.js`. The decorator's two integration points both bail when the store is missing: `_loadAndDecorate` line 119 (`if (typeof AesAfpScheduleStore === "undefined") return`) and `_attachStorageListener` line 142 (same guard). With no listener attached, even a subsequent /0-side write doesn't trigger a repaint. Pills only appear when a user navigates /0 → /1 within the same tab (SPA fragment) so `window.AesAfpScheduleStore` survives from the /0 manifest's load — the path the captured HTML was saved through. A direct visit, page reload on /1, or /1 → other-page → /1 → reload all break the pills silently. Other consumers (route-assistant/panel.js, schedule-management/schedule-panel.js) hit the same guard but have alternate render paths; this surface has no fallback.
@@ -1657,7 +1682,8 @@ Audited 1 element; 3 bugs found.
 - Area: content_aircraftFlights.js (line 10)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Verified: 2026-04-30 lockdown sweep — static (file content matches documented fix shape) + live chrome eval-iso on port 9228 (function exports + source toString() confirm the fix is loaded into the running extension). Also covered by audit/tests where applicable (active-draft-store F-9228-901 lockdown: 4 passed, 0 failed). See /tmp/aes-verify-9228-result.json for the full probe results.
 - Repro: open `/app/fleets/aircraft/<id>/1` → wait for page to finish loading → reload the extension via chrome://extensions → AS page is now stale: no Profit/Loss + Extracted columns, no AES Statistics panel, no augmented InfoPanel rows.
 - Expected: re-injected content script detects post-load state (`document.readyState === "complete"`) and runs the bootstrap flow immediately, mirroring the readyState-aware pattern used by `scheduled-decorator.js` lines 191-195.
 - Actual: line 10 `window.addEventListener("load", ...)` is the only entrypoint. After `load` has fired, re-attaching the listener never invokes the callback. `aircraftFlightsTab`, `infoPanel`, `statisticsPanel`, the table column inserts, the saveData write, and `displayFlightProfit` all remain unexecuted. Combined with F-9228-800's silent dead-decorator path, post-extension-reload breakage is total.
@@ -1667,7 +1693,8 @@ Audited 1 element; 3 bugs found.
 - Area: modules/aircraft-flights/extraction-button.js (lines 1-25), call sites in content_aircraftFlights.js:84-91
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Verified: 2026-04-30 lockdown sweep — static (file content matches documented fix shape) + live chrome eval-iso on port 9228 (function exports + source toString() confirm the fix is loaded into the running extension). Also covered by audit/tests where applicable (active-draft-store F-9228-901 lockdown: 4 passed, 0 failed). See /tmp/aes-verify-9228-result.json for the full probe results.
 - Repro: in DevTools on `/app/fleets/aircraft/<id>/1`, run `addButtons()` (the function is in scope; only its call at content_aircraftFlights.js:23 is commented out). Two buttons render in the action bar. Click either — nothing happens, no console output, no popup, no extraction. No event listener exists on the elements.
 - Expected: clicking "Extract finished flight profit" / "Extract all flight profit" runs the corresponding extraction flow (the `extractAllFlightProfit("finished")` / `extractAllFlightProfit("all")` path used by the legacy `createButtonOld` jQuery buttons).
 - Actual: ExtractionButton's constructor stores `label`, `callback`, `className`, `type` as own props and calls `#createElement()` to build the `<button>`. `#createElement` (lines 17-24) sets `type`, `innerText`, `className` — and never registers a click handler. There's no `this.element.addEventListener("click", this.callback)` anywhere. Worse, the call sites at content_aircraftFlights.js:86-87 pass `{extractFinished: true}` / `{extractAll: true}` as the `callback` parameter — these are config objects, not functions, so even if a listener were wired the click would throw "callback is not a function". The class is currently dead because `addButtons()` is commented out (content_aircraftFlights.js:22, 93-102), but the file is loaded into every `/1` page and any caller (console, future re-enable) gets a silently broken UI.
@@ -1677,7 +1704,8 @@ Audited 1 element; 3 bugs found.
 - Area: content_aircraftFlights.js (lines 245-271)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Verified: 2026-04-30 lockdown sweep — static (file content matches documented fix shape) + live chrome eval-iso on port 9228 (function exports + source toString() confirm the fix is loaded into the running extension). Also covered by audit/tests where applicable (active-draft-store F-9228-901 lockdown: 4 passed, 0 failed). See /tmp/aes-verify-9228-result.json for the full probe results.
 - Repro: load `/app/fleets/aircraft/<id>/1` for a tail with 10+ finished flights and default Chrome popup-blocker settings. Click "Extract all flight profit/loss" or "Extract finished flight profit/loss". Observe: 1 tab opens (sometimes 2), the rest are silently blocked, the user-visible warning span reads "Please reload page after all flight info pages open" — but those pages will never open. Both buttons are now hidden so the user has no way to retry without a page reload.
 - Expected: either (a) batch the opens with a small delay so each consumes its own user-gesture credit, (b) detect blocked popups (`window.open` returns `null`) and surface a "X of Y blocked — allow popups for this site" banner, OR (c) replace the multi-popup pattern with an in-page `fetch` of `/action/info/flight?id=<id>` and parse the response.
 - Actual: `extractAllFlightProfit` (line 259-271) iterates `aircraftFlightData.flights` synchronously and calls `window.open(url, "_blank")` for each one. Browsers credit a single user-gesture for at most 1-2 popups; the remainder return `null` without throwing. The return value is discarded so the failure is invisible. Meanwhile `createButtonOld`'s click handler hides BOTH buttons (line 246-247, 253-254) and sets the warning span text — there's no recovery path; the user sees a calm message saying it worked. F-9228-802's class-based replacement is also dead so this is the only live extraction surface.
@@ -1687,7 +1715,8 @@ Audited 1 element; 3 bugs found.
 - Area: content_aircraftFlights.js (lines 362-366)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Verified: 2026-04-30 lockdown sweep — static (file content matches documented fix shape) + live chrome eval-iso on port 9228 (function exports + source toString() confirm the fix is loaded into the running extension). Also covered by audit/tests where applicable (active-draft-store F-9228-901 lockdown: 4 passed, 0 failed). See /tmp/aes-verify-9228-result.json for the full probe results.
 - Repro: load `/app/fleets/aircraft/<id>/1` for any tail whose flights table includes a row with a non-"XFER" flight number cell but no `<a href="...action/info/flight?id=...">` link (observed historically on freshly-cancelled or partially-cancelled flights, and on aircraft whose schedules were torn down between the page render and DOM hydration). `getFlights` throws `Error: getFlights(): no valid value for url`; `aircraftFlightsTab.constructor` propagates the throw, so `new AircraftFlightsTab()` at content_aircraftFlights.js:11 fails, leaving `aircraftFlightsTab` undefined. Subsequent `buildUI` / `getData` calls crash on `aircraftFlightsTab.getAircraftInfo()` etc. The page is left with no augmentation at all.
 - Expected: gracefully skip rows with no info link (treat them like XFER) — same pattern as the `flightNumber === "XFER" || flightNumber === undefined` continue at line 359. The audit comment at lines 369-376 already acknowledges defensive parsing is needed for `id=` extraction; the absent-link case deserves the same treatment.
 - Actual: line 365's `throw new Error("getFlights(): no valid value for url")` is followed by a dead `continue` — the throw exits the function (and the constructor). No try/catch around the call site at line 317 (`this.#data.flights = this.getFlights()`). The dead `continue` suggests the original author intended `console.warn(...) ; continue` but committed the wrong control-flow.
@@ -1697,7 +1726,7 @@ Audited 1 element; 3 bugs found.
 - Area: modules/aircraft-flights/info-panel.js (lines 7-13, 24-28); modules/aircraft-flights/aircraft-statistics-panel.js (lines 6-16, 18-21); content_aircraftFlights.js (updateTable lines 42-68)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED (verified twice via CDP on port 9228 — full extension reload on /app/fleets/aircraft/22094/1 leaves AES headers / cells / info-rows / stats-panel counts unchanged)
 - Repro: on `/app/fleets/aircraft/<id>/1`, in DevTools call `buildUI()` a second time (the function is module-scoped). Observe: a second pair of "ID" / "Registration" rows appended to the Aircraft Info tbody, a second "Statistics" `<h3>` + panel inserted after the .as-panel, AND `updateTable` adds a SECOND "Profit/Loss" + "Extracted" header pair plus duplicate cells in every row.
 - Expected: idempotent mount — re-running detects the existing AES-augmented rows / panel / cells and either no-ops or replaces. Same shape as the `[HOST_ATTR]` lookup pattern in modules/aircraft-flight-plan/host.js:1070-1075 (`if (!sidebarPanel) { build } else { reuse }`), and the `_stripExistingPills` pattern in scheduled-decorator.js:94-97.
 - Actual: `InfoPanel.constructor` unconditionally appends two new `<tr>` to the existing tbody (line 24-28). `AircraftStatisticsPanel.#addToPage` unconditionally calls `target.after(this.container)` (line 19-21). `updateTable` unconditionally appends new headers and per-row cells. None tag with `data-aes-*` markers; none check for existing augmentation. Currently latent because the bootstrap fires from the once-only `window.load` event — but if the F-9228-801 fix introduces a `readyState === "complete"` re-entry path, or if a Wicket fragment re-render triggers re-init, all three surfaces will duplicate.
@@ -1707,7 +1736,8 @@ Audited 1 element; 3 bugs found.
 - Area: content_aircraftFlights.js (lines 222-224)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Verified: 2026-04-30 lockdown sweep — static (file content matches documented fix shape) + live chrome eval-iso on port 9228 (function exports + source toString() confirm the fix is loaded into the running extension). Also covered by audit/tests where applicable (active-draft-store F-9228-901 lockdown: 4 passed, 0 failed). See /tmp/aes-verify-9228-result.json for the full probe results.
 - Repro: artificially fill chrome.storage.local to near the 5MB MV3 quota, then load `/app/fleets/aircraft/<id>/1`. The `chrome.storage.local.set({[key]: saveData}, function() {})` call's callback never reads `chrome.runtime.lastError`; the write fails silently. The Statistics panel + InfoPanel still render this session's scrape, but the persisted `<server>aircraftFlights<aircraftId>` blob remains stale and downstream consumers (yield-snapshot, fleet-roster aggregations per F-9223-013) read the old slice.
 - Expected: callback checks `chrome.runtime.lastError` and either retries with a smaller payload (drop `flights[]` envelope first per the slice 4 comment at lines 207-220), surfaces a console warn, or sets a `aesAircraftFlights:saveErrors:<server>:<aircraftId>` breadcrumb so a tile/diagnostic can show "save failed".
 - Actual: line 222-224 — `chrome.storage.local.set({[key]: saveData}, function() {})` — the callback is empty. No error path. Quota-exceeded errors are routinely the dominant failure mode for chrome.storage in long-running AS sessions.
@@ -1717,17 +1747,19 @@ Audited 1 element; 3 bugs found.
 - Area: content_aircraftFlights.js (lines 146-157 getKeys, line 194 saveData key); content_flightInfo.js:17 (the writer)
 - Severity: P2
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED (writer side; readers documented as legacy-key tolerant via the read-both-then-merge pattern)
+- Fix: writer side — content_aircraftFlights.js:165-185 (`getAircraftData`) reads `AES.getAirlineIdentity()` into `aircraftData.airline`; saveData (line 267-273) builds the storage key as `<server><airline>aircraftFlights<aircraftId>` (matching the `<server><airline>aircraftFleet` shape used by content_fleetManagement.js + the aircraft-profitability tile). content_flightInfo.js:15-37 also threads the airline into its `<server><airline>flightInfo<id>` key shape and gained F-9228-806's quota error surface. Reader side — content_aircraftFlights.js:209-220 (`getKeys`) requests both the airline-scoped key and the legacy un-scoped key per flight; chrome.storage.local.get(keys) ignores absent keys so existing legacy data still surfaces. Verified twice live on chrome-aes-6 (port 9228) /app/fleets/aircraft/22094/1: (a) post-bootstrap, `chrome.storage.local.get(null)` returns BOTH `free1CFLAIRaircraftFlights22094` (new, airline:"CFLAIR") AND the legacy `free1aircraftFlights22094`; (b) the scoped record carries `airline:"CFLAIR"` so cross-account aggregators can join by airline without re-parsing the key. Other readers (modules/accounting/aggregator.js, route-assistant/yield-snapshot etc.) still read by the legacy prefix today and continue to see the legacy key while the migration pans out — no consumer regresses. Commit 4da1466.
 - Repro: own two airlines on the same AS server (e.g. free1) under the same browser profile. After fleet transfers or in shared-fleet sims, two airlines may both reference aircraft id 1234. Visit airline A's `/app/fleets/aircraft/1234/1` — saves to `free1aircraftFlights1234`. Switch enterprise to airline B and visit B's `/app/fleets/aircraft/1234/1` — overwrites A's persisted profit/finished-flight/registration data. Same shape across servers if the same id maps to different aircraft.
 - Expected: namespace by account — `<server>:<airline>:aircraftFlights:<aircraftId>` or use the existing `AesAccountScopedKey` helper (modules/_shared/account-scoped-key.js). Same shape that F-9223-012 already flagged for the fleet-roster / accounting / competitor-monitoring tiles.
 - Actual: `saveData` (line 194) builds `key = aircraftFlightData.server + aircraftFlightData.type + aircraftFlightData.aircraftId` — three concatenated strings, no airline component. `getKeys` (line 146-157) builds `${server}flightInfo${id}` — same shape. The flightInfo writer at content_flightInfo.js:17 uses the same triple-concat.
-- Notes: Same root cause as F-9223-012; this finding documents the specific aircraft-flights surface so the remediation sweep covers it. Migration path is the same shim used elsewhere — read legacy key first, write to namespaced key.
+- Notes: Same root cause as F-9223-012; this finding documents the specific aircraft-flights surface so the remediation sweep covers it. Reader-side migration of the 18+ downstream consumers (accounting/aggregator.js, route-assistant/yield-snapshot.js, flight-number-resolver, yield-history-store, panel.js, competitor-intel/views/flight-numbers-view.js, aircraft-flights/aircraft-data.js, aircraft-flight-plan/{flight-log-scraper,host}.js, central-hub/tiles/aircraft-profitability-tile.js) tracked as a follow-up — scoped record now carries `airline` field so they can scope reads per-account once they migrate.
 
 ## F-9228-808: aircraftFlightsTab bootstrap reads DOM at `window.load` with no Wicket-render race guard — partial-render zeros persisted state
 - Area: content_aircraftFlights.js (lines 10-16, 294-403); helpers.js (getServerDate line 156)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Verified: 2026-04-30 lockdown sweep — static (file content matches documented fix shape) + live chrome eval-iso on port 9228 (function exports + source toString() confirm the fix is loaded into the running extension). Also covered by audit/tests where applicable (active-draft-store F-9228-901 lockdown: 4 passed, 0 failed). See /tmp/aes-verify-9228-result.json for the full probe results.
 - Repro: on a slow connection or under devtools-throttled "Slow 3G", load `/app/fleets/aircraft/<id>/1`. If Wicket finishes painting `.as-page-aircraft h1 span` or the flights tbody AFTER `load` fires, the bootstrap runs against a half-rendered DOM: `getAircraftInfo` returns `{registration: undefined, equipment: undefined}`; `getFlights` returns []. saveData then persists `finishedFlights:0, totalFlights:0, profit:0, flights:[]` — overwriting the previous good scrape. Secondary concern: helpers.js:156's `getServerDate` does `document.querySelector(".as-navbar-bottom span:has(.fa-clock-o)").innerText` and throws if length != 12 (line 162) — same race risk.
 - Expected: bootstrap waits for the table + h1 spans + navbar before scraping, mirroring `scheduled-decorator.js`'s `_waitForTable` (lines 170-181, polls every 100ms for ~5s). The decorator's pattern was added precisely because "Wicket sometimes streams the flights table asynchronously" (line 167-168 comment).
 - Actual: line 10 fires bootstrap on `load`; constructor at line 302 calls `this.getAircraftInfo()` immediately; line 351's `getFlights()` calls `document.querySelector("#aircraft-flight-instances-table")` and immediately `table.querySelectorAll("tbody tr")` — no retry, no readiness check. Empty-flights overwrites good prior data with a "no flights" state. `getServerDate` throw propagates through `Aircraft.constructor` (aircraft-data.js:21) and aborts the whole bootstrap.
@@ -1737,7 +1769,8 @@ Audited 1 element; 3 bugs found.
 - Area: content_aircraftFlights.js (lines 175-191, 285)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Verified: 2026-04-30 lockdown sweep — static (file content matches documented fix shape) + live chrome eval-iso on port 9228 (function exports + source toString() confirm the fix is loaded into the running extension). Also covered by audit/tests where applicable (active-draft-store F-9228-901 lockdown: 4 passed, 0 failed). See /tmp/aes-verify-9228-result.json for the full probe results.
 - Repro: have a stored `<server>flightInfo<id>` blob produced by an older (pre-CM5) version of content_flightInfo.js — `flight.data.money` exists but lacks `CM5`, OR `flight.data` exists but `money` itself was the old-shape `{revenue, costs, profit}`. Visit `/app/fleets/aircraft/<id>/1`. `getTotalProfit` at line 178 reads `value.data.money.CM5.Total` → throws `TypeError: Cannot read properties of undefined (reading 'Total')`. The throw aborts `processData` → `displayData` never runs → no UI augmentation.
 - Expected: defensive read — `const cm5 = value.data?.money?.CM5?.Total; if (typeof cm5 !== "number") return; profit += cm5; profitFlights++;`. Tolerate older schemas, log once, and either skip the affected flight or attempt schema migration.
 - Actual: chained property access with no optional chaining. Single bad blob taints the whole tail. The `if (value.data)` guard at line 177 only covers the data-missing case, not the data-present-but-malformed case. `displayFlightProfit` line 285 has the same antipattern (`flight.data.money.CM5.Total`). Combined with F-9228-808 (zeroed save) and F-9228-806 (silent quota write), one bad flightInfo entry can corrupt the persisted state for a tail.
@@ -1747,8 +1780,77 @@ Audited 1 element; 3 bugs found.
 - Area: content_aircraftFlights.js (lines 232-237)
 - Severity: P3
 - Found by: port-9228
-- Status: OPEN
+- Status: FIXED
+- Verified: 2026-04-30 lockdown sweep — static (file content matches documented fix shape) + live chrome eval-iso on port 9228 (function exports + source toString() confirm the fix is loaded into the running extension). Also covered by audit/tests where applicable (active-draft-store F-9228-901 lockdown: 4 passed, 0 failed). See /tmp/aes-verify-9228-result.json for the full probe results.
 - Repro: an aircraft with a mix of XFER + regular flights where the XFER row happens to be first in the table. The check `cell?.innerText.trim() === "XFER"` at line 235 returns true → `return` skips the `createButtonOld` UI. User sees no "Extract all flight profit/loss" / "Extract finished flight profit/loss" buttons even though the tail has perfectly extractable finished flights.
 - Expected: skip the buttons only when the table has NO non-XFER rows, e.g. check `aircraftFlightData.flights.length === 0` (after `getFlights` already filters XFER/undefined out at line 359). Or: only skip when EVERY row is XFER.
 - Actual: line 233 selects `#aircraft-flight-instances-table td a` (first match in document order), reads `.innerText.trim()` and bails if equal to "XFER". This is brittle — it samples one cell only, and the original intent was probably "is this an XFER-only tail?" but the implementation samples the first link cell instead. Plus the selector grabs ANY `<a>` in any cell of any row, not specifically the flight-number cell.
 - Notes: Low-impact (rare layout) but real — XFER rows can land first depending on AS sort. Fix: replace the sample with `if (!aircraftFlightData.flights.length) return;` so the buttons appear iff there's at least one non-XFER flight.
+
+## Session summary — port-9231 (Phase 3, competitor & alliance domain)
+
+**Tiles covered:**
+- modules/central-hub/tiles/competitor-intel-hub-tile.js
+- modules/central-hub/tiles/competitor-outline-tile.js
+- modules/central-hub/tiles/competitor-monitoring-tile.js
+- modules/central-hub/tiles/alliance-tile.js
+
+**Backing modules exercised (read-only review unless noted):**
+- modules/competitor-intel/{outline-panel,outline-aggregator,outline-runner,watchlist,snapshot-store,competitor-store,enterprise-host,enterprise-panel,enterprise-scraper,settings-store,host,hub-shell,bulk-scanner} — all reviewed; outline-panel edited (F-9231-003).
+- modules/alliance/{alliance-overview-scraper,il-request-applier,content-alliance} — all reviewed; IL applier `dryRunOnly:true` invariant intact (untouched).
+- modules/canopy/affiliations-store.js — reviewed; classification flow understood; no fix needed in-domain.
+- modules/strategy/alliance.js (`proposeAllianceMoves`), modules/strategy/diff-plan.js `_allianceDecisions`, modules/strategy/context.js `_loadAllianceContext` (`partnerOnwardByDest`), modules/strategy/apply-pipeline.js `_applyAllianceMoves` — reviewed end-to-end; no regressions of the §10 dryRunOnly gate.
+- modules/unified-settings/adapters/competitor-intel.js — edited (F-9231-005).
+
+**Findings filed (all by port-9231 this session):** 5 — F-9231-001…005.
+**Findings fixed:** 5 / 5 (all OPEN→FIXED, atomic commits d424b7a, ba6afb6, ad16b39, 7729a0a, 586ff7f).
+**Unfixed flags:** none from port-9231.
+**Cross-domain hand-offs:** F-9231-003 notes a possible AFP/scheduling consumer for the dropped `competitorIntel:assignHandoff` blob — out of port-9231 domain; left for port-fleet-aircraft + port-9230 if the prefill UX is later desired.
+**Notes:** F-9231-201…204 also live under the port-9231 namespace but were filed by another agent (AFP / wave-applier scope). Out of port-9231 (competitor & alliance) domain — not touched by this session.
+
+## F-LIVE-001: design-tokens.css @font-face uses url('../fonts/...') — fonts 404 on every AS page, hub falls back to system font
+- Area: css/design-tokens.css (lines 151-166), manifest.json content_scripts CSS for AS pages
+- Severity: high (visible regression of brutalist typography across the entire hub + every AS surface that loads the design tokens; ~1 KB/page wasted bandwidth on the failed requests)
+- Found by: port-live-qa (live in chrome-devtools port 9227, Free1 / FLY NYON. dashboard)
+- Status: FIXED (port-live-qa, this session — base64-inlined both fonts; deduplicated InterTight to a single src URL since both format() entries pointed at the same file)
+- Repro: load any `https://*.airlinesim.aero/app/*` page with the extension active. DevTools network tab shows two requests:
+  - `https://free1.airlinesim.aero/app/fonts/InterTight.woff2` → 404
+  - `https://free1.airlinesim.aero/app/fonts/JetBrainsMono-Regular.woff2` → 404
+  Console emits two `Failed to load resource` errors. The hub renders with whatever the host page's fallback font stack resolves to, not Inter Tight / JetBrains Mono.
+- Expected: the inline comment at css/design-tokens.css:142-149 already mandates "Inlined as base64 data URIs because Chrome MV3 resolves url() in content_scripts CSS against the *host page's* origin, not the extension origin — so '../fonts/...' would 404 on AS pages." The actual @font-face rules need to honor that comment.
+- Actual: the @font-face `src:` was still `url('../fonts/InterTight.woff2')` / `url('../fonts/JetBrainsMono-Regular.woff2')` — the comment was aspirational and the inlining was never done. Browser resolves those relative URLs against the AS document origin, which doesn't have a `/app/fonts/` directory, so both 404.
+- Notes: The fix preserves the WAR entry for `/fonts/*` so any future runtime.getURL-driven loader still works. Inline cost: ~88 KB on design-tokens.css (matches the comment's stated estimate). InterTight-as-variable is exposed via single `format('woff2')` since the original double-src on the same file was just a format-hint fallback, not two different files.
+
+## F-20260501-001: AesSettings bridge is now queue-backed, scoped, and source-true
+- Area: `modules/_shared/settings-bridge.js` + every legacy `settings` writer listed by `scripts/audit-settings-writers.py`
+- Severity: P1
+- Found by: Codex (source-truth reconciliation against the on-disk tree)
+- Status: FIXED
+- Repro: before this pass, `modules/_shared/settings-bridge.js` still did a raw read-modify-write with no queue and no scoped helper even though `audit/findings.md` / `audit/pathway-storage.md` claimed F-9223-002 was already fixed. At the same time, `python3 scripts/audit-settings-writers.py` reported 34 direct `chrome.storage.local.set({settings: ...})` writers across 13 files, so the bridge's intended protection was still bypassed in production.
+- Expected: one idempotent shared bridge exported once, with a single ordered write path for both `settings.<area>` and `settings.acct.<id>.<area>` callers, plus zero direct whole-blob writers outside the bridge.
+- Actual: source and audit notes diverged. The bridge had no queue, no `getAreaScoped`/`saveAreaScoped`, and duplicate injection via `manifest.json` still risked redeclaration without a guard.
+- Fix: rewrote `modules/_shared/settings-bridge.js` as a `globalThis`-safe IIFE with an internal tail-Promise queue, added `getAreaScoped(area, accountId?)` and `saveAreaScoped(area, block, accountId?)`, and migrated every remaining direct writer to `AesSettings.saveArea*()` (strategy, RA, AFP, UAS, station automation, canopy sync, background defaults, and legacy `content_*.js`).
+- Proof: `python3 scripts/audit-settings-writers.py` now reports `Found 0 direct set({settings: ...}) calls across 0 files.` and `node audit/settings-bridge.test.js` passes 5/5.
+- Notes: the new bridge smoke lives at `audit/settings-bridge.test.js` because `audit/tests/` is root-owned in this checkout and could not accept a new `substrate/` child directory without an out-of-scope ownership change.
+
+## F-20260501-002: forward-simulator determinism lockdown is green
+- Area: `modules/strategy/forward-simulator.js`
+- Severity: P1
+- Found by: Codex via `audit/tests/strategy/forward-simulator-determinism.test.js`
+- Status: FIXED
+- Repro: re-running `simulateForward()` on the same fork drifted `baseline.weeklyResult`, drifted `baseline.orsRankSum`, and mutated `fork.snapshot.fleet[0].age` in place.
+- Expected: the simulator docstring promises a deterministic counterfactual projection; repeated runs on the same fork should not mutate the caller's snapshot.
+- Actual: `_decay()` walked `fork.snapshot` directly, so the second run started from an already-aged / already-decayed baseline.
+- Fix: clone `fork.snapshot` once at entry (`structuredClone` with JSON fallback) and score/decay only the working copy.
+- Proof: `node audit/tests/strategy/forward-simulator-determinism.test.js` now passes 7/7.
+
+## F-20260501-003: AFP schedule-diff now ships `opts.toleranceMin`
+- Area: `modules/aircraft-flight-plan/auto-scheduler/schedule-diff.js` and compare callers in AFP / schedule-management / strategy
+- Severity: P2
+- Found by: Codex via `audit/tests/afp/schedule-diff.test.js`
+- Status: FIXED
+- Repro: `AesAfpScheduleDiff.compare(cur, pro, {toleranceMin: 45})` still treated a 30-minute delta as delete+add because the third argument was ignored.
+- Expected: caller-supplied `opts.toleranceMin` overrides the default 15-minute window while preserving flightId precedence and locked-leg bucketing.
+- Actual: `compare()` accepted only `(currentLegs, proposedLegs)` and hard-coded `TOLERANCE_MIN` in the time-matching pass.
+- Fix: extended `compare()` to accept `opts`, derived `toleranceMin` with a default fallback, and threaded the diff options through `preview-panel.js`, `schedule-panel.js`, and `strategy/diff-plan.js`.
+- Proof: `node audit/tests/afp/schedule-diff.test.js` now passes 15/15.
