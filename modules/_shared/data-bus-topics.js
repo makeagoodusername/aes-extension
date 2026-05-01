@@ -211,6 +211,134 @@ window.AES_DATA_BUS_TOPICS = [
         emittedBy: "modules/strategy/decision-dispatch.js  // applyPending",
         hint:     "{hub, dest, classKey, decisionId, appliedAt}",
         notes:    "fired only on successful direct-apply via applyPending(). Consumed by review tile to flag the dispatch as resolved."
+    },
+
+    // -- conductor K11 / K14 --
+    {
+        topic:    "data:conductor:trust:updated",
+        emittedBy: "modules/conductor/trust-driver.js  // _onOutcomeApplied",
+        hint:     "{scenarioId, tq, lcb, tier, n}",
+        notes:    "fired after a terminal verdict updates the per-scenario Beta posterior; consumers re-fetch via AesConductorTrustStore.get()"
+    },
+    {
+        topic:    "signal:conductor:tier:promoted",
+        emittedBy: "modules/conductor/trust-driver.js",
+        hint:     "{scenarioId, fromTier, toTier, reason}",
+        notes:    "transition event — fires only when the cached entry.tier changes between two record() calls. Consumers: K11 tile, future K6 history strip"
+    },
+    {
+        topic:    "signal:conductor:drift",
+        emittedBy: "modules/conductor/drift-driver.js",
+        hint:     "{scenarioId, polarity, magnitude}",
+        notes:    "K14 CUSUM drift detection — emitted when residual stream trips the h-threshold; drift-driver also writes a proposal record + clamps K11 tier ceiling"
+    },
+    {
+        topic:    "data:conductor:drift:proposal:created",
+        emittedBy: "modules/conductor/drift-driver.js",
+        hint:     "{scenarioId, key, current, proposed}",
+        notes:    "fired when drift-driver records a threshold-patch proposal; consumed by drift-tile detail modal"
+    },
+    {
+        topic:    "data:conductor:threshold:applied",
+        emittedBy: "modules/conductor/threshold-store.js  // apply",
+        hint:     "{scenarioId, key, before, after, source}",
+        notes:    "fired after a user accepts a drift threshold proposal (live or dry-run); rationale strings on subsequent fires reference the overlay"
+    },
+
+    // -- strategy slice 21 — scenario forks --
+    {
+        topic:    "data:strategy:fork:created",
+        emittedBy: "modules/strategy/fork-store.js",
+        hint:     "{forkId, baseRev, namedAs}",
+        notes:    "fired after AesStrategyForkStore.create() persists a new fork; consumed by counterfactual-lab-tile"
+    },
+    {
+        topic:    "data:strategy:fork:simulated",
+        emittedBy: "modules/strategy/forward-simulator.js",
+        hint:     "{forkId, weeks, durationMs}",
+        notes:    "fired after simulateForward() finishes; payload carries summary stats only — full result via AesStrategyForkStore.get(forkId).lastResult"
+    },
+    {
+        topic:    "data:strategy:fork:promoted",
+        emittedBy: "modules/strategy/fork-store.js  // promote",
+        hint:     "{forkId, dispatchId}",
+        notes:    "fired when a fork's intervention is promoted into decision-dispatch (still through the existing two-gate)"
+    },
+
+    // -- central-hub feed bridges + account bootstrap --
+    {
+        topic:    "data:account:bootstrapped",
+        emittedBy: "modules/central-hub/shell.js + modules/central-hub/feed/index.js",
+        hint:     "{accountId, server?, airline?, at?}",
+        notes:    "fired once per page after AesAccountRegistry resolves __aesAccountId; both shell and feed/index gate on window.__aesAccountBootstrapEmitted so a single emit lands. Consumed by store-cache (acct rebind) and HubFeed cash/strategy slices."
+    },
+    {
+        topic:    "data:accounting:weekly:saved",
+        emittedBy: "modules/central-hub/feed/index.js  // substring bridge on 'accounting:' writes",
+        hint:     "{key}  // raw chrome.storage.local key that triggered the bridge",
+        notes:    "coalesced one-per-onChanged-batch from any accounting:* write (e.g. 'ZB:1234:accounting:index'); cash-feed slice reads via deps[]"
+    },
+    {
+        topic:    "data:strategy:applied:saved",
+        emittedBy: "modules/central-hub/feed/index.js  // bridgeStorage(prefix='aesStrategy:plan:applied')",
+        hint:     "{key, suffix?, source: 'storage'}",
+        notes:    "bridge translates legacy 'aesStrategy:plan:applied' storage writes into a bus topic; consumed by strategy-feed slice via deps[]"
+    },
+    {
+        topic:    "data:strategy:settings:saved",
+        emittedBy: "modules/central-hub/feed/index.js  // bridgeStorage(prefix='settings', single=true)",
+        hint:     "{key: 'settings', source: 'storage'}",
+        notes:    "RA + strategy settings live in the shared 'settings' blob; bridge fires once per onChanged batch. Consumed by strategy-feed slice via deps[]"
+    },
+
+    // -- command-palette telemetry (Slice 16) --
+    {
+        topic:    "data:command-palette:opened",
+        emittedBy: "modules/command-palette/host.js  // _emitBus('opened')",
+        hint:     "{scope, at}",
+        notes:    "fired when the palette opens. No subscriber today; registered for data-flow-inspector visibility + auditTopics() truth"
+    },
+    {
+        topic:    "data:command-palette:closed",
+        emittedBy: "modules/command-palette/host.js  // _emitBus('closed')",
+        hint:     "{scope, at}",
+        notes:    "fired when the palette closes (Esc / dispatch / backdrop click). No subscriber today; registered for inspector visibility"
+    },
+    {
+        topic:    "data:command-palette:invoked",
+        emittedBy: "modules/command-palette/host.js  // _emitBus('invoked', {id})",
+        hint:     "{scope, at, id}",
+        notes:    "fired immediately before AESCommandRegistry.dispatch(id). No subscriber today; registered for inspector visibility + future analytics"
+    },
+
+    // -- strategy:layered stores (published with valueShape; subscribers may use last/peek) --
+    {
+        topic:      "data:strategy:layered:division-changed",
+        emittedBy:  "modules/strategy/layered/division-store.js  // _emit",
+        hint:       "{event, …}  // event-shape per division-store internals",
+        valueShape: "{event: 'created'|'updated'|'deleted'|'restored', divisionId?, def?}",
+        notes:      "published (cached) — subscribers use AesDataBus.last() or peek() to read; CentralHubBus also carries the plain 'strategy:layered:division-changed' event"
+    },
+    {
+        topic:      "data:strategy:layered:family-changed",
+        emittedBy:  "modules/strategy/layered/family-store.js  // _emit",
+        hint:       "{event, …}  // event-shape per family-store internals",
+        valueShape: "{event: 'created'|'updated'|'deleted'|'restored', familyId?, def?}",
+        notes:      "published (cached) — see division-changed for read pattern"
+    },
+    {
+        topic:      "data:strategy:layered:fleet-changed",
+        emittedBy:  "modules/strategy/layered/fleet-store.js  // _emit",
+        hint:       "{event, …}  // event-shape per fleet-store internals",
+        valueShape: "{event: 'created'|'updated'|'deleted'|'restored', fleetId?, def?}",
+        notes:      "published (cached) — see division-changed for read pattern"
+    },
+    {
+        topic:      "data:strategy:layered:route-extras-changed",
+        emittedBy:  "modules/strategy/layered/route-extras-store.js  // _emit",
+        hint:       "{event, …}  // event-shape per route-extras-store internals",
+        valueShape: "{event: 'saved'|'deleted'|'restored', routeKey?, blob?}",
+        notes:      "published (cached) — see division-changed for read pattern"
     }
 
     // Slices 2 + 3 will add: data:schedule-management:store:saved,
