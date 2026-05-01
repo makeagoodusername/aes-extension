@@ -14,9 +14,24 @@ $(function() {
 
 function saveData() {
     saveDataSpan = $('<span></span>');
-    let key = flightInfoData.server + flightInfoData.type + flightInfoData.flightId;
+    // F-9228-807: airline-scoped key. Without the airline component the
+    // same flightId on the same server (cross-airline shared-fleet sims,
+    // fleet transfers) collided across airlines and silently overwrote
+    // the prior airline's data. content_aircraftFlights.js reads both the
+    // airline-scoped key and the legacy un-scoped key for backwards-compat.
+    const airline = (typeof AES !== "undefined" && AES.getAirlineIdentity)
+        ? (AES.getAirlineIdentity() || "") : "";
+    let key = flightInfoData.server + airline + flightInfoData.type + flightInfoData.flightId;
     chrome.storage.local.set({
         [key]: flightInfoData }, function() {
+        // F-9228-806 sibling: surface chrome quota / serialization failures
+        // instead of silently dropping the write.
+        const err = chrome.runtime && chrome.runtime.lastError;
+        if (err) {
+            console.warn("[AES /action/info/flight] saveData failed", err.message || err);
+            saveDataSpan.addClass('bad').text('Save failed: ' + (err.message || err));
+            return;
+        }
         saveDataSpan.addClass('good').text('Flight info data saved!');
         chrome.storage.local.get(['settings'], function(result) {
             let settings = result.settings;

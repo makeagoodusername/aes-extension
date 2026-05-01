@@ -6,14 +6,62 @@ let aircraftFlightData,
     aircraftFlightsTab,
     statisticsPanel,
     infoPanel
+let aircraftFlightsInitStarted = false
 
-window.addEventListener("load", async (event) => {
-    aircraftFlightsTab = new AircraftFlightsTab()
-    buildUI()
-    await getData()
-    processData()
-    displayData()
-})
+// F-9228-801: gate on document.readyState so that an extension reload
+// mid-session (which re-injects the content script after `load` has already
+// fired) still bootstraps the page. Plain window.addEventListener("load")
+// silently no-ops in that case and the table stays un-augmented.
+async function init() {
+    if (aircraftFlightsInitStarted) return
+    aircraftFlightsInitStarted = true
+    try {
+        await waitForBootstrapReady()
+        aircraftFlightsTab = new AircraftFlightsTab()
+        buildUI()
+        await getData()
+        processData()
+        displayData()
+    } catch (e) {
+        aircraftFlightsInitStarted = false
+        console.warn("[AES /1 aircraft-flights] bootstrap failed", e)
+    }
+}
+function scheduleInit() {
+    // The manifest loads this file before aircraft-data.js, info-panel.js,
+    // and the FlightData model. If the content script is injected after the
+    // page load event, calling init synchronously would run before those
+    // subsequent files execute. Defer one task and poll for dependencies.
+    setTimeout(() => { init() }, 0)
+}
+if (document.readyState === "complete") scheduleInit()
+else window.addEventListener("load", scheduleInit, {once: true})
+
+function waitForBootstrapReady(timeoutMs = 6000) {
+    const started = Date.now()
+    return new Promise((resolve, reject) => {
+        const tick = () => {
+            const depsReady = typeof Aircraft !== "undefined"
+                && typeof FlightData !== "undefined"
+                && typeof InfoPanel !== "undefined"
+                && typeof AircraftStatisticsPanel !== "undefined"
+                && typeof AES !== "undefined"
+            const tableReady = !!document.querySelector("#aircraft-flight-instances-table tbody")
+            const headingReady = document.querySelectorAll(".as-page-aircraft h1 span").length >= 2
+            const clockReady = !!document.querySelector(".as-navbar-bottom span:has(.fa-clock-o)")
+            if (depsReady && tableReady && headingReady && clockReady) {
+                resolve()
+                return
+            }
+            if (Date.now() - started >= timeoutMs) {
+                reject(new Error("timed out waiting for /1 dependencies and AS DOM"))
+                return
+            }
+            setTimeout(tick, 100)
+        }
+        tick()
+    })
+}
 
 function buildUI() {
     infoPanel = new InfoPanel()
@@ -41,13 +89,23 @@ function displayData() {
 
 function updateTable() {
     const table = document.querySelector("#aircraft-flight-instances-table")
+    if (!table) return
+    // F-9228-805: idempotent mount. With F-9228-801's readyState re-entry,
+    // updateTable() can be invoked against an already-augmented table on
+    // extension reload; without this guard the headers and per-row cells
+    // would duplicate.
+    if (table.dataset.aesFlightsAugmented === "1") return
+    table.dataset.aesFlightsAugmented = "1"
+
     const thead = table.querySelector("thead")
     const headers = thead.querySelectorAll("th")
 
     const profitHeader = document.createElement("th")
     profitHeader.innerText = "Profit/Loss"
+    profitHeader.dataset.aesFlightsHeader = "profit"
     const extractedHeader = document.createElement("th")
     extractedHeader.innerText = "Extracted"
+    extractedHeader.dataset.aesFlightsHeader = "extracted"
     headers[9].after(profitHeader, extractedHeader)
 
     const tbody = table.querySelector("tbody")
@@ -57,14 +115,16 @@ function updateTable() {
         const profitCell = document.createElement("td")
         profitCell.innerText = "--"
         profitCell.className = "text-center text-nowrap"
+        profitCell.dataset.aesFlightsCell = "profit"
         const extractedCell = document.createElement("td")
         extractedCell.innerText = "--"
         extractedCell.className = "text-center text-nowrap"
+        extractedCell.dataset.aesFlightsCell = "extracted"
         target.after(profitCell, extractedCell)
     }
 
     const tfootCell = table.querySelector("tfoot td")
-    tfootCell.setAttribute("colspan", "15")
+    if (tfootCell) tfootCell.setAttribute("colspan", "15")
 }
 
 
@@ -83,8 +143,8 @@ function updateStatisticsPanel() {
 
 function createButtons() {
     const buttons = [
-        new ExtractionButton("Extract finished flight profit", {extractFinished: true}),
-        new ExtractionButton("Extract all flight profit", {extractAll: true})
+        new ExtractionButton("Extract finished flight profit", () => extractAllFlightProfit("finished")),
+        new ExtractionButton("Extract all flight profit", () => extractAllFlightProfit("all"))
     ]
 
     return buttons
@@ -111,6 +171,10 @@ function getAircraftData() {
         date: serverDate.date,
         time: serverDate.time,
         server: AES.getServerName(),
+        // F-9228-807: airline name is part of the storage-key namespace so
+        // two airlines on the same server can't clobber each other's
+        // aircraft-flights records when they share an aircraftId.
+        airline: AES.getAirlineIdentity ? (AES.getAirlineIdentity() || "") : "",
         aircraftId: aircraftInfo.id,
         registration: aircraftInfo.registration,
         equipment: aircraftInfo.equipment,
@@ -144,13 +208,18 @@ function addFlightInfoToAircarftData() {
 }
 
 function getKeys() {
+    // F-9228-807: read both the airline-scoped key (preferred — written
+    // by the post-fix content_flightInfo.js) and the legacy un-scoped key
+    // (still on disk for tails the user extracted before the fix landed).
+    // chrome.storage.local.get(keys) ignores absent keys, so requesting
+    // both is safe and addFlightInfoToAircarftData merges by storedFlight.flightId.
     const keys = []
+    const server = aircraftFlightData.server
+    const airline = aircraftFlightData.airline || ""
     for (const flight of aircraftFlightData.flights) {
-        const server = aircraftFlightData.server
         const id = flight.id
-        const key = `${server}flightInfo${id}`
-
-        keys.push(key)
+        if (airline) keys.push(`${server}${airline}flightInfo${id}`)
+        keys.push(`${server}flightInfo${id}`)
     }
 
     return keys
@@ -174,8 +243,13 @@ function getTotalProfit() {
 
     aircraftFlightData.flights.forEach(function(value) {
         if (value.status == 'finished' || value.status == 'inflight') {
-            if (value.data) {
-                profit += value.data.money.CM5.Total;
+            // F-9228-809: harden the chain. Older flightInfo blobs and
+            // partial schemas may be missing `money` or `money.CM5`,
+            // which used to throw mid-loop and abort processData().
+            const total = value.data && value.data.money
+                && value.data.money.CM5 && value.data.money.CM5.Total
+            if (typeof total === "number") {
+                profit += total;
                 profitFlights++;
             }
         }
@@ -191,9 +265,18 @@ function getTotalProfit() {
 }
 
 function saveData() {
-    let key = aircraftFlightData.server + aircraftFlightData.type + aircraftFlightData.aircraftId;
+    // F-9228-807: airline-scoped key. Without the airline component the
+    // same aircraftId on the same server (rare but possible after fleet
+    // transfers / shared-fleet sims) collided across airlines, silently
+    // overwriting the prior airline's persisted data.
+    const airline = aircraftFlightData.airline || ""
+    let key = aircraftFlightData.server + airline + aircraftFlightData.type + aircraftFlightData.aircraftId;
     let saveData = {
         aircraftId: aircraftFlightData.aircraftId,
+        // F-9228-807: include airline in the saved blob (in addition to the
+        // scoping in the storage key) so cross-account aggregators can join
+        // records by airline without re-parsing the key shape.
+        airline: airline,
         date: aircraftFlightData.date,
         equipment: aircraftFlightData.equipment,
         finishedFlights: aircraftFlightData.finishedFlights,
@@ -221,6 +304,11 @@ function saveData() {
 
     chrome.storage.local.set({
         [key]: saveData }, function() {
+        // F-9228-806: surface quota / serialization failures instead of
+        // silently dropping the write. The panel would otherwise show
+        // stale data on the next visit with no indication the save failed.
+        const err = chrome.runtime && chrome.runtime.lastError
+        if (err) console.warn("[AES /1 aircraft-flights] saveData failed", err.message || err)
     });
 }
 
@@ -230,11 +318,18 @@ function display() {
 }
 
 function createButtonOld() {
-    const cell = document.querySelector("#aircraft-flight-instances-table td a")
-    const xfer = cell?.innerText.trim() === "XFER"
-    if (xfer) {
-        return
+    // F-9228-810: only suppress when EVERY row is an XFER. The legacy
+    // selector "#aircraft-flight-instances-table td a" hit the first
+    // anchor in the table, so a single XFER row at the top hid the
+    // extract buttons even when other valid flights were present.
+    const rows = document.querySelectorAll("#aircraft-flight-instances-table tbody tr")
+    if (!rows.length) return
+    let allXfer = true
+    for (const r of rows) {
+        const fn = r.querySelector("td:nth-child(2)")?.innerText.trim()
+        if (fn && fn !== "XFER") { allXfer = false; break }
     }
+    if (allXfer) return
     let btn = $('<button class="btn btn-default"></button>').text('Extract all flight profit/loss');
     let btn1 = $('<button class="btn btn-default"></button>').text('Extract finished flight profit/loss');
 
@@ -257,17 +352,36 @@ function createButtonOld() {
 }
 
 function extractAllFlightProfit(type) {
-    aircraftFlightData.flights.forEach(function(value) {
-        if (type == 'finished') {
-            if (value.status == 'finished' || value.status == 'inflight') {
-
-            } else {
-                return
-            }
-        }
-        let url = 'https://' + aircraftFlightData.server + '.airlinesim.aero/action/info/flight?id=' + value.id;
-        window.open(url, '_blank');
-    });
+    // F-9228-803: open the first window synchronously inside the click
+    // gesture, then let the user re-confirm if the browser blocked any of
+    // the rest. A tight `forEach(window.open)` was previously triggering
+    // popup-blockers on Chrome+Firefox after the first 1-2 windows, with
+    // no user feedback — extracts silently dropped to a partial set.
+    const queue = []
+    for (const value of aircraftFlightData.flights) {
+        if (type == 'finished'
+                && value.status != 'finished'
+                && value.status != 'inflight') continue
+        queue.push('https://' + aircraftFlightData.server
+            + '.airlinesim.aero/action/info/flight?id=' + value.id)
+    }
+    if (!queue.length) return
+    const first = window.open(queue.shift(), '_blank')
+    if (!first) {
+        alert("Popups blocked. Allow popups for airlinesim.aero, then click Extract again.")
+        return
+    }
+    // Stagger the rest so the browser registers them as part of the same
+    // user-gesture chain instead of a flood. 60ms is tight enough that
+    // 50 flights still finish in ~3s; loose enough to dodge the blocker.
+    let i = 0
+    const tick = () => {
+        if (i >= queue.length) return
+        const w = window.open(queue[i++], '_blank')
+        if (!w) console.warn("[AES /1 aircraft-flights] popup blocked at flight", i)
+        setTimeout(tick, 60)
+    }
+    setTimeout(tick, 60)
 }
 
 function displayFlightProfit() {
@@ -278,11 +392,14 @@ function displayFlightProfit() {
         }
 
         const daysAgo = AES.getDateDiff(flight.data.date)
+        const total = flight.data && flight.data.money
+            && flight.data.money.CM5 && flight.data.money.CM5.Total
+        if (typeof total !== "number") return
         const profitCell = flight.row.querySelector("td:nth-child(13)")
         profitCell.innerHTML = null
         profitCell.classList.remove("text-center")
         profitCell.classList.add("text-right")
-        profitCell.append(AES.formatCurrency(flight.data.money.CM5.Total))
+        profitCell.append(AES.formatCurrency(total))
         const extractedCell = flight.row.querySelector("td:nth-child(14)")
         extractedCell.innerHTML = null
         extractedCell.classList.remove("text-center")
@@ -361,7 +478,12 @@ class AircraftFlightsTab {
             }
             const url = row.querySelector(`[href*="action/info/flight"]`)?.href
             if (!url) {
-                throw new Error("getFlights(): no valid value for `url`")
+                // F-9228-804: skip rather than throw. A single row missing
+                // its info-link (e.g. a partially-rendered Wicket fragment
+                // or a cancelled-but-not-yet-removed flight) used to halt
+                // the entire bootstrap, leaving the panel blank for the
+                // whole table.
+                console.warn("[AES /1 aircraft-flights] skipping row with no info link", row)
                 continue
             }
 
