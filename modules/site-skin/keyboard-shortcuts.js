@@ -11,7 +11,57 @@
 // Listeners are no-ops when the user is typing into a field.
 
 (function () {
-    if (window.AESSiteSkin && !window.AESSiteSkin.isEnabled()) return;
+    function ensureSiteSkinApi() {
+        const root = document.documentElement;
+        const skin = window.AESSiteSkin = window.AESSiteSkin || {};
+        skin.SKIN_KEY = skin.SKIN_KEY || "aes_skin_enabled";
+        skin.DENSITY_KEY = skin.DENSITY_KEY || "aes_skin_density";
+        skin.PAGE_KEY = skin.PAGE_KEY || "aes_skin_page";
+        if (typeof skin.isEnabled !== "function") {
+            skin.isEnabled = function () { return root.dataset.aesSkin !== "off"; };
+        }
+        if (typeof skin.getDensity !== "function") {
+            skin.getDensity = function () { return root.dataset.aesDensity || "comfortable"; };
+        }
+        if (typeof skin.getPageKind !== "function") {
+            skin.getPageKind = function () { return root.dataset.aesPage || "other"; };
+        }
+        if (typeof skin.safeSyncSet !== "function") {
+            skin.safeSyncSet = function (payload) {
+                try {
+                    if (typeof chrome === "undefined"
+                        || !chrome.storage || !chrome.storage.sync) return false;
+                    chrome.storage.sync.set(payload);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            };
+        }
+        if (typeof skin.setEnabled !== "function") {
+            skin.setEnabled = function (v) {
+                root.dataset.aesSkin = v ? "on" : "off";
+                if (document.body) document.body.classList.toggle("aes-skin", !!v);
+                return skin.safeSyncSet({ [skin.SKIN_KEY]: !!v });
+            };
+        }
+        if (typeof skin.setDensity !== "function") {
+            skin.setDensity = function (v) {
+                const value = v === "compact" ? "compact" : "comfortable";
+                root.dataset.aesDensity = value;
+                return skin.safeSyncSet({ [skin.DENSITY_KEY]: value });
+            };
+        }
+        if (typeof skin.cycleDensity !== "function") {
+            skin.cycleDensity = function () {
+                skin.setDensity(skin.getDensity() === "compact" ? "comfortable" : "compact");
+            };
+        }
+        return skin;
+    }
+
+    const siteSkin = ensureSiteSkinApi();
+    const skinEnabled = !(siteSkin && typeof siteSkin.isEnabled === "function" && !siteSkin.isEnabled());
 
     const PREFIX_TIMEOUT_MS = 800;
 
@@ -185,7 +235,10 @@
         }
     }
 
-    document.addEventListener("keydown", handleKey, true);
+    // Help dialog is always available (menu "Shortcuts" item, programmatic
+    // showShortcuts), but the chord scanner only attaches when the skin is
+    // enabled — vim-style nav is a skin feature.
+    if (skinEnabled) document.addEventListener("keydown", handleKey, true);
 
     window.AESSiteSkin = window.AESSiteSkin || {};
     window.AESSiteSkin.showShortcuts = showHelp;
