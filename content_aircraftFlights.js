@@ -95,10 +95,13 @@ function updateTable() {
     // extension reload; without this guard the headers and per-row cells
     // would duplicate.
     if (table.dataset.aesFlightsAugmented === "1") return
-    table.dataset.aesFlightsAugmented = "1"
 
     const thead = table.querySelector("thead")
-    const headers = thead.querySelectorAll("th")
+    const tbody = table.querySelector("tbody")
+    const headers = thead ? thead.querySelectorAll("th") : []
+    const headerAnchor = headers[9]
+    if (!headerAnchor || !tbody) return
+    table.dataset.aesFlightsAugmented = "1"
 
     const profitHeader = document.createElement("th")
     profitHeader.innerText = "Profit/Loss"
@@ -106,12 +109,15 @@ function updateTable() {
     const extractedHeader = document.createElement("th")
     extractedHeader.innerText = "Extracted"
     extractedHeader.dataset.aesFlightsHeader = "extracted"
-    headers[9].after(profitHeader, extractedHeader)
+    headerAnchor.after(profitHeader, extractedHeader)
 
-    const tbody = table.querySelector("tbody")
     const rows = tbody.querySelectorAll("tr")
     for (const row of rows) {
         const target = row.querySelector("td:nth-child(12)")
+        // AS renders a single-cell "No flights scheduled" placeholder row when
+        // the aircraft has no flights yet. Skip it; otherwise target.after()
+        // throws and aborts the entire init() chain (info/stats panels blank).
+        if (!target) continue
         const profitCell = document.createElement("td")
         profitCell.innerText = "--"
         profitCell.className = "text-center text-nowrap"
@@ -183,7 +189,6 @@ function getAircraftData() {
         finishedFlights: flightsStats.finishedFlights,
         totalFlights: flightsStats.totalFlights
     }
-    console.log(aircraftData)
 
     return aircraftData
 }
@@ -419,7 +424,6 @@ class AircraftFlightsTab {
         this.#info = this.getAircraftInfo()
         this.#data = new Aircraft()
         this.#setAircraftData()
-        console.log(this.#data)
     }
 
     /**
