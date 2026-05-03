@@ -49,12 +49,29 @@
 ;(function () {
     if (typeof window === "undefined" || window.AesConductorScenarios) return
 
-    const RATIO_FLOOR        = 105                // % — AS maintenance floor
-    const CONDITION_FLOOR    = 60                 // % — AS condition rough floor
-    const CASH_STEP_FLOOR    = 100_000            // AS$ — minimum cash move worth surfacing
-    const PROFIT_DECAY_PCT   = 0.25               // 25% drop vs prior snapshot
-    const PROFIT_RECOVER_PCT = 0.25               // 25% rise vs prior snapshot
-    const ORS_RANK_DROP_MIN  = 2                  // ranks worsened in any class
+    // K14.1 — defaults are preserved as named DEFAULT_* constants. Scenarios
+    // read live values from `ctx.thresholds.<scenarioId>.<KEY> ?? default`
+    // so user / drift overlays in AesConductorThresholdStore take effect with
+    // zero behavioural change when no overlay is set. The scenario-engine
+    // (match) and outcome-driver (evaluate) prefetch the overlay blob once
+    // per tick and inject it via ctx — keeping match/evaluate pure-sync.
+    const DEFAULT_RATIO_FLOOR        = 105        // % — AS maintenance floor
+    const CONDITION_FLOOR            = 60         // % — AS condition rough floor
+    const CASH_STEP_FLOOR            = 100_000    // AS$ — minimum cash move worth surfacing
+    const DEFAULT_PROFIT_DECAY_PCT   = 0.25       // 25% drop vs prior snapshot
+    const PROFIT_RECOVER_PCT         = 0.25       // 25% rise vs prior snapshot
+    const ORS_RANK_DROP_MIN          = 2          // ranks worsened in any class
+
+    /** Pull a threshold from the per-tick ctx overlay, falling back to the
+     *  shipped default. ctx may be undefined (legacy callers) or lack
+     *  `thresholds` (engine couldn't load the overlay this tick). */
+    function _threshold(ctx, scenarioId, key, def) {
+        if (!ctx || !ctx.thresholds) return def
+        const bag = ctx.thresholds[scenarioId]
+        if (!bag) return def
+        const v = bag[key]
+        return (typeof v === "number" && isFinite(v)) ? v : def
+    }
 
     // K10 evaluator constants — recovery thresholds and per-scenario KPI windows.
     const DAY_MS                  = 24 * 3600 * 1000
@@ -126,29 +143,36 @@
         label:    "Maintenance watch",
         severity: "warn",
         tier:     "alert",
-        match: (signal) => {
+        defaultTierCap: "apply-confirm",
+        match: (signal, ctx) => {
             if (!signal || signal.type !== "maintenance.ratio.changed") return null
             const p = signal.payload || {}
             const to = _num(p.to)
             const from = _num(p.from)
-            if (to == null || to >= RATIO_FLOOR) return null
+            const floor = _threshold(ctx, "MaintenanceWatch", "RATIO_FLOOR", DEFAULT_RATIO_FLOOR)
+            if (to == null || to >= floor) return null
             const dropped = (from != null && to < from)
             return {
                 rationale: (p.aircraftId || "?") + " maintenance ratio at "
                     + to.toFixed(1) + "%"
                     + (dropped && from != null ? " (was " + from.toFixed(1) + "%)" : "")
-                    + " — below " + RATIO_FLOOR + "% floor",
-                payload: {aircraftId: p.aircraftId, ratio: to, prior: from, floor: RATIO_FLOOR}
+                    + " — below " + floor + "% floor",
+                payload: {aircraftId: p.aircraftId, ratio: to, prior: from, floor: floor}
             }
         },
         kpiWindowMs: KPI_MAINT_MS,
         evaluate: (fire, ctx) => {
             const p = (fire && fire.payload) || {}
             if (!p.aircraftId) return _outcome(null, null, null, true, "No aircraft id on fire")
-            const recoverAt = (p.floor || RATIO_FLOOR) + MAINT_RECOVER_BUFFER
+            // Prefer the floor stamped onto the fire (captures the value in
+            // effect at fire time); fall back to ctx overlay then default.
+            const floor = (typeof p.floor === "number" && isFinite(p.floor))
+                ? p.floor
+                : _threshold(ctx, "MaintenanceWatch", "RATIO_FLOOR", DEFAULT_RATIO_FLOOR)
+            const recoverAt = floor + MAINT_RECOVER_BUFFER
             const after = _byField(_afterTs(ctx.byType("maintenance.ratio.changed"), fire.firedAt),
                                    "aircraftId", p.aircraftId)
-            const expected = (p.floor || RATIO_FLOOR) - (p.ratio || 0)
+            const expected = floor - (p.ratio || 0)
             if (!after.length) {
                 return _windowClosed(fire, KPI_MAINT_MS, ctx.now)
                     ? _outcome(null, expected, false, true, "No ratio updates in 14d — assumed unrecovered")
@@ -183,27 +207,32 @@
         label:    "Aircraft condition watch",
         severity: "warn",
         tier:     "alert",
-        match: (signal) => {
+        defaultTierCap: "apply-confirm",
+        match: (signal, ctx) => {
             if (!signal || signal.type !== "maintenance.condition.changed") return null
             const p = signal.payload || {}
             const to = _num(p.to)
             const from = _num(p.from)
-            if (to == null || to >= CONDITION_FLOOR) return null
+            const floor = _threshold(ctx, "ConditionWatch", "CONDITION_FLOOR", CONDITION_FLOOR)
+            if (to == null || to >= floor) return null
             return {
                 rationale: (p.aircraftId || "?") + " condition at " + to.toFixed(1) + "%"
                     + (from != null ? " (was " + from.toFixed(1) + "%)" : "")
-                    + " — below " + CONDITION_FLOOR + "% floor",
-                payload: {aircraftId: p.aircraftId, condition: to, prior: from, floor: CONDITION_FLOOR}
+                    + " — below " + floor + "% floor",
+                payload: {aircraftId: p.aircraftId, condition: to, prior: from, floor: floor}
             }
         },
         kpiWindowMs: KPI_CONDITION_MS,
         evaluate: (fire, ctx) => {
             const p = (fire && fire.payload) || {}
             if (!p.aircraftId) return _outcome(null, null, null, true, "No aircraft id on fire")
-            const recoverAt = (p.floor || CONDITION_FLOOR) + CONDITION_RECOVER_BUFFER
+            const conditionFloor = (typeof p.floor === "number" && isFinite(p.floor))
+                ? p.floor
+                : _threshold(ctx, "ConditionWatch", "CONDITION_FLOOR", CONDITION_FLOOR)
+            const recoverAt = conditionFloor + CONDITION_RECOVER_BUFFER
             const after = _byField(_afterTs(ctx.byType("maintenance.condition.changed"), fire.firedAt),
                                    "aircraftId", p.aircraftId)
-            const expected = (p.floor || CONDITION_FLOOR) - (p.condition || 0)
+            const expected = conditionFloor - (p.condition || 0)
             if (!after.length) {
                 return _windowClosed(fire, KPI_CONDITION_MS, ctx.now)
                     ? _outcome(null, expected, false, true, "No condition updates in 14d — assumed unrecovered")
@@ -277,11 +306,12 @@
         label:    "Cash step",
         severity: "info",
         tier:     "alert",
-        match: (signal) => {
+        match: (signal, ctx) => {
             if (!signal || signal.type !== "cash.balance.changed") return null
             const p = signal.payload || {}
             const delta = _num(p.delta)
-            if (delta == null || Math.abs(delta) < CASH_STEP_FLOOR) return null
+            const floor = _threshold(ctx, "CashStep", "CASH_STEP_FLOOR", CASH_STEP_FLOOR)
+            if (delta == null || Math.abs(delta) < floor) return null
             const sign = delta > 0 ? "+" : ""
             return {
                 rationale: "Cash balance moved " + sign + Math.round(delta).toLocaleString()
@@ -296,12 +326,14 @@
         label:    "Route profit decay",
         severity: "warn",
         tier:     "alert",
-        match: (signal) => {
+        defaultTierCap: "apply-confirm",
+        match: (signal, ctx) => {
             if (!signal || signal.type !== "route.profit.changed") return null
             const p = signal.payload || {}
             if (p.direction !== "drop") return null
             const pct = _num(p.pct)
-            if (pct == null || pct > -PROFIT_DECAY_PCT) return null   // pct is signed (negative = drop)
+            const decayPct = _threshold(ctx, "ProfitDecay", "PROFIT_DECAY_PCT", DEFAULT_PROFIT_DECAY_PCT)
+            if (pct == null || pct > -decayPct) return null   // pct is signed (negative = drop)
             return {
                 rationale: (p.hub || "?") + "→" + (p.dest || "?") + " profit "
                     + Math.round(pct * 100) + "% (now ≈" + Math.round((p.to || 0) / 1000) + "k/wk, "
@@ -316,7 +348,7 @@
             const baseline = _num(p.from)
             const dipTo    = _num(p.to)
             if (baseline == null) return _outcome(null, null, null, true, "No baseline on fire")
-            const recoverFloor = baseline * PROFIT_RECOVER_RATIO
+            const recoverFloor = baseline * _threshold(ctx, "ProfitDecay", "PROFIT_RECOVER_RATIO", PROFIT_RECOVER_RATIO)
             const after = _byRoute(_afterTs(ctx.byType("route.profit.changed"), fire.firedAt),
                                    p.hub, p.dest)
             const expected = baseline - (dipTo || 0)
@@ -355,12 +387,13 @@
         label:    "Route profit recovery",
         severity: "info",
         tier:     "alert",
-        match: (signal) => {
+        defaultTierCap: "suggest",
+        match: (signal, ctx) => {
             if (!signal || signal.type !== "route.profit.changed") return null
             const p = signal.payload || {}
             if (p.direction !== "recovery") return null
             const pct = _num(p.pct)
-            if (pct == null || pct < PROFIT_RECOVER_PCT) return null
+            if (pct == null || pct < _threshold(ctx, "ProfitRecovery", "PROFIT_RECOVER_PCT", PROFIT_RECOVER_PCT)) return null
             return {
                 rationale: (p.hub || "?") + "→" + (p.dest || "?") + " profit +"
                     + Math.round(pct * 100) + "% (now ≈" + Math.round((p.to || 0) / 1000) + "k/wk)",
@@ -384,7 +417,7 @@
                 const sp = s && s.payload
                 if (sp && sp.direction === "drop") {
                     const dropPct = _num(sp.pct)
-                    if (dropPct != null && dropPct <= -RECOVERY_HOLD_PCT) {
+                    if (dropPct != null && dropPct <= -_threshold(ctx, "ProfitRecovery", "RECOVERY_HOLD_PCT", RECOVERY_HOLD_PCT)) {
                         const observed = _num(sp.to) != null ? (_num(sp.to) - recoverTo) : null
                         return _outcome(observed, 0, false, true,
                             "Recovery lost: profit dropped " + Math.round(dropPct * 100) + "%")
@@ -422,11 +455,12 @@
         label:    "ORS rank regression",
         severity: "warn",
         tier:     "alert",
-        match: (signal) => {
+        defaultTierCap: "apply-confirm",
+        match: (signal, ctx) => {
             if (!signal || signal.type !== "ors.rank.changed") return null
             const p = signal.payload || {}
             const worst = _num(p.worstRegression)
-            if (worst == null || worst < ORS_RANK_DROP_MIN) return null
+            if (worst == null || worst < _threshold(ctx, "OrsRegression", "ORS_RANK_DROP_MIN", ORS_RANK_DROP_MIN)) return null
             const cls = (Array.isArray(p.classes) ? p.classes : [])
                 .find(c => c && c.direction === "worsened" && c.rankDelta === worst)
             return {
@@ -473,13 +507,14 @@
         label:    "ORS rank recovery",
         severity: "info",
         tier:     "alert",
-        match: (signal) => {
+        defaultTierCap: "suggest",
+        match: (signal, ctx) => {
             if (!signal || signal.type !== "ors.rank.changed") return null
             const p = signal.payload || {}
             if (p.direction !== "improved") return null
             const cls = (Array.isArray(p.classes) ? p.classes : [])
                 .find(c => c && c.direction === "improved" && c.rankDelta != null)
-            if (!cls || cls.rankDelta == null || cls.rankDelta > -ORS_RANK_DROP_MIN) return null
+            if (!cls || cls.rankDelta == null || cls.rankDelta > -_threshold(ctx, "OrsRecovery", "ORS_RANK_DROP_MIN", ORS_RANK_DROP_MIN)) return null
             return {
                 rationale: (p.hub || "?") + "→" + (p.dest || "?") + " ORS rank improved "
                     + Math.abs(cls.rankDelta) + " (" + cls.payload + " " + cls.rankFrom
@@ -501,7 +536,7 @@
             for (const s of after) {
                 const sp = s && s.payload
                 const worst = _num(sp && sp.worstRegression)
-                if (worst != null && worst >= ORS_RANK_DROP_MIN) {
+                if (worst != null && worst >= _threshold(ctx, "OrsRecovery", "ORS_RANK_DROP_MIN", ORS_RANK_DROP_MIN)) {
                     return _outcome(-worst, 0, false, true,
                         "Recovery lost: ORS rank dropped " + worst + " ranks again")
                 }
