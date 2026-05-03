@@ -345,6 +345,32 @@ window.AES_DATA_BUS_TOPICS = [
         hint:       "{event, …}  // event-shape per route-extras-store internals",
         valueShape: "{event: 'saved'|'deleted'|'restored', routeKey?, blob?}",
         notes:      "published (cached) — see division-changed for read pattern"
+    },
+
+    // -- Visibility wave: lessons + gossip + network/time-scrubber --
+    {
+        topic:    "data:strategy:lesson:mined",
+        emittedBy: "modules/strategy/lesson-miner.js  // runOnce",
+        hint:     "{accountId, count, topThree: [{lessonId, lift, n, hub, distanceBand}]}",
+        notes:    "Slice 26 Phase 2 — fired after the miner persists a fresh top-K lesson set; consumed by lessons-tile + briefing-tile 'Engine learned' strip"
+    },
+    {
+        topic:    "data:strategy:gossip:event",
+        emittedBy: "modules/strategy/gossip-driver.js  // processOnce",
+        hint:     "{eventId, kind, severity, route?, iata?, summary, ts}",
+        notes:    "Slice 27 — fired per detected market anomaly; consumed by gossip-feed-tile (and chrome.notifications for severity:high)"
+    },
+    {
+        topic:    "view-time:scrubbed",
+        emittedBy: "modules/strategy/time-scrubber.js  // scrubTo / reset",
+        hint:     "{weekId: string|null, ts: number|null}  // null = live",
+        notes:    "Slice 25 — fired when the user scrubs the time-scrubber; subscribers (RA panel, briefing tile, network-graph tile) re-render against the historical AccountingSnapshotStore week"
+    },
+    {
+        topic:    "data:strategy:network:rendered",
+        emittedBy: "modules/central-hub/tiles/network-graph-tile.js  // settle complete",
+        hint:     "{nodeCount, edgeCount, durationMs}",
+        notes:    "Slice 25 — telemetry: emitted once per network-graph tile expand after the layout settles; useful for the data-flow-inspector"
     }
 
     // Slices 2 + 3 will add: data:schedule-management:store:saved,
