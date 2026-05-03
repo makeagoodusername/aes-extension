@@ -264,6 +264,12 @@ window.AES_DATA_BUS_TOPICS = [
         hint:     "{forkId, dispatchId}",
         notes:    "fired when a fork's intervention is promoted into decision-dispatch (still through the existing two-gate)"
     },
+    {
+        topic:    "data:strategy:intervention:pending",
+        emittedBy: "modules/strategy/decision-dispatch.js  // composeFromIntervention",
+        hint:     "{dispatchId, kind, originForkId, source}",
+        notes:    "K11.2 — sibling slot for intervention-shaped pending dispatches; canonical state lives in chrome.storage.local['aesStrategy:interventionPending'] (read via readPendingIntervention()). Decision-dispatch's price-move slot ('aesStrategy:dispatchPending') is NOT touched."
+    },
 
     // -- central-hub feed bridges + account bootstrap --
     {

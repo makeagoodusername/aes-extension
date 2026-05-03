@@ -20,10 +20,15 @@
  *
  * Public API:
  *   AesStrategyDecisionDispatch.composeMove({hub, dest, classKey, toPct, source})
+ *   AesStrategyDecisionDispatch.composeFromIntervention(intervention, {originForkId, reason})
  *   AesStrategyDecisionDispatch.readPending() → Promise<payload | null>
+ *   AesStrategyDecisionDispatch.readPendingIntervention() → Promise<payload | null>
  *   AesStrategyDecisionDispatch.clearPending() → Promise<void>
- *   AesStrategyDecisionDispatch.KEY (storage key constant)
- *   AesStrategyDecisionDispatch.TOPIC (bus topic)
+ *   AesStrategyDecisionDispatch.clearPendingIntervention() → Promise<void>
+ *   AesStrategyDecisionDispatch.KEY        (price-move pending storage key)
+ *   AesStrategyDecisionDispatch.KEY_INTV   (Slice 21 intervention pending key)
+ *   AesStrategyDecisionDispatch.TOPIC      (price-move pending bus topic)
+ *   AesStrategyDecisionDispatch.TOPIC_INTV (intervention pending bus topic)
  */
 ;(function () {
     if (typeof window === "undefined") return
@@ -32,6 +37,14 @@
     const KEY           = "aesStrategy:dispatchPending"
     const TOPIC         = "data:strategy:dispatch:pending"
     const APPLIED_TOPIC = "data:strategy:dispatch:applied"
+
+    // K11.2 — Slice 21 fork→dispatch adapter writes to a sibling slot so the
+    // change-log aggregator's price-move projection (change-log-aggregator.js
+    // §dispatchPending) keeps reading the canonical {hub, dest, classKey,
+    // toPct} shape, while intervention payloads (setWeight / addAircraft /
+    // dropRoute / flipDna) flow through their own pending key.
+    const KEY_INTV   = "aesStrategy:interventionPending"
+    const TOPIC_INTV = "data:strategy:intervention:pending"
 
     function _now() { return Date.now() }
 
@@ -185,14 +198,87 @@
         } catch (_) { /* best-effort */ }
     }
 
+    /**
+     * K11.2 — fork→dispatch adapter. fork-store.promote() calls this with
+     * the fork's first intervention plus provenance. We validate against
+     * the intervention-types catalogue, stamp a deterministic dispatchId
+     * (so re-promotes on the same fork+timestamp collide rather than fan
+     * out duplicate slots), persist to KEY_INTV, and ring the bus.
+     *
+     * Return shape:
+     *   string  — dispatchId on success
+     *   null    — validation failed, storage write failed, or types
+     *             namespace missing. fork-store.promote distinguishes
+     *             null from throw to surface a meaningful reason.
+     *
+     * Two-gate model is preserved: this method only stages a pending
+     * intervention; user (or a future Apply UI) still drives the actual
+     * AS-side write through the existing apply pipeline.
+     */
+    async function composeFromIntervention(intervention, ctx) {
+        const types = window.AesStrategyInterventionTypes
+        if (!types || typeof types.validate !== "function") return null
+        const v = types.validate(intervention)
+        if (!v.ok) return null
+
+        const c = ctx || {}
+        const requestedAt = _now()
+        const originForkId = String(c.originForkId || "anon")
+        const dispatchId = "intv:" + originForkId + ":" + requestedAt
+        const payload = {
+            dispatchId:   dispatchId,
+            intervention: JSON.parse(JSON.stringify(intervention)),
+            summary:      types.summarize(intervention),
+            originForkId: originForkId,
+            reason:       String(c.reason || ""),
+            source:       "counterfactual-lab",
+            requestedAt:  requestedAt,
+            applied:      false
+        }
+        try {
+            await chrome.storage.local.set({[KEY_INTV]: payload})
+        } catch (e) {
+            console.warn("[AES decision-dispatch] intervention storage write failed", e)
+            return null
+        }
+        try {
+            if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+                window.AesDataBus.emit(TOPIC_INTV, {
+                    dispatchId:   dispatchId,
+                    kind:         intervention.kind,
+                    originForkId: originForkId,
+                    source:       payload.source
+                })
+            }
+        } catch (_) { /* bus failure must not break the storage path */ }
+        return dispatchId
+    }
+
+    async function readPendingIntervention() {
+        try {
+            const out = await chrome.storage.local.get([KEY_INTV])
+            return out[KEY_INTV] || null
+        } catch (_) { return null }
+    }
+
+    async function clearPendingIntervention() {
+        try { await chrome.storage.local.remove([KEY_INTV]) }
+        catch (_) { /* best-effort */ }
+    }
+
     window.AesStrategyDecisionDispatch = {
-        composeMove:   composeMove,
-        readPending:   readPending,
-        clearPending:  clearPending,
-        applyPending:  applyPending,
-        KEY:           KEY,
-        TOPIC:         TOPIC,
-        APPLIED_TOPIC: APPLIED_TOPIC
+        composeMove:              composeMove,
+        composeFromIntervention:  composeFromIntervention,
+        readPending:              readPending,
+        readPendingIntervention:  readPendingIntervention,
+        clearPending:             clearPending,
+        clearPendingIntervention: clearPendingIntervention,
+        applyPending:             applyPending,
+        KEY:                      KEY,
+        KEY_INTV:                 KEY_INTV,
+        TOPIC:                    TOPIC,
+        TOPIC_INTV:               TOPIC_INTV,
+        APPLIED_TOPIC:            APPLIED_TOPIC
     }
 
     // ── ?aes-debug smoke ──────────────────────────────────────────────
@@ -217,6 +303,24 @@
                 const cleared = await readPending()
                 console.assert(cleared === null,
                     "[smoke dispatch] clearPending zeroes the slot")
+
+                // K11.2 round-trip — composeFromIntervention path.
+                if (window.AesStrategyInterventionTypes) {
+                    const id = await composeFromIntervention(
+                        {kind: "setWeight", name: "profitWeight", value: 0.5},
+                        {originForkId: "fk-smoke", reason: "smoke"}
+                    )
+                    console.assert(typeof id === "string" && /^intv:fk-smoke:/.test(id),
+                        "[smoke dispatch] composeFromIntervention returns intv:<fork>:<ts>")
+                    const intvRead = await readPendingIntervention()
+                    console.assert(intvRead && intvRead.applied === false
+                        && intvRead.intervention && intvRead.intervention.kind === "setWeight",
+                        "[smoke dispatch] readPendingIntervention round-trips payload")
+                    await clearPendingIntervention()
+                    const intvCleared = await readPendingIntervention()
+                    console.assert(intvCleared === null,
+                        "[smoke dispatch] clearPendingIntervention zeroes the slot")
+                }
             })()
         }
     } catch (_) { /* smoke must never break the page */ }
