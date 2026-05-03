@@ -34,7 +34,11 @@ class CanvasAdvisorEngine {
     constructor(deps) {
         const d = deps || {}
         this.getInputs = typeof d.getInputs === "function" ? d.getInputs : (() => ({}))
-        this.dispatch  = typeof d.dispatch  === "function" ? d.dispatch  : null
+        // dispatch is an object {stage, unstage} from the rail controller —
+        // checks call into it from their action.run() to stage replacement
+        // edits or unstage problematic ones. Optional; checks fall through
+        // to action-less suggestions when dispatch is missing (older callers).
+        this.dispatch  = (d.dispatch && typeof d.dispatch === "object") ? d.dispatch : null
         this._busOff = []
     }
 
@@ -120,12 +124,26 @@ class CanvasAdvisorEngine {
             }
         }
         if (!near) return null
+        const alt = (edit.kind === "addRoute" && this.dispatch)
+            ? this._findAltAircraft(aid, edit.hub || (ctx && ctx.hub), ctx) : null
+        const action = alt
+            ? {
+                label: "Re-route to " + (alt.registration || alt.aircraftId),
+                run: () => {
+                    this.dispatch.unstage({matchKind: "addRoute", aircraftId: aid, destIata: edit.destIata})
+                    this.dispatch.stage({
+                        kind:    "addRoute",
+                        payload: Object.assign({}, edit, {aircraftId: alt.aircraftId, source: "advisor-reroute"})
+                    })
+                }
+            }
+            : null
         return {
             kind:        "maintenance-near",
             severity:    CanvasAdvisorEngine.SEVERITY_WARN,
             signature:   aid + ":" + near.startDay,
             message:     "Aircraft " + aid + " has a maintenance window in the next week. Adding flights may push the schedule into it.",
-            action:      null
+            action
         }
     }
 
@@ -133,19 +151,29 @@ class CanvasAdvisorEngine {
         if (edit.kind !== "addRoute") return null
         const score = Number(edit.paxScore) || 0
         if (score >= 30) return null  // healthy demand
+        const hub = edit.hub || (ctx && ctx.hub) || ""
+        const dest = edit.destIata || ""
+        const action = (typeof window !== "undefined" && window.CentralHubBus && hub && dest)
+            ? {
+                label: "Open in RA",
+                run: () => window.CentralHubBus.emit("focus-route", {hub, dest, source: "advisor"})
+            }
+            : null
         if (score === 0) {
             return {
                 kind:      "demand-missing",
                 severity:  CanvasAdvisorEngine.SEVERITY_INFO,
-                signature: (edit.aircraftId || "?") + ":" + (edit.destIata || "?"),
-                message:   "Adding " + (edit.destIata || "?") + " — no demand score in cache. Open Route Assistant to refresh demand for this hub."
+                signature: (edit.aircraftId || "?") + ":" + (dest || "?"),
+                message:   "Adding " + (dest || "?") + " — no demand score in cache. Open Route Assistant to refresh demand for this hub.",
+                action
             }
         }
         return {
             kind:      "demand-thin",
             severity:  CanvasAdvisorEngine.SEVERITY_INFO,
-            signature: (edit.aircraftId || "?") + ":" + (edit.destIata || "?"),
-            message:   (edit.destIata || "?") + " has paxScore " + score + " — below typical 30+ threshold. May not pay back."
+            signature: (edit.aircraftId || "?") + ":" + (dest || "?"),
+            message:   (dest || "?") + " has paxScore " + score + " — below typical 30+ threshold. May not pay back.",
+            action
         }
     }
 
@@ -158,11 +186,30 @@ class CanvasAdvisorEngine {
         const comp = wave.composition || {}
         const total = (comp.shortHaul || 0) + (comp.mediumHaul || 0) + (comp.longHaul || 0)
         if (total > 0) return null
+        const hub = preset.hub || (ctx && ctx.hub) || ""
+        const action = (typeof window !== "undefined")
+            ? {
+                label: "Open Wave Editor",
+                run: () => {
+                    if (window.RouteAssistantWaveEditor && typeof window.RouteAssistantWaveEditor.open === "function") {
+                        try { window.RouteAssistantWaveEditor.open({hub, presetId: preset.id}); return }
+                        catch (_) {}
+                    }
+                    if (window.CentralHubBus) {
+                        window.CentralHubBus.emit("open-tile", {
+                            tileId: "fleet-schedule-canvas",
+                            filter: {hub, view: "wave-editor"}
+                        })
+                    }
+                }
+            }
+            : null
         return {
             kind:      "composition-unset",
             severity:  CanvasAdvisorEngine.SEVERITY_INFO,
             signature: (preset.id || "?") + ":" + (wave.id || "?"),
-            message:   "Wave \"" + (wave.label || wave.id) + "\" has no composition set. Allocator hints will be weak — consider setting S/M/L counts."
+            message:   "Wave \"" + (wave.label || wave.id) + "\" has no composition set. Allocator hints will be weak — consider setting S/M/L counts.",
+            action
         }
     }
 
@@ -173,13 +220,59 @@ class CanvasAdvisorEngine {
         if (!sched || !Array.isArray(sched.legs)) return null
         for (const leg of sched.legs) {
             if (leg && leg.destination === edit.destIata) {
+                const action = this.dispatch
+                    ? {
+                        label: "Discard duplicate",
+                        run: () => this.dispatch.unstage({
+                            matchKind: "addRoute",
+                            aircraftId: edit.aircraftId,
+                            destIata:   edit.destIata
+                        })
+                    }
+                    : null
                 return {
                     kind:      "duplicate-dest",
                     severity:  CanvasAdvisorEngine.SEVERITY_INFO,
                     signature: edit.aircraftId + ":" + edit.destIata,
-                    message:   "Aircraft " + edit.aircraftId + " already serves " + edit.destIata + " in another wave. Confirm this is the desired second daily."
+                    message:   "Aircraft " + edit.aircraftId + " already serves " + edit.destIata + " in another wave. Confirm this is the desired second daily.",
+                    action
                 }
             }
+        }
+        return null
+    }
+
+    /**
+     * Find another aircraft on the same hub with no maintenance window in
+     * the next 7 days. Used by `_checkMaintenance` to power the "Re-route"
+     * remediation. Returns the fleet row (carries `aircraftId` + optional
+     * `registration`) or null when no clean alternative exists.
+     */
+    _findAltAircraft(currentAircraftId, hub, ctx) {
+        const fleet = ctx && Array.isArray(ctx.fleet) ? ctx.fleet : null
+        if (!fleet || !fleet.length) return null
+        const HUB = String(hub || "").toUpperCase()
+        const map = ctx && ctx.maintenance instanceof Map ? ctx.maintenance : null
+        const nowDays = Math.floor(Date.now() / 86400000)
+        for (const row of fleet) {
+            if (!row || row.aircraftId == null) continue
+            if (String(row.aircraftId) === String(currentAircraftId)) continue
+            if (HUB) {
+                const rowHub = String(row.hub || row.locIata || "").toUpperCase()
+                if (rowHub && rowHub !== HUB) continue
+            }
+            if (map) {
+                const rec = map.get(String(row.aircraftId))
+                const windows = (rec && Array.isArray(rec.windows)) ? rec.windows : []
+                let conflict = false
+                for (const w of windows) {
+                    if (!w || !isFinite(w.startDay)) continue
+                    const delta = w.startDay - nowDays
+                    if (delta >= 0 && delta <= 7) { conflict = true; break }
+                }
+                if (conflict) continue
+            }
+            return row
         }
         return null
     }
