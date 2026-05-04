@@ -2911,7 +2911,9 @@ function displayAircraftProfitability() {
             data: 'age',
             sortable: 1,
             visible: 1,
-            number: 1
+            number: 1,
+            // Item 30 (upstream v0.7.5): age averaged in summary row, not summed.
+            aggregate: 'avg'
     },
         {
             category: 'Aircraft',
@@ -2996,7 +2998,8 @@ function displayAircraftProfitability() {
             data: 'totalFlights',
             sortable: 1,
             visible: 1,
-            number: 1
+            number: 1,
+            aggregate: 'sum'
     },
         {
             category: 'Profit',
@@ -3004,7 +3007,8 @@ function displayAircraftProfitability() {
             data: 'finishedFlights',
             sortable: 1,
             visible: 1,
-            number: 1
+            number: 1,
+            aggregate: 'sum'
     },
         {
             category: 'Profit',
@@ -3012,7 +3016,8 @@ function displayAircraftProfitability() {
             data: 'profitFlights',
             sortable: 1,
             visible: 1,
-            number: 1
+            number: 1,
+            aggregate: 'sum'
     },
         {
             category: 'Profit',
@@ -3021,7 +3026,8 @@ function displayAircraftProfitability() {
             sortable: 1,
             visible: 1,
             number: 1,
-            format: 'money'
+            format: 'money',
+            aggregate: 'sum'
     },
         {
             category: 'Profit',
@@ -3257,6 +3263,63 @@ function generateTable(tableOptionsRule) {
     let thead = $('<thead></thead>').append(table.row.head);
     let tbody = $('<tbody></tbody>').append(table.row.body);
     table.tableHtml.append(thead, tbody);
+
+    // Item 30 (upstream v0.7.5): summary row support. Any column with
+    // `aggregate: 'sum' | 'avg' | 'count'` gets aggregated across the
+    // visible data and rendered into a tfoot summary row. Age uses 'avg';
+    // profit / totalFlights / finishedFlights / profitFlights use 'sum'.
+    // Closes the upstream "Aircraft Profitability age aggregation: averaged
+    // in summary" gap (CHANGELOG 0.7.5).
+    let hasAggregate = tableOptionsRule.column.some(function(col) {
+        return col.visible && col.aggregate;
+    });
+    if (hasAggregate) {
+        let summaryCells = [];
+        if (tableOptionsRule.tableSettings) {
+            summaryCells.push('<th></th>');
+        }
+        let firstLabelEmitted = false;
+        tableOptionsRule.column.forEach(function(colValue) {
+            if (!colValue.visible) return;
+            if (!colValue.aggregate) {
+                // Use the first non-aggregate visible cell to label the row,
+                // unless an explicit summaryLabel column is defined.
+                if (!firstLabelEmitted) {
+                    summaryCells.push('<th>Summary</th>');
+                    firstLabelEmitted = true;
+                } else {
+                    summaryCells.push('<th></th>');
+                }
+                return;
+            }
+            let values = tableOptionsRule.data.map(function(d) {
+                let raw = d[colValue.data];
+                let n = (typeof raw === 'number') ? raw : parseFloat(String(raw).replace(/[^\d.\-]/g, ''));
+                return isFinite(n) ? n : null;
+            }).filter(function(n) { return n !== null; });
+            let aggregated = '';
+            if (values.length) {
+                if (colValue.aggregate === 'avg') {
+                    aggregated = (values.reduce(function(a, b) { return a + b; }, 0) / values.length);
+                    aggregated = Math.round(aggregated * 100) / 100;
+                } else if (colValue.aggregate === 'sum') {
+                    aggregated = values.reduce(function(a, b) { return a + b; }, 0);
+                } else if (colValue.aggregate === 'count') {
+                    aggregated = values.length;
+                }
+            }
+            let td = $('<th></th>').addClass(tableOptionsRule.columnPrefix + colValue.data + '-summary');
+            if (aggregated !== '' && colValue.format) {
+                td.html(masterCellFormat(colValue.format, aggregated));
+            } else {
+                td.text(aggregated === '' ? '--' : aggregated);
+            }
+            summaryCells.push(td);
+        });
+        let tfoot = $('<tfoot></tfoot>').append($('<tr></tr>').append(summaryCells));
+        table.tableHtml.append(tfoot);
+    }
+
     let tableWell = $('<div style="overflow-x:auto;" class="as-table-well"></div>').append(table.tableHtml);
 
     //Table Settings
