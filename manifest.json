@@ -790,7 +790,8 @@
         {
             "js": [
                 "content_flightInfo.js",
-                "modules/data-models/flight-data.js"
+                "modules/data-models/flight-data.js",
+                "modules/flightInfo/flightInfo.js"
             ],
             "matches": [
                 "https://*.airlinesim.aero/action/info/flight*"
