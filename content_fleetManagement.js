@@ -107,11 +107,45 @@ function fltmng_getInt(text){
   const n = parseInt(String(text).replace(/[^\d]/g,''),10);
   return isFinite(n) ? n : 0;
 }
+// Tolerates absolute (`/app/fleets/aircraft/123/0`), relative (`../aircraft/123/`),
+// query-suffixed (`aircraft/123?tab=...`), and bare (`aircraft/123`) forms.
+// Falls back to the legacy `value.split('/')` slot scan if the regex misses,
+// which is what the original fork-side helper did. Backport of upstream v0.7.6
+// fltmng_getAircraftId hardening (CHANGELOG 0.7.6 — relative-path links).
 function fltmng_getAircraftId(value){
-    if (value) {
-        value = value.split('/');
-        const id = parseInt(value[value.length-2],10);
+    if (!value) return null;
+    let match = String(value).match(/(?:\/app\/fleets\/|\.\.\/)*aircraft\/(\d+)(?:\/|[?#]|$)/);
+    if (match) {
+        const id = parseInt(match[1], 10);
         return fltmng_isValidAircraftId(id) ? id : null;
+    }
+    const parts = String(value).split('/');
+    const fallback = parseInt(parts[parts.length-2], 10);
+    return fltmng_isValidAircraftId(fallback) ? fallback : null;
+}
+
+// Last-resort row-level scrape: try every `aircraft/...` link and finally the
+// row HTML itself. Used by callers that have a `<tr>` but no canonical link
+// element. Backport of upstream v0.7.6 fltmng_getAircraftIdFromRow.
+function fltmng_getAircraftIdFromRow(row){
+    if (!row) return null;
+    const $row = (row && row.jquery) ? row : $(row);
+    let primary = $row.find('a[href*="aircraft/"][title="Flights"]').attr('href') ||
+        $row.find('a[href*="aircraft/"][title="Flight Planning"]').attr('href') ||
+        $row.find('a[href*="aircraft/"][href*="/1"]').attr('href') ||
+        $row.find('a[href*="aircraft/"][href*="/0"]').attr('href') ||
+        $row.find('a[href*="aircraft/"]').first().attr('href');
+    let id = fltmng_getAircraftId(primary);
+    if (id) return id;
+    const hrefs = $row.find('a[href*="aircraft/"]').map(function(){ return $(this).attr('href'); }).get();
+    for (let i = 0; i < hrefs.length; i++){
+        id = fltmng_getAircraftId(hrefs[i]);
+        if (id) return id;
+    }
+    const htmlMatch = ($row.html() || '').match(/(?:\/app\/fleets\/|\.\.\/)*aircraft\/(\d+)(?:\/|[?#]|$)/);
+    if (htmlMatch) {
+        const parsed = parseInt(htmlMatch[1], 10);
+        return fltmng_isValidAircraftId(parsed) ? parsed : null;
     }
     return null;
 }
