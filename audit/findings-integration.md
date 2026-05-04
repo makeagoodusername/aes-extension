@@ -446,3 +446,63 @@ revisited and dispositioned:
   exercising the four cases (showNow on/off × showOnlyPricing on/off)
   before any change. Recommend keep-as-is until a user-reported bug
   surfaces.
+
+---
+
+## Session 4 — Dashboard render-path cluster close-out
+
+User invoked `/loop`-equivalent continuation request and asked for the
+dashboard render-path cluster (items `9, 10, 11, 23, 25, 39`) to be
+absorbed in full. Sessions 2/3 had landed `9, 11, 12, 23, 25` and the
+parallel session-3-tail had landed `30`. This session closes the final
+two: `10` (numeric-aware sorting) and `39` (inventory history Now-column
+anchor + percent direction).
+
+### Items now landed (2 final)
+
+| Commit | Item | Notes |
+|---|---|---|
+| `3707cab` | 39 | Inventory history Now-column compares to `dates[0]` (newest) instead of `dates[dates.length - 1]` (oldest); per-period historical comparisons use `dates[i + 1]` (older neighbor) instead of `dates[i - 1]` (newer). Body, head, and footer loops switched from `if (i)` to `if (!isOldest)`. Header colspan for "Now" corrected from 4 to 5 (was off-by-one against its 5-cell `th1` row). |
+| `50182ff` + `9e296cd` | 10 | Module-scope `getNumber(value)` strips non-numeric chars (commas, currency symbols, etc.) before `parseFloat` — replaces 8 `parseInt(text(), 10)` callsites across `routeManagementSortTable`, `CompetitorMonitoringSortTable`, `masterSortTable` (nested in `generateTable`), and `SortTable`. Sort state shape unchanged; not L2-scoped. |
+
+### Status post-session-4
+
+All 6 dashboard render-path cluster items absorbed. Combined with sessions
+2/3 work, the v0.7.8 changelog is now closed except for the 3 wontfix
+risk-skips (38/43/48). No open deferrals.
+
+### Verification
+
+- `node --check content_dashboard.js content_inventory.js` — clean.
+- `python3 -c "import json; json.load(open('manifest.json'))"` — valid.
+- `python3 scripts/audit-orphans.py` — 0 orphans, manifest clean.
+- `python3 scripts/audit-settings-writers.py` — 1 pre-existing finding in
+  `modules/schedule-management/presets-store.js:170` (unrelated to this
+  cluster).
+
+### Live verification still recommended (extends Session 2 + 3 list)
+
+7. Dashboard / Aircraft Profitability or Route Management: sort by a
+   formatted numeric column (e.g., "AS$1,234") → confirm rows order by
+   numeric value, not lexicographically (item 10).
+8. Dashboard / Competitor Monitoring: sort by a numeric column with
+   thousands-separated values → same as above (item 10).
+9. Inventory page with full history: enable "Show Now column" → confirm
+   `Δ %` against the most recent historical date is reasonable, not
+   showing the change since the oldest sample. Toggle showOnlyPricing on
+   and off; confirm comparisons still align (item 39).
+10. Inventory page: read across the historical columns left-to-right —
+    `Δ %` direction should reflect "change since the next-older snapshot",
+    not "change since the next-newer snapshot" (item 39 — most user-visible
+    fix).
+
+### Race notes
+
+This session ran concurrently with the parallel session that committed
+the `74459ef` AP summary row + `fbfb40f` release notes expansion. Several
+of my edits were transiently overwritten as the parallel session captured
+working-tree state for its own commits. Net result: my 6 commits all
+landed cleanly under separate hashes (`721c425`, `08954f1`, `5ee9a45`,
+`0b0edd5`, `3707cab`, `9e296cd`); the parallel session's `50182ff`
+opportunistically incorporated my staged `getNumber` helper alongside its
+own AP-summary cleanup.
