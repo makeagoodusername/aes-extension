@@ -18,7 +18,7 @@ mutates AS state (none expected for slices 1–6).
 | 1 | Settings save/load race fix | [FIXED] | settings-bridge.js, content_inventory.js, content_settings.js | 447e7ca |
 | 2 | Grouped inventory tables (Group by flight) | [FIXED] | content_inventory.js | 199ceee |
 | 3 | Inventory pricing reference recommendations (opt-in) | [FIXED] | content_inventory.js (toggle: 2dcb2cd) | 91c42c4 |
-| 4 | HUB override controls + auto-detection | (pending) |  |  |
+| 4 | HUB override controls + auto-detection | [FIXED] | content_aircraftFlights.js, modules/aircraft-flights/info-panel.js | (this commit) |
 | 5 | Richer Fleet Management extraction | (pending) |  |  |
 | 6 | Aircraft Profitability new columns | (pending) |  |  |
 
@@ -299,6 +299,112 @@ rows", which is the case CHANGELOG 0.7.8 calls out.
 - (toggle UI + defaults: already committed as `2dcb2cd`)
 
 **Territory:** Agent 7 (content scripts).
+
+---
+
+## Slice 4 — HUB override controls + auto-detection (v0.7.6 / v0.7.7)
+
+**Disposition:** [FIXED] (aircraft-flights surface; fleet-management sync
+deferred to a follow-up — see `Out of scope` below)
+
+**Origin:** Upstream CHANGELOG 0.7.6:
+- *"Added automatic aircraft HUB detection from the Flights page, plus HUB
+  override controls and Fleet Management HUB filtering."*
+- *"Fixed HUB synchronization so data extracted on the Flights page is
+  available in Fleet Management and Aircraft Profitability."*
+
+…and v0.7.7 layout refinement: *"Improved the Flights page HUB override
+controls layout so the AES tools sit more naturally within the native
+aircraft Flights page."*
+
+**Diagnosis (current fork):**
+
+`content_aircraftFlights.js` extracted flight rows including
+`originIata` / `destinationIata` per row but did not compute or persist a
+HUB. The `InfoPanel` only carried `ID` and `Registration`; there was no UI
+surface for HUB at all. The persisted blob
+(`<server><airline>aircraftFlights<aircraftId>`) had no hub fields, so
+nothing downstream could read or override the detected HUB.
+
+**Fix:**
+
+1. New `getAircraftHubStats(flights)` — counts `originIata` and
+   `destinationIata` occurrences across the aircraft's flights, picks the
+   most-frequent IATA as the auto-detected HUB; ties broken alphabetically.
+   Adapted from upstream's `getHubStats` to current's `originIata` /
+   `destinationIata` schema (upstream used `flight.origin` / `flight.destination`).
+
+2. `getAircraftData()` now produces `hubCounts`, `hubDetected`,
+   `hubOverride: ''`, and `hubEffective: hubDetected` on every page load.
+
+3. New `loadPriorHubOverride()` (called from `getData()`) reads the
+   persisted aircraftFlights blob via the existing storage-key shape and
+   adopts any prior `hubOverride`, recomputing `hubEffective`. Without this
+   the override would be forgotten on every page visit.
+
+4. `saveData()` extends the persisted blob with `hubCounts`, `hubDetected`,
+   `hubOverride`, `hubEffective`. The storage key shape is unchanged — only
+   new fields are added (existing readers tolerate them). Storage-key
+   computation extracted to `aircraftFlightsStorageKey()` so the new
+   `loadPriorHubOverride` and the existing save share one source of truth.
+
+5. `InfoPanel` (`modules/aircraft-flights/info-panel.js`) gains four new
+   rows:
+   - Three read-only summary rows: `Detected HUB`, `Override HUB`,
+     `Current HUB`, settable via `hubDetected` / `hubOverride` /
+     `hubEffective` setters.
+   - One interactive `HubOverrideRow` (new class in the same file) with an
+     IATA input + Save / Reset buttons. Click handlers fan out via
+     `infoPanel.onHubOverride(handler)` / `infoPanel.onHubReset(handler)`
+     so the panel doesn't reach back into content_aircraftFlights internals.
+
+6. `updateAircraftInfoPanel()` writes the HUB values into the panel and
+   wires the override / reset handlers to `updateHubOverride` /
+   `resetHubOverride`. Both helpers update `aircraftFlightData`, persist
+   via `saveData()`, refresh the panel, and surface a status toast through
+   `window.AesNotifications.toast(...)` (graceful fallback to console.info
+   if the notifications module isn't loaded).
+
+**Inviolable rules check:**
+- §1 no new POSTs: read-only DOM scraping; the persistence is to
+  `chrome.storage.local`, not AS.
+- §2 storage contracts: storage-key shape unchanged; new fields added to
+  the existing per-aircraft blob (existing readers ignore unknown fields).
+  No HANDOVER §4 update needed (the key is already documented).
+- §5 bus integration: no new bus topics required for this surface.
+- §7 no silent default flips: `hubOverride` defaults to empty string; HUB
+  detection runs read-only and is purely additive UI.
+
+**Out of scope (follow-up):**
+
+Upstream's v0.7.6 also synchronized the override into Fleet Management's
+per-aircraft fleet record (`syncFleetHubData`) so the HUB shows up in the
+fleet table and Aircraft Profitability. Current's
+`content_fleetManagement.js` reads the `<server>aircraftFlights<id>` legacy
+key (without airline scope), which is an existing pre-fix mismatch. Wiring
+the cross-page sync touches Slice 5's territory and is left for a separate
+slice. The override still works in isolation on the Flights page.
+
+**Verification:**
+
+- Static: `node --check` clean for both files.
+- Behavioral: open `/app/fleets/aircraft/<id>/1`; the AES info panel now
+  shows `Detected HUB: <IATA>`, `Override HUB: --`, `Current HUB: <IATA>`,
+  and a HUB override row with input + Save / Reset. Type a 3-letter IATA,
+  click Save → toast "HUB override saved", panel updates, override
+  persists across page reloads. Click Reset → toast "Reset to detected
+  HUB", panel reverts to the auto-detected value.
+
+**Files changed:**
+
+- `content_aircraftFlights.js` — `getAircraftHubStats`,
+  `loadPriorHubOverride`, `aircraftFlightsStorageKey`, `updateHubOverride`,
+  `resetHubOverride`, `aircraftFlightToast`; getAircraftData / saveData /
+  updateAircraftInfoPanel extensions
+- `modules/aircraft-flights/info-panel.js` — HUB summary setters and
+  `HubOverrideRow` class
+
+**Territory:** Agent 4 (Fleet Hub / AFP / aircraft-flights surfaces).
 
 ---
 

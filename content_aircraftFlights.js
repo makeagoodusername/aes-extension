@@ -78,7 +78,34 @@ function buildUI() {
 
 async function getData() {
     aircraftFlightData = getAircraftData()
+    await loadPriorHubOverride()
     aircraftFlightInfoData = await getAircraftFlightInfoData()
+}
+
+/**
+ * Read the persisted aircraftFlights blob (if any) and adopt any prior
+ * hubOverride into aircraftFlightData. hubEffective resolves to override
+ * when set, otherwise the freshly auto-detected HUB. Without this, every
+ * page visit would forget the user's HUB override.
+ */
+async function loadPriorHubOverride() {
+    const key = aircraftFlightsStorageKey()
+    let prior = null
+    try {
+        const result = await chrome.storage.local.get(key)
+        prior = result && result[key]
+    } catch (e) {
+        console.warn("[AES /1 aircraft-flights] hubOverride read failed", e && e.message || e)
+    }
+    if (prior && prior.hubOverride) {
+        aircraftFlightData.hubOverride = String(prior.hubOverride).toUpperCase()
+        aircraftFlightData.hubEffective = aircraftFlightData.hubOverride
+    }
+}
+
+function aircraftFlightsStorageKey() {
+    const airline = aircraftFlightData.airline || ""
+    return aircraftFlightData.server + airline + aircraftFlightData.type + aircraftFlightData.aircraftId
 }
 
 function processData() {
@@ -143,6 +170,42 @@ function updateTable() {
 function updateAircraftInfoPanel() {
     infoPanel.aircraftId = aircraftFlightData.aircraftId
     infoPanel.registration = aircraftFlightData.registration
+    infoPanel.hubDetected = aircraftFlightData.hubDetected
+    infoPanel.hubOverride = aircraftFlightData.hubOverride
+    infoPanel.hubEffective = aircraftFlightData.hubEffective
+        || aircraftFlightData.hubOverride
+        || aircraftFlightData.hubDetected
+    infoPanel.onHubOverride(updateHubOverride)
+    infoPanel.onHubReset(resetHubOverride)
+}
+
+function updateHubOverride(value) {
+    const clean = (value || "").trim().toUpperCase()
+    if (!clean) {
+        aircraftFlightToast('Enter a HUB code first', 'error')
+        return
+    }
+    aircraftFlightData.hubOverride = clean
+    aircraftFlightData.hubEffective = clean
+    saveData()
+    updateAircraftInfoPanel()
+    aircraftFlightToast('HUB override saved', 'success')
+}
+
+function resetHubOverride() {
+    aircraftFlightData.hubOverride = ''
+    aircraftFlightData.hubEffective = aircraftFlightData.hubDetected || ''
+    saveData()
+    updateAircraftInfoPanel()
+    aircraftFlightToast('Reset to detected HUB', 'success')
+}
+
+function aircraftFlightToast(message, level) {
+    if (window.AesNotifications && typeof window.AesNotifications.toast === "function") {
+        window.AesNotifications.toast(message, { level })
+    } else {
+        try { console.info("[AES /1 aircraft-flights]", level || "info", message) } catch (_) {}
+    }
 }
 
 function updateStatisticsPanel() {
@@ -178,6 +241,7 @@ function getAircraftData() {
     const flights = aircraftFlightsTab.getFlights()
     const flightsStats = aircraftFlightsTab.data.currentSchedule
     const serverDate = AES.getServerDate()
+    const hubStats = getAircraftHubStats(flights)
 
     const aircraftData = {
         date: serverDate.date,
@@ -193,10 +257,44 @@ function getAircraftData() {
         type: 'aircraftFlights',
         flights: flights,
         finishedFlights: flightsStats.finishedFlights,
-        totalFlights: flightsStats.totalFlights
+        totalFlights: flightsStats.totalFlights,
+        // HUB detection from upstream AES v0.7.6/0.7.7. Counts origin and
+        // destination airports across the aircraft's flights and picks the
+        // most common (ties broken alphabetically) as the auto-detected HUB.
+        // hubOverride is loaded later from the persisted blob; hubEffective
+        // resolves to override > detected.
+        hubCounts: hubStats.counts,
+        hubDetected: hubStats.hub,
+        hubOverride: '',
+        hubEffective: hubStats.hub
     }
 
     return aircraftData
+}
+
+/**
+ * Count origin/destination occurrences across the aircraft's flights and
+ * pick the most-frequent IATA as the auto-detected HUB. Ties resolved
+ * alphabetically. Backport of upstream AES v0.7.6 `getHubStats`, adapted
+ * to current's `originIata` / `destinationIata` schema.
+ */
+function getAircraftHubStats(flights) {
+    const counts = {}
+    for (const flight of flights || []) {
+        for (const airport of [flight.originIata, flight.destinationIata]) {
+            if (!airport) continue
+            counts[airport] = (counts[airport] || 0) + 1
+        }
+    }
+
+    let hub = ''
+    const ordered = Object.keys(counts).sort((a, b) => {
+        if (counts[b] === counts[a]) return a.localeCompare(b)
+        return counts[b] - counts[a]
+    })
+    if (ordered.length) hub = ordered[0]
+
+    return { counts, hub }
 }
 
 async function getAircraftFlightInfoData() {
@@ -285,7 +383,7 @@ function saveData() {
     // transfers / shared-fleet sims) collided across airlines, silently
     // overwriting the prior airline's persisted data.
     const airline = aircraftFlightData.airline || ""
-    let key = aircraftFlightData.server + airline + aircraftFlightData.type + aircraftFlightData.aircraftId;
+    let key = aircraftFlightsStorageKey();
     let saveData = {
         aircraftId: aircraftFlightData.aircraftId,
         // F-9228-807: include airline in the saved blob (in addition to the
@@ -295,6 +393,18 @@ function saveData() {
         date: aircraftFlightData.date,
         equipment: aircraftFlightData.equipment,
         finishedFlights: aircraftFlightData.finishedFlights,
+        // HUB fields from upstream AES v0.7.6/0.7.7. hubCounts is a
+        // {<iata>: count} dict from the most recent auto-detect. hubOverride
+        // is the user-set override (or "" if none). hubEffective resolves
+        // override > detected so downstream consumers can show a single
+        // "current HUB" without re-deriving the precedence rule.
+        hubCounts: aircraftFlightData.hubCounts || {},
+        hubDetected: aircraftFlightData.hubDetected || '',
+        hubOverride: aircraftFlightData.hubOverride || '',
+        hubEffective: aircraftFlightData.hubEffective
+            || aircraftFlightData.hubOverride
+            || aircraftFlightData.hubDetected
+            || '',
         profit: aircraftFlightData.profit,
         profitFlights: aircraftFlightData.profitFlights,
         registration: aircraftFlightData.registration,
