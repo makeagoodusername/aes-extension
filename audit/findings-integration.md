@@ -225,3 +225,44 @@ These require user's Chrome instance (auto-mode session can't drive AS UI):
   or leave it as a fork-divergence (the fork has its own
   `quick-price-applier`-like UX in some panes)?
 - Items 9/10/11/23/25/39 dashboard items: prioritize per-item or batch?
+
+---
+
+## Wontfix register — risk-skip items (do NOT re-port)
+
+Each of these has a fork-side reason to diverge from upstream. Future
+contributors should consult this register before re-attempting a port.
+
+### Item 38 — Inventory load-index formula
+- **Upstream (v0.7.3)**: `index = (10 ** (analysisPricePoint/100 - 1)) * load*100`
+- **Fork**: `(analysisPricePoint + load*100*3) / 4` (`content_inventory.js:933-942`)
+- **Why fork diverges**: fork's load-index is calibrated against its profile
+  / route-pressure / DNA-fit model; the Y/C/F threshold bands (≤50 = bad,
+  ≥90 = good, neutral otherwise — see `displayIndex`) are tuned to the
+  fork's value range. Reverting to upstream's exponential formula would
+  cause every band to mis-fire.
+- **Disposition**: **wontfix**. If we ever revisit, also revisit the
+  threshold bands AND the central-hub aircraft-profitability tile that
+  consumes `index` as a sort key.
+
+### Item 43 — content_flightInfo class refactor
+- **Upstream (v0.7.1)**: split flight-info extraction into a class-based
+  `modules/flightInfo/flightInfo.js` module.
+- **Fork**: keeps the procedural `content_flightInfo.js` because it carries
+  F-9228-807 hardening (airline-scoped storage key + `chrome.runtime.lastError`
+  surfacing on storage failures). The upstream class doesn't include those.
+- **Disposition**: **wontfix** unless the upstream class is forked locally to
+  layer the F-9228-807 hardening on top. There is a stub
+  `window.AesFlightInfo` library module (commit `5869bac`) that could
+  eventually take this on.
+
+### Item 48 — Route-management tab cap
+- **Upstream (v0.7.0)**: `for (i = 0; i < urls.length; i++) { window.open(urls[i]); if (i == 6) break; }` — caps at 6 tabs.
+- **Fork**: caps at 10 (`content_dashboard.js:2944-2949`).
+- **Why fork diverges**: fork's UAS (used-aircraft-scanner) staggering and
+  central-hub mass-open buttons assume a 10-tab budget. Lowering to 6 would
+  break those features' progress estimates and require coordinated changes
+  across multiple modules.
+- **Disposition**: **wontfix**. The 10-tab cap is intentional; if AS server
+  rate-limits change, revisit the cap globally (UAS + dashboard +
+  scrape-orchestrator concurrency).
