@@ -14,7 +14,7 @@
  * Why this matters:
  *
  *   - Without this, ORS reads `getOurFlightNumbers` from the legacy
- *     `<server><airline>schedule` cache (written by content_fligthSchedule.js
+ *     `<server><airline>schedule` cache (written by content_flightSchedule.js
  *     on the enterprise schedule tab). On a freshly-scraped route whose
  *     flights aren't in that cache yet, every leg tags as "not ours" and
  *     all rank flavors come back null — silent corruption that looks like
@@ -52,17 +52,40 @@
  *   scraper's own bulkScrape uses (ors-scraper.js:920). When tripped, the
  *   bulk run drains in-flight work, emits `phase:"halted"`, and resolves.
  *   Schedule scraper failures do NOT count toward the breaker.
+ *
+ * Load-order: wrapped in idempotent IIFE guard. Same shape as
+ * silent-auto-proposers.js / parallel-scanner.js so future double-listing
+ * or SPA re-injection no-ops cleanly instead of throwing
+ * `SyntaxError: Identifier 'RouteAssistantRouteSync' has already been declared`.
  */
+;(function () {
+    const root = (typeof window !== "undefined")
+        ? window
+        : ((typeof globalThis !== "undefined") ? globalThis : null)
+    if (root && root.RouteAssistantRouteSync) return
+
 class RouteAssistantRouteSync {
 
     constructor(server, opts) {
         if (!server) throw new Error("RouteAssistantRouteSync: server required")
         opts = opts || {}
         this.server = server
-        this.priceScraper = opts.priceScraper || new RouteAssistantSchedulePageScraper(server, {
+        const ScheduleScraper = typeof RouteAssistantSchedulePageScraper !== "undefined"
+            ? RouteAssistantSchedulePageScraper
+            : (typeof window !== "undefined" ? window.RouteAssistantSchedulePageScraper : null)
+        const OrsScraper = typeof RouteAssistantOrsScraper !== "undefined"
+            ? RouteAssistantOrsScraper
+            : (typeof window !== "undefined" ? window.RouteAssistantOrsScraper : null)
+        if (!opts.priceScraper && !ScheduleScraper) {
+            throw new Error("RouteAssistantRouteSync: schedule scraper missing")
+        }
+        if (!opts.orsScraper && !OrsScraper) {
+            throw new Error("RouteAssistantRouteSync: ORS scraper missing")
+        }
+        this.priceScraper = opts.priceScraper || new ScheduleScraper(server, {
             maxAgeDays: opts.scheduleMaxAgeDays
         })
-        this.orsScraper = opts.orsScraper || new RouteAssistantOrsScraper(server, {
+        this.orsScraper = opts.orsScraper || new OrsScraper(server, {
             maxAgeDays:                opts.orsMaxAgeDays,
             circuitBreakerCooldownMs:  opts.orsCircuitBreakerCooldownMs
         })
@@ -250,6 +273,11 @@ class RouteAssistantRouteSync {
     }
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = RouteAssistantRouteSync
-}
+    if (root) {
+        root.RouteAssistantRouteSync = RouteAssistantRouteSync
+    }
+
+    if (typeof module !== "undefined" && module.exports) {
+        module.exports = RouteAssistantRouteSync
+    }
+})()

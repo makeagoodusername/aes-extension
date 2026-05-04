@@ -31,3 +31,7 @@ class RouteAssistantTableView {
         panel._drawTable(sorted)
     }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantTableView = RouteAssistantTableView
+}

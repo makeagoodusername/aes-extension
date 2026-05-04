@@ -1,0 +1,770 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?1",
+  "title": "N001CFA | Free1 | AirlineSim",
+  "h3": [
+    "Assign a new flight",
+    "Flight Plan",
+    "AES Route Builder",
+    "Transfer Flight Plan",
+    "Aircraft Info",
+    "Settings",
+    "Schedule transfer flight",
+    "Cabin",
+    "AES Route Assistant"
+  ],
+  "slots": [
+    {
+      "name": "tools",
+      "text": "Plan from: Open station ▾ Open Route Assistant ↻ Update ☆ Watchlist this hub",
+      "len": 2608
+    },
+    {
+      "name": "auto-preview",
+      "text": "AUTO-BUILD (PREVIEW) scoring × maintenance budget → weekly grid LEGS — WEEKLY — SCORE — MAINT NOW 104% Auto-build week Apply all flights… Route candidates not ready yet — open the route candidates panel first. Apply-all is gated behind settings.aircraftFlightPlan.autoScheduler.tier === \"apply-on-confirm\".",
+      "len": 4087
+    },
+    {
+      "name": "studio",
+      "text": "Flight Studio compose · preview · apply DRAFT Plan hub: LHR · N001CFA · BOEING 767-300ER (WINGLETS) TEMPLATE (no templates saved yet) Save as… Manage ☰ #1 FROM → TO DEP PRICE SERVICE ✕ + Add leg or drag a candidate row into the tray FLIGHT# Next (blank = AS auto-assigns on submit) Preview Reset Undo TURN ← Continue back Continue → Build + create Build draft Create flights Dry-run output (click Preview to populate) Decision context Fill FROM + TO to see decision context.",
+      "len": 10688
+    },
+    {
+      "name": "candidates",
+      "text": "No FlightsFrom data for LHR. Scan flightsfrom.com for LHR or open flightsfrom.com/LHR manually",
+      "len": 1007
+    },
+    {
+      "name": "driver",
+      "text": "FILL LATEST PICK REVERSE O/D CLEAR SHOW WHAT'D POST Pick a destination from the candidate list above to fill the form. Dry-run output",
+      "len": 1381
+    },
+    {
+      "name": "wave",
+      "text": "Wave plan Build a multi-leg schedule from the candidates above × a saved preset. Manage presets. Preset: (no presets — create on dashboard) + New for LHR Generate wave plan Apply to fleet… No wave presets found. Create one on the AES dashboard → Schedule Management. No wave plan yet. Pick a preset above and click Generate.",
+      "len": 2591
+    },
+    {
+      "name": "header",
+      "text": "N001CFA · BOEING 767-300ER (WINGLETS) · LHR · v0.2.0 · Refresh",
+      "len": 289
+    },
+    {
+      "name": "spec",
+      "text": "BOEING 767-300ER (WINGLETS) · N001CFA 351 seats · 8,090 km · 850 km/h · 757% pax sat Refresh spec",
+      "len": 446
+    },
+    {
+      "name": "maintenance",
+      "text": "Maint 104.3% · Cond 67% · Budget 80h/wk · Fcast 0.0% in 7d",
+      "len": 542
+    },
+    {
+      "name": "audit",
+      "text": "Settings & activity Recent activity: No actions yet — pick a candidate to start.",
+      "len": 1901
+    }
+  ],
+  "candidates": [],
+  "buttons": [
+    {
+      "i": 17,
+      "tag": "A",
+      "text": "Forbidden Routes",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 42,
+      "tag": "A",
+      "text": "Casper Flight Logistics",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 48,
+      "tag": "A",
+      "text": "Flight Numbers",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 49,
+      "tag": "A",
+      "text": "Route Evaluation",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 64,
+      "tag": "A",
+      "text": "Stations",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 98,
+      "tag": "A",
+      "text": "FLIGHT PLAN",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 99,
+      "tag": "A",
+      "text": "FLIGHTS",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 102,
+      "tag": "A",
+      "text": "EXISTING FLIGHT NUMBER",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 103,
+      "tag": "A",
+      "text": "NEW FLIGHT NUMBER",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 111,
+      "tag": "INPUT",
+      "text": "Create new flight number",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 112,
+      "tag": "BUTTON",
+      "text": "Open station",
+      "title": "Open the station drawer for LHR (demand, top routes, conflicts).",
+      "disabled": false
+    },
+    {
+      "i": 113,
+      "tag": "BUTTON",
+      "text": "▾",
+      "title": "Bulk-open from watchlist / top routes / FlightsFrom / demand (scoped to LHR for the watchlist source).",
+      "disabled": false
+    },
+    {
+      "i": 114,
+      "tag": "BUTTON",
+      "text": "Open Route Assistant",
+      "title": "Open the full RA panel on the scheduling page rooted at LHR",
+      "disabled": false
+    },
+    {
+      "i": 115,
+      "tag": "BUTTON",
+      "text": "↻ Update",
+      "title": "Re-fetch candidates and re-read the persisted schedule for this hub.",
+      "disabled": false
+    },
+    {
+      "i": 116,
+      "tag": "BUTTON",
+      "text": "☆ Watchlist this hub",
+      "title": "Add/remove LHR from the Route Assistant watchlist.",
+      "disabled": false
+    },
+    {
+      "i": 117,
+      "tag": "BUTTON",
+      "text": "Auto-build week",
+      "title": "Route candidates not ready yet — open the route candidates panel first.",
+      "disabled": true
+    },
+    {
+      "i": 118,
+      "tag": "BUTTON",
+      "text": "Apply all flights…",
+      "title": "No build to apply — run Auto-build first.",
+      "disabled": true
+    },
+    {
+      "i": 123,
+      "tag": "BUTTON",
+      "text": "Next",
+      "title": "Ask AS for the next available flight number",
+      "disabled": false
+    },
+    {
+      "i": 124,
+      "tag": "BUTTON",
+      "text": "Preview",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 127,
+      "tag": "BUTTON",
+      "text": "← Continue back",
+      "title": "Seed the previous route-cycle leg and retreat DEP by flight time + turnaround",
+      "disabled": false
+    },
+    {
+      "i": 128,
+      "tag": "BUTTON",
+      "text": "Continue →",
+      "title": "Return to the route base, or open the next blank station row",
+      "disabled": false
+    },
+    {
+      "i": 129,
+      "tag": "BUTTON",
+      "text": "Build + create",
+      "title": "Build the optimal plan and create all flights in one click",
+      "disabled": false
+    },
+    {
+      "i": 130,
+      "tag": "BUTTON",
+      "text": "Build draft",
+      "title": "Run the optimiser and populate the spec without applying",
+      "disabled": false
+    },
+    {
+      "i": 131,
+      "tag": "BUTTON",
+      "text": "Create flights",
+      "title": "Apply the current spec via background-tab pipeline",
+      "disabled": false
+    },
+    {
+      "i": 132,
+      "tag": "BUTTON",
+      "text": "Scan flightsfrom.com for LHR",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 133,
+      "tag": "A",
+      "text": "or open flightsfrom.com/LHR manually",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 134,
+      "tag": "BUTTON",
+      "text": "FILL LATEST PICK",
+      "title": "Pick a candidate first",
+      "disabled": true
+    },
+    {
+      "i": 137,
+      "tag": "BUTTON",
+      "text": "SHOW WHAT'D POST",
+      "title": "Fill once before previewing",
+      "disabled": true
+    },
+    {
+      "i": 141,
+      "tag": "BUTTON",
+      "text": "Apply to fleet…",
+      "title": "Generate a wave plan first.",
+      "disabled": true
+    },
+    {
+      "i": 143,
+      "tag": "BUTTON",
+      "text": "Plan",
+      "title": "Needs a preset, aircraft spec, route candidates, and the wave applier module.",
+      "disabled": true
+    },
+    {
+      "i": 144,
+      "tag": "BUTTON",
+      "text": "Density On",
+      "title": "Hide the faint existing-route and ground-gap density layer.",
+      "disabled": false
+    },
+    {
+      "i": 146,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 147,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 148,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 158,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 159,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 160,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 170,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 171,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 172,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 178,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 179,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 180,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 186,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 187,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 188,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 189,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 190,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 191,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 201,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 202,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 203,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 213,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 214,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 215,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 221,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 222,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 223,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 229,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 230,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 231,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 232,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 233,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 234,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 244,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 245,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 246,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 256,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 257,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 258,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 264,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 265,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 266,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 272,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 273,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 274,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 275,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 276,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 277,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 287,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 288,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 289,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 299,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 300,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 301,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 307,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 308,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 309,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 319,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 320,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 321,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 327,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 328,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 329,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 339,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 340,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 341,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    },
+    {
+      "i": 347,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false
+    },
+    {
+      "i": 348,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false
+    },
+    {
+      "i": 349,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false
+    }
+  ]
+}

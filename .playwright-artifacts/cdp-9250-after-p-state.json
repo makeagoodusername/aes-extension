@@ -1,0 +1,62 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets/aircraft/22035/0?23",
+  "title": "N004CFA | Free1 | AirlineSim",
+  "bodyHasAES": false,
+  "aesNodes": 14,
+  "headings": [
+    "ASSIGN A NEW FLIGHT",
+    "FLIGHT PLAN",
+    "AES ROUTE BUILDER",
+    "TRANSFER FLIGHT PLAN",
+    "AIRCRAFT INFO",
+    "SETTINGS",
+    "SCHEDULE TRANSFER FLIGHT",
+    "CABIN",
+    "AES ROUTE ASSISTANT"
+  ],
+  "slots": [
+    {
+      "slot": "tools",
+      "text": "Plan from:\nOpen station\n▾\nOpen Route Assistant\n↻ Update\n☆ Watchlist this hub"
+    },
+    {
+      "slot": "auto-preview",
+      "text": "AUTO-BUILD (PREVIEW)\nscoring × maintenance budget → weekly grid\nLEGS\n—\nWEEKLY\n—\nSCORE\n—\nMAINT NOW\n100%\nAuto-build week\nApply all flights…\nRoute candidates not ready yet — open the route candidates panel first.\nApply-all is gated behind settings.aircraftFlightPlan.autoScheduler.tier === \"apply-on-confirm\"."
+    },
+    {
+      "slot": "studio",
+      "text": "Flight Studio\ncompose · dry-run\nDRY-RUN\nPlan hub: SYD · N004CFA · BOEING 767-300ER (WINGLETS)\nTEMPLATE\n(no templates saved yet)\nSave as…\nManage\n☰\n#1\nFROM\n→\nTO\nDEP\nPRICE\nSERVICE\n✕\n+ Add leg\nor drag a candidate row into the tray\nFLIGHT#\nNext\n(blank = AS auto-assigns on submit)\nPreview\nReset\nUndo\nTURN\n← Continue back\nContinue →\n🎯 Automate\nAuto-Build\nApply\nDry-run output (click Preview to populate)\nDecision context\nFill FROM + TO to see decision context."
+    },
+    {
+      "slot": "candidates",
+      "text": "No FlightsFrom data for SYD.\nScan flightsfrom.com for SYD\nor open flightsfrom.com/SYD manually"
+    },
+    {
+      "slot": "driver",
+      "text": "FILL LATEST PICK\nREVERSE O/D\nCLEAR\nSHOW WHAT'D POST\nPick a destination from the candidate list above to fill the form.\nDry-run output"
+    },
+    {
+      "slot": "wave",
+      "text": "Wave plan\nBuild a multi-leg schedule from the candidates above × a saved preset. Manage presets.\nPreset:\n(no presets — create on dashboard)\n+ New for SYD\nGenerate wave plan\nApply to fleet…\nNo wave presets found. Create one on the AES dashboard → Schedule Management.\nNo wave plan yet. Pick a preset above and click Generate."
+    },
+    {
+      "slot": "header",
+      "text": "N004CFA · BOEING 767-300ER (WINGLETS) · SYD · v0.2.0 · Refresh"
+    },
+    {
+      "slot": "spec",
+      "text": "BOEING 767-300ER (WINGLETS) · N004CFA\n351 seats · 8,090 km · 850 km/h · 757% pax sat\nRefresh spec"
+    },
+    {
+      "slot": "maintenance",
+      "text": "Maint 100.0% · Cond 100% · Budget 80h/wk · Fcast 0.0% in 7d"
+    },
+    {
+      "slot": "audit",
+      "text": "Settings & activity\nRecent activity:\nNo actions yet — pick a candidate to start."
+    }
+  ],
+  "candidates": [],
+  "formExists": true,
+  "body": "FLEET\n/\nAIRCRAFT\n/\nN004CFA | FREE1 | AIRLINESIM\nAIRLINESIM\n DATABASE \n HELP \n COMMUNITY \n PRIVATE MESSAGES 26\n HALLEU \nCFLAIR \n339,823 AS$\nCOMMERCIAL \nOPERATIONS \nMANAGEMENT \nAES\nBRIDGE\nAIRCRAFT: N004CFA / BOEING 767-300ER (WINGLETS)\nWITHDRAW PILOTS AIRCRAFT TYPE PERFORMANCE TOOL  PREVIOUS BACK TO FLEET\nFLIGHT PLAN\nFLIGHTS\nHISTORY\nCONVERSION\nASSIGN A NEW FLIGHT\nEXISTING FLIGHT NUMBER\nNEW FLIGHT NUMBER\nFLIGHT NUMBER\n \nFROM \nChoose One\nChoose One\nAberdeen, SD, US (ABR)\nAbilene (ABI)\nAdak Island (ADK)\nAguadilla (BQN)\nAkhiok (AKK)\nAkiak (AKI)\nAkron/Canton (CAK)\nAlakanuk (AUK)\nAlamogordo (ALM)\nAlamosa (ALS)\nAlbany, GA, US (ABY)\nAlbany, NY, US (ALB)\nAlbuquerque (ABQ)\nAleknagik (WKK)\nAlexandria, LA (AEX)\nAllakaket (AET)\nAllentown (ABE)\nAlliance (AIA)\nAlliance Ft. Worth (AFW)\nAlpena (APN)\nAltoona (AOO)\nAmarillo (AMA)\nAmbler (ABL)\nAnacortes (OTS)\nAnaktuvuk (AKP)\nAnchorage (ANC)\nAniak (ANI)\nAnvik (ANV)\nAppleton (ATW)\nArcata (ACV)\nArctic Village (ARC)\nAsheville (AVL)\nAspen (ASE)\nAthens, GA, US (AHN)\nAtka (AKB)\nAtlanta (ATL)\nAtlantic City (ACY)\nAtmautluak (ATT)\nAtqasuk (ATK)\nAugusta (AGS)\nAugusta State (AUG)\nAustin (AUS)\nBakersfield (BFL)\nBaltimore (BWI)\nBangor (BGR)\nBar Harbor (BHB)\nBarrow (BRW)\nBarter Island (BTI)\nBaton Rouge (BTR)\nBeaufort County (BFT)\nBeaumont (BPT)\nBeaver (WBQ)\nBeckley (BKW)\nBedford (BED)\nBelleville (BLV)\nBellingham (BLI)\nBemidji (BJI)\nBethel (BET)\nBettles (BTT)\nBilli"
+}

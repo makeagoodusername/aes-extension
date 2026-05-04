@@ -275,7 +275,7 @@ class OpenStationsModal {
         if (fresh.length) {
             settings.stationAutomation = settings.stationAutomation || {}
             settings.stationAutomation.countriesCache = fresh
-            await chrome.storage.local.set({settings})
+            await window.AesSettings.saveArea("stationAutomation", settings.stationAutomation)
             this._countries = new Map(fresh.map(c => [c.id, {name: c.name, code: c.code}]))
         }
     }
@@ -585,7 +585,9 @@ class OpenStationsModal {
 
         const chips = document.createElement("span")
         chips.style.cssText = "display:flex;gap:3px;flex-shrink:0;"
-        const ordered = ["demand", "ff", "watch", "top"]
+        // F-9228-304: include "candidates" so seeded-mode rows render the
+        // chip declared in SOURCE_LABELS. Previously the chip was unreachable.
+        const ordered = ["demand", "ff", "watch", "top", "candidates"]
         for (const k of ordered) {
             if (!c.sources.has(k)) continue
             const meta = OpenStationsModal.SOURCE_LABELS[k]

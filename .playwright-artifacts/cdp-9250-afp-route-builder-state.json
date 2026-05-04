@@ -1,0 +1,261 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets?19",
+  "title": "Default fleet | Free1 | AirlineSim",
+  "bodyHasAES": false,
+  "aesNodes": 0,
+  "headings": [
+    "AES FLEET MANAGEMENT",
+    "FLEETS",
+    "ACTIONS"
+  ],
+  "slots": [],
+  "candidates": [],
+  "buttons": [
+    {
+      "i": 3,
+      "tag": "BUTTON",
+      "text": "✈ OPEN FLEET SCHEDULE GRID",
+      "title": "Open a side-by-side schedule view for every aircraft, with cross-fleet route overlay",
+      "cls": "",
+      "disabled": false
+    },
+    {
+      "i": 4,
+      "tag": "BUTTON",
+      "text": "▦ OPEN SCHEDULE CANVAS",
+      "title": "Wave-as-spine canvas with a context-aware assistant rail",
+      "cls": "",
+      "disabled": false
+    },
+    {
+      "i": 6,
+      "tag": "BUTTON",
+      "text": "RUN STRATEGY ▸",
+      "title": "Open the cross-module Strategy preview/apply panel",
+      "cls": "",
+      "disabled": false
+    },
+    {
+      "i": 7,
+      "tag": "BUTTON",
+      "text": "QUICK-APPLY 0 HIGH-CONF ▸",
+      "title": "No high-confidence applicable decisions in the current plan",
+      "cls": "",
+      "disabled": true
+    },
+    {
+      "i": 10,
+      "tag": "BUTTON",
+      "text": "↟\nWAVES\n0 presets",
+      "title": "Switch to Waves",
+      "cls": "",
+      "disabled": false
+    },
+    {
+      "i": 12,
+      "tag": "BUTTON",
+      "text": "AUTO-GENERATE PLANS (2)",
+      "title": "Build a wave draft for every aircraft missing one (2 aircraft, runs sequentially with concurrency 2).",
+      "cls": "",
+      "disabled": false
+    },
+    {
+      "i": 13,
+      "tag": "BUTTON",
+      "text": "APPLY ALL PENDING (0)",
+      "title": "No pending legs across the fleet.",
+      "cls": "",
+      "disabled": true
+    },
+    {
+      "i": 15,
+      "tag": "BUTTON",
+      "text": "+ CREATE STARTER",
+      "title": "Create a starter wave plan for SYD. Edits sync with RA Wave View, AFP wave strip, and the Fleet Schedule Grid.",
+      "cls": "",
+      "disabled": false
+    },
+    {
+      "i": 17,
+      "tag": "BUTTON",
+      "text": "MARKETS",
+      "title": "Open the route markets page for SYD",
+      "cls": "",
+      "disabled": false
+    },
+    {
+      "i": 20,
+      "tag": "BUTTON",
+      "text": "+ CREATE STARTER",
+      "title": "Create a starter wave plan for LHR. Edits sync with RA Wave View, AFP wave strip, and the Fleet Schedule Grid.",
+      "cls": "",
+      "disabled": false
+    },
+    {
+      "i": 22,
+      "tag": "BUTTON",
+      "text": "MARKETS",
+      "title": "Open the route markets page for LHR",
+      "cls": "",
+      "disabled": false
+    },
+    {
+      "i": 24,
+      "tag": "BUTTON",
+      "text": "CREATE NEW FLEET",
+      "title": "",
+      "cls": "btn btn-default",
+      "disabled": false
+    },
+    {
+      "i": 28,
+      "tag": "BUTTON",
+      "text": "R",
+      "title": "Open scheduling/route assistant for this aircraft's hub",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-r",
+      "disabled": false
+    },
+    {
+      "i": 29,
+      "tag": "BUTTON",
+      "text": "S",
+      "title": "Open Schedule Management overlay",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-s",
+      "disabled": false
+    },
+    {
+      "i": 30,
+      "tag": "BUTTON",
+      "text": "P",
+      "title": "Open the Flight Plan tab (AFP module)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-p",
+      "disabled": false
+    },
+    {
+      "i": 31,
+      "tag": "BUTTON",
+      "text": "D",
+      "title": "Open AFP Schedule Control (proxy dry-run · Tier 1)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-d",
+      "disabled": false
+    },
+    {
+      "i": 35,
+      "tag": "BUTTON",
+      "text": "R",
+      "title": "Open scheduling/route assistant for this aircraft's hub",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-r",
+      "disabled": false
+    },
+    {
+      "i": 36,
+      "tag": "BUTTON",
+      "text": "S",
+      "title": "Open Schedule Management overlay",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-s",
+      "disabled": false
+    },
+    {
+      "i": 37,
+      "tag": "BUTTON",
+      "text": "P",
+      "title": "Open the Flight Plan tab (AFP module)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-p",
+      "disabled": false
+    },
+    {
+      "i": 38,
+      "tag": "BUTTON",
+      "text": "D",
+      "title": "Open AFP Schedule Control (proxy dry-run · Tier 1)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-d",
+      "disabled": false
+    },
+    {
+      "i": 42,
+      "tag": "BUTTON",
+      "text": "R",
+      "title": "Open scheduling/route assistant for this aircraft's hub",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-r",
+      "disabled": false
+    },
+    {
+      "i": 43,
+      "tag": "BUTTON",
+      "text": "S",
+      "title": "Open Schedule Management overlay",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-s",
+      "disabled": false
+    },
+    {
+      "i": 44,
+      "tag": "BUTTON",
+      "text": "P",
+      "title": "Open the Flight Plan tab (AFP module)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-p",
+      "disabled": false
+    },
+    {
+      "i": 45,
+      "tag": "BUTTON",
+      "text": "D",
+      "title": "Open AFP Schedule Control (proxy dry-run · Tier 1)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-d",
+      "disabled": false
+    },
+    {
+      "i": 49,
+      "tag": "BUTTON",
+      "text": "R",
+      "title": "Open scheduling/route assistant for this aircraft's hub",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-r",
+      "disabled": false
+    },
+    {
+      "i": 50,
+      "tag": "BUTTON",
+      "text": "S",
+      "title": "Open Schedule Management overlay",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-s",
+      "disabled": false
+    },
+    {
+      "i": 51,
+      "tag": "BUTTON",
+      "text": "P",
+      "title": "Open the Flight Plan tab (AFP module)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-p",
+      "disabled": false
+    },
+    {
+      "i": 52,
+      "tag": "BUTTON",
+      "text": "D",
+      "title": "Open AFP Schedule Control (proxy dry-run · Tier 1)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-d",
+      "disabled": false
+    },
+    {
+      "i": 54,
+      "tag": "BUTTON",
+      "text": "×Close",
+      "title": "",
+      "cls": "btn btn-default aes-modal__close",
+      "disabled": false
+    }
+  ],
+  "form": false,
+  "modules": {
+    "AesAfp": false,
+    "AesAfpRouteCandidates": false,
+    "AesAfpFormDriver": false,
+    "AesAfpWaveApplier": false,
+    "AesAfpSubmitBridge": false,
+    "AesAfpAutoApplyBatch": false,
+    "RouteAssistantWaveOverlay": false,
+    "SchedulePresets": false,
+    "ScheduleBuilder": false,
+    "AesAfpScheduleApplyOrchestrator": false,
+    "AesAfpDragToSchedule": false
+  }
+}

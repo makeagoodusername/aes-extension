@@ -75,14 +75,21 @@
     }
 
     function _findStripRoot() {
-        // The wave-strip mount is rendered into a host the AFP panel
-        // hands to AesAfpWaveStrip.render. We look for any element
-        // containing at least one strip-lane child, walking up from
-        // a known query target.
+        // F-9228-900: previously we did `lanes[0].closest("div")` which
+        // returns the lane element itself (the lane IS a div with the
+        // matching attribute). coordsToWave then queried within ONE lane
+        // and found zero descendant lanes — every drop fell through to
+        // "Drop outside wave-strip" and the dashed-outline hover affordance
+        // never appeared. wave-strip.js now stamps `data-aes-wave-strip="1"`
+        // on the wrap; address the wrap so coordsToWave sees every lane.
+        const wrap = document.querySelector('[data-aes-wave-strip="1"]')
+        if (wrap) return wrap
+        // Back-compat for older wave-strip builds: walk up from the first
+        // lane to its common ancestor (parentElement.parentElement = wrap).
         const lanes = document.querySelectorAll('[data-aes-wave-strip-lane="1"]')
         if (!lanes.length) return null
-        // Climb to the nearest common ancestor that holds them all.
-        return lanes[0].closest("div") || document.body
+        const parent = lanes[0].parentElement
+        return (parent && parent.parentElement) || parent || null
     }
 
     function _arbMove(ev, c) {

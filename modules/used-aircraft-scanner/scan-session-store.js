@@ -27,7 +27,7 @@ class MarketScanSession {
 
     /**
      * Builds a fresh session record. Caller must persist via save().
-     * @param {object} args - {server, presetId, presetName, queue: [{type, family, status?, error?}], concurrency, staggerMs}
+     * @param {object} args - {server, presetId, presetName, queue: [{type, family, familyFallback?, status?, error?}], concurrency, staggerMs}
      */
     static create(args) {
         const scanId = Date.now().toString(36)
@@ -35,6 +35,7 @@ class MarketScanSession {
             idx: idx,
             type: entry.type,
             family: entry.family,
+            familyFallback: !!entry.familyFallback,
             status: entry.status || "pending",
             error: entry.error || null,
             startedAt: null,
@@ -149,4 +150,8 @@ class MarketScanSession {
         }
         if (toRemove.length) await chrome.storage.local.remove(toRemove)
     }
+}
+
+if (typeof window !== "undefined") {
+    window.MarketScanSession = MarketScanSession
 }

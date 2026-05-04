@@ -276,6 +276,10 @@ class RouteAssistantToast {
     }
 }
 
+if (typeof window !== "undefined") {
+    window.RouteAssistantToast = RouteAssistantToast
+}
+
 if (typeof module !== "undefined" && module.exports) {
     module.exports = RouteAssistantToast
 }

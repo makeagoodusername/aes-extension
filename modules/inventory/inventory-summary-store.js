@@ -10,13 +10,15 @@
  *   routeAssistant:inventory:<HUB>-<DEST>
  *     → {hub, dest, scrapedAt, source,
  *        classes: {Y, C, F, Cargo: {totalSeats, soldSeats, avgFare?}},
- *        departures: [{date, time, totalSeats, sold, classBreakdown?}],
+ *        departures: [{date, time, flight, flightNumberId, totalSeats, sold, classBreakdown?}],
+ *        flightNumbers: [{code, flightNumberId}],
  *        parserNotes?}
  *
  * Output row shape (from loadAll):
  *   { hub, dest, scrapedAt,
- *     loads: {Y, C, F, cargo, overall} (each number|null),
- *     lowLoadFlightCount, departureCount, parserNotes }
+ *     loads: {Y, C, F, Cargo, cargo, overall} (each number|null),
+ *     lowLoadFlightCount, departureCount, flightNumberCount, flightNumbers,
+ *     parserNotes }
  *
  * Loads are computed lazily here — the cache stores totalSeats/soldSeats per
  * class, not pre-computed percentages, because the scraper's data shape is
@@ -25,6 +27,34 @@
 class CentralInventorySummaryStore {
     static CACHE_PREFIX = "routeAssistant:inventory:"
     static LOW_LOAD_THRESHOLD = 0.5
+
+    static _keyAccountId(key) {
+        const m = /^routeAssistant:inventory:acct:([^:]+):/i.exec(String(key || ""))
+        return m ? m[1] : null
+    }
+
+    static _effectiveAccountId(opts) {
+        if (opts && opts.accountId) return String(opts.accountId)
+        if (typeof currentAccountIdSync === "function") {
+            try { return currentAccountIdSync() || null } catch (_) { /* noop */ }
+        }
+        if (window.AesAccountKey
+                && typeof window.AesAccountKey.currentAccountIdSync === "function") {
+            try { return window.AesAccountKey.currentAccountIdSync() || null } catch (_) { /* noop */ }
+        }
+        return null
+    }
+
+    static _preferCandidate(next, prev, accountId) {
+        if (!prev) return true
+        if (accountId) {
+            const nextMatch = next.accountId === accountId
+            const prevMatch = prev.accountId === accountId
+            if (nextMatch !== prevMatch) return nextMatch
+        }
+        if (!!next.accountId !== !!prev.accountId) return !!next.accountId
+        return (next.row.scrapedAt || 0) > (prev.row.scrapedAt || 0)
+    }
 
     /**
      * @param {object} [opts]
@@ -39,6 +69,7 @@ class CentralInventorySummaryStore {
             ? Math.max(0, Math.min(1, opts.lowLoadThreshold))
             : CentralInventorySummaryStore.LOW_LOAD_THRESHOLD
         const hubFilter = opts.hub ? String(opts.hub).toUpperCase() : null
+        const accountId = CentralInventorySummaryStore._effectiveAccountId(opts)
         const maxAgeMs = (isFinite(opts.maxAgeDays) && opts.maxAgeDays > 0)
             ? opts.maxAgeDays * 86400000
             : null
@@ -46,11 +77,13 @@ class CentralInventorySummaryStore {
         const all = await chrome.storage.local.get(null)
         const prefix = CentralInventorySummaryStore.CACHE_PREFIX
         const now = Date.now()
-        const rows = []
+        const rowsByPair = new Map()
 
         for (const k in all) {
             if (k.indexOf(prefix) !== 0) continue
             if (k.length === prefix.length) continue
+            const keyAccountId = CentralInventorySummaryStore._keyAccountId(k)
+            if (accountId && keyAccountId && keyAccountId !== accountId) continue
             const rec = all[k]
             if (!rec) continue
             if (hubFilter && String(rec.hub || "").toUpperCase() !== hubFilter) continue
@@ -62,27 +95,41 @@ class CentralInventorySummaryStore {
                 Y:     CentralInventorySummaryStore._classLoad(classes.Y),
                 C:     CentralInventorySummaryStore._classLoad(classes.C),
                 F:     CentralInventorySummaryStore._classLoad(classes.F),
-                cargo: CentralInventorySummaryStore._classLoad(classes.Cargo),
+                Cargo: CentralInventorySummaryStore._classLoad(classes.Cargo),
                 overall: CentralInventorySummaryStore._overallPaxLoad(classes)
             }
+            // Backward-compatible alias for older tile code/tests that used
+            // the lowercase key before Cargo became a first-class column.
+            loads.cargo = loads.Cargo
             const departures = Array.isArray(rec.departures) ? rec.departures : []
+            const flightNumbers = CentralInventorySummaryStore._flightNumbers(rec, departures)
 
-            rows.push({
+            const row = {
                 hub:                String(rec.hub  || "").toUpperCase(),
                 dest:               String(rec.dest || "").toUpperCase(),
                 scrapedAt:          typeof rec.scrapedAt === "number" ? rec.scrapedAt : null,
                 loads:              loads,
                 lowLoadFlightCount: CentralInventorySummaryStore._countLowLoadDepartures(departures, threshold),
                 departureCount:     departures.length,
+                flightNumberCount:  flightNumbers.length,
+                flightNumbers:      flightNumbers,
                 parserNotes:        rec.parserNotes || null
-            })
+            }
+            const pairKey = row.hub + "-" + row.dest
+            const next = {row, accountId: keyAccountId}
+            const prev = rowsByPair.get(pairKey)
+            if (CentralInventorySummaryStore._preferCandidate(next, prev, accountId)) {
+                rowsByPair.set(pairKey, next)
+            }
         }
 
+        const rows = Array.from(rowsByPair.values()).map(entry => entry.row)
         rows.sort((a, b) => (b.scrapedAt || 0) - (a.scrapedAt || 0))
 
         const totals = {
             routeCount:         rows.length,
             lowLoadFlightCount: rows.reduce((s, r) => s + (r.lowLoadFlightCount || 0), 0),
+            flightNumberCount:  rows.reduce((s, r) => s + (r.flightNumberCount || 0), 0),
             oldestScrapedAt:    rows.length ? Math.min.apply(null, rows.map(r => r.scrapedAt || Infinity)) : null,
             newestScrapedAt:    rows.length ? rows[0].scrapedAt : null
         }
@@ -98,6 +145,38 @@ class CentralInventorySummaryStore {
         if (!isFinite(total) || total <= 0) return null
         if (!isFinite(sold)) return null
         return sold / total
+    }
+
+    static _flightNumbers(rec, departures) {
+        const out = new Map()
+        const add = (code, id) => {
+            const cleanCode = String(code || "").replace(/\s+/g, " ").trim()
+            const numId = id != null && isFinite(id) ? Number(id) : null
+            if (!cleanCode && numId == null) return
+            const key = numId != null ? "id:" + numId : "code:" + cleanCode.toUpperCase()
+            const prev = out.get(key) || {}
+            out.set(key, {
+                code: cleanCode || prev.code || null,
+                flightNumberId: numId != null ? numId : (prev.flightNumberId != null ? prev.flightNumberId : null)
+            })
+        }
+
+        if (rec && Array.isArray(rec.flightNumbers)) {
+            for (const fn of rec.flightNumbers) {
+                if (!fn) continue
+                add(fn.code || fn.flight || fn.flightNumber, fn.flightNumberId)
+            }
+        }
+        if (Array.isArray(departures)) {
+            for (const dep of departures) {
+                if (!dep) continue
+                add(dep.flight || dep.flightNumber, dep.flightNumberId)
+            }
+        }
+        return Array.from(out.values()).sort((a, b) => {
+            if (a.flightNumberId != null && b.flightNumberId != null) return a.flightNumberId - b.flightNumberId
+            return String(a.code || "").localeCompare(String(b.code || ""))
+        })
     }
 
     /**

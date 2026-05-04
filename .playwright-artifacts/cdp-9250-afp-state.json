@@ -1,0 +1,205 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets?11",
+  "title": "Default fleet | Free1 | AirlineSim",
+  "bodyHasAES": false,
+  "aesNodes": 0,
+  "headings": [
+    "AES FLEET MANAGEMENT",
+    "FLEETS",
+    "ACTIONS"
+  ],
+  "slots": [],
+  "candidates": [],
+  "buttons": [
+    {
+      "i": 3,
+      "tag": "BUTTON",
+      "text": "✈ OPEN FLEET SCHEDULE GRID",
+      "title": "Open a side-by-side schedule view for every aircraft, with cross-fleet route overlay",
+      "cls": ""
+    },
+    {
+      "i": 6,
+      "tag": "BUTTON",
+      "text": "RUN STRATEGY ▸",
+      "title": "Open the cross-module Strategy preview/apply panel",
+      "cls": ""
+    },
+    {
+      "i": 7,
+      "tag": "BUTTON",
+      "text": "QUICK-APPLY 0 HIGH-CONF ▸",
+      "title": "No high-confidence applicable decisions in the current plan",
+      "cls": ""
+    },
+    {
+      "i": 12,
+      "tag": "BUTTON",
+      "text": "AUTO-GENERATE PLANS (1)",
+      "title": "Build a wave draft for every aircraft missing one (1 aircraft, runs sequentially with concurrency 2).",
+      "cls": ""
+    },
+    {
+      "i": 13,
+      "tag": "BUTTON",
+      "text": "APPLY ALL PENDING (0)",
+      "title": "No pending legs across the fleet.",
+      "cls": ""
+    },
+    {
+      "i": 15,
+      "tag": "BUTTON",
+      "text": "+ CREATE STARTER",
+      "title": "Create a starter wave plan for LHR. Edits sync with RA Wave View, AFP wave strip, and the Fleet Schedule Grid.",
+      "cls": ""
+    },
+    {
+      "i": 17,
+      "tag": "BUTTON",
+      "text": "MARKETS",
+      "title": "Open the route markets page for LHR",
+      "cls": ""
+    },
+    {
+      "i": 19,
+      "tag": "BUTTON",
+      "text": "CREATE NEW FLEET",
+      "title": "",
+      "cls": "btn btn-default"
+    },
+    {
+      "i": 23,
+      "tag": "BUTTON",
+      "text": "R",
+      "title": "Open scheduling/route assistant for this aircraft's hub",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-r"
+    },
+    {
+      "i": 24,
+      "tag": "BUTTON",
+      "text": "S",
+      "title": "Open Schedule Management overlay",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-s"
+    },
+    {
+      "i": 25,
+      "tag": "BUTTON",
+      "text": "P",
+      "title": "Open the Flight Plan tab (AFP module)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-p"
+    },
+    {
+      "i": 26,
+      "tag": "BUTTON",
+      "text": "D",
+      "title": "Open AFP Schedule Control (proxy dry-run · Tier 1)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-d"
+    },
+    {
+      "i": 30,
+      "tag": "BUTTON",
+      "text": "R",
+      "title": "Open scheduling/route assistant for this aircraft's hub",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-r"
+    },
+    {
+      "i": 31,
+      "tag": "BUTTON",
+      "text": "S",
+      "title": "Open Schedule Management overlay",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-s"
+    },
+    {
+      "i": 32,
+      "tag": "BUTTON",
+      "text": "P",
+      "title": "Open the Flight Plan tab (AFP module)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-p"
+    },
+    {
+      "i": 33,
+      "tag": "BUTTON",
+      "text": "D",
+      "title": "Open AFP Schedule Control (proxy dry-run · Tier 1)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-d"
+    },
+    {
+      "i": 37,
+      "tag": "BUTTON",
+      "text": "R",
+      "title": "Open scheduling/route assistant for this aircraft's hub",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-r"
+    },
+    {
+      "i": 38,
+      "tag": "BUTTON",
+      "text": "S",
+      "title": "Open Schedule Management overlay",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-s"
+    },
+    {
+      "i": 39,
+      "tag": "BUTTON",
+      "text": "P",
+      "title": "Open the Flight Plan tab (AFP module)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-p"
+    },
+    {
+      "i": 40,
+      "tag": "BUTTON",
+      "text": "D",
+      "title": "Open AFP Schedule Control (proxy dry-run · Tier 1)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-d"
+    },
+    {
+      "i": 44,
+      "tag": "BUTTON",
+      "text": "R",
+      "title": "Open scheduling/route assistant for this aircraft's hub",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-r"
+    },
+    {
+      "i": 45,
+      "tag": "BUTTON",
+      "text": "S",
+      "title": "Open Schedule Management overlay",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-s"
+    },
+    {
+      "i": 46,
+      "tag": "BUTTON",
+      "text": "P",
+      "title": "Open the Flight Plan tab (AFP module)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-p"
+    },
+    {
+      "i": 47,
+      "tag": "BUTTON",
+      "text": "D",
+      "title": "Open AFP Schedule Control (proxy dry-run · Tier 1)",
+      "cls": "aes-btn aes-btn--sm aes-fleet-hub-action-d"
+    },
+    {
+      "i": 49,
+      "tag": "BUTTON",
+      "text": "×Close",
+      "title": "",
+      "cls": "btn btn-default aes-modal__close"
+    },
+    {
+      "i": 53,
+      "tag": "BUTTON",
+      "text": "HIDE ASSISTANT ▸",
+      "title": "Toggle assistant rail (R)",
+      "cls": "aes-btn aes-btn--sm"
+    },
+    {
+      "i": 60,
+      "tag": "BUTTON",
+      "text": "APPLY",
+      "title": "",
+      "cls": ""
+    }
+  ],
+  "form": false
+}

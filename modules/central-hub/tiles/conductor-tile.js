@@ -136,7 +136,7 @@
             this.id              = "conductor"
             this.title           = "Conductor"
             this.section         = "tools"
-            this.priority        = 7
+            this.priority        = 8
             this.requiresAirline = true
             this._activeFilter   = "all"
         }
@@ -474,7 +474,12 @@
             const time = document.createElement("span")
             time.textContent = _fmtTime(s.firedAt)
             time.style.cssText = "color:" + T.color.slate + ";flex:0 0 auto;"
-            time.title = new Date(s.firedAt).toISOString()
+            // Defensive — `new Date(undefined).toISOString()` throws RangeError,
+            // which would tear the whole signal list down on a single
+            // malformed entry. Older callers (or seeded fixtures) may lack
+            // firedAt; surface "?" rather than crash.
+            try { time.title = new Date(s.firedAt).toISOString() }
+            catch (_) { time.title = "(no timestamp)" }
 
             const age = document.createElement("span")
             age.textContent = _fmtAge(now - s.firedAt) + " ago"
@@ -499,25 +504,78 @@
             const footer = document.createElement("div")
             footer.style.cssText = "display:flex;align-items:center;justify-content:space-between;"
                 + "color:" + T.color.slate + ";font-size:" + T.fs.micro + ";"
-                + "font-family:" + T.font.mono + ";"
+                + "font-family:" + T.font.mono + ";gap:" + T.sp[2] + ";flex-wrap:wrap;"
 
             const stats = document.createElement("span")
             stats.textContent = "Showing " + shown + " of " + total + " signals"
                 + " · cap " + (window.AesConductorSignalStore && window.AesConductorSignalStore.CAP || 500)
+            stats.style.cssText = "flex:1 1 auto;min-width:0;"
 
-            const clear = document.createElement("button")
-            clear.type = "button"
-            clear.textContent = "Clear"
-            clear.style.cssText = "padding:2px 8px;border:1px solid " + T.color.paperRule + ";"
-                + "background:transparent;color:" + T.color.oxide + ";cursor:pointer;"
-                + "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";"
-            clear.addEventListener("click", async () => {
-                if (typeof window.AesConductorSignalStore === "undefined") return
-                await window.AesConductorSignalStore.clear(ctx)
-                this.refresh().catch(() => {})
-            })
+            const actions = document.createElement("div")
+            actions.style.cssText = "display:flex;gap:" + T.sp[1] + ";flex:0 0 auto;flex-wrap:wrap;"
 
-            footer.append(stats, clear)
+            const _btn = (label, title, onClick) => {
+                const b = document.createElement("button")
+                b.type = "button"
+                b.textContent = label
+                b.title = title || ""
+                b.style.cssText = "padding:2px 8px;border:1px solid " + T.color.paperRule + ";"
+                    + "background:transparent;color:" + T.color.oxide + ";cursor:pointer;"
+                    + "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";"
+                b.addEventListener("click", onClick)
+                return b
+            }
+
+            // K10 outcome-driver — manual tick. Lets the user score open
+            // fires now instead of waiting for the next interval.
+            if (window.AesConductorOutcomeDriver
+                    && typeof window.AesConductorOutcomeDriver.tickOnce === "function") {
+                actions.appendChild(_btn("Tick outcomes",
+                    "Run AesConductorOutcomeDriver.tickOnce({force:true}) — re-scores open fires now.",
+                    async (ev) => {
+                        const b = ev.currentTarget
+                        b.disabled = true
+                        try { await window.AesConductorOutcomeDriver.tickOnce({force: true}) }
+                        catch (_) {}
+                        finally { b.disabled = false }
+                        this.refresh().catch(() => {})
+                    }))
+            }
+
+            // Clear scenario fires.
+            if (window.AesConductorScenarioStore
+                    && typeof window.AesConductorScenarioStore.clear === "function") {
+                actions.appendChild(_btn("Clear fires",
+                    "Erase the per-airline scenario-fire ring.",
+                    async () => {
+                        if (!ctx) return
+                        await window.AesConductorScenarioStore.clear(ctx)
+                        this.refresh().catch(() => {})
+                    }))
+            }
+
+            // Clear routines.
+            if (window.AesConductorRoutineStore
+                    && typeof window.AesConductorRoutineStore.clear === "function") {
+                actions.appendChild(_btn("Clear routines",
+                    "Erase active + archived routine instances for this airline.",
+                    async () => {
+                        if (!ctx) return
+                        await window.AesConductorRoutineStore.clear(ctx)
+                        this.refresh().catch(() => {})
+                    }))
+            }
+
+            // Existing — clear signal ring.
+            actions.appendChild(_btn("Clear signals",
+                "Erase the per-airline conductor:signal ring.",
+                async () => {
+                    if (typeof window.AesConductorSignalStore === "undefined") return
+                    await window.AesConductorSignalStore.clear(ctx)
+                    this.refresh().catch(() => {})
+                }))
+
+            footer.append(stats, actions)
             return footer
         }
     }
@@ -526,7 +584,7 @@
         window.CentralHubTileRegistry.register({
             id:       "conductor",
             section:  "tools",
-            priority: 7,
+            priority: 8,
             factory:  () => new CentralHubConductorTile()
         })
     }

@@ -167,11 +167,19 @@
                     }
                     const ok = !!(resp && resp.ok)
                     if (resp && resp.error && !lastError) lastError = resp.error
-                    resolve({aircraftId, ok, succeeded, failed,
+                    const responseResults = Array.isArray(resp && resp.results) ? resp.results : []
+                    const responseSucceeded = Number(resp && resp.succeeded)
+                    const responseFailed = Number(resp && resp.failed)
+                    const finalSucceeded = succeeded || (isFinite(responseSucceeded) ? responseSucceeded : 0)
+                        || responseResults.filter(r => r && r.ok).length
+                    const finalFailed = failed || (isFinite(responseFailed) ? responseFailed : 0)
+                        || responseResults.filter(r => r && r.ok === false).length
+                    resolve({aircraftId, ok, succeeded: finalSucceeded, failed: finalFailed,
                              aborted: !!(resp && resp.aborted),
                              skipped: !!(resp && resp.skipped),
                              error:   lastError || (resp && resp.error) || null,
-                             batchId})
+                             batchId,
+                             results: responseResults})
                 })
             } catch (e) {
                 _detachProgress()

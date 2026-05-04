@@ -8,7 +8,9 @@
 // header chrome and the strip would compete for vertical space).
 
 (function () {
-    if (window.AESSiteSkin && !window.AESSiteSkin.isEnabled()) return;
+    if (window.AESSiteSkin
+        && typeof window.AESSiteSkin.isEnabled === "function"
+        && !window.AESSiteSkin.isEnabled()) return;
 
     const SKIPPED_PAGES = new Set(["scheduling"]);
 

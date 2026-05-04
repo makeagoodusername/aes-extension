@@ -200,3 +200,6 @@ class MarketScanDiffStore {
 }
 
 if (typeof module !== "undefined" && module.exports) module.exports = MarketScanDiffStore
+if (typeof window !== "undefined") {
+    window.MarketScanDiffStore = MarketScanDiffStore
+}

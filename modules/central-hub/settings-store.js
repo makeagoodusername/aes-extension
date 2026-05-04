@@ -45,8 +45,12 @@ class CentralHubSettings {
             // legacy section flow ("classic") and the salience-ranked
             // waterfall ("cascade"). Defaults to classic; cascadePromptedAt
             // gates the first-boot prompt (§4.18 — no silent default flips).
-            layoutMode:           "classic",      // "classic" | "cascade"
-            cascadePromptedAt:    0,
+            // cascadePromptDismissed is a permanent-reject flag set by the
+            // "Don't show again" CTA in the prompt — when true the prompt
+            // never re-fires regardless of cascadePromptedAt.
+            layoutMode:               "classic",      // "classic" | "cascade"
+            cascadePromptedAt:        0,
+            cascadePromptDismissed:   false,
             // CH-W1 — per-input weights for the salience scorer. Empty
             // map → CentralHubSalience.DEFAULT_WEIGHTS used. The
             // Customization → Dashboard section exposes sliders.
@@ -95,6 +99,7 @@ class CentralHubSettings {
         if (typeof merged.cubistColorBlind !== "boolean") merged.cubistColorBlind = false
         if (merged.layoutMode !== "cascade")             merged.layoutMode      = "classic"
         if (typeof merged.cascadePromptedAt !== "number") merged.cascadePromptedAt = 0
+        if (typeof merged.cascadePromptDismissed !== "boolean") merged.cascadePromptDismissed = false
         if (!merged.salienceWeights || typeof merged.salienceWeights !== "object") {
             merged.salienceWeights = {}
         }

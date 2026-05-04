@@ -9,7 +9,14 @@
  *
  * Section "operations" priority 0 — sits above World View on the
  * dashboard so it's the first thing the user sees each session.
+ *
+ * Wrapped in an IIFE because the manifest content_scripts injection model
+ * shares a single global scope across every tile file, and at least one
+ * sibling (strategy-slot-trading-tile.js) declared a top-level `function
+ * _text(T, s)` that overwrote our 1-arg `_text(s)` — turning every
+ * "no data yet" string into a TypeError. Keep helpers strictly local.
  */
+;(function () {
 class CentralHubStrategyBriefingTile extends window.CentralHubTile {
     constructor() {
         super()
@@ -50,12 +57,47 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         // by the per-bucket guard inside _maybeAutoOpen.
         if (!this._autoOpenChecked) {
             this._autoOpenChecked = true
-            setTimeout(() => { this._maybeAutoOpen().catch(() => {}) }, 1500)
+            let scheduledActiveSection = null
+            try {
+                const got = await chrome.storage.local.get(["centralHub:settings"])
+                scheduledActiveSection = got
+                    && got["centralHub:settings"]
+                    && got["centralHub:settings"].activeSection || null
+            } catch (_) {}
+            setTimeout(() => {
+                this._maybeAutoOpen({scheduledActiveSection}).catch(() => {})
+            }, 1500)
         }
     }
 
     openHandler() {
-        return () => this._openFullBriefing()
+        return async () => {
+            // _openFullBriefing early-returns if `_briefing` is null. When the
+            // user clicks Open before the first loadStatus() resolves (or on a
+            // page where buildBriefing() hasn't been called yet because the
+            // tile hasn't refreshed), the click would silently no-op. Compose
+            // a briefing on demand so the modal always opens.
+            if (!this._briefing && window.AesStrategyBriefing
+                    && typeof window.AesStrategyBriefing.buildBriefing === "function") {
+                try {
+                    const ctx = this._mountCtx || this.ctx || {}
+                    const accountId = (typeof window.__aesAccountId === "string" ? window.__aesAccountId : null)
+                    this._briefing = await window.AesStrategyBriefing.buildBriefing({
+                        server:    ctx.server  || null,
+                        airline:   ctx.airline || null,
+                        accountId: accountId
+                    })
+                } catch (e) {
+                    console.warn("[AES briefing tile] open buildBriefing threw", e)
+                }
+            }
+            this._openFullBriefing()
+            setTimeout(() => {
+                if (!this._modalRoot && typeof this._showOpenFallbackFeedback === "function") {
+                    this._showOpenFallbackFeedback()
+                }
+            }, 100)
+        }
     }
 
     // ── Status ──────────────────────────────────────────────────────────
@@ -347,6 +389,9 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         if (!report) return
 
         const overlay = document.createElement("div")
+        overlay.className = "aes-briefing-modal"
+        overlay.dataset.aesStrategySurface = "briefing"
+        overlay.tabIndex = -1
         overlay.style.cssText = [
             "position:fixed", "inset:0", "z-index:2147483640",
             "background:rgba(11,18,32,0.7)",
@@ -358,6 +403,10 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         })
 
         const dialog = document.createElement("div")
+        dialog.className = "aes-briefing-dialog"
+        dialog.setAttribute("role", "dialog")
+        dialog.setAttribute("aria-modal", "true")
+        dialog.setAttribute("aria-label", "Executive briefing")
         dialog.style.cssText = [
             "background:" + T.color.bone,
             "border:" + T.geom.bw2 + " solid " + T.color.oxide,
@@ -459,21 +508,29 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         this._modalRoot = overlay
 
         const escHandler = (e) => {
-            if (e.key === "Escape") {
+            if (e.key === "Escape" || e.key === "Esc" || e.code === "Escape") {
+                e.preventDefault()
                 e.stopPropagation()
                 this._closeModal({reason: "escape"})
             }
         }
         document.addEventListener("keydown", escHandler, true)
+        overlay.addEventListener("keydown", escHandler, true)
         this._modalEsc = escHandler
+        setTimeout(() => {
+            try { overlay.focus({preventScroll: true}) } catch (_) {}
+        }, 0)
 
         this._emitBus("briefing:opened", {windowDays: report.windowDays})
     }
 
     _closeModal(opts) {
         if (!this._modalRoot) return
+        if (this._modalEsc) {
+            document.removeEventListener("keydown", this._modalEsc, true)
+            try { this._modalRoot.removeEventListener("keydown", this._modalEsc, true) } catch (_) {}
+        }
         try { this._modalRoot.remove() } catch (_) {}
-        if (this._modalEsc) document.removeEventListener("keydown", this._modalEsc, true)
         this._modalRoot = null
         this._modalEsc  = null
         this._emitBus("briefing:dismissed", opts || {})
@@ -764,9 +821,21 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
 
     // ── Auto-open guard ─────────────────────────────────────────────────
 
-    async _maybeAutoOpen() {
+    async _maybeAutoOpen(opts) {
+        opts = opts || {}
         try {
-            const settingsGot = await chrome.storage.local.get(["settings"])
+            const settingsGot = await chrome.storage.local.get(["settings", "centralHub:settings"])
+            const hubSettings = settingsGot && settingsGot["centralHub:settings"]
+            const activeSection = hubSettings && hubSettings.activeSection
+            if (opts.scheduledActiveSection && opts.scheduledActiveSection !== this.section) return
+            if (opts.scheduledActiveSection && activeSection
+                    && activeSection !== opts.scheduledActiveSection) return
+            if (activeSection && activeSection !== this.section) return
+            const expanded = Array.isArray(hubSettings && hubSettings.expandedTiles)
+                ? hubSettings.expandedTiles.map(String)
+                : []
+            if (expanded.some(id => id !== this.id && /^strategy/.test(id))) return
+            if (document.querySelector("[data-aes-strategy-surface], .aes-strategy-modal, .aes-layered-panel")) return
             const cfg = settingsGot
                 && settingsGot.settings
                 && settingsGot.settings.strategy
@@ -837,10 +906,13 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         }
     }
 
-    _openStrategyPanel() {
+    _openStrategyPanel(opts) {
         try {
             if (window.AesStrategyPanel && typeof window.AesStrategyPanel.open === "function") {
-                window.AesStrategyPanel.open()
+                const ret = window.AesStrategyPanel.open(opts || {})
+                if (ret && typeof ret.catch === "function") {
+                    ret.catch(e => console.warn("[AES briefing tile] open strategy panel failed", e))
+                }
             }
         } catch (e) { console.warn("[AES briefing tile] open strategy panel threw", e) }
     }
@@ -854,9 +926,7 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
     }
 
     _openRoutePanelToSettings() {
-        // No deep-link for settings — defer to Strategy panel which carries
-        // the apply-tier surface.  Future Slice 17 can add a deep-link.
-        this._openStrategyPanel()
+        this._openStrategyPanel({section: "settings", domain: "price"})
     }
 
     _emitBus(name, payload) {
@@ -998,3 +1068,4 @@ if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
         factory:  () => new CentralHubStrategyBriefingTile()
     })
 }
+})();

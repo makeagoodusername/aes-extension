@@ -43,6 +43,20 @@
  * subscribers can still re-fetch via the producer's `get()` if they prefer.
  */
 window.AES_DATA_BUS_TOPICS = [
+    // -- shared settings plumbing --
+    {
+        topic:    "data:settings:area:saved",
+        emittedBy: "modules/_shared/settings-bridge.js",
+        hint:     "{area, accountId, scoped, sections: string[]}",
+        notes:    "generic write-through signal for AesSettings.saveArea/saveAreaScoped; domain stores may still emit richer module-specific topics"
+    },
+    {
+        topic:    "data:init:startup:failed",
+        emittedBy: "modules/_shared/init-guard.js",
+        hint:     "{label, name, message, url, firstAt, lastAt, count}",
+        notes:    "tab-local startup guard diagnostic; emitted when a boot slice degrades instead of throwing during content-script startup"
+    },
+
     // -- route-assistant --
     {
         topic:    "data:route-assistant:settings:saved",
@@ -104,6 +118,12 @@ window.AES_DATA_BUS_TOPICS = [
         emittedBy: "modules/route-assistant/ors-scraper.js",
         hint:     "{hub, dest}",
         notes:    "single key per route; subscribers refetch via RouteAssistantOrsScraper.loadRecord"
+    },
+    {
+        topic:    "data:route-assistant:ors:health",
+        emittedBy: "modules/route-assistant/ors-intelligence.js",
+        hint:     "{server, accountId, updatedAt, coverage?, lastRun?, breaker?}",
+        notes:    "fired by saveHealth on every coverage / sync write; subscribers refresh ORS dashboards + banners"
     },
     {
         topic:    "data:route-assistant:schedule:updated",
@@ -211,6 +231,18 @@ window.AES_DATA_BUS_TOPICS = [
         emittedBy: "modules/strategy/decision-dispatch.js  // applyPending",
         hint:     "{hub, dest, classKey, decisionId, appliedAt}",
         notes:    "fired only on successful direct-apply via applyPending(). Consumed by review tile to flag the dispatch as resolved."
+    },
+    {
+        topic:    "data:strategy:company-reputation:saved",
+        emittedBy: "modules/strategy/company-reputation-store.js  // save",
+        hint:     "{displayName?, airlineCode?, ratingLabel?, ...rec}",
+        notes:    "fired after AesCompanyReputationStore.save persists the cleaned record; subscribers refetch via loadLatest(). Subscriber wiring is follow-up — registered now to clear auditTopics() drift list."
+    },
+    {
+        topic:    "fleet-optimizer:target-changed",
+        emittedBy: "modules/strategy/fleet-optimizer-settings.js  // save (dual-emits to CentralHubBus + AesStrategy.bus)",
+        hint:     "{before, after, changedKeys: string[]}",
+        notes:    "non-canonical topic name (legacy — does not follow data:<module>:<slice>:<verb>); fired after save() persists fleetOptimizer settings. Subscriber wiring is follow-up — registered now to clear auditTopics() drift list."
     },
 
     // -- conductor K11 / K14 --

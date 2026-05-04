@@ -3,7 +3,7 @@
 /**
  * CanvasCommitBar — turns the rail's staged edits into real writes.
  *
- * The rail-controller collects edits in memory; when the user hits Commit
+ * The rail-controller collects edits in memory; when the user hits Apply
  * we route each edit by `kind`:
  *
  *   applyPricing  → RouteAssistantPricingApplier.apply() per route. Honours
@@ -12,11 +12,10 @@
  *                   real POST + verification path. Identical to the path the
  *                   RA panel uses.
  *
- *   addRoute      → handoff via AesHandoffStore (`source: "dnd-grid"`). The
- *                   AFP page's wave-applier consumes the record on mount and
- *                   pre-selects the candidate row. The store holds ONE
- *                   pending handoff at a time, so multi-route batches drop a
- *                   toast nudging the user to open the AFP tab once per leg.
+ *   addRoute      → the Fleet Schedule Grid background-tab submit pipeline.
+ *                   This posts AS's New Flight Number form from hidden
+ *                   aircraft Flight Plan tabs and refreshes the affected
+ *                   aircraft schedules afterward.
  *
  *   moveRoute     → emitted on the bus + recorded in the apply log as a
  *                   `dry-run` placeholder. AS's per-flight-edit POST is
@@ -39,6 +38,7 @@ class CanvasCommitBar {
         const d = deps || {}
         this.server      = d.server || ""
         this.airlineCode = d.airlineCode || ""
+        this.getInputs   = typeof d.getInputs === "function" ? d.getInputs : (() => ({}))
         this.getStaged   = typeof d.getStaged === "function" ? d.getStaged : (() => [])
         this.clearStaged = typeof d.clearStaged === "function" ? d.clearStaged : (() => {})
         this.onCount     = typeof d.onCount === "function" ? d.onCount : null
@@ -63,14 +63,15 @@ class CanvasCommitBar {
             ok:        0,    // pricing applies that succeeded (posted or dry-run accepted)
             failed:    0,
             dryRun:    0,
-            deferred:  0,    // schedule edits that need an AFP-page hand-off
-            handedOff: 0     // single addRoute that wrote to AesHandoffStore
+            deferred:  0,    // edits whose writer is intentionally not live yet
+            handedOff: 0,    // single addRoute that wrote to AesHandoffStore
+            rescraped:  0
         }
 
         try {
             // Group by kind. Pricing applies run sequentially (the applier's
-            // own circuit-breaker assumes serial calls); schedule edits are
-            // logged + handed off.
+            // own circuit-breaker assumes serial calls); schedule adds use
+            // the same background-tab submit path as the actual schedule grid.
             const pricingEdits = staged.filter(e => e && e.kind === "applyPricing")
             const addEdits     = staged.filter(e => e && e.kind === "addRoute")
             const moveEdits    = staged.filter(e => e && e.kind === "moveRoute")
@@ -84,16 +85,17 @@ class CanvasCommitBar {
                 else summary.failed++
             }
 
-            // Single-leg add via the existing handoff store: pre-select the
-            // candidate row in the AFP page so the user only has to click
-            // Submit once. Bulk adds toast a count and ask the user to open
-            // each aircraft's plan tab.
-            if (addEdits.length === 1) {
-                const handed = await this._handoffSingleAdd(addEdits[0])
-                if (handed) summary.handedOff++
-                else summary.deferred++
-            } else if (addEdits.length > 1) {
-                summary.deferred += addEdits.length
+            if (addEdits.length) {
+                const addPayloads = addEdits.map(e => this._normaliseAddPayload(e)).filter(Boolean)
+                summary.failed += addEdits.length - addPayloads.length
+                const applied = await this._runScheduleAdds(addPayloads)
+                if (applied && applied.ran) {
+                    summary.ok += applied.succeeded
+                    summary.failed += applied.failed
+                    summary.rescraped += applied.rescraped
+                } else {
+                    summary.failed += addPayloads.length
+                }
             }
 
             // Move + Remove: deferred to AFP-page; just count for the toast.
@@ -114,7 +116,7 @@ class CanvasCommitBar {
         } catch (err) {
             console.warn("[AES Canvas] commit threw", err)
             if (typeof window !== "undefined" && window.RouteAssistantToast) {
-                window.RouteAssistantToast.show("Commit error — see console.",
+                window.RouteAssistantToast.show("Apply error — see console.",
                     {type: "error", duration: 5000})
             }
         } finally {
@@ -134,9 +136,10 @@ class CanvasCommitBar {
     }
 
     async _runPricingApply(edit) {
-        const p = edit && edit.payload
+        const p = this._payloadOf(edit)
         if (!p || !p.hub || !p.dest || !p.prices) return null
-        const applier = await this._buildApplier()
+        const built = await this._buildApplierContext()
+        const applier = built && built.applier
         if (!applier) {
             if (typeof window !== "undefined" && window.RouteAssistantToast) {
                 window.RouteAssistantToast.show(
@@ -152,7 +155,8 @@ class CanvasCommitBar {
                 reason:       p.reason || "Schedule Canvas commit",
                 submitButton: p.submitButton || undefined,
                 rationale:    Array.isArray(p.rationale) ? p.rationale : null,
-                proposerStrategy: p.proposerStrategy || null
+                proposerStrategy: p.proposerStrategy || null,
+                classGates:   built.classGates || null
             })
             return r
         } catch (e) {
@@ -162,6 +166,11 @@ class CanvasCommitBar {
     }
 
     async _buildApplier() {
+        const built = await this._buildApplierContext()
+        return built && built.applier
+    }
+
+    async _buildApplierContext() {
         if (typeof window === "undefined") return null
         if (typeof window.RouteAssistantPricingApplier === "undefined") return null
         if (!this.server) return null
@@ -181,18 +190,22 @@ class CanvasCommitBar {
                 })
             }
         } catch (_) {}
-        return new window.RouteAssistantPricingApplier(this.server, {
-            dryRunOnly:           cfg.dryRunOnly !== false,
-            applyEnabled:         !!cfg.enabled,
-            cooldownMinPerRoute:  cfg.cooldownMinPerRoute,
-            cooldownMinGlobal:    cfg.cooldownMinGlobal,
-            warnAboveDeltaPct:    cfg.warnAboveDeltaPct,
-            applyLog:             log
-        })
+        return {
+            applier: new window.RouteAssistantPricingApplier(this.server, {
+                dryRunOnly:           cfg.dryRunOnly !== false,
+                applyEnabled:         !!cfg.enabled,
+                liveScopes:           cfg.liveScopes || {},
+                cooldownMinPerRoute:  cfg.cooldownMinPerRoute,
+                cooldownMinGlobal:    cfg.cooldownMinGlobal,
+                warnAboveDeltaPct:    cfg.warnAboveDeltaPct,
+                applyLog:             log
+            }),
+            classGates: cfg.classes || null
+        }
     }
 
     async _handoffSingleAdd(edit) {
-        const p = edit && edit.payload
+        const p = this._normaliseAddPayload(edit)
         if (!p || !p.aircraftId || !p.destIata) return false
         if (typeof window === "undefined" || typeof window.AesHandoffStore === "undefined") return false
         try {
@@ -200,7 +213,13 @@ class CanvasCommitBar {
                 aircraftId: p.aircraftId,
                 destIata:   p.destIata,
                 hub:        p.hub || null,
-                dropMin:    isFinite(p.dropMin) ? p.dropMin : null,
+                dropMin:    p.dropMin != null && isFinite(p.dropMin) ? p.dropMin : null,
+                depTime:    p.depTime || null,
+                flightNumberText: p.flightNumberText || "",
+                pricePct:   p.pricePct,
+                service:    p.service || "",
+                dayMask:    Array.isArray(p.dayMask) ? p.dayMask.slice(0, 7).map(Boolean) : null,
+                fillForm:   true,
                 source:     "dnd-grid"
             })
             return true
@@ -210,25 +229,167 @@ class CanvasCommitBar {
         }
     }
 
+    _payloadOf(edit) {
+        if (!edit || typeof edit !== "object") return null
+        if (edit.payload && typeof edit.payload === "object") return edit.payload
+        return edit
+    }
+
+    _safeInputs() {
+        try { return this.getInputs() || {} }
+        catch (_) { return {} }
+    }
+
+    _normaliseAddPayload(edit) {
+        const p = this._payloadOf(edit)
+        if (!p || typeof p !== "object") return null
+        const aircraftId = p.aircraftId != null ? String(p.aircraftId) : ""
+        const destIata = String(p.destIata || p.destination || "").toUpperCase()
+        if (!aircraftId || !/^[A-Z]{3}$/.test(destIata)) return null
+        const inputs = this._safeInputs()
+        const preset = inputs && inputs.preset
+        const wave = this._findWave(p.waveId, preset)
+        const hub = String(p.hub || (inputs && inputs.hub) || (preset && preset.hub) || "").toUpperCase()
+        const dropMin = p.dropMin != null && isFinite(p.dropMin) ? Number(p.dropMin) : null
+        const pricePct = Number(p.pricePct)
+        const flightNumberText = String(p.flightNumberText || "")
+            .replace(/[^0-9]/g, "").slice(0, 4)
+        const depTime = p.depTime || p.depTimeLocal
+            || (dropMin != null ? _minToHHMM(dropMin) : null)
+            || (wave && wave.departureWindow && wave.departureWindow.start)
+            || "09:00"
+        const dayMask = Array.isArray(p.dayMask) && p.dayMask.length >= 7
+            ? p.dayMask.slice(0, 7).map(Boolean)
+            : null
+        return {
+            aircraftId,
+            destIata,
+            destName: p.destName || "",
+            hub,
+            waveId: p.waveId || null,
+            dropMin,
+            depTime,
+            pricePct: Number.isFinite(pricePct) && pricePct > 0 ? pricePct : 100,
+            service:  typeof p.service === "string" ? p.service : "",
+            flightNumberText,
+            dayMask,
+            fares:    (p.fares && typeof p.fares === "object") ? p.fares : {},
+            sourceEdit: edit
+        }
+    }
+
+    _findWave(waveId, preset) {
+        if (!waveId || !preset || !Array.isArray(preset.waves)) return null
+        return preset.waves.find(w => w && String(w.id) === String(waveId)) || null
+    }
+
+    async _runScheduleAdds(addPayloads) {
+        if (!addPayloads || !addPayloads.length) return {ran: false}
+        const gate = await this._scheduleApplyGate(addPayloads.length)
+        if (!gate.ok) {
+            if (typeof window !== "undefined" && window.RouteAssistantToast) {
+                window.RouteAssistantToast.show("Route apply blocked: " + gate.reason + ".",
+                    {type: "warn", duration: 6000})
+            }
+            return {ran: false, reason: gate.reason}
+        }
+        if (typeof window !== "undefined" && window.RouteAssistantToast) {
+            window.RouteAssistantToast.show("Applying " + addPayloads.length
+                + " route" + (addPayloads.length === 1 ? "" : "s")
+                + " through AirlineSim Flight Plan tabs…",
+                {type: "info", duration: 4000})
+        }
+        const byAircraft = new Map()
+        for (const p of addPayloads) {
+            if (!byAircraft.has(p.aircraftId)) byAircraft.set(p.aircraftId, [])
+            byAircraft.get(p.aircraftId).push({
+                origin:      p.hub || "",
+                destination: p.destIata,
+                depTime:     p.depTime,
+                dayMask:     Array.isArray(p.dayMask) ? p.dayMask.slice(0, 7).map(Boolean) : null,
+                pricePct:    p.pricePct,
+                service:     p.service,
+                flightNumberText: p.flightNumberText || ""
+            })
+        }
+        const runs = Array.from(byAircraft.entries()).map(([aircraftId, legs]) => ({aircraftId, legs}))
+        let result = null
+        try {
+            result = await window.AesAfpFleetApplyOrchestrator.start({
+                runs,
+                ctx:    {server: this.server},
+                source: "canvas"
+            })
+        } catch (e) {
+            console.warn("[AES Canvas] schedule apply failed", e)
+            return {ran: true, succeeded: 0, failed: addPayloads.length, rescraped: 0}
+        }
+        const succeeded = Number(result && result.totalSucceeded) || 0
+        const failed = Math.max(0, addPayloads.length - succeeded)
+        const rescraped = succeeded ? await this._rescrapeAircrafts(Array.from(byAircraft.keys())) : 0
+        return {ran: true, succeeded, failed, rescraped, result}
+    }
+
+    async _scheduleApplyGate(count) {
+        if (typeof window === "undefined" || !window.AesAfpFleetApplyOrchestrator) {
+            return {ok: false, reason: "fleet apply module not loaded"}
+        }
+        if (!this.server) return {ok: false, reason: "server missing"}
+        let cap = 28
+        try {
+            if (typeof window.AesAfpSettings !== "undefined") {
+                const s = await window.AesAfpSettings.load()
+                const a = (s && s.autoScheduler) || {}
+                cap = Number(a.maxLegsPerApply) || cap
+            }
+            if (count > cap) return {ok: false, reason: "too many legs for maxLegsPerApply"}
+            return {ok: true}
+        } catch (e) {
+            if (count > cap) return {ok: false, reason: "too many legs for maxLegsPerApply"}
+            return {ok: true}
+        }
+    }
+
+    async _rescrapeAircrafts(aircraftIds) {
+        if (typeof FleetScheduleGridScraper === "undefined") return 0
+        let ok = 0
+        for (const aircraftId of aircraftIds || []) {
+            try {
+                const scraper = new FleetScheduleGridScraper(this.server, {maxConcurrency: 1})
+                const res = await scraper.scrapeOne(aircraftId, {force: true})
+                if (res && res.ok && res.schedule) ok++
+            } catch (e) {
+                console.warn("[AES Canvas] post-commit rescrape failed", aircraftId, e)
+            }
+        }
+        return ok
+    }
+
     _toastSummary(s) {
         if (typeof window === "undefined" || !window.RouteAssistantToast) return
         const parts = []
         if (s.ok)        parts.push(s.ok + " applied")
         if (s.dryRun)    parts.push(s.dryRun + " dry-run")
-        if (s.handedOff) parts.push(s.handedOff + " staged for AFP")
+        if (s.rescraped)  parts.push(s.rescraped + " schedule refresh")
         if (s.deferred)  parts.push(s.deferred + " deferred")
         if (s.failed)    parts.push(s.failed + " failed")
         const summaryText = parts.length ? parts.join(" · ") : "No edits"
         const type = s.failed ? "warn" : (s.deferred && !s.ok && !s.handedOff ? "info" : "success")
         let detail = ""
-        if (s.handedOff) {
-            detail = " Open the aircraft's Flight Plan tab to submit the staged leg."
-        } else if (s.deferred && !s.handedOff) {
+        if (s.deferred) {
             detail = " Open Aircraft Flight Plan to apply the remaining schedule edits."
         }
-        window.RouteAssistantToast.show("Commit: " + summaryText + "." + detail,
+        window.RouteAssistantToast.show("Apply: " + summaryText + "." + detail,
             {type, duration: 6000})
     }
+}
+
+function _minToHHMM(min) {
+    if (min == null || !isFinite(min)) return null
+    const m = Math.max(0, Math.min(1439, Math.round(min)))
+    const h = Math.floor(m / 60)
+    const mm = m % 60
+    return (h < 10 ? "0" + h : h) + ":" + (mm < 10 ? "0" + mm : mm)
 }
 
 if (typeof window !== "undefined") {

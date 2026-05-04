@@ -69,7 +69,11 @@
         body.textContent = rec.rationale || ""
         card.appendChild(body)
 
-        const members = (rec.members || []).filter(m => m && m.name).slice(0, 5)
+        // F-9228-404: filter out members with no enterpriseId — clicking
+        // such a chip would call onPickEnterprise(null, …) which the
+        // world-view tile silently drops at the focus-enterprise guard,
+        // leaving the user with no feedback.
+        const members = (rec.members || []).filter(m => m && m.name && m.enterpriseId).slice(0, 5)
         if (members.length) {
             const mList = document.createElement("div")
             mList.style.cssText = "margin-top:" + T.sp[1] + ";display:flex;flex-wrap:wrap;gap:" + T.sp[1] + ";"
@@ -189,8 +193,12 @@
             const empty = document.createElement("p")
             empty.style.cssText = "color:" + T.color.slate + ";margin:0;"
                 + "font-family:" + T.font.display + ";font-size:" + T.fs.body + ";"
+            // F-9228-403: /app/info/airports/<id> expects a numeric airportId,
+            // not an IATA, so the previous hint led to a dead URL. The
+            // scheduling page is keyed by IATA and is what every other
+            // hint in this tile uses.
             empty.textContent = "No competitor data cached for this hub yet. "
-                + "Visit /app/info/airports/" + (network && network.hub || "<hub>")
+                + "Visit /app/com/scheduling/" + (network && network.hub || "<hub>")
                 + " or scrape competitors to seed."
             wrap.appendChild(empty)
             host.appendChild(wrap)

@@ -34,6 +34,8 @@
 
     const TOP_N = 20
     const KM_PER_NM = 1.852
+    const PRESETS_DEP_RETRY_MS = 100
+    const PRESETS_DEP_MAX_WAIT_MS = 6000
 
     const _state = {
         ctxReady:        false,
@@ -50,6 +52,7 @@
         // aircraft's current location IATA are listed in the picker.
         // Toggle off to access cross-hub presets (e.g. ferry flights).
         hubFilterEnabled: true,
+        handoff:         null,   // last consumed wave-designer handoff metadata
         draft:           null,   // last AesAfpActiveDraftStore record (for apply/dismiss/edit overlay)
         draftListener:   null,   // chrome.storage listener for draft key
         draftReloadTimer: null
@@ -82,11 +85,17 @@
             return _emptyBuildWith("RouteAssistantWaveOverlay not loaded — manifest order?", preset)
         }
 
+        // F-9228-903: route-candidates filter/score against AesAfp.getActiveHub()
+        // (which honours the Plan-from override). Build the wave plan against
+        // the same hub so candidates from the override hub aren't placed as
+        // if they were rooted at the aircraft's actual location.
+        const activeHub = (window.AesAfp && typeof AesAfp.getActiveHub === "function")
+            ? AesAfp.getActiveHub() : null
         const scoredRows = candidates.map(_candidateToScoredRow)
         const buildCtx = {
             server:            ctx.server || "",
             airlineCode:       ctx.airlineCode || ctx.airlineId || "",
-            hubIata:           String(ctx.currentLocationIata || "").toUpperCase(),
+            hubIata:           String(activeHub || ctx.currentLocationIata || "").toUpperCase(),
             selectedSpec:      spec,
             topN:              TOP_N,
             carrierClassifier: null
@@ -132,18 +141,26 @@
         ganttHost.className = "aes-afp-wave-gantt"
         host.appendChild(ganttHost)
 
+        // F-9228-903: same override-aware lookup as buildFromCandidates so the
+        // Gantt's onFlightClick → applyLeg flows through the user's chosen hub.
+        const activeHub = (window.AesAfp && typeof AesAfp.getActiveHub === "function")
+            ? AesAfp.getActiveHub() : null
         const hubIata = String(
-            (window.AesAfp && AesAfp.ctx && AesAfp.ctx.currentLocationIata) || ""
+            activeHub || (window.AesAfp && AesAfp.ctx && AesAfp.ctx.currentLocationIata) || ""
         ).toUpperCase()
 
-        try {
-            RouteAssistantWaveOverlay.renderGantt(ganttHost, build, {
-                hubIata,
-                onFlightClick: (flight) => applyLeg(flight)
-            })
-        } catch (e) {
-            console.warn("[AFP-E] renderGantt threw", e)
-            _renderEmpty(ganttHost, "Gantt render failed: " + ((e && e.message) || e))
+        if (!build.preset || !Array.isArray(build.preset.waves)) {
+            _renderEmpty(ganttHost, "Draft preset metadata unavailable — regenerate to rebuild the Gantt.")
+        } else {
+            try {
+                RouteAssistantWaveOverlay.renderGantt(ganttHost, build, {
+                    hubIata,
+                    onFlightClick: (flight) => applyLeg(flight)
+                })
+            } catch (e) {
+                console.warn("[AFP-E] renderGantt threw", e)
+                _renderEmpty(ganttHost, "Gantt render failed: " + ((e && e.message) || e))
+            }
         }
 
         const flights = (build.flights) || []
@@ -177,10 +194,14 @@
             catch (e) { console.warn("[AFP-E] bus emit failed", e) }
         }
         if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.info) {
+            // F-9228-907: this path only PRE-FILLS the New Flight Number form;
+            // AS's green Submit still has to be clicked. Match the wording to
+            // the button title so the user doesn't think the leg shipped.
             const arrow = (flight.direction === "inbound") ? "←" : "→"
-            const msg = "Leg applied: " + (flight.origin || "?")
+            const msg = "Leg pre-filled: " + (flight.origin || "?")
                 + " " + arrow + " " + (flight.destination || "?")
                 + (flight.depTimeLocal ? " · " + flight.depTimeLocal : "")
+                + " — click Submit below to confirm"
             try { RouteAssistantToast.info(msg) } catch (_) { /* non-fatal */ }
         }
         // Mirror the apply into the per-aircraft draft so the Fleet Hub
@@ -500,6 +521,12 @@
                 tone: "warn"
             }
         }
+        if (_state.handoff && _state.handoff.hubMismatch) {
+            return {text: "Wave Designer handoff is for " + _state.handoff.hub
+                + ", but this aircraft is at " + (_state.handoff.currentHub || "another airport")
+                + ". Move/open an aircraft at " + _state.handoff.hub
+                + " before generating this wave plan.", tone: "warn"}
+        }
         if (!_state.spec) {
             // After spec-resolver attempted (success OR null), don't keep
             // saying "Waiting…" forever — that misroutes the user toward
@@ -517,6 +544,16 @@
         if (_state.buildStale && _state.lastBuild)
             return {text: "Underlying data changed — click Regenerate to refresh.", tone: "warn"}
         return null
+    }
+
+    function _tryAutoGenerateHandoff() {
+        if (!_state._handoffConsumed) return false
+        if (_state.lastBuild) return false
+        if (_state.handoff && _state.handoff.hubMismatch) return false
+        if (!_generateEnabled()) return false
+        try { _onGenerate() }
+        catch (e) { console.warn("[AFP-8c] deferred auto-generate threw", e) }
+        return true
     }
 
     function _generateEnabled() {
@@ -809,13 +846,33 @@
     // ── Presets loader ─────────────────────────────────────────────────
 
     let _presetsPromise = null
+    let _presetsWaitStartedAt = 0
 
     function _loadPresets() {
         if (_presetsPromise) return _presetsPromise
         if (typeof SchedulePresets === "undefined") {
-            _state.presetsLoaded = true
-            _state.presetsError  = "SchedulePresets not loaded"
-            return Promise.resolve(null)
+            if (!_presetsWaitStartedAt) _presetsWaitStartedAt = Date.now()
+            _state.presetsLoaded = false
+            _state.presetsError  = null
+            _presetsPromise = new Promise(resolve => {
+                const retry = () => {
+                    if (typeof SchedulePresets !== "undefined") {
+                        _presetsPromise = null
+                        _loadPresets().then(resolve)
+                        return
+                    }
+                    if (Date.now() - _presetsWaitStartedAt >= PRESETS_DEP_MAX_WAIT_MS) {
+                        _state.presetsLoaded = true
+                        _state.presetsError  = "SchedulePresets not loaded"
+                        _presetsPromise = null
+                        resolve(null)
+                        return
+                    }
+                    setTimeout(retry, PRESETS_DEP_RETRY_MS)
+                }
+                setTimeout(retry, PRESETS_DEP_RETRY_MS)
+            })
+            return _presetsPromise
         }
         _presetsPromise = SchedulePresets.load().then(p => {
             _state.presets         = (p && Array.isArray(p.presets)) ? p.presets : []
@@ -912,10 +969,15 @@
         if (!rec) return
         if (String(rec.aircraftId) !== String(ctx.aircraftId)) return
         if (rec.source === "dnd-grid" || !rec.presetId) return
-        _state._handoffConsumed = true
+        // F-9228-904: only flip the once-per-mount guard AFTER consume()
+        // succeeds. If consume rejects (transient chrome.storage error,
+        // listener throw, etc), the handoff record remains in the store —
+        // a subsequent ctx:ready / presets-loaded transition should retry
+        // rather than seeing _handoffConsumed=true and bailing forever.
         try { rec = await window.AesHandoffStore.consume(ctx.aircraftId) }
         catch (e) { console.warn("[AFP-8c] handoff consume threw", e); return }
         if (!rec) return
+        _state._handoffConsumed = true
         // Find the preset; if missing (deleted between handoff and arrival),
         // surface a hint and bail.
         const preset = (_state.presets || []).find(p => p && p.id === rec.presetId)
@@ -926,13 +988,35 @@
             }
             return
         }
+        const handoffHub = String(rec.hub || preset.hub || "").toUpperCase()
+        const currentHub = String(ctx.currentLocationIata || "").toUpperCase()
+        const hubMismatch = !!(handoffHub && currentHub && handoffHub !== currentHub)
+        _state.handoff = {
+            source:      rec.source || "wave-designer",
+            presetId:    preset.id,
+            hub:         handoffHub,
+            currentHub:  currentHub,
+            hubMismatch: hubMismatch
+        }
+        if (hubMismatch) {
+            // The handoff's preset must remain visible even when the AFP page
+            // defaults to filtering presets by the aircraft's current airport.
+            _state.hubFilterEnabled = false
+        }
         _state.selectedPresetId = preset.id
         _markBuildStale()
         _renderToolbar()
         _renderStatus()
+        if (hubMismatch) {
+            if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.warn) {
+                try { RouteAssistantToast.warn("Wave Designer handoff is for "
+                    + handoffHub + ", but this aircraft is at " + currentHub + ".") } catch (_) { /* noop */ }
+            }
+            return
+        }
         if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.info) {
             try { RouteAssistantToast.info("Loaded from Wave Designer — "
-                + (preset.name || "preset") + ". Generating…") } catch (_) { /* noop */ }
+                + (preset.name || "preset") + (_generateEnabled() ? ". Generating…" : ".")) } catch (_) { /* noop */ }
         }
         // Auto-generate so the user lands on a Gantt, not a blank toolbar.
         if (_generateEnabled()) {
@@ -943,6 +1027,7 @@
     function _onSpecResolved(payload) {
         _state.spec = (payload && payload.spec) || null
         _markBuildStale()
+        if (_tryAutoGenerateHandoff()) return
         _renderToolbar()
         _renderStatus()
     }
@@ -951,6 +1036,7 @@
         _state.candidates = (payload && Array.isArray(payload.candidates))
             ? payload.candidates : []
         _markBuildStale()
+        if (_tryAutoGenerateHandoff()) return
         _renderToolbar()
         _renderStatus()
     }

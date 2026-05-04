@@ -10,11 +10,11 @@
  *   ─────────────────────
  *   { body slot }
  *   ─────────────────────
- *   {staged-edit count}  [Discard] [Commit]
+ *   {staged-edit count}  [Discard] [Apply]
  *
  * Mode toggle is passive — clicking emits the bus event and the canvas
  * shell re-orchestrates which engine drives the body. The footer is
- * filled by Phase G's commit-bar; in Phase C it's a stub.
+ * wired to the commit bar by the rail controller.
  */
 class CanvasRailShell {
 
@@ -199,7 +199,7 @@ class CanvasRailShell {
 
         const commit = document.createElement("button")
         commit.type = "button"
-        commit.textContent = "Commit"
+        commit.textContent = "Apply"
         commit.disabled = this._stagedCount === 0
         commit.style.cssText = "padding:3px 10px;font-size:10px;border:1px solid " + (T ? T.color.rust : "#B8472A") + ";background:" + (T ? T.color.rust : "#B8472A") + ";color:" + (T ? T.color.rustFg || "#F4F1EA" : "#F4F1EA") + ";cursor:pointer;text-transform:uppercase;letter-spacing:0.06em;font-weight:700;"
         commit.addEventListener("click", () => { if (this.onCommit) this.onCommit() })

@@ -25,6 +25,7 @@ class CanvasWaveSpineRenderer {
     static EVENT_AIRCRAFT_CLICK = "canvas:wave-spine:aircraft-click"
     static EVENT_WAVE_CLICK     = "canvas:wave-spine:wave-click"
     static EVENT_CELL_CLICK     = "canvas:wave-spine:cell-click"
+    static EVENT_OPEN_TIMELINE  = "canvas:wave-spine:open-timeline"
 
     static DAY_LETTERS = ["M", "T", "W", "T", "F", "S", "S"]
 
@@ -96,15 +97,35 @@ class CanvasWaveSpineRenderer {
     }
 
     /**
-     * Filter the fleet to aircraft whose home hub matches the active hub.
-     * Aircraft with no hub field stay out (they'd render incorrectly under
-     * a wave that targets a specific airport). The Fleet Command Center
-     * "Unassigned" callout already handles those rows.
+     * Filter the fleet to aircraft that belong on the active hub canvas.
+     * Prefer explicit fleet hub/location metadata, but do not hide a cached
+     * schedule just because the fleet row has not been enriched yet. A
+     * schedule whose hubIata or legs touch the active hub is still actionable
+     * in the wave view and should render.
      */
     _fleetForActiveHub() {
         if (!this.activeHub) return this.fleet.slice()
         const target = String(this.activeHub).toUpperCase()
-        return this.fleet.filter(r => r && String(r.hub || "").toUpperCase() === target)
+        return this.fleet.filter(r => {
+            if (!r) return false
+            if (String(r.hub || "").toUpperCase() === target) return true
+            if (String(r.locIata || "").toUpperCase() === target) return true
+            if (String(r.gravityHub || "").toUpperCase() === target) return true
+            const sched = this.schedules.get(String(r.aircraftId))
+            return this._scheduleTouchesHub(sched, target)
+        })
+    }
+
+    _scheduleTouchesHub(schedule, hub) {
+        const HUB = String(hub || "").toUpperCase()
+        if (!HUB || !schedule) return false
+        if (String(schedule.hubIata || "").toUpperCase() === HUB) return true
+        const legs = Array.isArray(schedule.legs) ? schedule.legs : []
+        for (const leg of legs) {
+            if (String(leg && leg.origin || "").toUpperCase() === HUB) return true
+            if (String(leg && leg.destination || "").toUpperCase() === HUB) return true
+        }
+        return false
     }
 
     _waves() {
@@ -186,7 +207,24 @@ class CanvasWaveSpineRenderer {
         const sub = document.createElement("div")
         sub.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";color:" + (T ? T.color.slate : "#7A6F66") + ";font-size:10px;"
         sub.textContent = (row.equipment || row.typeId || "—")
-        el.append(reg, sub)
+        const links = document.createElement("div")
+        links.style.cssText = "display:flex;gap:8px;margin-top:4px;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;"
+        const fp = document.createElement("a")
+        fp.href = "/app/fleets/aircraft/" + encodeURIComponent(row.aircraftId) + "/0"
+        fp.target = "_blank"
+        fp.rel = "noopener"
+        fp.textContent = "Flight plan"
+        fp.style.cssText = "color:" + (T ? T.color.rust : "#B8472A") + ";text-decoration:none;"
+        fp.addEventListener("click", ev => ev.stopPropagation())
+        const hist = document.createElement("a")
+        hist.href = "/app/fleets/aircraft/" + encodeURIComponent(row.aircraftId) + "/1"
+        hist.target = "_blank"
+        hist.rel = "noopener"
+        hist.textContent = "Flights"
+        hist.style.cssText = "color:" + (T ? T.color.rust : "#B8472A") + ";text-decoration:none;"
+        hist.addEventListener("click", ev => ev.stopPropagation())
+        links.append(fp, hist)
+        el.append(reg, sub, links)
         el.addEventListener("click", () => {
             this.rootEl.dispatchEvent(new CustomEvent(CanvasWaveSpineRenderer.EVENT_AIRCRAFT_CLICK,
                 {bubbles: true, detail: {aircraftId: row.aircraftId}}))
@@ -208,6 +246,7 @@ class CanvasWaveSpineRenderer {
             "min-height:64px",
             "background:" + (isEmpty ? "transparent" : (T ? T.color.bone2 : "#ECE7DC")),
             "cursor:pointer",
+            "position:relative",
             "transition:background 80ms linear"
         ].join(";")
         if (isEmpty) {
@@ -216,6 +255,9 @@ class CanvasWaveSpineRenderer {
             hint.textContent = "+ open"
             el.append(hint)
         } else {
+            el.draggable = true
+            el.title = "Drag this scheduled cell onto another wave or aircraft to stage a move."
+            el.addEventListener("dragstart", (ev) => this._onCellDragStart(ev, row, wave, summary))
             const head = document.createElement("div")
             head.style.cssText = "display:flex;justify-content:space-between;align-items:baseline;gap:8px;"
             const dest = document.createElement("span")
@@ -249,7 +291,9 @@ class CanvasWaveSpineRenderer {
                     : "no flight"
                 days.append(pill)
             }
+            const legList = this._buildLegList(T, summary)
             el.append(head, days)
+            if (legList) el.append(legList)
         }
         el.addEventListener("click", () => {
             this.rootEl.dispatchEvent(new CustomEvent(CanvasWaveSpineRenderer.EVENT_CELL_CLICK,
@@ -258,37 +302,132 @@ class CanvasWaveSpineRenderer {
         return el
     }
 
+    _buildLegList(T, summary) {
+        const legs = Array.isArray(summary.legs) ? summary.legs : []
+        if (!legs.length) return null
+        const list = document.createElement("div")
+        list.style.cssText = "display:flex;flex-direction:column;gap:2px;margin-top:5px;"
+            + "font-family:" + (T ? T.font.mono : "monospace") + ";font-size:9px;"
+            + "color:" + (T ? T.color.oxide2 : "#4A413B") + ";"
+        for (const leg of legs.slice(0, 3)) {
+            const line = document.createElement("div")
+            line.style.cssText = "display:flex;align-items:center;gap:5px;min-width:0;"
+            const fnText = leg.flightNumber || leg.flightCode || (leg.flightId ? "#" + leg.flightId : "#auto")
+            let fnNode
+            if (leg.flightLink) {
+                const a = document.createElement("a")
+                a.href = leg.flightLink
+                a.target = "_blank"
+                a.rel = "noopener"
+                a.textContent = fnText
+                a.title = "Open flight number"
+                a.style.cssText = "color:" + (T ? T.color.rust : "#B8472A") + ";text-decoration:none;font-weight:700;white-space:nowrap;"
+                a.addEventListener("click", ev => ev.stopPropagation())
+                fnNode = a
+            } else {
+                fnNode = document.createElement("span")
+                fnNode.textContent = fnText
+                fnNode.style.cssText = "font-weight:700;white-space:nowrap;"
+            }
+            const day = document.createElement("span")
+            day.textContent = CanvasWaveSpineRenderer.DAY_LETTERS[leg.dayIdx] || "?"
+            day.style.cssText = "color:" + (T ? T.color.slate : "#7A6F66") + ";"
+            const route = document.createElement("span")
+            route.textContent = (leg.origin || "?") + "→" + (leg.destination || "?")
+            route.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+            const time = document.createElement("span")
+            time.textContent = leg.depTimeLocal || "—"
+            time.style.cssText = "margin-left:auto;color:" + (T ? T.color.slate : "#7A6F66") + ";white-space:nowrap;"
+            line.append(fnNode, day, route, time)
+            list.append(line)
+        }
+        if (legs.length > 3) {
+            const more = document.createElement("div")
+            more.style.cssText = "color:" + (T ? T.color.slate : "#7A6F66") + ";font-size:9px;"
+            more.textContent = "+" + (legs.length - 3) + " more"
+            list.append(more)
+        }
+        return list
+    }
+
+    _onCellDragStart(ev, row, wave, summary) {
+        if (!ev || !ev.dataTransfer || !summary || !summary.flightCount) return
+        const leg = Array.isArray(summary.legs) && summary.legs.length ? summary.legs[0] : null
+        const payload = {
+            kind:             "canvas.schedule-cell",
+            aircraftId:       String(row.aircraftId || ""),
+            registration:     row.registration || "",
+            presetId:         this.preset && this.preset.id || null,
+            waveId:           wave && wave.id || null,
+            hub:              this.activeHub || row.hub || "",
+            destIata:         summary.topDest || (leg && leg.destination) || "",
+            flightCount:      summary.flightCount,
+            sourceLegSeq:     leg && leg.seq != null ? leg.seq : null,
+            flightId:         leg && leg.flightId || null,
+            flightNumber:     leg && (leg.flightNumber || leg.flightCode) || null,
+            origin:           leg && leg.origin || null,
+            destination:      leg && leg.destination || summary.topDest || null,
+            depTimeLocal:     leg && leg.depTimeLocal || null
+        }
+        const dtType = (typeof window !== "undefined"
+                && window.CanvasDropBridge
+                && window.CanvasDropBridge.DT_CELL_TYPE)
+            || "application/x-aes-canvas-cell"
+        try {
+            ev.dataTransfer.effectAllowed = "move"
+            ev.dataTransfer.setData(dtType, JSON.stringify(payload))
+            ev.dataTransfer.setData("text/plain", payload.destIata || "schedule-cell")
+        } catch (_) { /* noop */ }
+    }
+
     /**
-     * Bucket this aircraft's legs into the given wave window. A leg
-     * belongs to a wave when its `depTimeLocal` falls inside the wave's
-     * departure window (HH:MM–HH:MM). Cross-midnight wraps would need
-     * extra care; for now we treat midnight-spanning windows as a single
-     * range for assignment (legs whose dep falls in the wrapped half just
-     * miss this wave — acceptable for v1, since AS rarely flies through
-     * midnight windows).
+     * Bucket this aircraft's legs into the given wave window. Outbound legs
+     * belong by departure window; inbound legs belong by arrival window.
+     * When the hub side is unknown, fall back to either window so cached
+     * schedules still surface instead of showing a false "+ open" cell.
      */
     _summariseWaveCell(row, wave) {
-        const out = {flightCount: 0, totalBlockMin: 0, topDest: null, dayMask: [false,false,false,false,false,false,false], color: null}
+        const out = {flightCount: 0, totalBlockMin: 0, topDest: null, dayMask: [false,false,false,false,false,false,false], color: null, legs: []}
         const sched = this.schedules.get(String(row.aircraftId))
         if (!sched || !Array.isArray(sched.legs) || !sched.legs.length) return out
         const dep = wave.departureWindow || {}
-        const startMin = _hhmmToMin(dep.start)
-        const endMin = _hhmmToMin(dep.end)
-        if (startMin === null || endMin === null) return out
+        const arr = wave.arrivalWindow || {}
+        const depStartMin = _hhmmToMin(dep.start)
+        const depEndMin = _hhmmToMin(dep.end)
+        const arrStartMin = _hhmmToMin(arr.start)
+        const arrEndMin = _hhmmToMin(arr.end)
+        if ((depStartMin === null || depEndMin === null)
+                && (arrStartMin === null || arrEndMin === null)) return out
+        const hub = String(this.activeHub || row.hub || row.locIata || sched.hubIata || "").toUpperCase()
         const destCounts = new Map()
         for (const leg of sched.legs) {
-            const m = _hhmmToMin(leg.depTimeLocal)
-            if (m === null) continue
-            const inWindow = (startMin <= endMin)
-                ? (m >= startMin && m <= endMin)
-                : (m >= startMin || m <= endMin)  // wrap
-            if (!inWindow) continue
+            const match = this._legWaveMatch(leg, {
+                hub,
+                depStartMin,
+                depEndMin,
+                arrStartMin,
+                arrEndMin
+            })
+            if (!match) continue
             out.flightCount++
             out.totalBlockMin += Number(leg.durationMin) || 0
             const dayIdx = Number(leg.dayIdx)
             if (dayIdx >= 0 && dayIdx < 7) out.dayMask[dayIdx] = true
-            const dest = leg.destination || ""
+            const dest = match.station || ""
             if (dest) destCounts.set(dest, (destCounts.get(dest) || 0) + 1)
+            out.legs.push({
+                seq:          leg.seq,
+                dayIdx:       leg.dayIdx,
+                origin:       leg.origin || null,
+                destination:  leg.destination || null,
+                depTimeLocal: leg.depTimeLocal || null,
+                arrTimeLocal: leg.arrTimeLocal || null,
+                waveDirection: match.direction,
+                flightCode:   leg.flightCode || null,
+                flightNumber: leg.flightNumber || leg.flightCode || null,
+                flightId:     leg.flightId || null,
+                flightLink:   leg.flightLink || null
+            })
         }
         let topDest = null, topN = 0
         for (const [d, n] of destCounts) if (n > topN) { topDest = d; topN = n }
@@ -299,6 +438,34 @@ class CanvasWaveSpineRenderer {
             if (colored && colored.color) out.color = colored.color
         }
         return out
+    }
+
+    _legWaveMatch(leg, ctx) {
+        if (!leg) return null
+        const origin = String(leg.origin || "").toUpperCase()
+        const dest = String(leg.destination || "").toUpperCase()
+        const hub = String(ctx && ctx.hub || "").toUpperCase()
+        const depMin = _hhmmToMin(leg.depTimeLocal)
+        const arrMin = _hhmmToMin(leg.arrTimeLocal)
+        const depOk = _minInWindow(depMin, ctx.depStartMin, ctx.depEndMin)
+        const arrOk = _minInWindow(arrMin, ctx.arrStartMin, ctx.arrEndMin)
+
+        if (hub && origin === hub && depOk) {
+            return {direction: "outbound", station: dest || origin}
+        }
+        if (hub && dest === hub && arrOk) {
+            return {direction: "inbound", station: origin || dest}
+        }
+        if (!hub) {
+            if (depOk) return {direction: "departure", station: dest || origin}
+            if (arrOk) return {direction: "arrival", station: dest || origin}
+            return null
+        }
+        if (depOk || arrOk) {
+            const station = (origin === hub) ? dest : ((dest === hub) ? origin : (dest || origin))
+            return {direction: depOk ? "departure" : "arrival", station}
+        }
+        return null
     }
 
     _buildEmptyHubMessage(T) {
@@ -317,9 +484,27 @@ class CanvasWaveSpineRenderer {
         lead.style.cssText = "font-size:13px;font-weight:" + (T ? T.fw.bold : "700") + ";margin-bottom:8px;"
         lead.textContent = "No wave preset for " + (this.activeHub || "this hub")
         const sub = document.createElement("div")
-        sub.style.cssText = "font-size:11px;"
-        sub.textContent = "Create one from Route Assistant → Waves, or open the Timeline view to schedule without a wave spine."
-        el.append(lead, sub)
+        sub.style.cssText = "font-size:11px;margin-bottom:14px;"
+        sub.textContent = "Create one from Route Assistant Waves, or use Timeline to schedule without wave cells."
+        const btn = document.createElement("button")
+        btn.type = "button"
+        btn.textContent = "Open Timeline"
+        btn.style.cssText = [
+            "padding:6px 12px",
+            "font-size:10px",
+            "font-weight:" + (T ? T.fw.bold : "700"),
+            "letter-spacing:0.06em",
+            "text-transform:uppercase",
+            "border:1px solid " + (T ? T.color.oxide : "#2B2520"),
+            "background:" + (T ? T.color.bone : "#F4F1EA"),
+            "color:" + (T ? T.color.oxide : "#2B2520"),
+            "cursor:pointer"
+        ].join(";")
+        btn.addEventListener("click", () => {
+            this.rootEl.dispatchEvent(new CustomEvent(CanvasWaveSpineRenderer.EVENT_OPEN_TIMELINE,
+                {bubbles: true, detail: {hub: this.activeHub || ""}}))
+        })
+        el.append(lead, sub, btn)
         return el
     }
 }
@@ -331,6 +516,13 @@ function _hhmmToMin(s) {
     const h = +m[1], min = +m[2]
     if (h < 0 || h > 23 || min < 0 || min > 59) return null
     return h * 60 + min
+}
+
+function _minInWindow(value, start, end) {
+    if (value === null || start === null || end === null) return false
+    return (start <= end)
+        ? (value >= start && value <= end)
+        : (value >= start || value <= end)
 }
 
 if (typeof window !== "undefined") {

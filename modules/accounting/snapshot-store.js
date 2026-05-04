@@ -175,3 +175,7 @@ class AccountingSnapshotStore {
         await chrome.storage.local.remove(keys)
     }
 }
+
+if (typeof window !== "undefined") {
+    window.AccountingSnapshotStore = AccountingSnapshotStore
+}

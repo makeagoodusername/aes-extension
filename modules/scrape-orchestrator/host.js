@@ -67,6 +67,8 @@
         )
 
         const summary = {
+            runId:       null,
+            source:      "manual",
             startedAt:   Date.now(),
             completedAt: null,
             durationMs:  0,
@@ -106,6 +108,7 @@
             },
             onError:      (e) => _modal && _modal.onError(e),
             onDone:       (e) => {
+                summary.runId       = (e && e.runId) || summary.runId
                 summary.completedAt = Date.now()
                 summary.durationMs  = summary.completedAt - summary.startedAt
                 summary.aborted     = !!(e && e.aborted)
@@ -118,7 +121,7 @@
         })
 
         try {
-            await _orchestrator.start(opts)
+            await _orchestrator.start(Object.assign({}, opts, {source: "manual"}))
         } catch (e) {
             if (_modal) _modal.onError({message: (e && e.message) || String(e), phase: null})
         }

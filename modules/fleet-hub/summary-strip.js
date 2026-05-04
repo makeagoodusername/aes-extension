@@ -29,9 +29,16 @@ class FleetHubSummaryStrip {
         let drafted = 0
         let live = 0
         const hubCounts = new Map()
+        // F-9228-601: distinct hubs that have a live saved schedule (not
+        // distinct aircraft). Prior code incremented per-row, mislabelling
+        // an aircraft count as a hub count.
+        const liveHubs = new Set()
         for (const r of rows) {
             if (r.hasDraftedPlan) drafted++
-            if (r.scheduleStatus === "live") live++
+            if (r.scheduleStatus === "live") {
+                live++
+                if (r.hub) liveHubs.add(r.hub)
+            }
             const hub = r.hub || "?"
             hubCounts.set(hub, (hubCounts.get(hub) || 0) + 1)
         }
@@ -50,7 +57,7 @@ class FleetHubSummaryStrip {
         const parts = [
             total + " aircraft",
             drafted + " plan" + (drafted === 1 ? "" : "s") + " drafted",
-            live + " hub" + (live === 1 ? "" : "s") + " w/ live schedule"
+            liveHubs.size + " hub" + (liveHubs.size === 1 ? "" : "s") + " w/ live schedule"
         ]
         if (hubsSorted) parts.push("hubs: " + hubsSorted)
         if (lastScrape) parts.push("last scrape " + lastScrape)

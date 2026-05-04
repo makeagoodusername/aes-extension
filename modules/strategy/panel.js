@@ -27,6 +27,8 @@
  * useful for "quick-apply N high-confidence" entry points.
  * `opts.filter` (partial filter override) — applied over default filter,
  * e.g. `{selectedOnly: true, sort: "impact"}` pairs with preselect.
+ * `opts.skipSeed` — compose from current cache on first open instead of
+ * running the store-readiness seed pump first.
  *
  * Mounts an isolated stylesheet via inline cssText so the modal renders
  * the same on dashboard, fleet, and scheduling pages regardless of which
@@ -58,35 +60,118 @@
         price:         "Pricing",
         crew:          "Crew",
         routeCreation: "New routes",
-        alliance:      "Alliance & Interline"
+        alliance:      "Alliance & Interline",
+        slotBid:       "Slot bids"
+    }
+    const DOMAIN_ORDER = ["schedule", "service", "price", "crew", "routeCreation", "alliance", "slotBid"]
+
+    const FILTER_DEFAULT = {
+        search:         "",
+        domain:         "all",
+        applicableOnly: false,
+        advisoryOnly:   false,
+        selectedOnly:   false,
+        sort:           "order"  // "order" | "impact" | "hub"
     }
 
-    let _state = {
-        overlay:    null,
-        plan:       null,
-        snapshot:   null,
-        diff:       null,
-        settings:   null,
-        selected:   new Set(),     // decision-ids the user has checked
-        applying:   false,
-        // Multi-account: knownServers + the user-selected server scope.
-        // Default = current page's server. Switching forces a re-snapshot
-        // scoped to that server so the user can preview plans for sister
-        // airlines on the same server, or for entirely different worlds.
-        server:        null,
-        knownServers:  [],
-        // Sister-airline (one game world) scope. portfolio holds the
-        // current server's airlines + overlap data so the picker, the
-        // overlap card, and the tile portfolio can all consume one read.
-        airline:       null,        // display name from AesAccountRegistry
-        portfolio:     null,        // {airlines, overlapHubs, overlapRoutes}
-        filter: {                  // decisions list — preserves across re-renders
-            search:        "",
-            applicableOnly:false,
-            selectedOnly:  false,
-            sort:          "order"  // "order" | "impact" | "hub"
+    const SECTION_MENU = [
+        {id: "overview",  label: "Overview"},
+        {id: "readiness", label: "Data"},
+        {id: "settings",  label: "Settings"},
+        {id: "decisions", label: "Decisions"},
+        {id: "aircraft",  label: "Schedules"},
+        {id: "learning",  label: "Learning"},
+        {id: "journal",   label: "Journal"}
+    ]
+
+    const SECTION_ALIASES = {
+        summary: "overview",
+        data: "readiness",
+        stores: "readiness",
+        store: "readiness",
+        readiness: "readiness",
+        tuning: "settings",
+        tune: "settings",
+        settings: "settings",
+        decisions: "decisions",
+        decision: "decisions",
+        pricing: "decisions",
+        price: "decisions",
+        service: "decisions",
+        schedule: "decisions",
+        schedules: "aircraft",
+        aircraft: "aircraft",
+        fleet: "aircraft",
+        learn: "learning",
+        learning: "learning",
+        journal: "journal",
+        log: "journal"
+    }
+
+    const DOMAIN_ALIASES = {
+        schedules: "schedule",
+        schedule: "schedule",
+        service: "service",
+        services: "service",
+        pricing: "price",
+        prices: "price",
+        price: "price",
+        crew: "crew",
+        route: "routeCreation",
+        routes: "routeCreation",
+        routecreation: "routeCreation",
+        "route-creation": "routeCreation",
+        alliance: "alliance",
+        interline: "alliance",
+        slot: "slotBid",
+        slots: "slotBid",
+        slotbid: "slotBid",
+        "slot-bid": "slotBid",
+        slotbids: "slotBid",
+        "slot-bids": "slotBid"
+    }
+
+    function _copyFilter(overrides) {
+        const out = Object.assign({}, FILTER_DEFAULT,
+            (overrides && typeof overrides === "object") ? overrides : {})
+        const domainRaw = String(out.domain || "all")
+        const alias = DOMAIN_ALIASES[domainRaw.toLowerCase()]
+        out.domain = alias || domainRaw
+        if (out.domain !== "all" && !DOMAIN_LABEL[out.domain]) out.domain = "all"
+        out.applicableOnly = !!out.applicableOnly
+        out.advisoryOnly   = !!out.advisoryOnly
+        out.selectedOnly   = !!out.selectedOnly
+        out.sort = (out.sort === "impact" || out.sort === "hub") ? out.sort : "order"
+        return out
+    }
+
+    function _baseState() {
+        return {
+            overlay:    null,
+            plan:       null,
+            snapshot:   null,
+            diff:       null,
+            settings:   null,
+            selected:   new Set(),     // decision-ids the user has checked
+            applying:   false,
+            focusSection: "overview",
+            focusTimer: null,
+            // Multi-account: knownServers + the user-selected server scope.
+            // Default = current page's server. Switching forces a re-snapshot
+            // scoped to that server so the user can preview plans for sister
+            // airlines on the same server, or for entirely different worlds.
+            server:        null,
+            knownServers:  [],
+            // Sister-airline (one game world) scope. portfolio holds the
+            // current server's airlines + overlap data so the picker, the
+            // overlap card, and the tile portfolio can all consume one read.
+            airline:       null,        // display name from AesAccountRegistry
+            portfolio:     null,        // {airlines, overlapHubs, overlapRoutes}
+            filter:        _copyFilter()
         }
     }
+
+    let _state = _baseState()
 
     /**
      * Discover servers for which we have cached strategy inputs. Scans
@@ -224,6 +309,16 @@
         b.type = "button"
         return b
     }
+    function _delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms))
+    }
+    function _seedTimeoutMs(opts) {
+        const o = opts || {}
+        if (o.timeoutMs != null) return Math.max(1000, Number(o.timeoutMs) || 0)
+        if (o.firstOpen) return 12000
+        if (o.forceFull) return 120000
+        return 90000
+    }
     function _badge(text, tone) {
         const bg =
             tone === "ok"   ? COLOR.chipBgOk   :
@@ -250,6 +345,186 @@
         return _el("p", "color:" + COLOR.muted + ";font-style:italic;margin:6px 0;font-size:12px;", label)
     }
 
+    function _normaliseSection(section) {
+        if (!section) return null
+        const key = String(section).trim().replace(/\s+/g, "-").toLowerCase()
+        if (!key) return null
+        if (SECTION_ALIASES[key]) return SECTION_ALIASES[key]
+        for (const item of SECTION_MENU) if (item.id === key) return item.id
+        return null
+    }
+
+    function _normaliseDomain(domain) {
+        if (!domain) return null
+        const raw = String(domain).trim()
+        if (!raw || raw === "all") return "all"
+        const key = raw.replace(/\s+/g, "-").toLowerCase()
+        if (DOMAIN_ALIASES[key]) return DOMAIN_ALIASES[key]
+        for (const k of Object.keys(DOMAIN_LABEL)) {
+            if (String(k).toLowerCase() === key) return k
+        }
+        return null
+    }
+
+    function _markSection(host, section) {
+        if (!host) return host
+        host.dataset.aesStrategySection = section
+        host.classList.add("aes-strategy-section")
+        host.style.scrollMarginTop = "84px"
+        return host
+    }
+
+    function _resetSectionHosts() {
+        _state.summaryHost   = _markSection(_el("div", ""), "overview")
+        _state.readinessHost = _markSection(_el("div", ""), "readiness")
+        _state.settingsHost  = _markSection(_el("div", ""), "settings")
+        _state.tuningHost    = _markSection(_el("div", ""), "settings")
+        _state.overlapHost   = _markSection(_el("div", ""), "overview")
+        _state.decisionsHost = _markSection(_el("div", "flex:0 0 auto;overflow:visible;"), "decisions")
+        _state.aircraftHost  = _markSection(_el("div", "border-top:1px solid " + COLOR.rule + ";"), "aircraft")
+        _state.learningHost  = _markSection(_el("div", "border-top:1px solid " + COLOR.rule + ";"), "learning")
+        _state.journalHost   = _markSection(_el("div", "border-top:1px solid " + COLOR.rule + ";"), "journal")
+    }
+
+    function _appendSectionHosts() {
+        _state.bodyHost.append(_state.summaryHost, _state.readinessHost, _state.settingsHost,
+                               _state.tuningHost, _state.overlapHost,
+                               _state.decisionsHost, _state.aircraftHost, _state.learningHost,
+                               _state.journalHost)
+    }
+
+    function _renderSectionMenu(host) {
+        if (!host) return
+        host.textContent = ""
+        const wrap = _el("div", [
+            "display:flex","align-items:center","gap:6px","flex-wrap:wrap",
+            "padding:8px 16px","border-bottom:1px solid " + COLOR.rule,
+            "background:#111827"
+        ].join(";"))
+        const active = _normaliseSection(_state.focusSection) || "overview"
+        for (const item of SECTION_MENU) {
+            const isActive = item.id === active
+            const btn = _el("button", [
+                "background:" + (isActive ? COLOR.accent : COLOR.chipBg),
+                "color:" + (isActive ? COLOR.bg : COLOR.text),
+                "border:1px solid " + (isActive ? COLOR.accent : COLOR.rule),
+                "border-radius:4px",
+                "padding:5px 10px",
+                "font:600 11px sans-serif",
+                "letter-spacing:0.04em",
+                "text-transform:uppercase",
+                "cursor:pointer"
+            ].join(";"), item.label)
+            btn.type = "button"
+            btn.dataset.aesStrategyMenu = item.id
+            if (isActive) btn.dataset.active = "1"
+            btn.addEventListener("click", () => _focusSection(item.id))
+            wrap.appendChild(btn)
+        }
+        host.appendChild(wrap)
+    }
+
+    function _focusSection(section, opts) {
+        const targetSection = _normaliseSection(section) || "overview"
+        _state.focusSection = targetSection
+        _renderSectionMenu(_state.menuHost)
+        if (targetSection === "journal" && _state.journalHost) {
+            if (!_state.journalHost._aesJournalState) {
+                _state.journalHost._aesJournalState = {expanded: true, filter: "all", search: ""}
+            } else {
+                _state.journalHost._aesJournalState.expanded = true
+            }
+            void _renderJournalSection(_state.journalHost)
+        }
+        if (!_state.overlay) return false
+        const target = _state.overlay.querySelector('[data-aes-strategy-section="' + targetSection + '"]')
+        if (!target) return false
+        const instant = !!(opts && opts.instant)
+        setTimeout(() => {
+            try { target.scrollIntoView({behavior: instant ? "auto" : "smooth", block: "start"}) }
+            catch (_) { try { target.scrollIntoView() } catch (__) {} }
+            try {
+                target.style.boxShadow = "inset 3px 0 0 " + COLOR.accent
+                if (_state.focusTimer) clearTimeout(_state.focusTimer)
+                _state.focusTimer = setTimeout(() => {
+                    try { target.style.boxShadow = "" } catch (_) {}
+                    _state.focusTimer = null
+                }, 1200)
+            } catch (_) {}
+        }, 0)
+        return true
+    }
+
+    function _applyOpenOptions(opts) {
+        opts = opts || {}
+        let filterChanged = false
+        if (opts.filter && typeof opts.filter === "object") {
+            _state.filter = _copyFilter(Object.assign({}, _state.filter || _copyFilter(), opts.filter))
+            filterChanged = true
+        }
+        const domain = _normaliseDomain(opts.domain || opts.kind)
+        if (domain) {
+            if (_state.filter.domain !== domain) filterChanged = true
+            _state.filter.domain = domain
+            _state.focusSection = "decisions"
+        }
+        if (opts.search != null) {
+            const v = String(opts.search)
+            if (_state.filter.search !== v) filterChanged = true
+            _state.filter.search = v
+        }
+        if (opts.sort != null) {
+            const v = String(opts.sort)
+            const next = (v === "impact" || v === "hub") ? v : "order"
+            if (_state.filter.sort !== next) filterChanged = true
+            _state.filter.sort = next
+        }
+        for (const key of ["applicableOnly", "advisoryOnly", "selectedOnly"]) {
+            if (opts[key] != null) {
+                const v = !!opts[key]
+                if (_state.filter[key] !== v) filterChanged = true
+                _state.filter[key] = v
+            }
+        }
+        if (_state.filter.applicableOnly && _state.filter.advisoryOnly) {
+            _state.filter.advisoryOnly = false
+            filterChanged = true
+        }
+        _state.filter = _copyFilter(_state.filter)
+        const section = _normaliseSection(opts.section || opts.focus || opts.tab)
+        if (section) _state.focusSection = section
+        return {filterChanged: filterChanged, section: section || _state.focusSection}
+    }
+
+    async function _applyScopeOptions(opts) {
+        opts = opts || {}
+        const optServer  = opts.server || null
+        const optAirline = opts.airlineCode || opts.airline || opts.airlineIdentity || null
+        let changed = false
+        if (optServer && optServer !== _state.server) {
+            if (_state.knownServers.indexOf(optServer) < 0) {
+                _state.knownServers = _state.knownServers.concat([optServer]).sort()
+            }
+            _state.server = optServer
+            _state.portfolio = await _scanPortfolio(_state.server)
+            _state.airline = _defaultAirline(_state.portfolio)
+            _state.selected.clear()
+            changed = true
+        }
+        if (optAirline) {
+            if (!_state.portfolio) _state.portfolio = await _scanPortfolio(_state.server)
+            const match = ((_state.portfolio && _state.portfolio.airlines) || [])
+                .find(a => a.airline === optAirline || a.displayName === optAirline)
+            const nextAirline = match ? match.airline : optAirline
+            if (nextAirline !== _state.airline) {
+                _state.airline = nextAirline
+                _state.selected.clear()
+                changed = true
+            }
+        }
+        return changed
+    }
+
     // ── Store readiness ──────────────────────────────────────────────────
 
     /**
@@ -270,6 +545,37 @@
         ].join(";"))
         host.appendChild(wrap)
 
+        // Scope-vs-session mismatch banner. The remote-refresh foundation
+        // phase opens /app/fleets in a background tab — that URL binds to
+        // whatever airline the AS session is currently logged into. If the
+        // panel is scoped to a different airline (sister, alliance pick),
+        // every "Fetch …" button below silently scrapes the session airline
+        // instead. Surface that loudly here so the user doesn't misread the
+        // empty rows as "scrape failed" when they're actually "scrape went
+        // to the wrong airline".
+        const pageAirlineForReadiness = _currentPageAirline()
+        const scopeAirline = _state.airline
+        const norm = (s) => String(s || "").replace(/[^A-Za-z0-9]/g, "").toLowerCase()
+        const scopeMismatch = !!(scopeAirline && pageAirlineForReadiness
+            && norm(scopeAirline) !== norm(pageAirlineForReadiness))
+        if (scopeMismatch) {
+            const banner = _el("div", [
+                "padding:8px 10px","margin-bottom:8px","border-radius:4px",
+                "background:rgba(239, 68, 68, 0.10)",
+                "border:1px solid rgba(239, 68, 68, 0.40)",
+                "color:#fca5a5","font:11px sans-serif","line-height:1.5"
+            ].join(";"))
+            banner.appendChild(_el("strong", "color:#fecaca;font-weight:600;",
+                "⚠ Scope mismatch — seeds will hit the wrong airline"))
+            banner.appendChild(_el("div", "margin-top:4px;color:#fca5a5;",
+                "Panel is scoped to " + scopeAirline + " but the AS session on this tab is "
+                + pageAirlineForReadiness + ". The Fetch buttons below open background tabs that "
+                + "inherit the session airline, so they'll scrape " + pageAirlineForReadiness
+                + "'s data — not " + scopeAirline + "'s. Switch airline in the AS masthead first, "
+                + "or change scope above to match the tab."))
+            wrap.appendChild(banner)
+        }
+
         // Probe + cache the items so the seed button can re-use the
         // same action callbacks without re-probing.
         let items = []
@@ -287,6 +593,11 @@
             wrap.appendChild(_el("p", "color:" + COLOR.err + ";font:12px sans-serif;",
                 "Readiness probe threw: " + ((e && e.message) || String(e))))
             return
+        }
+        if (!Array.isArray(items)) {
+            wrap.appendChild(_el("p", "color:" + COLOR.err + ";font:12px sans-serif;",
+                "Readiness probe returned unexpected data. Refresh the page and try again."))
+            items = []
         }
 
         const tallies = {filled: 0, partial: 0, empty: 0, missing: 0}
@@ -401,7 +712,39 @@
                 row.appendChild(wrap)
             }
         }
+        // Always offer a direct AS-page link for stores that have a
+        // canonical view URL, so the user can verify state by hand even
+        // when the seed button is broken (wrong scope, rate limit, etc).
+        // The action above may or may not be a nav — when it's a seed
+        // the user otherwise has no escape hatch back to the AS page.
+        const viewTarget = _readinessViewTarget(item)
+        if (viewTarget && !(action && action.kind === "nav" && action.url === viewTarget.url)) {
+            const view = _navLink(viewTarget.label, viewTarget.url)
+            view.style.marginLeft = "4px"
+            view.style.opacity = "0.75"
+            view.title = "Open the AirlineSim page this store reads from"
+            row.appendChild(view)
+        }
         return row
+    }
+
+    /**
+     * Canonical AirlineSim page each readiness store reads from. Returned
+     * as a secondary nav link beside whatever auto-action the row already
+     * offers, so the user can always see the source-of-truth page even
+     * when the auto-seed is broken or the store has no auto path.
+     */
+    function _readinessViewTarget(item) {
+        if (!item || !item.key) return null
+        switch (item.key) {
+            case "fleet":      return {label: "View /app/fleets",       url: "/app/fleets"}
+            case "schedules":  return {label: "View /app/fleets",       url: "/app/fleets"}
+            case "routes":     return {label: "View accounting",        url: "/app/finance/accounting/0"}
+            case "crewPilots": return {label: "View staff",             url: "/action/enterprise/staffPilots"}
+            // markets / ors are per-route — no single page summarises them
+            // outcomes is in-extension only, no AS page
+            default:           return null
+        }
     }
 
     /** Build a same-server in-app nav link. Anchor (not <button>) so the
@@ -414,7 +757,10 @@
         ].join(";"), label)
         const server = _state.server || _currentPageServer()
         const base = server ? ("https://" + server + ".airlinesim.aero") : ""
-        a.href = base + url
+        const host = location && location.hostname || ""
+        const localHarness = !/\.airlinesim\.aero$/i.test(host)
+        a.href = localHarness ? url : (base + url)
+        if (localHarness && base) a.dataset.aesExternalHref = base + url
         a.target = "_blank"
         a.rel = "noopener"
         return a
@@ -461,7 +807,7 @@
         }
 
         try {
-            await window.AesStrategyStoreReadiness.seedMissing({
+            const seedPromise = window.AesStrategyStoreReadiness.seedMissing({
                 snapshot:         _state.snapshot,
                 server:           _state.server,
                 airline:          _state.airline,
@@ -483,6 +829,28 @@
                     banner.textContent = "Composing snapshot + plan…"
                 }
             })
+            const settled = seedPromise
+                .then(report => ({report}))
+                .catch(error => ({error}))
+            const seedResult = await Promise.race([
+                settled,
+                _delay(_seedTimeoutMs(o)).then(() => ({timeout: true}))
+            ])
+            if (seedResult.timeout) {
+                banner.textContent = "Seeding is still running. Composing with current cache…"
+                _toast("Strategy seeding is still running; showing the current cache.", "warn")
+                settled.then(result => {
+                    if (!_state.overlay) return
+                    if (result && result.error) {
+                        _toast("Background seed finished with an error: "
+                            + ((result.error && result.error.message) || String(result.error)), "warn")
+                    } else {
+                        _toast("Background seed finished. Refresh to fold in the new data.", "ok")
+                    }
+                })
+            } else if (seedResult.error) {
+                console.warn("[AES strategy panel] seedMissing threw", seedResult.error)
+            }
         } catch (e) {
             console.warn("[AES strategy panel] seedMissing threw", e)
         }
@@ -543,7 +911,7 @@
             try { weights = await window.AesStrategyLearn.getCurrentWeights(acctId) } catch (_) { weights = null }
         }
         const scored   = ns.scoreRoutes(snapshot, weights || undefined)
-        const plan     = ns.allocateFleet(snapshot, scored, {})
+        const plan     = await ns.allocateFleet(snapshot, scored, {})
         const currentSchedules = await _loadCurrentSchedules(plan, snapshot && snapshot.server)
         // Slice 12 — alliance & IL codeshare proposer threads in here.
         // Defensive (older installs without alliance.js degrade to []) and
@@ -813,18 +1181,61 @@
         host.appendChild(wrap)
     }
 
+    function _summaryFilterActive(filter) {
+        const cur = _copyFilter(_state.filter)
+        const next = _copyFilter(filter)
+        return cur.domain === next.domain
+            && cur.applicableOnly === next.applicableOnly
+            && cur.advisoryOnly === next.advisoryOnly
+            && !cur.selectedOnly
+            && !(cur.search || "").trim()
+    }
+
+    function _setDecisionFilter(filter, opts) {
+        const base = _copyFilter(_state.filter)
+        const next = _copyFilter(Object.assign({}, base, filter || {}))
+        if (filter && Object.prototype.hasOwnProperty.call(filter, "domain")) {
+            next.search = ""
+            next.selectedOnly = false
+            if (!Object.prototype.hasOwnProperty.call(filter, "applicableOnly")) next.applicableOnly = false
+            if (!Object.prototype.hasOwnProperty.call(filter, "advisoryOnly")) next.advisoryOnly = false
+        }
+        if (filter && (filter.applicableOnly || filter.advisoryOnly)) {
+            next.search = ""
+            next.selectedOnly = false
+        }
+        if (filter && filter.applicableOnly) next.advisoryOnly = false
+        if (filter && filter.advisoryOnly) next.applicableOnly = false
+        if (filter && Object.prototype.hasOwnProperty.call(filter, "applicableOnly")
+                && !filter.applicableOnly) next.applicableOnly = false
+        if (filter && Object.prototype.hasOwnProperty.call(filter, "advisoryOnly")
+                && !filter.advisoryOnly) next.advisoryOnly = false
+        if (next.domain !== "all") {
+            next.applicableOnly = !!(filter && filter.applicableOnly)
+            next.advisoryOnly = !!(filter && filter.advisoryOnly)
+        }
+        _state.filter = next
+        if (_state.summaryHost && _state.diff) _renderSummaryStrip(_state.summaryHost, _state.diff)
+        if (_state.decisionsHost && _state.diff) _renderDecisions(_state.decisionsHost, _state.diff)
+        if (opts && opts.scroll && _state.decisionsHost && typeof _state.decisionsHost.scrollIntoView === "function") {
+            try { _state.decisionsHost.scrollIntoView({behavior: "smooth", block: "start"}) } catch (_) {}
+        }
+    }
+
     function _renderSummaryStrip(host, diff) {
         host.textContent = ""
         const s = diff && diff.summary || {}
         const realDiff = s.scheduleDiffMode === "real"
         const items = [
-            ["Schedules", s.byKind && s.byKind.schedule || 0, null],
-            ["Service",   s.byKind && s.byKind.service  || 0, null],
-            ["Pricing",   s.byKind && s.byKind.price    || 0, null],
-            ["Crew",      s.byKind && s.byKind.crew     || 0, null],
-            ["New routes",s.byKind && s.byKind.routeCreation || 0, null],
-            ["Applicable",s.applicableTotal || 0, null],
-            ["Advisory",  s.advisoryTotal   || 0, null]
+            ["Schedules", s.byKind && s.byKind.schedule || 0, null, {domain: "schedule"}],
+            ["Service",   s.byKind && s.byKind.service  || 0, null, {domain: "service"}],
+            ["Pricing",   s.byKind && s.byKind.price    || 0, null, {domain: "price"}],
+            ["Crew",      s.byKind && s.byKind.crew     || 0, null, {domain: "crew"}],
+            ["New routes",s.byKind && s.byKind.routeCreation || 0, null, {domain: "routeCreation"}],
+            ["Alliance",  s.byKind && s.byKind.alliance || 0, null, {domain: "alliance"}],
+            ["Slot bids", s.byKind && s.byKind["slot-bid"] || 0, null, {domain: "slotBid"}],
+            ["Applicable",s.applicableTotal || 0, null, {domain: "all", applicableOnly: true}],
+            ["Advisory",  s.advisoryTotal   || 0, null, {domain: "all", advisoryOnly: true}]
         ]
         // Schedule-leg diff chips appear only when we have real cached
         // schedules — otherwise the numbers would be misleading.
@@ -836,22 +1247,34 @@
                 items.push(["Locked", s.lockedLegs, "warn"])
         }
         const row = _el("div", "display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid " + COLOR.rule + ";align-items:center;")
-        for (const [label, n, tone] of items) {
+        for (const [label, n, tone, filter] of items) {
             const accent = tone === "ok"   ? COLOR.ok
                         : tone === "err"   ? COLOR.err
                         : tone === "warn"  ? COLOR.warn
                         : tone === "muted" ? COLOR.muted
                         : COLOR.text
-            const chip = _el("div", [
+            const active = filter && _summaryFilterActive(filter)
+            const chip = _el(filter ? "button" : "div", [
                 "display:flex",
                 "flex-direction:column",
                 "align-items:center",
+                "justify-content:center",
                 "padding:6px 10px",
                 "background:" + COLOR.chipBg,
-                "border:1px solid " + (tone ? accent : COLOR.rule),
+                "border:1px solid " + (active ? COLOR.accent : (tone ? accent : COLOR.rule)),
                 "border-radius:4px",
-                "min-width:64px"
+                "min-width:64px",
+                "color:" + COLOR.text,
+                filter ? "cursor:pointer" : "",
+                filter ? "text-align:center" : ""
             ].join(";"))
+            if (filter) {
+                chip.type = "button"
+                chip.dataset.aesStrategyFilter = filter.domain || "all"
+                chip.dataset.active = active ? "1" : "0"
+                chip.title = "Show " + label.toLowerCase() + " decisions"
+                chip.addEventListener("click", () => _setDecisionFilter(filter, {scroll: true}))
+            }
             chip.appendChild(_el("span", "color:" + COLOR.muted + ";font:600 10px sans-serif;letter-spacing:0.06em;text-transform:uppercase;", label))
             chip.appendChild(_el("span", "color:" + accent + ";font:600 16px sans-serif;", String(n)))
             row.appendChild(chip)
@@ -969,6 +1392,9 @@
             ["serviceMovesEnabled",  "Service"],
             ["priceMovesEnabled",    "Pricing"],
             ["crewMovesEnabled",     "Crew"],
+            ["routeCreationEnabled", "New routes"],
+            ["allianceMovesEnabled", "Alliance"],
+            ["slotBidApplyEnabled",  "Slot bids"],
             ["crossAirlineEnabled",  "X-airline hints"]
         ]
         for (const [key, label] of flagDefs) {
@@ -984,6 +1410,20 @@
             lbl.append(cb, _el("span", "", label))
             wrap.appendChild(lbl)
         }
+
+        const sep3 = _el("span", "color:" + COLOR.rule + ";", "│")
+        wrap.appendChild(sep3)
+        const seedLbl = _el("label", "display:inline-flex;align-items:center;gap:4px;color:" + COLOR.text + ";font:12px sans-serif;cursor:pointer;")
+        const seedCb = _el("input")
+        seedCb.type = "checkbox"
+        seedCb.checked = !settings.autoSeedDisabled
+        seedCb.addEventListener("change", async () => {
+            await window.AesStrategySettings.save({autoSeedDisabled: !seedCb.checked})
+            _state.settings = await window.AesStrategySettings.load()
+            _renderSettingsStrip(_state.settingsHost, _state.settings)
+        })
+        seedLbl.append(seedCb, _el("span", "", "Auto-seed on open"))
+        wrap.appendChild(seedLbl)
         host.appendChild(wrap)
     }
 
@@ -1000,14 +1440,19 @@
      * decisions.
      */
     function _filteredDecisions(decisions) {
-        const f = _state.filter
+        const f = _copyFilter(_state.filter)
+        _state.filter = f
         const q = (f.search || "").trim().toLowerCase()
+        const domain = (f.domain && f.domain !== "all") ? f.domain : null
         const out = decisions.filter(d => {
+            if (domain && d.domain !== domain) return false
             if (f.applicableOnly && !d.applicable) return false
+            if (f.advisoryOnly   && d.applicable) return false
             if (f.selectedOnly   && !_state.selected.has(d.id)) return false
             if (q) {
                 const haystack = [
-                    d.title || "", d.subtitle || "",
+                    d.title || "", d.subtitle || "", d.domain || "",
+                    DOMAIN_LABEL[d.domain] || "",
                     Array.isArray(d.rationale) ? d.rationale.join(" ") : ""
                 ].join(" ").toLowerCase()
                 if (haystack.indexOf(q) < 0) return false
@@ -1209,10 +1654,7 @@
     function _renderDecisions(host, diff) {
         host.textContent = ""
         const decisions = (diff && diff.decisions) || []
-        if (!decisions.length) {
-            host.appendChild(_emptyState("No decisions in plan. Try refreshing after seeding stores on /app/com/scheduling/<HUB>."))
-            return
-        }
+        const noDecisions = !decisions.length
         const visible = _filteredDecisions(decisions)
         // Group by domain (over the already-filtered list)
         const groups = new Map()
@@ -1236,8 +1678,28 @@
         search.addEventListener("input", () => {
             _state.filter.search = search.value
             _renderDecisions(host, diff)
+            if (_state.summaryHost) _renderSummaryStrip(_state.summaryHost, diff)
         })
         filterBar.appendChild(search)
+
+        const domainLbl = _el("label", "display:inline-flex;align-items:center;gap:4px;color:" + COLOR.text + ";")
+        domainLbl.appendChild(_el("span", "color:" + COLOR.muted + ";font-size:11px;text-transform:uppercase;letter-spacing:0.04em;", "Domain"))
+        const domainSel = _el("select", "background:" + COLOR.chipBg + ";color:" + COLOR.text + ";border:1px solid "
+            + COLOR.rule + ";border-radius:3px;padding:5px 8px;font:12px sans-serif;")
+        domainSel.dataset.aesStrategyDomainFilter = "1"
+        const domainOptions = [["all", "All domains"]]
+            .concat(DOMAIN_ORDER.map(k => [k, DOMAIN_LABEL[k]]))
+        for (const [value, label] of domainOptions) {
+            const o = _el("option", "", label)
+            o.value = value
+            if ((_state.filter.domain || "all") === value) o.selected = true
+            domainSel.appendChild(o)
+        }
+        domainSel.addEventListener("change", () => {
+            _setDecisionFilter({domain: domainSel.value || "all", applicableOnly: false, advisoryOnly: false}, {scroll: false})
+        })
+        domainLbl.appendChild(domainSel)
+        filterBar.appendChild(domainLbl)
 
         const toggle = (label, key) => {
             const lbl = _el("label", "display:inline-flex;align-items:center;gap:4px;cursor:pointer;color:" + COLOR.text + ";")
@@ -1245,13 +1707,18 @@
             cb.type = "checkbox"
             cb.checked = !!_state.filter[key]
             cb.addEventListener("change", () => {
+                _state.filter = _copyFilter(_state.filter)
                 _state.filter[key] = cb.checked
+                if (key === "applicableOnly" && cb.checked) _state.filter.advisoryOnly = false
+                if (key === "advisoryOnly" && cb.checked) _state.filter.applicableOnly = false
                 _renderDecisions(host, diff)
+                if (_state.summaryHost) _renderSummaryStrip(_state.summaryHost, diff)
             })
             lbl.append(cb, _el("span", "", label))
             return lbl
         }
         filterBar.appendChild(toggle("Applicable only", "applicableOnly"))
+        filterBar.appendChild(toggle("Advisory only",   "advisoryOnly"))
         filterBar.appendChild(toggle("Selected only",   "selectedOnly"))
 
         const sortLbl = _el("label", "display:inline-flex;align-items:center;gap:4px;color:" + COLOR.text + ";")
@@ -1270,10 +1737,27 @@
         })
         sortLbl.appendChild(sortSel)
         filterBar.appendChild(sortLbl)
+        const hasActiveFilter = !!((_state.filter.search || "").trim()
+            || ((_state.filter.domain || "all") !== "all")
+            || _state.filter.applicableOnly
+            || _state.filter.advisoryOnly
+            || _state.filter.selectedOnly)
+        if (hasActiveFilter) {
+            const clearBtn = _btn("Clear filters", false)
+            clearBtn.dataset.aesStrategyClearFilters = "1"
+            clearBtn.addEventListener("click", () => {
+                _state.filter = _copyFilter({sort: _state.filter.sort})
+                _renderDecisions(host, diff)
+                if (_state.summaryHost) _renderSummaryStrip(_state.summaryHost, diff)
+            })
+            filterBar.appendChild(clearBtn)
+        }
         host.appendChild(filterBar)
 
         if (!visible.length) {
-            host.appendChild(_emptyState("No decisions match the current filter."))
+            host.appendChild(_emptyState(noDecisions
+                ? "No decisions in plan. Try refreshing after seeding stores on /app/com/scheduling/<HUB>."
+                : "No decisions match the current filter."))
             return
         }
 
@@ -1497,7 +1981,7 @@
         }
 
         if (grouped) {
-            for (const domain of ["schedule", "service", "price", "crew", "routeCreation", "alliance"]) {
+            for (const domain of DOMAIN_ORDER) {
                 const items = groups.get(domain) || []
                 if (!items.length) continue
                 list.appendChild(_el("div", [
@@ -1746,6 +2230,10 @@
             return
         }
         const acctId = await _scopedAccountId()
+        if (_state.focusSection === "journal") {
+            if (!host._aesJournalState) host._aesJournalState = {expanded: true, filter: "all", search: ""}
+            else host._aesJournalState.expanded = true
+        }
         await window.AesStrategyJournalPanel.render(host, {accountId: acctId})
     }
 
@@ -1872,7 +2360,7 @@
      */
     function _summarizeSelection() {
         const out = {
-            schedule: 0, service: 0, price: 0, crew: 0, routeCreation: 0,
+            schedule: 0, service: 0, price: 0, crew: 0, routeCreation: 0, alliance: 0, slotBid: 0,
             scheduleAddedLegs: 0,
             dollarImpact: 0, ors: 0, headcount: 0,
             highStakes: false
@@ -1889,6 +2377,7 @@
                 out.scheduleAddedLegs += d.payload.legs.length
         }
         out.highStakes = (out.routeCreation > 0)
+                       || (out.slotBid > 0)
                        || (out.price > 5)
                        || (out.scheduleAddedLegs > 20)
         return out
@@ -1899,12 +2388,17 @@
             "position:fixed","inset:0","background:rgba(0,0,0,0.7)",
             "z-index:10003","display:flex","align-items:center","justify-content:center"
         ].join(";"))
+        overlay.className = "aes-strategy-confirm-overlay"
         const card = _el("div", [
             "background:" + COLOR.bg,"color:" + COLOR.text,
             "border:1px solid " + COLOR.rule,"border-radius:6px",
             "width:min(540px,92vw)","padding:20px",
             "box-shadow:0 12px 48px rgba(0,0,0,0.6)","font-family:sans-serif"
         ].join(";"))
+        card.className = "aes-strategy-confirm-modal"
+        card.setAttribute("role", "dialog")
+        card.setAttribute("aria-modal", "true")
+        card.setAttribute("aria-label", "Confirm strategy apply")
         overlay.appendChild(card)
 
         const close = () => { try { overlay.parentNode.removeChild(overlay) } catch (_) {} }
@@ -1959,6 +2453,8 @@
         lineMaybe(summary.price,         "{n} price move(s)")
         lineMaybe(summary.crew,          "{n} crew action(s) — total " + summary.headcount + " people")
         lineMaybe(summary.routeCreation, "{n} new route creation(s) — these post legs to NEW aircraft schedules")
+        lineMaybe(summary.alliance,      "{n} alliance / interline action(s)")
+        lineMaybe(summary.slotBid,       "{n} slot bid action(s) — dry-run stub until the AS bid form mapping is complete")
         if (!countsList.children.length) {
             countsList.appendChild(_el("li", "color:" + COLOR.muted + ";font-style:italic;", "No applicable decisions selected."))
         }
@@ -1993,7 +2489,7 @@
             scopeMismatch
                 ? "Type the scoped airline name above to override the wrong-account guard. Strongly consider cancelling and switching tabs instead."
                 : (high
-                    ? "High-stakes plan: includes new route creations, > 5 price moves, "
+                    ? "High-stakes plan: includes new route creations, slot bids, > 5 price moves, "
                       + "or > 20 schedule adds. Type APPLY to enable Confirm."
                     : "Review the counts above. You can cancel and untick decisions in the modal."))
         card.appendChild(note)
@@ -2058,7 +2554,8 @@
             const report = await window.AesStrategy.apply(_state.plan, {
                 selected: sel,
                 source:   "strategy-panel",
-                snapshot: _state.snapshot      // thread through so outcomes.record skips a 2nd snapshot fetch
+                snapshot: _state.snapshot,     // thread through so outcomes.record skips a 2nd snapshot fetch
+                diff:     _state.diff          // apply exactly the reviewed decision set, including advisory tuners
             })
             // Decorate decision rows with results
             const byId = new Map()
@@ -2119,15 +2616,8 @@
 
             _state.bodyHost.textContent = ""
             _renderHeader(_state.headerHost, _state.plan, _state.settings)
-            _state.summaryHost   = _el("div", "")
-            _state.readinessHost = _el("div", "")
-            _state.settingsHost  = _el("div", "")
-            _state.tuningHost    = _el("div", "")
-            _state.overlapHost   = _el("div", "")
-            _state.decisionsHost = _el("div", "flex:1;overflow:auto;")
-            _state.aircraftHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
-            _state.learningHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
-            _state.journalHost   = _el("div", "border-top:1px solid " + COLOR.rule + ";")
+            _renderSectionMenu(_state.menuHost)
+            _resetSectionHosts()
             _renderSummaryStrip(_state.summaryHost, _state.diff)
             _renderReadiness(_state.readinessHost)
             _renderSettingsStrip(_state.settingsHost, _state.settings)
@@ -2146,11 +2636,9 @@
             _renderAircraftAccordion(_state.aircraftHost, _state.plan, _state.diff)
             _renderLearningSection(_state.learningHost)
             _renderJournalSection(_state.journalHost)
-            _state.bodyHost.append(_state.summaryHost, _state.readinessHost, _state.settingsHost,
-                                   _state.tuningHost, _state.overlapHost,
-                                   _state.decisionsHost, _state.aircraftHost, _state.learningHost,
-                                   _state.journalHost)
+            _appendSectionHosts()
             _renderFooter(_state.footerHost)
+            _focusSection(_state.focusSection || "overview", {instant: true})
             // skipSeed signals "this is a re-render after a seed already
             // ran, or a non-network-burn event like a slider drag". Only
             // the explicit user-driven entry points (first open, Refresh
@@ -2166,18 +2654,30 @@
     }
 
     async function open(opts) {
-        if (_state.overlay) return
         opts = opts || {}
+        if (_state.overlay) {
+            const scopeChanged = await _applyScopeOptions(opts)
+            const applied = _applyOpenOptions(opts)
+            if (scopeChanged) {
+                await _refresh({skipSeed: true})
+            } else {
+                if (applied.filterChanged && _state.decisionsHost && _state.diff) {
+                    if (_state.summaryHost) _renderSummaryStrip(_state.summaryHost, _state.diff)
+                    _renderDecisions(_state.decisionsHost, _state.diff)
+                    _renderFooter(_state.footerHost)
+                }
+                _focusSection(applied.section || _state.focusSection || "overview")
+            }
+            return
+        }
         const settings = window.AesStrategySettings ? await window.AesStrategySettings.load() : null
         _state.settings = settings || {tier: "preview-only"}
         _state.selected = Array.isArray(opts.preselect)
             ? new Set(opts.preselect.map(String))
             : new Set()
         _state.applying = false
-        _state.filter = Object.assign(
-            {search: "", applicableOnly: false, selectedOnly: false, sort: "order"},
-            (opts.filter && typeof opts.filter === "object") ? opts.filter : {}
-        )
+        _state.filter = _copyFilter(opts.filter)
+        _applyOpenOptions(opts)
         // Discover servers + default to current page's server. The picker
         // in the header only appears when 2+ servers have cached data.
         // opts.server / opts.airlineCode let callers (the tile portfolio's
@@ -2186,7 +2686,7 @@
         _state.knownServers = await _listKnownServers()
         const cur = _currentPageServer()
         const optServer  = opts.server  || null
-        const optAirline = opts.airlineCode || null
+        const optAirline = opts.airlineCode || opts.airline || opts.airlineIdentity || null
         if (optServer && _state.knownServers.indexOf(optServer) < 0) {
             // Server passed by caller but not in the cached set — add it
             // anyway so the picker can render and we don't silently
@@ -2212,6 +2712,8 @@
             "position:fixed","inset:0","background:rgba(0,0,0,0.6)",
             "z-index:10001","display:flex","align-items:stretch","justify-content:center"
         ].join(";"))
+        overlay.className = "aes-strategy-panel"
+        overlay.dataset.aesStrategyPanel = "1"
         const modal = _el("div", [
             "background:" + COLOR.bg,
             "color:" + COLOR.text,
@@ -2224,17 +2726,23 @@
             "box-shadow:0 12px 48px rgba(0,0,0,0.5)",
             "font-family:sans-serif"
         ].join(";"))
+        modal.className = "aes-strategy-modal"
+        modal.setAttribute("role", "dialog")
+        modal.setAttribute("aria-modal", "true")
+        modal.setAttribute("aria-label", "Strategy preview")
         overlay.appendChild(modal)
         overlay.addEventListener("click", (e) => { if (e.target === overlay) close() })
         document.addEventListener("keydown", _onEsc)
 
         _state.overlay     = overlay
         _state.headerHost  = _el("div", "")
+        _state.menuHost    = _el("div", "")
         _state.bodyHost    = _el("div", "flex:1;display:flex;flex-direction:column;overflow:auto;")
         _state.footerHost  = _el("div", "")
-        modal.append(_state.headerHost, _state.bodyHost, _state.footerHost)
+        modal.append(_state.headerHost, _state.menuHost, _state.bodyHost, _state.footerHost)
 
         document.body.appendChild(overlay)
+        _renderSectionMenu(_state.menuHost)
 
         // Optional pre-supplied plan/snapshot for tests
         if (opts && opts.plan && opts.snapshot && opts.diff) {
@@ -2242,15 +2750,8 @@
             _state.snapshot = opts.snapshot
             _state.diff     = opts.diff
             _renderHeader(_state.headerHost, _state.plan, _state.settings)
-            _state.summaryHost   = _el("div", "")
-            _state.readinessHost = _el("div", "")
-            _state.settingsHost  = _el("div", "")
-            _state.tuningHost    = _el("div", "")
-            _state.overlapHost   = _el("div", "")
-            _state.decisionsHost = _el("div", "flex:1;overflow:auto;")
-            _state.aircraftHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
-            _state.learningHost  = _el("div", "border-top:1px solid " + COLOR.rule + ";")
-            _state.journalHost   = _el("div", "border-top:1px solid " + COLOR.rule + ";")
+            _renderSectionMenu(_state.menuHost)
+            _resetSectionHosts()
             _renderSummaryStrip(_state.summaryHost, _state.diff)
             _renderReadiness(_state.readinessHost)
             _renderSettingsStrip(_state.settingsHost, _state.settings)
@@ -2265,11 +2766,9 @@
             _renderAircraftAccordion(_state.aircraftHost, _state.plan, _state.diff)
             _renderLearningSection(_state.learningHost)
             _renderJournalSection(_state.journalHost)
-            _state.bodyHost.append(_state.summaryHost, _state.readinessHost, _state.settingsHost,
-                                   _state.tuningHost, _state.overlapHost,
-                                   _state.decisionsHost, _state.aircraftHost, _state.learningHost,
-                                   _state.journalHost)
+            _appendSectionHosts()
             _renderFooter(_state.footerHost)
+            _focusSection(_state.focusSection || "overview", {instant: true})
         } else {
             _renderHeader(_state.headerHost, null, _state.settings)
             // First open: probe + auto-seed any missing/stale stores
@@ -2279,6 +2778,7 @@
             // on AesStrategySettings (autoSeedDisabled) so power users who
             // don't want surprise HTTP traffic on open can flip it off.
             const skipAutoSeed = !!(_state.settings && _state.settings.autoSeedDisabled)
+                || !!(opts && (opts.skipSeed || opts.skipAutoSeed))
             if (skipAutoSeed) {
                 await _refresh({skipSeed: true})
             } else {
@@ -2293,11 +2793,18 @@
 
     function close() {
         if (!_state.overlay) return
+        if (_state.focusTimer) {
+            try { clearTimeout(_state.focusTimer) } catch (_) {}
+        }
         try { _state.overlay.parentNode && _state.overlay.parentNode.removeChild(_state.overlay) } catch (_) {}
         document.removeEventListener("keydown", _onEsc)
-        _state = {overlay: null, plan: null, snapshot: null, diff: null,
-                   settings: null, selected: new Set(), applying: false}
+        _state = _baseState()
     }
 
-    window.AesStrategyPanel = {open: open, close: close}
+    window.AesStrategyPanel = {
+        open: open,
+        close: close,
+        focus: _focusSection,
+        sections: SECTION_MENU.map(s => s.id)
+    }
 })()

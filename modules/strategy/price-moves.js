@@ -158,12 +158,21 @@
      * The result is the weighted sum of these anchors. Falls back to the
      * caller's `fallbackPricePct` when competitor data is absent.
      */
-    function _targetPct(route, weights, opts) {
+    function _targetPct(route, weights, opts, classKey) {
         const c = route && route.competitor
         const fallback = _num(opts && opts.fallbackPricePct, 100)
-        if (!c || c.priceMin == null || c.priceMax == null) return fallback
-        const lo  = _num(c.priceMin, fallback)
-        const hi  = _num(c.priceMax, fallback)
+        // Prefer per-class competitor band when scraper supplied it
+        // (context.js _summarizeCompetitorRecord splits by serviceClass).
+        // Falls through to the overall band so legacy snapshots still work.
+        let bandSrc = c
+        if (c && classKey && c.byClass && c.byClass[classKey]
+                && c.byClass[classKey].priceMin != null
+                && c.byClass[classKey].priceMax != null) {
+            bandSrc = c.byClass[classKey]
+        }
+        if (!bandSrc || bandSrc.priceMin == null || bandSrc.priceMax == null) return fallback
+        const lo  = _num(bandSrc.priceMin, fallback)
+        const hi  = _num(bandSrc.priceMax, fallback)
         const mid = (lo + hi) / 2
 
         const rankAnchor   = lo - 5
@@ -242,6 +251,171 @@
         }
     }
 
+    // ── Live controls: demand + ORS + in-flight outcomes ──────────────
+
+    const ORS_CLASS_KEYS = {
+        Y:     ["Y", "ECONOMY"],
+        C:     ["C", "BUSINESS"],
+        F:     ["F", "FIRST"],
+        Cargo: ["Cargo", "CARGO"]
+    }
+
+    function _classMapValue(map, cls) {
+        if (!map || typeof map !== "object") return null
+        const v = map[cls]
+        return isFinite(_num(v, NaN)) ? _num(v, NaN) : null
+    }
+
+    function _orsForClass(route, classKey) {
+        if (classKey === "Cargo") return null
+        const byClass = route && route.orsByClass
+        if (!byClass || typeof byClass !== "object") return null
+        const keys = ORS_CLASS_KEYS[classKey] || [classKey]
+        for (const k of keys) {
+            if (byClass[k]) return byClass[k]
+        }
+        return null
+    }
+
+    function _competitorCountForClass(route, classKey) {
+        const byClass = route && route.competitor && route.competitor.byClass
+        if (byClass && byClass[classKey] && isFinite(_num(byClass[classKey].samples, NaN))) {
+            return _num(byClass[classKey].samples, 0)
+        }
+        const c = route && route.competitor
+        if (!c) return 0
+        const total = _num(c.flightCount, 0)
+        const ours  = _num(c.ourFlightCount, 0)
+        return Math.max(0, total - ours)
+    }
+
+    function _pricingControlSignals(route, classKey) {
+        const cls = classKey || "Y"
+        const isCargo = cls === "Cargo"
+        const paxScore = _num(route && route.paxScore, NaN)
+        const cargoScore = _num(route && route.cargoScore, NaN)
+        const score = isCargo ? cargoScore : paxScore
+        const rmByClass = _classMapValue(route && route.rmTightnessByClass, cls)
+        const rm = rmByClass != null ? rmByClass : _num(route && route.rmTightness, NaN)
+        const elastByClass = _classMapValue(route && route.priceElasticityByClass, cls)
+        const elast = elastByClass != null ? elastByClass
+            : (isCargo ? _num(route && route.cargoElasticity, NaN)
+                       : _num(route && route.paxElasticity, NaN))
+        const ors = _orsForClass(route, cls)
+        const rank = ors ? _num(ors.rankAny, NaN) : NaN
+        const gapRaw = ors ? _num(ors.ratingGapToTop, NaN) : NaN
+        const our = ors ? _num(ors.ourTopRating, NaN) : NaN
+        const top = ors ? _num(ors.topCompetitorRating, NaN) : NaN
+        const ratingGap = isFinite(gapRaw) ? gapRaw
+            : (isFinite(our) && isFinite(top) ? our - top : NaN)
+
+        const compCount = isCargo ? 0 : _competitorCountForClass(route, cls)
+        const cw = (typeof window !== "undefined" && window.AesOrsCompetitionWeight)
+            ? window.AesOrsCompetitionWeight
+            : null
+        const competitionWeight = cw && !isCargo && typeof cw.weightFromCompetitorCount === "function"
+            ? cw.weightFromCompetitorCount(compCount)
+            : (isCargo ? 0 : 1)
+        const effectiveRank = isFinite(rank) && competitionWeight > 0
+            ? rank * competitionWeight + 1 * (1 - competitionWeight)
+            : NaN
+        const effectiveGap = isFinite(ratingGap) ? ratingGap * competitionWeight : NaN
+
+        const active = (route && route.activeFlightControls) || {}
+        const avgCm5 = _num(active.avgCm5, NaN)
+
+        return {
+            demandStrong: isFinite(score) && score >= 8 || isFinite(rm) && rm >= 0.85,
+            demandWeak:   isFinite(score) && score <= 3 || isFinite(rm) && rm < 0.50,
+            highlyElastic: isFinite(elast) && elast <= -2,
+            orsStrong: !isCargo && (isFinite(effectiveRank) && effectiveRank <= 3
+                || isFinite(effectiveGap) && effectiveGap >= -2),
+            orsWeak: !isCargo && (isFinite(effectiveRank) && effectiveRank >= 8
+                || isFinite(effectiveGap) && effectiveGap <= -6),
+            orsSevere: !isCargo && (isFinite(effectiveRank) && effectiveRank >= 15
+                || isFinite(effectiveGap) && effectiveGap <= -12),
+            airborne: !!(active && _num(active.inflight, 0) > 0),
+            inflight: _num(active.inflight, 0),
+            avgCm5: isFinite(avgCm5) ? avgCm5 : null,
+            classKey: cls,
+            demandSide: isCargo ? "cargo" : "pax",
+            classScore: isFinite(score) ? score : null,
+            rmTightness: isFinite(rm) ? rm : null,
+            classElasticity: isFinite(elast) ? elast : null,
+            competitorCount: compCount,
+            competitionWeight: competitionWeight,
+            effectiveRank: isFinite(effectiveRank) ? effectiveRank : null,
+            effectiveGap: isFinite(effectiveGap) ? effectiveGap : null
+        }
+    }
+
+    function _pricingControlPolicy(rawMovePct, signals) {
+        const notes = []
+        let factor = 1
+        let block = null
+        const c = signals || {}
+        if (rawMovePct > 0) {
+            if (c.orsSevere) {
+                factor *= 0.35
+                notes.push("[control:ORS] weak ORS rank/gap; upward move heavily damped")
+            } else if (c.orsWeak) {
+                factor *= 0.60
+                notes.push("[control:ORS] below-pack ORS; upward move damped")
+            }
+            if (c.demandWeak) {
+                factor *= 0.65
+                notes.push("[control:demand] weak demand/headroom; upward move damped")
+            }
+            if (c.highlyElastic) {
+                factor *= 0.75
+                notes.push("[control:demand] highly elastic demand; upward move damped")
+            }
+            if (c.airborne && c.avgCm5 != null && c.avgCm5 < 0) {
+                factor *= 0.50
+                notes.push("[control:airborne] in-air route is CM5-negative; upward move damped")
+            }
+            if (c.airborne && c.orsSevere && c.demandWeak) {
+                block = "control variables blocked upward move: in-air route has weak demand and poor ORS"
+            }
+            if (c.airborne && c.avgCm5 != null && c.avgCm5 < 0 && c.orsWeak) {
+                block = "control variables blocked upward move: in-air route is CM5-negative with weak ORS"
+            }
+        } else if (rawMovePct < 0) {
+            if (c.demandStrong) {
+                factor *= 0.55
+                notes.push("[control:demand] strong demand or tight inventory; discount damped")
+            }
+            if (c.orsStrong) {
+                factor *= 0.75
+                notes.push("[control:ORS] strong ORS position; discount damped")
+            }
+            if (c.airborne && c.avgCm5 != null && c.avgCm5 > 0 && c.demandStrong) {
+                factor *= 0.80
+                notes.push("[control:airborne] in-air route is profitable with strong demand; discount damped")
+            }
+        }
+        return {factor: factor, notes: notes, block: block, signals: c}
+    }
+
+    function _applyPricingControls(route, classKey, movePct) {
+        if (!isFinite(movePct) || movePct === 0) {
+            return {move: movePct, factor: 1, notes: [], block: null, signals: null}
+        }
+        const signals = _pricingControlSignals(route, classKey)
+        const policy = _pricingControlPolicy(movePct, signals)
+        if (policy.block) {
+            return {move: 0, factor: policy.factor, notes: policy.notes,
+                    block: policy.block, signals: signals}
+        }
+        return {
+            move: movePct * policy.factor,
+            factor: policy.factor,
+            notes: policy.notes,
+            block: null,
+            signals: signals
+        }
+    }
+
     // ── Slice 9 — cargo asymmetric decision ───────────────────────────
     //
     // Cargo demand is decoupled from passenger pricing — it's driven by
@@ -264,7 +438,14 @@
         const currentPct = _num(route && route.ownPricing
                                 && route.ownPricing.prices
                                 && route.ownPricing.prices.Cargo, fallback)
-        const cargoComp = route && route.competitor   // shared with pax band today
+        // Prefer the cargo-specific competitor band (context.js splits by
+        // serviceClass when the markets-page scraper supplies it). Falls
+        // through to the overall band only when no Cargo flights were
+        // observed — a route with no cargo competitors should still get
+        // a directional signal from the pax-side band.
+        const compTop = route && route.competitor
+        const cargoBand = (compTop && compTop.byClass && compTop.byClass.Cargo) || null
+        const cargoComp = cargoBand || compTop
         const hasBand = cargoComp && cargoComp.priceMin != null && cargoComp.priceMax != null
         let move = 0
         let reason = null
@@ -301,7 +482,7 @@
     function _classMove(route, classKey, currentPct, weights, opts, snapshot) {
         const deadband = _num(opts.deadband,         5)
         const maxMove  = _num(opts.maxMovePerWindow, 10)
-        const target = _targetPct(route, weights, opts)
+        const target = _targetPct(route, weights, opts, classKey)
         let delta = target - currentPct
         if (Math.abs(delta) < deadband) return null
         const cong = _num(route.congestionIndex, 0)
@@ -318,10 +499,13 @@
         // reduce demand and so don't worsen the staffing crunch.
         const crewGuard = _crewPressureGuard(snapshot, move)
         if (crewGuard.available && crewGuard.damper < 1) move = move * crewGuard.damper
+        const control = _applyPricingControls(route, classKey, move)
+        if (control.block) return null
+        move = control.move
         if (Math.abs(move) < deadband) return null
         const toPct = _round(currentPct + move, 0)
         return {move: move, toPct: toPct, target: target, cong: cong, damper: damper,
-                guard: guard, elast: elast, crewGuard: crewGuard, maxMove: maxMove}
+                guard: guard, elast: elast, crewGuard: crewGuard, control: control, maxMove: maxMove}
     }
 
     /**
@@ -342,6 +526,20 @@
 
     function proposePriceMoves(snapshot, opts) {
         const o = opts || {}
+
+        // Per-class apply gates from settings. When a class is disabled the
+        // proposer emits no move for that cabin, leaving AS unchanged. The
+        // applier preflight has the same check as a defense-in-depth — both
+        // layers must drop the class for it to actually skip.
+        const classGates = (snapshot && snapshot.settings && snapshot.settings.routeAssistant
+            && snapshot.settings.routeAssistant.pricing
+            && snapshot.settings.routeAssistant.pricing.apply
+            && snapshot.settings.routeAssistant.pricing.apply.classes) || null
+        const classEnabled = (cls) => {
+            if (!classGates) return true
+            const g = classGates[cls]
+            return !g || g.enabled !== false
+        }
 
         // Pricing Compass — single-route filter. Lets a caller compute the
         // moves for one (hub, dest) without solving the whole network. The
@@ -416,6 +614,7 @@
                 ? ["Y", "C", "F"].filter(k => isFinite(_num(ownPrices[k], NaN)))
                 : ["Y"]
             for (const cls of classKeys) {
+                if (!classEnabled(cls)) continue
                 const currentPct = ownPrices ? _num(ownPrices[cls], fallbackPct)
                     : ((r.override && _num(r.override.yieldPerKm, NaN)) || fallbackPct)
                 const m = _classMove(r, cls, currentPct, w, o, snapshot)
@@ -423,7 +622,16 @@
 
                 const rationale = []
                 const c = r.competitor
-                if (c && c.priceMin != null && c.priceMax != null) {
+                // Prefer the per-class band when present (context.js
+                // _summarizeCompetitorRecord splits competitor prices by
+                // serviceClass). Falls through to the overall band so
+                // legacy snapshots keep producing the same rationale.
+                const clsBand = c && c.byClass && c.byClass[cls]
+                if (clsBand && clsBand.priceMin != null && clsBand.priceMax != null) {
+                    rationale.push("[market] " + cls + " competitor band $"
+                        + clsBand.priceMin + "–" + clsBand.priceMax
+                        + (clsBand.samples != null ? " (" + clsBand.samples + " flights)" : ""))
+                } else if (c && c.priceMin != null && c.priceMax != null) {
                     rationale.push("[market] competitor band " + c.priceMin + "–" + c.priceMax + "%")
                 }
                 if (c && c.dominantCarrier) rationale.push("[market] dominant carrier " + c.dominantCarrier)
@@ -472,6 +680,13 @@
                         + " — downward move dampened ×" + _round(m.crewGuard.damper, 2)
                         + " (avoid stimulating demand we can't staff)")
                 }
+                if (m.control && m.control.notes && m.control.notes.length) {
+                    for (const note of m.control.notes) rationale.push(note)
+                    if (m.control.factor < 1) {
+                        rationale.push("[control] demand/ORS/active-flight controls scaled move ×"
+                            + _round(m.control.factor, 2))
+                    }
+                }
 
                 // Per-class impact weighting — Y carries most of the pax
                 // P&L, so split 0.5 / 0.3 / 0.2 across Y / C / F.
@@ -491,10 +706,13 @@
                 })
             }
 
-            if (includeCargo) {
+            if (includeCargo && classEnabled("Cargo")) {
                 const cargo = _cargoAsymmetric(r, w, o)
                 if (cargo && Math.abs(cargo.move) >= _num(o.deadband, 5) / 2) {
-                    const toPct = _round(cargo.currentPct + cargo.move, 0)
+                    const control = _applyPricingControls(r, "Cargo", cargo.move)
+                    if (control.block) continue
+                    if (Math.abs(control.move) < _num(o.deadband, 5) / 2) continue
+                    const toPct = _round(cargo.currentPct + control.move, 0)
                     const cargoRationale = [
                         "[cargo asymmetric] " + cargo.reason,
                         "[Cargo] " + _round(cargo.currentPct, 0) + "% → " + toPct + "%"
@@ -503,15 +721,22 @@
                         cargoRationale.push("[goal] profit-tilted weights (" + _round(w.profitWeight, 2)
                             + ") dampened the discount ×0.6")
                     }
+                    if (control.notes && control.notes.length) {
+                        for (const note of control.notes) cargoRationale.push(note)
+                        if (control.factor < 1) {
+                            cargoRationale.push("[control] demand/ORS/active-flight controls scaled move ×"
+                                + _round(control.factor, 2))
+                        }
+                    }
                     moves.push({
                         hub:        r.hub,
                         dest:       r.dest,
                         classKey:   "Cargo",
                         fromPct:    _round(cargo.currentPct, 0),
                         toPct:      toPct,
-                        deltaPct:   cargo.move,
+                        deltaPct:   control.move,
                         rationale:  cargoRationale,
-                        impactWeekly: Math.round((cargo.move / 100) * profitPerWeek * 0.25),
+                        impactWeekly: Math.round((control.move / 100) * profitPerWeek * 0.25),
                         profitPerWeek: profitPerWeek,
                         objective:  {kind: resolved.kind, weights: w}
                     })

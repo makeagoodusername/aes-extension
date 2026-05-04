@@ -59,6 +59,7 @@ class RouteAssistantWaveDraftStore {
             const out = await chrome.storage.local.get([ns, lg])
             return out[ns] || out[lg] || null
         } catch (e) {
+            if (window.AESSiteSkin?.handleInvalidatedContext?.(e)) return null
             console.warn("[AES wave-draft] load failed:", e)
             return null
         }
@@ -73,6 +74,7 @@ class RouteAssistantWaveDraftStore {
             if (!record) await chrome.storage.local.remove([key])
             else await chrome.storage.local.set({[key]: record})
         } catch (e) {
+            if (window.AESSiteSkin?.handleInvalidatedContext?.(e)) return
             console.warn("[AES wave-draft] save failed:", e)
         }
     }

@@ -62,6 +62,12 @@
     const DEFAULT_ORS_PER_ACTIVE_PP   = 0.05   // 1pp active rise → 0.05pp ORS
     const DEFAULT_NETWORK_REV_PER_PP  = 1500   // AS$/week per 1pp ORS, network-avg
     const RECRUIT_PP_HALF_FOR_CUTS    = 0.5    // cut elasticity is stickier
+    const DEFAULT_ROLE_WEIGHTS = Object.freeze({
+        flight:     0.75,
+        cabin:      1.00,
+        ground:     0.55,
+        operations: 0.35
+    })
 
     function _num(v, f) { const n = Number(v); return isFinite(n) ? n : f }
 
@@ -166,6 +172,77 @@
             weights: {shareWeight: 0.4, profitWeight: 0.4, rankWeight: 0.2}}
     }
 
+    function _objectiveWeights(resolved) {
+        return resolved && resolved.weights ? resolved.weights : (resolved || {})
+    }
+
+    function _reputationForPosition(snapshot, position) {
+        const planning = snapshot && snapshot.strategySettings
+            && snapshot.strategySettings.reputationPlanning || {}
+        if (planning.enabled === false) return {available: false, pressure: 0, roleWeight: 0}
+        const rec = snapshot && snapshot.companyReputation
+        const score = _num(rec && rec.ratingScore, NaN)
+        const target = Math.max(1, Math.min(10, _num(planning.targetRatingScore, 8)))
+        const roleProfiles = snapshot && snapshot.crewRoleProfiles
+        const role = roleProfiles && position && position.positionId != null
+            ? roleProfiles[String(position.positionId)]
+            : null
+        const responsibility = role && role.responsibilityClass || _fallbackResponsibility(position)
+        const configured = planning.roleWeights && planning.roleWeights[responsibility] != null
+            ? _num(planning.roleWeights[responsibility], NaN)
+            : NaN
+        const roleWeight = isFinite(configured)
+            ? Math.max(0, Math.min(10, configured))
+            : (role && role.reputationWeight != null
+                ? _num(role.reputationWeight, DEFAULT_ROLE_WEIGHTS[responsibility] || 0.35)
+                : (DEFAULT_ROLE_WEIGHTS[responsibility] || 0.35))
+        if (!isFinite(score)) {
+            return {
+                available: false,
+                pressure: 0,
+                roleWeight,
+                responsibility,
+                targetRatingScore: target,
+                protectHighRating: planning.protectHighRating !== false
+            }
+        }
+        return {
+            available:          true,
+            pressure:           Math.max(0, Math.min(1, (target - score) / target)),
+            protection:         Math.max(0, Math.min(1, (score - target + 1) / target)),
+            ratingScore:        score,
+            ratingLabel:        rec && rec.ratingLabel || null,
+            targetRatingScore:  target,
+            protectHighRating:  planning.protectHighRating !== false,
+            roleWeight:         roleWeight,
+            responsibility:     responsibility,
+            roleProfile:        role || null
+        }
+    }
+
+    function _fallbackResponsibility(position) {
+        const g = String(position && position.group || "").toLowerCase()
+        if (g.indexOf("flight") >= 0) return "flight"
+        if (g.indexOf("cabin")  >= 0) return "cabin"
+        if (g.indexOf("ground") >= 0) return "ground"
+        return "operations"
+    }
+
+    function _reputationValueForTier(tierPp, reputation, networkRev) {
+        if (!reputation || reputation.roleWeight <= 0) return {liftPp: 0, value: 0}
+        const tierIntensity = Math.min(1, Math.abs(tierPp) / 20)
+        if (tierPp > 0 && reputation.pressure > 0) {
+            const lift = reputation.pressure * reputation.roleWeight * tierIntensity * 0.08
+            return {liftPp: lift, value: lift * networkRev}
+        }
+        if (tierPp < 0 && reputation.protectHighRating) {
+            const risk = Math.max(reputation.pressure, reputation.protection || 0)
+            const lift = -risk * reputation.roleWeight * tierIntensity * 0.06
+            return {liftPp: lift, value: lift * networkRev}
+        }
+        return {liftPp: 0, value: 0}
+    }
+
     /**
      * Sweep the pay-tier grid for one position and return the argmax J
      * candidate, or null when no positive-J move exists.
@@ -188,9 +265,11 @@
 
         const slot = _toSkillSlot(position, bySkillLabel)
         const PP = window.AesStrategyPayPerception
+        const objectiveWeights = _objectiveWeights(weights)
         const perception = (PP && typeof PP.evaluate === "function")
-            ? PP.evaluate({skillSlot: slot, weights: weights})
+            ? PP.evaluate({skillSlot: slot, weights: objectiveWeights})
             : null
+        const reputation = _reputationForPosition(snapshot, Object.assign({positionId: position.positionId}, position))
 
         // Pay-perception is the direction oracle (raise/cut/hold gated by
         // missing/reserve/market signals). The tuner refines the
@@ -216,9 +295,19 @@
             const recruitDelta = recruitsPerPp * tierPp * elasticity
             const orsLiftPp    = (recruitDelta / Math.max(1, required)) * orsPerActivePp
             const weeklyCostDelta = (newSalary - currentSalary) * employed
-            const J = orsLiftPp * networkRev - weeklyCostDelta
+            const rep = _reputationValueForTier(tierPp, reputation, networkRev)
+            const J = orsLiftPp * networkRev - weeklyCostDelta + rep.value
             if (!best || J > best.J) {
-                best = {tierPp, newSalary, recruitDelta, orsLiftPp, weeklyCostDelta, J}
+                best = {
+                    tierPp,
+                    newSalary,
+                    recruitDelta,
+                    orsLiftPp,
+                    weeklyCostDelta,
+                    reputationLiftPp: rep.liftPp,
+                    reputationValue:  rep.value,
+                    J
+                }
             }
         }
         if (!best) return null
@@ -232,6 +321,17 @@
             + "/wk · orsLiftPp=" + _round(best.orsLiftPp, 4)
             + " · weeklyCostΔ=" + _round(best.weeklyCostDelta, 0)
             + " · J=" + _round(best.J, 1))
+        if (reputation.available) {
+            rationale.push("[reputation] rating " + (reputation.ratingLabel || reputation.ratingScore)
+                + " target " + reputation.targetRatingScore
+                + " · role=" + reputation.responsibility
+                + " weight=" + _round(reputation.roleWeight, 2)
+                + " · valueΔ=" + _round(best.reputationValue, 0)
+                + " · repLiftPp=" + _round(best.reputationLiftPp, 4))
+        } else if (reputation.roleWeight > 0) {
+            rationale.push("[reputation] company rating unavailable — role weight "
+                + _round(reputation.roleWeight, 2) + " kept neutral")
+        }
         if (perception && perception.hypothesis) rationale.push(perception.hypothesis)
         if (countryAvg > 0) {
             rationale.push("[ctx] country-avg=" + countryAvg
@@ -251,8 +351,15 @@
             payTierPp:           best.tierPp,
             weeklyCostDelta:     best.weeklyCostDelta,
             employed:            employed,
+            active:              _num(position.active, null),
+            required:            required,
             expectedRecruitDelta: _round(best.recruitDelta, 2),
             expectedOrsLiftPp:    _round(best.orsLiftPp, 4),
+            expectedReputationLiftPp: _round(best.reputationLiftPp, 4),
+            reputationValue:      _round(best.reputationValue, 2),
+            reputationRating:     reputation.ratingLabel || null,
+            responsibilityClass:  reputation.responsibility || null,
+            roleReputationWeight: _round(reputation.roleWeight || 0, 3),
             J:                   _round(best.J, 2),
             perceptionAction:     perception ? perception.action     : null,
             perceptionConfidence: perception ? perception.confidence : null,
@@ -325,7 +432,8 @@
             }
         }
 
-        const settings = (snapshot.settings && snapshot.settings.crewPay) || {}
+        const settings = (snapshot.strategySettings && snapshot.strategySettings.crewPay)
+            || (snapshot.settings && snapshot.settings.crewPay) || {}
         const declaredBudget = _num(settings.weeklyBudgetAS$, NaN)
         const remainingBudget = isFinite(declaredBudget)
             ? Math.max(0, declaredBudget - serviceCost)
@@ -372,6 +480,7 @@
                 deferredCount:       deferred.length,
                 weeklyCostDelta:     accepted.reduce((s, m) => s + (m.weeklyCostDelta || 0), 0),
                 expectedOrsLiftPp:   _round(accepted.reduce((s, m) => s + (m.expectedOrsLiftPp || 0), 0), 4),
+                expectedReputationLiftPp: _round(accepted.reduce((s, m) => s + (m.expectedReputationLiftPp || 0), 0), 4),
                 serviceCost:         serviceCost,
                 weeklyBudget:        isFinite(declaredBudget) ? declaredBudget : null,
                 remainingBudget:     isFinite(remainingBudget) ? remainingBudget : null,

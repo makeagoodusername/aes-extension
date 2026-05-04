@@ -2,10 +2,12 @@
 
 /**
  * Data-flow inspector tile — turns the cross-module data infrastructure
- * (AesDataBus + AesView + AesCleanup) into a live, debuggable artifact.
+ * (AesDataBus + AesWriteThrough + AesView + AesCleanup) into a live,
+ * debuggable artifact.
  *
  * Four panes:
  *   ▸ Recent activity      — the last ~20 bus emits across all topics
+ *   ▸ Write-through        — shared storage writer/cache/event counters
  *   ▸ Topics               — every topic with emit count, last-at, source mix
  *   ▸ Views                — every reactive view with deps, compute time, errors
  *   ▸ Caches               — registered cleanup callbacks with last-run-at
@@ -40,7 +42,11 @@ class CentralHubDataFlowInspectorTile extends window.CentralHubTile {
         const cleanupCount = window.AesCleanup
             ? window.AesCleanup.list().length
             : 0
-        const summary = `${total} emits · ${viewCount} views · ${cleanupCount} caches`
+        const writeStats = window.AesWriteThrough && window.AesWriteThrough.stats
+            ? window.AesWriteThrough.stats()
+            : null
+        const writeCount = writeStats ? ((writeStats.sets || 0) + (writeStats.removes || 0)) : 0
+        const summary = `${total} emits · ${writeCount} writes · ${viewCount} views · ${cleanupCount} caches`
         return {
             badge:     window.AesDataBus ? String(total) : "OFF",
             badgeKind: window.AesDataBus ? (total > 0 ? "default" : "muted") : "muted",
@@ -57,6 +63,10 @@ class CentralHubDataFlowInspectorTile extends window.CentralHubTile {
             // installing a global subscriber. The latter requires walking topic
             // names, so tick-based is simpler.
         }
+        // If the tile mounts already expanded (persisted state), kick off the
+        // tick — `toggle()` is the only other path that starts it, and the
+        // expanded mount bypasses toggle.
+        if (this.expanded) this._startTick()
     }
 
     toggle() {
@@ -99,7 +109,9 @@ class CentralHubDataFlowInspectorTile extends window.CentralHubTile {
         }
 
         hostEl.append(this._renderToolbar())
+        hostEl.append(await this._renderOrsDependencyPane())
         hostEl.append(this._renderActivityPane())
+        hostEl.append(this._renderWriteThroughPane())
         hostEl.append(this._renderTopicsPane())
         hostEl.append(this._renderViewsPane())
         hostEl.append(this._renderCachesPane())
@@ -169,6 +181,77 @@ class CentralHubDataFlowInspectorTile extends window.CentralHubTile {
             list.append(t, topic, src)
         }
         pane.append(list)
+        return pane
+    }
+
+    _renderWriteThroughPane() {
+        const T = window.AESTokens
+        const pane = this._pane("Write-through")
+        if (!window.AesWriteThrough || typeof window.AesWriteThrough.stats !== "function") {
+            this._renderEmptyState(pane, "Write-through helper not loaded.")
+            return pane
+        }
+        const s = window.AesWriteThrough.stats()
+        const metrics = [
+            ["sets", s.sets || 0],
+            ["removes", s.removes || 0],
+            ["mutates", s.mutates || 0],
+            ["events", s.events || 0],
+            ["cache hit/miss", (s.cacheHits || 0) + "/" + (s.cacheMisses || 0)],
+            ["queues", s.pendingQueues || 0]
+        ]
+        const grid = document.createElement("div")
+        grid.style.cssText = [
+            "display:grid",
+            "grid-template-columns:repeat(auto-fit,minmax(120px,1fr))",
+            "gap:" + T.sp[2],
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.small
+        ].join(";")
+        for (const m of metrics) {
+            const cell = document.createElement("div")
+            cell.style.cssText = [
+                "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+                "background:" + T.color.bone2,
+                "padding:" + T.sp[2]
+            ].join(";")
+            const label = document.createElement("div")
+            label.textContent = m[0]
+            label.style.cssText = "color:" + T.color.slate + ";text-transform:uppercase;letter-spacing:" + T.track.caps + ";"
+            const value = document.createElement("strong")
+            value.textContent = String(m[1])
+            value.style.cssText = "display:block;color:" + T.color.oxide + ";font-family:" + T.font.display + ";font-size:" + T.fs.body + ";"
+            cell.append(label, value)
+            grid.append(cell)
+        }
+        pane.append(grid)
+
+        const recent = Array.isArray(s.recent) ? s.recent.slice(0, 6) : []
+        if (recent.length) {
+            const list = document.createElement("div")
+            list.style.cssText = [
+                "display:grid",
+                "grid-template-columns:auto 1fr auto",
+                "gap:" + T.sp[1] + " " + T.sp[2],
+                "font-family:" + T.font.mono,
+                "font-size:" + T.fs.small,
+                "margin-top:" + T.sp[2]
+            ].join(";")
+            for (const r of recent) {
+                const at = document.createElement("span")
+                at.textContent = this._fmtTime(r.at)
+                at.style.color = T.color.slate
+                const key = document.createElement("span")
+                key.textContent = (r.keys || []).join(", ")
+                key.title = JSON.stringify(r, null, 2)
+                key.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:" + T.color.oxide + ";"
+                const op = document.createElement("span")
+                op.textContent = r.op || "write"
+                op.style.color = r.op === "remove" ? T.color.rust : T.color.moss
+                list.append(at, key, op)
+            }
+            pane.append(list)
+        }
         return pane
     }
 
@@ -360,6 +443,60 @@ class CentralHubDataFlowInspectorTile extends window.CentralHubTile {
         ].join(";")
         wrap.append(h)
         return wrap
+    }
+
+    async _renderOrsDependencyPane() {
+        const T = window.AESTokens
+        const pane = this._pane("ORS dependency chain")
+        if (!window.RouteAssistantOrsIntelligence) {
+            this._renderEmptyState(pane, "ORS intelligence facade not loaded.")
+            return pane
+        }
+        let health = null
+        try {
+            const server = this.ctx && this.ctx.server
+            health = await window.RouteAssistantOrsIntelligence.loadHealth(server)
+        } catch (_) { health = null }
+
+        const chain = [
+            ["Schedule freshness", health && health.scheduleFlownRoutes != null
+                ? health.scheduleFlownRoutes + " flown routes observed" : "pending"],
+            ["ORS scrape", health && health.totalRoutes != null
+                ? health.coveredRoutes + "/" + health.totalRoutes + " covered"
+                : "no health summary"],
+            ["Snapshots + observations", "records update after successful ORS sync"],
+            ["Sandbox + strategy consumers", health && health.warningRoutes && health.warningRoutes.length
+                ? health.warningRoutes.length + " warning route" + (health.warningRoutes.length === 1 ? "" : "s")
+                : "ready when ORS is covered"]
+        ]
+        const grid = document.createElement("div")
+        grid.style.cssText = [
+            "display:grid",
+            "grid-template-columns:180px 1fr",
+            "gap:" + T.sp[1] + " " + T.sp[2],
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.small
+        ].join(";")
+        for (const row of chain) {
+            const name = document.createElement("span")
+            name.textContent = row[0]
+            name.style.color = T.color.oxide
+            const val = document.createElement("span")
+            val.textContent = row[1]
+            val.style.color = T.color.slate
+            grid.append(name, val)
+        }
+        if (health && health.breaker && health.breaker.active) {
+            const name = document.createElement("span")
+            name.textContent = "Breaker"
+            name.style.color = T.color.amber
+            const val = document.createElement("span")
+            val.textContent = "cooldown " + Math.ceil(health.breaker.remainingMs / 60000) + "m"
+            val.style.color = T.color.amber
+            grid.append(name, val)
+        }
+        pane.append(grid)
+        return pane
     }
 
     _btn(label, onClick, opts) {

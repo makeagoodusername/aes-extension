@@ -60,6 +60,20 @@ class RouteAssistantWatchlistStore {
         return RouteAssistantWatchlistStore.LEGACY_KEY
     }
 
+    static _emptyBlob() {
+        return {server: null, routes: {}, updatedAt: null}
+    }
+
+    static _storageLocal() {
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return null
+        return chrome.storage.local
+    }
+
+    static _isExtensionContextInvalidated(err) {
+        const msg = err && (err.message || err.stack || String(err))
+        return /extension context invalidated/i.test(String(msg || ""))
+    }
+
     /**
      * Read the entire watchlist as a Map<routeKey, {addedAt, note?}>.
      * Returns an empty Map when the cache hasn't been written yet so
@@ -135,25 +149,50 @@ class RouteAssistantWatchlistStore {
     static async _loadBlob() {
         const ns = RouteAssistantWatchlistStore._key()
         const lg = RouteAssistantWatchlistStore._legacyKey()
+        const storage = RouteAssistantWatchlistStore._storageLocal()
+        if (!storage) return RouteAssistantWatchlistStore._emptyBlob()
         let blob = null
-        if (ns === lg) {
-            const out = await chrome.storage.local.get([ns])
-            blob = out[ns] || null
-        } else {
-            const out = await chrome.storage.local.get([ns, lg])
-            blob = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+        try {
+            if (ns === lg) {
+                const out = await storage.get([ns])
+                blob = out[ns] || null
+            } else {
+                const out = await storage.get([ns, lg])
+                blob = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+            }
+        } catch (err) {
+            if (RouteAssistantWatchlistStore._isExtensionContextInvalidated(err)) {
+                console.warn("[AES watchlist] extension context invalidated while reading; using empty watchlist")
+                return RouteAssistantWatchlistStore._emptyBlob()
+            }
+            throw err
         }
         return (blob && blob.routes)
             ? blob
-            : {server: null, routes: {}, updatedAt: null}
+            : RouteAssistantWatchlistStore._emptyBlob()
     }
 
     static async _saveBlob(blob) {
         blob.updatedAt = Date.now()
         const key = RouteAssistantWatchlistStore._key()
-        await chrome.storage.local.set({[key]: blob})
+        const storage = RouteAssistantWatchlistStore._storageLocal()
+        if (!storage) return false
+        try {
+            await storage.set({[key]: blob})
+        } catch (err) {
+            if (RouteAssistantWatchlistStore._isExtensionContextInvalidated(err)) {
+                console.warn("[AES watchlist] extension context invalidated while writing; skipped watchlist save")
+                return false
+            }
+            throw err
+        }
+        return true
     }
 
     /** L2 deprecated — preserve for any reader still doing key arithmetic. */
     static get CACHE_KEY() { return RouteAssistantWatchlistStore.LEGACY_KEY }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantWatchlistStore = RouteAssistantWatchlistStore
 }

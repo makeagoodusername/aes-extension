@@ -55,10 +55,23 @@ class AesCompetitorOutlineAggregator {
         const enterpriseRecords = await AesCompetitorOutlineAggregator
             ._loadEnterpriseRecords(server, args && args.enterpriseIds)
         if (!enterpriseRecords.length) {
-            return AesCompetitorOutlineAggregator._emptyResult(server, "no competitor records cached")
+            const empty = AesCompetitorOutlineAggregator._emptyResult(server, "no competitor records cached")
+            const airline = args && args.airline ? String(args.airline) : ""
+            empty.airline = airline
+            if (airline) {
+                const ourFinancials = await AesCompetitorOutlineAggregator
+                    ._loadOurFinancials(server, airline)
+                if (ourFinancials) empty.ourFinancials = ourFinancials
+            }
+            return empty
         }
 
-        // 2. Enumerate every (competitor, hub, dest) we'll need to look up.
+        const relationshipById = await AesCompetitorOutlineAggregator
+            ._loadRelationships(enterpriseRecords)
+
+        // 2. Enumerate every observed (enterprise, hub, dest) we'll need to
+        //    look up. Partner/self rows are retained in the payload with
+        //    includedAsRival=false so the panel can explain exclusions.
         const pairKeys = new Set()
         for (const enterprise of enterpriseRecords) {
             const footprint = enterprise.routeFootprint || []
@@ -104,12 +117,22 @@ class AesCompetitorOutlineAggregator {
             ? args.economics
             : await AesCompetitorOutlineAggregator._loadEconomics()
 
+        const airline = args && args.airline
+            ? String(args.airline)
+            : ""
+        const ourFinancials = airline
+            ? await AesCompetitorOutlineAggregator._loadOurFinancials(server, airline)
+            : null
+
         // 8. Walk the tree.
         const competitors = []
         for (const enterprise of enterpriseRecords) {
+            const eid = String(enterprise.enterpriseId || "")
             const competitorRow = AesCompetitorOutlineAggregator._buildCompetitorRow({
                 server,
                 enterprise,
+                relationship: relationshipById.get(eid)
+                    || AesCompetitorOutlineAggregator._relationshipFromAffiliation(null, eid),
                 storageBundle,
                 specsByTypeId,
                 distanceByPair,
@@ -120,17 +143,34 @@ class AesCompetitorOutlineAggregator {
             if (competitorRow) competitors.push(competitorRow)
         }
 
-        // 9. Threat scoreboard sort.
-        competitors.sort((a, b) => (b.summary.threatScore || 0) - (a.summary.threatScore || 0))
+        // 9. Threat scoreboard sort, with included rivals first.
+        competitors.sort((a, b) => {
+            const ar = AesCompetitorOutlineAggregator._isIncludedRivalRow(a) ? 1 : 0
+            const br = AesCompetitorOutlineAggregator._isIncludedRivalRow(b) ? 1 : 0
+            if (ar !== br) return br - ar
+            const t = (b.summary.threatScore || 0) - (a.summary.threatScore || 0)
+            if (t !== 0) return t
+            return String(a.name || "").localeCompare(String(b.name || ""))
+        })
 
-        return {
+        const rivals = competitors.filter(c =>
+            AesCompetitorOutlineAggregator._isIncludedRivalRow(c))
+        const excluded = competitors.length - rivals.length
+        const result = {
             scrapedAt:    Date.now(),
             server:       String(server),
+            airline:      airline,
             competitors:  competitors,
-            totalRoutes:  competitors.reduce((s, c) => s + c.summary.totalRoutes, 0),
-            uncontested:  competitors.reduce((s, c) =>
+            observedCount: competitors.length,
+            rivalCount:    rivals.length,
+            excludedCount: excluded,
+            totalRoutes:  rivals.reduce((s, c) => s + c.summary.totalRoutes, 0),
+            totalObservedRoutes: competitors.reduce((s, c) => s + c.summary.totalRoutes, 0),
+            uncontested:  rivals.reduce((s, c) =>
                 s + (c.summary.uncontestedRoutes || 0), 0)
         }
+        if (ourFinancials) result.ourFinancials = ourFinancials
+        return result
     }
 
     static _emptyResult(server, reason) {
@@ -138,7 +178,11 @@ class AesCompetitorOutlineAggregator {
             scrapedAt:   Date.now(),
             server:      String(server || ""),
             competitors: [],
+            observedCount: 0,
+            rivalCount: 0,
+            excludedCount: 0,
             totalRoutes: 0,
+            totalObservedRoutes: 0,
             uncontested: 0,
             note:        reason || null
         }
@@ -151,7 +195,7 @@ class AesCompetitorOutlineAggregator {
     static async _loadEnterpriseRecords(server, ids) {
         const all = await chrome.storage.local.get(null)
         const prefix = "competitorIntel:enterprise:" + server + ":"
-        const out = []
+        const byId = new Map()
         const wantSet = (Array.isArray(ids) && ids.length)
             ? new Set(ids.map(String))
             : null
@@ -159,9 +203,26 @@ class AesCompetitorOutlineAggregator {
             if (k.indexOf(prefix) !== 0) continue
             const rec = all[k]
             if (!rec || typeof rec !== "object") continue
-            if (wantSet && !wantSet.has(String(rec.enterpriseId))) continue
-            out.push(rec)
+            const id = String(rec.enterpriseId || k.slice(prefix.length))
+            if (wantSet && !wantSet.has(id)) continue
+            byId.set(id, rec.enterpriseId ? rec : Object.assign({}, rec, {enterpriseId: id}))
         }
+        if (typeof AesCompetitorStore !== "undefined"
+                && typeof AesCompetitorStore.loadLegacyMonitoring === "function") {
+            const legacy = await AesCompetitorStore.loadLegacyMonitoring(server, all)
+            for (const rec of legacy) {
+                if (!rec || !rec.enterpriseId) continue
+                const id = String(rec.enterpriseId)
+                if (wantSet && !wantSet.has(id)) continue
+                if (byId.has(id)) {
+                    byId.set(id, AesCompetitorOutlineAggregator
+                        ._mergeEnterpriseRecords(byId.get(id), rec))
+                } else {
+                    byId.set(id, rec)
+                }
+            }
+        }
+        const out = Array.from(byId.values())
         // Stable order: name asc when known, then enterpriseId.
         out.sort((a, b) => {
             const na = String(a.name || "").toLowerCase()
@@ -170,6 +231,129 @@ class AesCompetitorOutlineAggregator {
             return String(a.enterpriseId).localeCompare(String(b.enterpriseId))
         })
         return out
+    }
+
+    static _mergeEnterpriseRecords(primary, secondary) {
+        if (!primary) return secondary || null
+        if (!secondary) return primary
+        const merged = Object.assign({}, secondary, primary)
+
+        const fleet = Object.assign({},
+            secondary.fleet && typeof secondary.fleet === "object" ? secondary.fleet : {},
+            primary.fleet && typeof primary.fleet === "object" ? primary.fleet : {})
+        merged.fleet = Object.keys(fleet).length ? fleet : (primary.fleet || secondary.fleet || null)
+
+        merged.fleetByType = AesCompetitorOutlineAggregator
+            ._preferNonEmptyArray(primary.fleetByType, secondary.fleetByType)
+        merged.hubs = AesCompetitorOutlineAggregator
+            ._mergeHubs(primary.hubs, secondary.hubs)
+        merged.routeFootprint = AesCompetitorOutlineAggregator
+            ._mergeRouteFootprints(primary.routeFootprint, secondary.routeFootprint)
+
+        const sources = []
+        for (const src of [primary.source, secondary.source]) {
+            if (src && sources.indexOf(src) < 0) sources.push(src)
+        }
+        if (sources.length > 1) {
+            merged.source = sources.join("+")
+            merged.sources = sources
+        } else if (sources.length === 1) {
+            merged.source = sources[0]
+        }
+        merged.legacyTracking = !!(primary.legacyTracking || secondary.legacyTracking)
+        merged.scrapedAt = Math.max(
+            Number(primary.scrapedAt) || 0,
+            Number(secondary.scrapedAt) || 0
+        ) || primary.scrapedAt || secondary.scrapedAt || null
+
+        const notes = []
+        for (const n of [primary.parserNotes, secondary.parserNotes]) {
+            if (n && notes.indexOf(n) < 0) notes.push(n)
+        }
+        if (notes.length) merged.parserNotes = notes.join("; ")
+
+        return merged
+    }
+
+    static _preferNonEmptyArray(primary, secondary) {
+        if (Array.isArray(primary) && primary.length) return primary
+        if (Array.isArray(secondary) && secondary.length) return secondary
+        if (Array.isArray(primary)) return primary
+        if (Array.isArray(secondary)) return secondary
+        return []
+    }
+
+    static _mergeHubs(primary, secondary) {
+        const map = new Map()
+        const add = (rows) => {
+            for (const h of rows || []) {
+                if (!h) continue
+                const id = String(h.iata || h.airportIata || h.airportId || "").toUpperCase()
+                if (!id) continue
+                map.set(id, Object.assign({}, map.get(id) || {}, h))
+            }
+        }
+        add(secondary)
+        add(primary)
+        return Array.from(map.values())
+            .sort((a, b) => (b.weeklyDepartures || 0) - (a.weeklyDepartures || 0))
+    }
+
+    static _mergeRouteFootprints(primary, secondary) {
+        const map = new Map()
+        const add = (rows) => {
+            for (const r of rows || []) {
+                if (!r || !r.hub || !r.dest) continue
+                const key = _pairKey(r.hub, r.dest)
+                const prev = map.get(key) || {}
+                const next = Object.assign({}, prev, r, {
+                    hub: String(r.hub).toUpperCase(),
+                    dest: String(r.dest).toUpperCase()
+                })
+                if (!isFinite(next.weeklyFlights) && isFinite(prev.weeklyFlights)) {
+                    next.weeklyFlights = prev.weeklyFlights
+                }
+                map.set(key, next)
+            }
+        }
+        add(secondary)
+        add(primary)
+        return Array.from(map.values())
+            .sort((a, b) => (b.weeklyFlights || 0) - (a.weeklyFlights || 0))
+    }
+
+    static async _loadRelationships(enterpriseRecords) {
+        const ids = (enterpriseRecords || [])
+            .map(e => e && e.enterpriseId != null ? String(e.enterpriseId) : "")
+            .filter(Boolean)
+        const map = new Map()
+        if (!ids.length) return map
+
+        let byEnterpriseId = null
+        let classifiedMany = null
+        const store = (typeof AesCanopyAffiliations !== "undefined" && AesCanopyAffiliations)
+            || (typeof window !== "undefined" && window.AesCanopyAffiliations)
+            || null
+        if (store) {
+            try {
+                if (typeof store.load === "function") {
+                    const block = await store.load()
+                    byEnterpriseId = block && block.byEnterpriseId || {}
+                } else if (typeof store.classifyMany === "function") {
+                    classifiedMany = await store.classifyMany(ids)
+                }
+            } catch (e) {
+                console.warn("[AES competitor-intel] affiliation classification failed", e)
+            }
+        }
+
+        for (const id of ids) {
+            let rec = null
+            if (byEnterpriseId && byEnterpriseId[id]) rec = byEnterpriseId[id]
+            else if (classifiedMany && typeof classifiedMany.get === "function") rec = classifiedMany.get(id)
+            map.set(id, AesCompetitorOutlineAggregator._relationshipFromAffiliation(rec, id))
+        }
+        return map
     }
 
     static async _bulkLoadRouteData(server, pairKeys) {
@@ -190,6 +374,23 @@ class AesCompetitorOutlineAggregator {
             out.marketShare[pk] = data["routeAssistant:markets:marketShare:" + pk] || null
             out.ownPricing[pk]  = data["routeAssistant:markets:ownPricing:" + pk]  || null
             out.ors[pk]         = data["routeAssistant:ors:" + pk]                 || null
+        }
+        try {
+            const routes = Array.from(pairKeys).map(pk => {
+                const parts = String(pk).split("-")
+                return {hub: parts[0], dest: parts[1]}
+            }).filter(r => r.hub && r.dest)
+            if (typeof RouteAssistantOrsIntelligence !== "undefined"
+                    && typeof RouteAssistantOrsIntelligence.bulkLoadRecords === "function") {
+                const map = await RouteAssistantOrsIntelligence.bulkLoadRecords(routes, {maxAgeDays: null})
+                map.forEach((rec, pk) => { if (rec) out.ors[pk] = rec })
+            } else if (typeof RouteAssistantOrsScraper !== "undefined"
+                    && typeof RouteAssistantOrsScraper.bulkLoadCache === "function") {
+                const map = await RouteAssistantOrsScraper.bulkLoadCache(routes, {maxAgeDays: null})
+                map.forEach((rec, pk) => { if (rec) out.ors[pk] = rec })
+            }
+        } catch (e) {
+            console.warn("[AES competitor-intel] ORS facade fallback failed", e)
         }
         return out
     }
@@ -303,6 +504,149 @@ class AesCompetitorOutlineAggregator {
         }
     }
 
+    static async _loadOurFinancials(server, airline) {
+        const agg = (typeof AccountingAggregator !== "undefined" && AccountingAggregator)
+            || (typeof window !== "undefined" && window.AccountingAggregator)
+            || null
+        if (!agg || typeof agg.loadUnifiedLedger !== "function") return null
+        try {
+            const ledger = await agg.loadUnifiedLedger(server, airline)
+            return AesCompetitorOutlineAggregator
+                ._buildOurFinancialsFromLedger(server, airline, ledger)
+        } catch (e) {
+            console.warn("[AES competitor-intel] own accounting load failed", e)
+            return null
+        }
+    }
+
+    static _buildOurFinancialsFromLedger(server, airline, ledger) {
+        if (!ledger || typeof ledger !== "object") return null
+        const hasSnapshots = (Number(ledger.snapshotIndexCount) || 0) > 0
+            || !!ledger.periodActuals
+            || !!ledger.bankActuals
+            || !!ledger.balanceActuals
+            || AesCompetitorOutlineAggregator._hasAnySisterSnapshot(ledger.sisters)
+        if (!hasSnapshots) return null
+
+        const totals = (ledger.periodActuals && ledger.periodActuals.totals) || {}
+        const revenue = AesCompetitorOutlineAggregator._totalCurrent(totals.revenue)
+        const ebit = AesCompetitorOutlineAggregator._totalCurrent(totals.ebit)
+        const ebt = AesCompetitorOutlineAggregator._totalCurrent(totals.ebt)
+        const bankPayload = ledger.bankActuals && ledger.bankActuals.payload || {}
+        const bankBalance = AesCompetitorOutlineAggregator._numOrNull(
+            ledger.bankActuals && ledger.bankActuals.cashBalance != null
+                ? ledger.bankActuals.cashBalance
+                : bankPayload.cashBalance
+        )
+        const cashBalance = bankBalance != null
+            ? bankBalance
+            : AesCompetitorOutlineAggregator._cashFromSisters(ledger.sisters)
+
+        const routeRows = Array.isArray(ledger.routes) ? ledger.routes : []
+        const routeProfitTotal = AesCompetitorOutlineAggregator._sumFinite(
+            routeRows.map(r => r && r.profitPerWeek))
+        const routeLatestAt = AesCompetitorOutlineAggregator._maxFinite(
+            routeRows.map(r => r && r.snapshotAt))
+
+        const aircraftRows = Array.isArray(ledger.aircraft) ? ledger.aircraft : []
+        const fleetProfitTotal = AesCompetitorOutlineAggregator._sumFinite(
+            aircraftRows.map(r => r && r.profit))
+        const fleetFlights = AesCompetitorOutlineAggregator._sumFinite(
+            aircraftRows.map(r => r && r.finishedFlights))
+
+        const freshnessAt = AesCompetitorOutlineAggregator._maxFinite([
+            ledger.scrapedAt,
+            ledger.periodActuals && ledger.periodActuals.scrapedAt,
+            ledger.bankActuals && ledger.bankActuals.scrapedAt,
+            ledger.balanceActuals && ledger.balanceActuals.scrapedAt,
+            routeLatestAt
+        ])
+
+        return {
+            basis:   "actual",
+            label:   "Actual",
+            source:  "accounting snapshots",
+            server:  String(server || ""),
+            airline: String(airline || ""),
+            cashBalance: cashBalance,
+            cash: {
+                bankBalance: bankBalance,
+                cashBalance: cashBalance,
+                scrapedAt: ledger.bankActuals && ledger.bankActuals.scrapedAt || null,
+                source: bankBalance != null ? "bank" : (cashBalance != null ? "cashflow" : "missing")
+            },
+            latest: {
+                weekId: ledger.periodActuals && ledger.periodActuals.weekId || null,
+                revenue: revenue,
+                ebit: ebit,
+                ebt: ebt,
+                scrapedAt: ledger.periodActuals && ledger.periodActuals.scrapedAt || null
+            },
+            routes: {
+                count: routeRows.length,
+                totalProfitPerWeek: Math.round(routeProfitTotal),
+                latestSnapshotAt: routeLatestAt || null
+            },
+            fleet: {
+                aircraftCount: aircraftRows.length,
+                totalProfit: Math.round(fleetProfitTotal),
+                finishedFlights: Math.round(fleetFlights)
+            },
+            freshness: {
+                snapshotAt: freshnessAt || null,
+                incomeAt: ledger.periodActuals && ledger.periodActuals.scrapedAt || null,
+                bankAt: ledger.bankActuals && ledger.bankActuals.scrapedAt || null,
+                routesAt: routeLatestAt || null
+            }
+        }
+    }
+
+    static _hasAnySisterSnapshot(sisters) {
+        if (!sisters || typeof sisters !== "object") return false
+        return !!(sisters.leasing || sisters.capital || sisters.assets || sisters.cashflow)
+    }
+
+    static _relationshipFromAffiliation(rec, enterpriseId) {
+        const known = ["self", "allied", "interline", "codeshare", "neutral", "adversary"]
+        const kind = rec && known.indexOf(rec.kind) >= 0
+            ? rec.kind
+            : "unclassified"
+        const includedAsRival = AesCompetitorOutlineAggregator._kindIncludedAsRival(kind)
+        const label = AesCompetitorOutlineAggregator._relationshipLabel(kind)
+        return {
+            kind: kind,
+            label: label,
+            source: rec && rec.source ? String(rec.source) : "unclassified",
+            includedAsRival: includedAsRival
+        }
+    }
+
+    static _relationshipLabel(kind) {
+        const store = (typeof AesCanopyAffiliations !== "undefined" && AesCanopyAffiliations)
+            || (typeof window !== "undefined" && window.AesCanopyAffiliations)
+            || null
+        if (store && typeof store.kindLabel === "function" && kind !== "unclassified") {
+            try { return store.kindLabel(kind) } catch (_) {}
+        }
+        return ({
+            self:         "Kin",
+            allied:       "Allied",
+            interline:    "Interline",
+            codeshare:    "Codeshare",
+            neutral:      "Neutral",
+            adversary:    "Adversary",
+            unclassified: "Unclassified"
+        })[kind] || "Unclassified"
+    }
+
+    static _kindIncludedAsRival(kind) {
+        return kind === "neutral" || kind === "adversary" || kind === "unclassified"
+    }
+
+    static _isIncludedRivalRow(row) {
+        return !!(row && row.relationship && row.relationship.includedAsRival)
+    }
+
     // ------------------------------------------------------------------
     // Per-competitor row builder
     // ------------------------------------------------------------------
@@ -376,6 +720,8 @@ class AesCompetitorOutlineAggregator {
         const oldestEnterprise = enterprise.scrapedAt || null
         const oldestEdge = AesCompetitorOutlineAggregator
             ._oldestEdgeAt(input.storageBundle, footprint)
+        const financials = AesCompetitorOutlineAggregator
+            ._buildRivalFinancials(enterprise, routes, weeklyFlightSum)
 
         return {
             enterpriseId: String(enterprise.enterpriseId || ""),
@@ -383,10 +729,13 @@ class AesCompetitorOutlineAggregator {
             code:         carrierIata,
             alliance:     enterprise.alliance || null,
             baseCountry:  enterprise.baseCountry || null,
+            relationship: input.relationship
+                || AesCompetitorOutlineAggregator._relationshipFromAffiliation(null, enterprise.enterpriseId),
             fleet: {
                 totalCount: enterprise.fleet && enterprise.fleet.aircraftCount || null,
                 byType:     fleetByType
             },
+            financials: financials,
             routes: routes,
             summary: {
                 totalRoutes:        routes.length,
@@ -400,7 +749,97 @@ class AesCompetitorOutlineAggregator {
                 freshness: {
                     enterpriseAt: oldestEnterprise,
                     oldestEdgeAt: oldestEdge
-                }
+                },
+                estimatedWeeklyProfit: financials.totalEstimatedWeeklyProfit,
+                estimatedWeeklyRevenue: financials.estimatedWeeklyRouteRevenue
+            }
+        }
+    }
+
+    static _buildRivalFinancials(enterprise, routes, weeklyFlightSum) {
+        const fleet = enterprise && enterprise.fleet && typeof enterprise.fleet === "object"
+            ? enterprise.fleet
+            : {}
+        const publicFacts = {
+            aircraft:        AesCompetitorOutlineAggregator._numOrNull(fleet.aircraftCount),
+            stations:        AesCompetitorOutlineAggregator._numOrNull(fleet.stationsCount),
+            employees:       AesCompetitorOutlineAggregator._numOrNull(fleet.employeeCount),
+            passengers:      AesCompetitorOutlineAggregator._numOrNull(fleet.paxCarried),
+            cargo:           AesCompetitorOutlineAggregator._numOrNull(fleet.cargoCarried),
+            operatedFlights: AesCompetitorOutlineAggregator._numOrNull(fleet.operatedFlights),
+            seatsOffered:    AesCompetitorOutlineAggregator._numOrNull(fleet.seatsOffered),
+            cargoOffered:    AesCompetitorOutlineAggregator._numOrNull(fleet.cargoOffered),
+            sko:             AesCompetitorOutlineAggregator._firstNum([
+                fleet.sko, fleet.SKO, fleet.seatKilometersOffered, fleet.seatKmOffered
+            ]),
+            fko:             AesCompetitorOutlineAggregator._firstNum([
+                fleet.fko, fleet.FKO, fleet.freightKilometersOffered, fleet.freightKmOffered
+            ]),
+            rating:          fleet.rating || null,
+            weeklyFlights:   Number(weeklyFlightSum) || 0
+        }
+
+        const topProfitLanes = []
+        let estimatedWeeklyRouteRevenue = 0
+        let totalEstimatedWeeklyProfit = 0
+        let estimatedCount = 0
+        const confidenceRanks = {missing: 0, low: 1, med: 2, high: 3}
+        let confidenceRank = 3
+        const freshnessValues = []
+
+        for (const r of routes || []) {
+            const them = r && r.theirs || {}
+            const profit = AesCompetitorOutlineAggregator._numOrNull(them.estProfitPerWeek)
+            const revenue = AesCompetitorOutlineAggregator._numOrNull(them.estRevenuePerWeek)
+            if (revenue != null) estimatedWeeklyRouteRevenue += revenue
+            if (profit != null) {
+                totalEstimatedWeeklyProfit += profit
+                estimatedCount++
+                topProfitLanes.push({
+                    hub: r.hub,
+                    dest: r.dest,
+                    estimatedWeeklyProfit: Math.round(profit),
+                    estimatedWeeklyRevenue: revenue != null ? Math.round(revenue) : null,
+                    confidence: them.incomeConfidence || "low"
+                })
+            }
+            const rank = confidenceRanks[them.incomeConfidence || "missing"] || 0
+            if (rank < confidenceRank) confidenceRank = rank
+            if (Number.isFinite(Number(them.freshnessAt))) freshnessValues.push(Number(them.freshnessAt))
+        }
+        topProfitLanes.sort((a, b) =>
+            (b.estimatedWeeklyProfit || 0) - (a.estimatedWeeklyProfit || 0))
+
+        const confidence = estimatedCount > 0
+            ? (confidenceRank >= 3 ? "high" : confidenceRank >= 2 ? "med" : "low")
+            : "missing"
+        const freshnessAt = freshnessValues.length
+            ? Math.min.apply(null, freshnessValues)
+            : (enterprise && enterprise.scrapedAt || null)
+
+        return {
+            basis:  "estimated",
+            label:  "Estimated",
+            source: "public operating facts and route-derived estimates",
+            publicFacts: publicFacts,
+            estimatedWeeklyRouteRevenue: Math.round(estimatedWeeklyRouteRevenue),
+            estimatedWeeklyRouteProfit:  Math.round(totalEstimatedWeeklyProfit),
+            totalEstimatedWeeklyProfit:  Math.round(totalEstimatedWeeklyProfit),
+            routeEstimateCount: estimatedCount,
+            topProfitLanes: topProfitLanes.slice(0, 5),
+            confidence: confidence,
+            freshness: {
+                enterpriseAt: enterprise && enterprise.scrapedAt || null,
+                routeAt: freshnessAt
+            },
+            estimates: {
+                estimatedWeeklyRouteRevenue: Math.round(estimatedWeeklyRouteRevenue),
+                estimatedWeeklyRouteProfit:  Math.round(totalEstimatedWeeklyProfit),
+                totalEstimatedWeeklyProfit:  Math.round(totalEstimatedWeeklyProfit),
+                routeCountWithEstimates: estimatedCount,
+                topProfitLanes: topProfitLanes.slice(0, 5),
+                confidence: confidence,
+                freshnessAt: freshnessAt
             }
         }
     }
@@ -757,6 +1196,58 @@ class AesCompetitorOutlineAggregator {
             }
         }
         return oldest
+    }
+
+    static _numOrNull(v) {
+        if (v === null || v === undefined || v === "") return null
+        const n = Number(v)
+        return Number.isFinite(n) ? n : null
+    }
+
+    static _firstNum(values) {
+        for (const v of values || []) {
+            const n = AesCompetitorOutlineAggregator._numOrNull(v)
+            if (n != null) return n
+        }
+        return null
+    }
+
+    static _sumFinite(values) {
+        let sum = 0
+        for (const v of values || []) {
+            const n = Number(v)
+            if (Number.isFinite(n)) sum += n
+        }
+        return sum
+    }
+
+    static _maxFinite(values) {
+        let max = null
+        for (const v of values || []) {
+            const n = Number(v)
+            if (!Number.isFinite(n)) continue
+            if (max === null || n > max) max = n
+        }
+        return max
+    }
+
+    static _totalCurrent(total) {
+        if (!total || typeof total !== "object") return null
+        return AesCompetitorOutlineAggregator._numOrNull(total.current)
+    }
+
+    static _cashFromSisters(sisters) {
+        const cashflow = sisters && sisters.cashflow && sisters.cashflow.payload
+        if (!cashflow || !Array.isArray(cashflow.tables)) return null
+        for (const table of cashflow.tables) {
+            const rows = table && Array.isArray(table.rows) ? table.rows : []
+            for (const row of rows) {
+                if (!row || !/cash|balance/i.test(String(row.label || ""))) continue
+                const n = AesCompetitorOutlineAggregator._numOrNull(row.value)
+                if (n != null) return n
+            }
+        }
+        return null
     }
 
     static async _loadPaxScoreByPair(pairKeys) {

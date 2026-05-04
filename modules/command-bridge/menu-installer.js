@@ -76,15 +76,36 @@
         // creates a new one. Falls back to window.open() only if the
         // message round-trip fails (extension reload race, MV3 SW asleep
         // and rejecting, etc).
+        if (window.AESSiteSkin?.safeRuntimeSendMessage) {
+            try {
+                const sent = window.AESSiteSkin.safeRuntimeSendMessage(
+                    {type: "aes:bridge:open"},
+                    (resp, err) => {
+                        if (err || !resp || !resp.ok) {
+                            try { window.open(chrome.runtime.getURL("bridge.html"), "aes-bridge") }
+                            catch (_) { /* noop */ }
+                        }
+                    }
+                )
+                if (sent !== false) return
+                return
+            } catch (_) { /* fall through */ }
+        }
         try {
             chrome.runtime.sendMessage({type: "aes:bridge:open"}, (resp) => {
                 const err = chrome.runtime.lastError
+                if (err && window.AESSiteSkin?.handleInvalidatedContext) {
+                    window.AESSiteSkin.handleInvalidatedContext(err)
+                    return
+                }
                 if (err || !resp || !resp.ok) {
                     try { window.open(chrome.runtime.getURL("bridge.html"), "aes-bridge") }
                     catch (_) { /* noop */ }
                 }
             })
-        } catch (_) {
+        } catch (e) {
+            if (window.AESSiteSkin?.handleInvalidatedContext
+                && window.AESSiteSkin.handleInvalidatedContext(e)) return
             try { window.open(chrome.runtime.getURL("bridge.html"), "aes-bridge") }
             catch (__) { /* noop */ }
         }

@@ -223,3 +223,7 @@ class RouteAssistantModeTabs {
         return out
     }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantModeTabs = RouteAssistantModeTabs
+}

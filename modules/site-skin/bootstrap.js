@@ -55,6 +55,17 @@
         root.dataset.aesDensity = value;
     }
 
+    function recoverInvalidatedContext(err) {
+        const message = err && err.message ? err.message : String(err || "");
+        if (!/Extension context invalidated/i.test(message)) return false;
+        try { root.dataset.aesContext = "reloading"; } catch (_) { /* noop */ }
+        try {
+            if (document.body) document.body.dataset.aesContext = "reloading";
+        } catch (_) { /* noop */ }
+        try { location.reload(); } catch (_) { /* noop */ }
+        return true;
+    }
+
     // Synchronous initial read. chrome.storage.sync.get is async, so the
     // very first paint may briefly use the defaults set above — that's
     // fine because the defaults match the most common opt-in (skin on,
@@ -74,6 +85,19 @@
             if (changes[SKIN_KEY])    applySkin(changes[SKIN_KEY].newValue);
             if (changes[DENSITY_KEY]) applyDensity(changes[DENSITY_KEY].newValue);
         });
+
+        if (chrome.runtime && chrome.runtime.onMessage) {
+            chrome.runtime.onMessage.addListener(function (msg) {
+                if (!msg || msg.type !== "aes:site-skin:update") return false;
+                if (Object.prototype.hasOwnProperty.call(msg, "enabled")) {
+                    applySkin(msg.enabled);
+                }
+                if (Object.prototype.hasOwnProperty.call(msg, "density")) {
+                    applyDensity(msg.density);
+                }
+                return false;
+            });
+        }
     }
 
     // <body> doesn't exist at document_start — wait for it then mirror the
@@ -103,11 +127,39 @@
     window.AESSiteSkin.isEnabled = function () { return root.dataset.aesSkin !== "off"; };
     window.AESSiteSkin.getDensity = function () { return root.dataset.aesDensity || "comfortable"; };
     window.AESSiteSkin.getPageKind = function () { return root.dataset.aesPage || "other"; };
+    window.AESSiteSkin.handleInvalidatedContext = recoverInvalidatedContext;
+    window.AESSiteSkin.safeRuntimeSendMessage = function (message, callback) {
+        try {
+            chrome.runtime.sendMessage(message, function (resp) {
+                const lastErr = chrome.runtime && chrome.runtime.lastError;
+                if (lastErr && recoverInvalidatedContext(lastErr)) return;
+                if (typeof callback === "function") callback(resp, lastErr || null);
+            });
+            return true;
+        } catch (e) {
+            if (recoverInvalidatedContext(e)) return false;
+            throw e;
+        }
+    };
+    window.AESSiteSkin.safeSyncSet = function (payload) {
+        try {
+            chrome.storage.sync.set(payload, function () {
+                const lastErr = chrome.runtime && chrome.runtime.lastError;
+                if (lastErr) recoverInvalidatedContext(lastErr);
+            });
+            return true;
+        } catch (e) {
+            if (recoverInvalidatedContext(e)) return false;
+            throw e;
+        }
+    };
     window.AESSiteSkin.setEnabled = function (v) {
-        chrome.storage.sync.set({ [SKIN_KEY]: !!v });
+        return window.AESSiteSkin.safeSyncSet({ [SKIN_KEY]: !!v });
     };
     window.AESSiteSkin.setDensity = function (v) {
-        chrome.storage.sync.set({ [DENSITY_KEY]: v === "compact" ? "compact" : "comfortable" });
+        return window.AESSiteSkin.safeSyncSet({
+            [DENSITY_KEY]: v === "compact" ? "compact" : "comfortable"
+        });
     };
     window.AESSiteSkin.cycleDensity = function () {
         const next = root.dataset.aesDensity === "compact" ? "comfortable" : "compact";

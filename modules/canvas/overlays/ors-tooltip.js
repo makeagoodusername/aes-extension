@@ -131,8 +131,10 @@ class CanvasOrsTooltip {
                 lines.push("Top demand: " + top.destIata + " (paxScore " + (top.paxScore || 0) + ")")
                 if (top.profitPerWeek) lines.push("Est. AS$" + Math.round(top.profitPerWeek).toLocaleString() + "/week")
                 if (top.weeklyFlights) lines.push("Currently " + top.weeklyFlights + "× weekly across the market")
-                // ORS projection is heavy; skip in the tip and surface a "press to project" hint instead.
-                lines.push("(click cell → Builder for full ORS projection)")
+                const orsReady = await this._orsUsableFor(this.activeHub, top.destIata)
+                lines.push(orsReady.usable
+                    ? "ORS ready for projection"
+                    : "ORS not ready: " + (orsReady.reason || "sync route data + ORS"))
             }
         }
 
@@ -172,8 +174,24 @@ class CanvasOrsTooltip {
             const data = await chrome.storage.local.get([key])
             const blob = data[key]
             const rows = (blob && Array.isArray(blob.rows)) ? blob.rows : []
-            return rows.sort((a, b) => (b.paxScore || 0) - (a.paxScore || 0))[0] || null
+            return rows.map(_normaliseDemandRow).filter(Boolean)
+                .sort((a, b) => (b.paxScore || 0) - (a.paxScore || 0))[0] || null
         } catch (_) { return null }
+    }
+
+    async _orsUsableFor(hub, dest) {
+        if (!hub || !dest || typeof RouteAssistantOrsIntelligence === "undefined") {
+            return {usable: false, reason: "facade missing"}
+        }
+        try {
+            const svc = new RouteAssistantOrsIntelligence()
+            const snap = await svc.getRouteSnapshot(hub, dest)
+            if (!snap || !snap.record) return {usable: false, reason: "no ORS cache"}
+            if (snap.usable) return {usable: true}
+            return {usable: false, reason: (snap.warnings && snap.warnings[0]) || "not usable"}
+        } catch (_) {
+            return {usable: false, reason: "lookup failed"}
+        }
     }
 }
 
@@ -197,6 +215,24 @@ function _escape(s) {
         c === ">" ? "&gt;" :
         c === '"' ? "&quot;" : "&#39;"
     ))
+}
+
+function _normaliseDemandRow(row) {
+    if (!row || typeof row !== "object") return null
+    const dest = String(row.destIata || row.dest || row.iata || row.destination || "").trim().toUpperCase()
+    if (!/^[A-Z]{3}$/.test(dest)) return null
+    return Object.assign({}, row, {
+        destIata:      dest,
+        destName:      row.destName || row.name || row.airportName || "",
+        paxScore:      _num(row.paxScore),
+        profitPerWeek: _num(row.profitPerWeek),
+        weeklyFlights: _num(row.weeklyFlights)
+    })
+}
+
+function _num(value) {
+    const n = Number(value)
+    return isFinite(n) ? n : null
 }
 
 if (typeof window !== "undefined") {

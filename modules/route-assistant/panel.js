@@ -75,6 +75,8 @@ class RouteAssistantPanel {
         this.fleetSpecs = null         // array of specs for Fleet mode
         this._storageListener = null
         this._storageDebounceTimer = null
+        this._topRoutesPublishTimer = null
+        this._pendingTopRoutesRows = null
 
         // Re-entry / lifecycle guards. The two enrichment loops can be
         // triggered both by user action (refresh) and by storage events,
@@ -253,6 +255,11 @@ class RouteAssistantPanel {
             clearTimeout(this._viewportResizeTimer)
             this._viewportResizeTimer = null
         }
+        if (this._topRoutesPublishTimer) {
+            clearTimeout(this._topRoutesPublishTimer)
+            this._topRoutesPublishTimer = null
+        }
+        this._pendingTopRoutesRows = null
         this._detachStorageListener()
         this._detachHubShortcuts()
         if (this._rowPreviewTimer) { clearTimeout(this._rowPreviewTimer); this._rowPreviewTimer = 0 }
@@ -1045,9 +1052,13 @@ class RouteAssistantPanel {
             fix: () => { closeC(); window.open("/app/com/scheduling/" + hubU + destU, "_blank") }
         })
         items.push({
-            label: "AS demand seeded",
+            label: row.demandSource === "flightsfrom" ? "Flight demand reflected" : "AS demand seeded",
             ok: row.paxScore !== null && row.paxScore !== undefined,
-            hint: (row.paxScore != null) ? "pax " + row.paxScore + " · cargo " + (row.cargoScore != null ? row.cargoScore : "?") : "no demand record",
+            hint: (row.paxScore != null)
+                ? "pax " + row.paxScore + " · "
+                    + (row.demandSource === "flightsfrom"
+                        ? "FlightsFrom" : "cargo " + (row.cargoScore != null ? row.cargoScore : "?"))
+                : "no demand record",
             fix: () => { closeC(); window.open("/action/info/airports/" + (row.airportId || ""), "_blank") }
         })
         const fleetCtx = (typeof this._fleetContext === "function") ? this._fleetContext() : null
@@ -1872,8 +1883,30 @@ class RouteAssistantPanel {
         return top
     }
 
+    _currentAirlineCode() {
+        const fromSchedule = (this.ownSchedule && this.ownSchedule.airline) || null
+        if (fromSchedule) return String(fromSchedule)
+        try {
+            if (typeof AES !== "undefined" && typeof AES.getAirlineCode === "function") {
+                const ident = AES.getAirlineCode()
+                if (typeof ident === "string" && ident) return ident
+                if (ident && ident.code) return String(ident.code)
+                if (ident && ident.airlineCode) return String(ident.airlineCode)
+            }
+        } catch (_) { /* fall through */ }
+        try {
+            if (typeof AES !== "undefined" && typeof AES.getAirlineIdentity === "function") {
+                const ident = AES.getAirlineIdentity()
+                if (typeof ident === "string" && ident) return ident
+                if (ident && ident.code) return String(ident.code)
+                if (ident && ident.airlineCode) return String(ident.airlineCode)
+            }
+        } catch (_) { /* fall through */ }
+        return null
+    }
+
     _openStationsModal() {
-        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        const airlineCode = this._currentAirlineCode()
         if (!airlineCode) {
             if (typeof RouteAssistantToast !== "undefined") {
                 RouteAssistantToast.show("Airline not loaded yet — try again in a moment.", {type: "warn"})
@@ -1898,7 +1931,7 @@ class RouteAssistantPanel {
         if (this._stationStatusStrip) return
         if (!this._stationStatusHost) return
         if (typeof StationAutomationStatusStrip === "undefined") return
-        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        const airlineCode = this._currentAirlineCode()
         if (!airlineCode) return
         this._stationStatusStrip = new StationAutomationStatusStrip({
             server:      this.server,
@@ -1980,7 +2013,7 @@ class RouteAssistantPanel {
      * mutex was implicit; now it's explicit.
      */
     async _setPanelMode(mode) {
-        const VALID = {table: 1, waves: 1, sandbox: 1, heatmap: 1}
+        const VALID = {table: 1, waves: 1, sandbox: 1, heatmap: 1, compass: 1}
         if (!VALID[mode]) mode = "table"
         if (!this.settings) return
         this.settings.panelMode = mode
@@ -2045,7 +2078,7 @@ class RouteAssistantPanel {
         // Pin fleet to the schedule's airline when available — multi-airline
         // accounts otherwise pick by largest fleet, which is usually right but
         // worth marking ambiguous.
-        const airlineCode = this.ownSchedule && this.ownSchedule.airline || null
+        const airlineCode = this._currentAirlineCode()
         this.fleet = await RouteAssistantFleetStore.loadFleet(this.server, airlineCode)
         this._ensureStationStatusStrip()
         await this._loadCachedTypeSpecs()
@@ -2482,12 +2515,24 @@ class RouteAssistantPanel {
         // Airport-overview cache resolves alliance ids for every
         // enterprise operating at a destination — one cache lookup per
         // destination station yields a complete map for the popover.
+        // Records cached after the carriers-field upgrade also yield an
+        // enrichment map (name + weeklyDepartures + IL flag) so a single
+        // visit to the AS airport page populates the popover with no
+        // per-enterprise meta scrape required.
         let allianceMap = new Map()
+        let enrichmentMap = new Map()
         if (typeof RouteAssistantAirportOverviewScraper !== "undefined" && stationIds.size) {
             const overviewCache = await RouteAssistantAirportOverviewScraper.bulkLoadCache(
                 Array.from(stationIds), {maxAgeDays: cfg.airportOverviewMaxAgeDays}
             )
             allianceMap = RouteAssistantAirportOverviewScraper.buildAllianceMap(overviewCache)
+            if (typeof RouteAssistantAirportOverviewScraper.buildEnterpriseEnrichmentMap === "function") {
+                enrichmentMap = RouteAssistantAirportOverviewScraper.buildEnterpriseEnrichmentMap(overviewCache)
+            }
+            // Stash per-station records so the Cmp popover can fall back
+            // to the AS Stations table for destinations whose per-route
+            // marketShare cache hasn't been seeded yet.
+            this._airportOverviewByStationId = overviewCache
         }
 
         const baseLogoUrl = `https://${this.server}.airlinesim.aero/app/logo/`
@@ -2508,6 +2553,16 @@ class RouteAssistantPanel {
                         if (meta.avatarUrl) e.avatarUrl = meta.avatarUrl
                         if (meta.iata) e.iata = meta.iata
                         if (!e.name && meta.name) e.name = meta.name
+                    }
+                    const enrich = enrichmentMap.get(idStr)
+                    if (enrich) {
+                        if (!e.name && enrich.name) e.name = enrich.name
+                        if (e.airportWeeklyDepartures == null && enrich.weeklyDepartures > 0) {
+                            e.airportWeeklyDepartures = enrich.weeklyDepartures
+                        }
+                        if (e.isInterliningAtAirport == null && enrich.isInterlining) {
+                            e.isInterliningAtAirport = true
+                        }
                     }
                     if (!e.allianceId && allianceMap.has(idStr)) {
                         e.allianceId = allianceMap.get(idStr) || null
@@ -2563,14 +2618,17 @@ class RouteAssistantPanel {
         }
 
         // Re-load the now-fresh cache and decorate entries with the
-        // newly discovered alliance ids without recursing through
-        // `_applyCachedEnterpriseMeta` (which would re-trigger this
-        // method).
+        // newly discovered alliance ids + name/weeklyDepartures/IL flag
+        // without recursing through `_applyCachedEnterpriseMeta` (which
+        // would re-trigger this method).
         const fresh = await RouteAssistantAirportOverviewScraper.bulkLoadCache(
             Array.from(stationIds), {maxAgeDays: cfg.airportOverviewMaxAgeDays}
         )
         const allianceMap = RouteAssistantAirportOverviewScraper.buildAllianceMap(fresh)
-        if (!allianceMap.size) return
+        const enrichmentMap = (typeof RouteAssistantAirportOverviewScraper.buildEnterpriseEnrichmentMap === "function")
+            ? RouteAssistantAirportOverviewScraper.buildEnterpriseEnrichmentMap(fresh)
+            : new Map()
+        if (!allianceMap.size && !enrichmentMap.size) return
 
         const baseLogoUrl = `https://${this.server}.airlinesim.aero/app/logo/`
         for (const r of this.rows) {
@@ -2578,12 +2636,22 @@ class RouteAssistantPanel {
                 if (!Array.isArray(list)) continue
                 for (const e of list) {
                     if (!e || e.enterpriseId == null) continue
-                    if (e.allianceId) continue
                     const idStr = String(e.enterpriseId)
-                    if (!allianceMap.has(idStr)) continue
-                    e.allianceId = allianceMap.get(idStr) || null
-                    if (e.allianceId) {
-                        e.allianceLogoUrl = baseLogoUrl + String(e.allianceId) + "/enterprise-s.png?strict=true"
+                    if (!e.allianceId && allianceMap.has(idStr)) {
+                        e.allianceId = allianceMap.get(idStr) || null
+                        if (e.allianceId) {
+                            e.allianceLogoUrl = baseLogoUrl + String(e.allianceId) + "/enterprise-s.png?strict=true"
+                        }
+                    }
+                    const enrich = enrichmentMap.get(idStr)
+                    if (enrich) {
+                        if (!e.name && enrich.name) e.name = enrich.name
+                        if (e.airportWeeklyDepartures == null && enrich.weeklyDepartures > 0) {
+                            e.airportWeeklyDepartures = enrich.weeklyDepartures
+                        }
+                        if (e.isInterliningAtAirport == null && enrich.isInterlining) {
+                            e.isInterliningAtAirport = true
+                        }
                     }
                 }
             }
@@ -3924,9 +3992,12 @@ class RouteAssistantPanel {
             this.statusBar.append(ffSpan)
         }
 
-        const unresolved = this.rows.filter(r => r.paxScore === null).length
+        const asResolved = this.rows.filter(r => r.demandSource === "route-assistant").length
+        const ffFallback = this.rows.filter(r => r.demandSource === "flightsfrom").length
+        const unresolved = this.rows.length - asResolved
         const demandSpan = document.createElement("span")
-        demandSpan.textContent = `· Demand: ${this.rows.length - unresolved}/${this.rows.length} resolved`
+        demandSpan.textContent = `· Demand: ${asResolved}/${this.rows.length} AS`
+            + (ffFallback ? `, ${ffFallback} FF fallback` : "")
         demandSpan.style.color = unresolved > 0 ? "#fbbf24" : "#9ca3af"
         this.statusBar.append(demandSpan)
 
@@ -4080,7 +4151,9 @@ class RouteAssistantPanel {
     }
 
     async _resolveDemand() {
-        const unresolved = this.rows.filter(r => r.paxScore === null).map(r => r.destIata)
+        const unresolved = this.rows
+            .filter(r => r.demandSource !== "route-assistant")
+            .map(r => r.destIata)
         if (!unresolved.length) return
         if (this.scanner) {
             this._noteToast("Already resolving demand…")
@@ -5091,6 +5164,13 @@ class RouteAssistantPanel {
         const resolved = this.rows.filter(r => r.paxScore !== null).length
         const panelMode = (this.settings && this.settings.panelMode) || "table"
         if (resolved === 0 && panelMode === "table") {
+            // F-2026-05-01: first-run hubs often have flightsfrom rows before
+            // any demand scrape has resolved. Downstream consumers (World View,
+            // accounting-ledger synthesis, route-management tiles, etc.) still
+            // need the hub footprint in `routeAssistant:topRoutes:*`, so publish
+            // the raw route set before the seed prompt short-circuits the scored
+            // table path.
+            this._scheduleTopRoutesPublish(this.rows)
             this._renderSeedPrompt()
             return
         }
@@ -5108,6 +5188,7 @@ class RouteAssistantPanel {
             activeFields)
 
         if (!this.scoredRows.length) {
+            this._renderModeTabs()
             this._renderEmpty("No routes match the current filters.")
             return
         }
@@ -5126,6 +5207,7 @@ class RouteAssistantPanel {
         if (onlyChanged && this._diffPrevSnapshot) {
             this.scoredRows = this.scoredRows.filter(r => !!r._diff)
             if (!this.scoredRows.length) {
+                this._renderModeTabs()
                 this._renderEmpty("No routes have changed since your last visit. Toggle the Δ Changed chip off to see all rows.")
                 return
             }
@@ -5180,6 +5262,14 @@ class RouteAssistantPanel {
         }
 
         const sorted = this._sortRows(this.scoredRows)
+        this._renderModeTabs()
+
+        // Publish a slim top-routes snapshot for cross-feature consumers
+        // once per successful scoring pass, regardless of the active panel mode.
+        // Debounce across the enrichment/render burst so the scheduling page
+        // emits one settled snapshot instead of hammering storage on every
+        // intermediate re-render while distances/specs stream in.
+        this._scheduleTopRoutesPublish(sorted)
 
         // U5 multi-select — intersect `_selectedRoutes` with the visible
         // (post-filter, post-sort) destIata set. Routes filtered out are
@@ -5398,11 +5488,6 @@ class RouteAssistantPanel {
         const selFooter = this._renderSelectionFooter(visible)
         if (selFooter) this.tableHost.append(selFooter)
 
-        // Publish a slim top-routes snapshot for cross-feature consumers
-        // (currently the Used Aircraft Scanner's route-fit metric). Capped
-        // at 50 to keep storage write small; the scanner doesn't need more.
-        this._publishTopRoutes(visible)
-
         // Diff-against-last-visit — overwrite `routeAssistant:lastSnapshot:<HUB>`
         // with the full scored set so the next mount can compute deltas.
         // The in-memory `this._diffPrevSnapshot` is unaffected, so the
@@ -5505,12 +5590,14 @@ class RouteAssistantPanel {
             return
         }
 
-        if (!this.selectedSpec) {
+        const waveFleetCtx = (typeof this._fleetContext === "function")
+            ? this._fleetContext() : null
+        if (!waveFleetCtx) {
             const banner = document.createElement("div")
             banner.style.cssText = "margin:6px 0;padding:6px 10px;font-size:11px;"
                 + "background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.30);"
                 + "border-radius:3px;color:#fde68a;"
-            banner.textContent = "No aircraft picked — pick one in the panel header to size haul buckets and skip OOR routes."
+            banner.textContent = "No aircraft context — pick Fleet, type, or tail in the panel header to size haul buckets and skip OOR routes."
             this.tableHost.append(banner)
         }
 
@@ -5571,11 +5658,13 @@ class RouteAssistantPanel {
         const useProfit = optimizeMode === "profit"
         const useConnection = optimizeMode === "connection"
 
-        const buildFleetCtx = (typeof this._fleetContext === "function")
-            ? this._fleetContext() : null
+        const fleetSig = waveFleetCtx && Array.isArray(waveFleetCtx.fleetSpecs)
+            ? waveFleetCtx.fleetSpecs.map(s => s && s.typeId || "?").sort().join(",")
+            : ""
 
         const buildSig = (preset.id || "?") + ":" + topN
             + ":" + (this.selectedSpec ? this.selectedSpec.typeId : "none")
+            + ":" + fleetSig
             + ":" + (hubRoutes ? hubRoutes.length : 0)
             + ":" + pickedHub
             + ":" + ovSig
@@ -5585,7 +5674,7 @@ class RouteAssistantPanel {
             || this._waveBuildHub !== pickedHub) {
             this._waveBuild = RouteAssistantWaveOverlay.buildSchedule(preset, hubRoutes, {
                 server:            this.server,
-                airlineCode:       (this.ownSchedule && this.ownSchedule.airline) || null,
+                airlineCode:       this._currentAirlineCode(),
                 hubIata:           pickedHub,
                 selectedSpec:      this.selectedSpec,
                 topN:              topN,
@@ -5597,19 +5686,20 @@ class RouteAssistantPanel {
                 overrides:         overridesMap,
                 optimize:          useConnection,
                 mode:              useProfit ? "profit" : null,
-                fleetSpecs:        buildFleetCtx && buildFleetCtx.fleetSpecs || null
+                fleetSpecs:        waveFleetCtx && waveFleetCtx.fleetSpecs || null
             })
             this._waveBuild._sig = buildSig
             this._waveBuildHub   = pickedHub
         }
 
-        if (this._waveBuild.validation && this._waveBuild.validation.length) {
+        const hasWaveValidationErrors = !!(this._waveBuild.validation && this._waveBuild.validation.length)
+        if (hasWaveValidationErrors) {
             const vbox = document.createElement("div")
             vbox.style.cssText = "margin:8px 0;padding:8px 10px;"
                 + "background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.40);"
                 + "border-radius:3px;color:#fca5a5;font-size:11px;"
             const h = document.createElement("strong")
-            h.textContent = "Preset \"" + preset.name + "\" has issues — fix in Schedule Management:"
+            h.textContent = "Preset \"" + preset.name + "\" has issues — fix the editable wave fields below:"
             h.style.cssText = "display:block;margin-bottom:4px;"
             vbox.append(h)
             for (const err of this._waveBuild.validation) {
@@ -5618,7 +5708,16 @@ class RouteAssistantPanel {
                 vbox.append(line)
             }
             this.tableHost.append(vbox)
-            return
+        }
+
+        const automationCtx = await this._buildWaveAutomationContext(
+            pickedHub, preset, this._wavePresets, hubRoutes)
+        if (automationCtx) {
+            this._waveAutomationContext = automationCtx
+            this.tableHost.append(this._renderWaveAutomationStrip(
+                automationCtx, preset, pickedHub, {
+                    hasValidationErrors: hasWaveValidationErrors
+                }))
         }
 
         if (!hubRoutes || !hubRoutes.length) {
@@ -5639,6 +5738,7 @@ class RouteAssistantPanel {
         // silently rather than confuse the user with a dead button.
         if (typeof window.AesAfpFleetPickerModal !== "undefined"
                 && typeof window.AesAfpFleetApplyOrchestrator !== "undefined"
+                && !hasWaveValidationErrors
                 && this._waveBuild && Array.isArray(this._waveBuild.flights)
                 && this._waveBuild.flights.length) {
             const strip = document.createElement("div")
@@ -5753,6 +5853,7 @@ class RouteAssistantPanel {
                 this._waveBuild, this.scoredRows, {
                     hubIata:           pickedHub,
                     selectedSpec:      this.selectedSpec,
+                    fleetSpecs:        fleetCtx && fleetCtx.fleetSpecs || null,
                     carrierClassifier: this._carrierClassifierForFlight(),
                     fleetCount:        fleetCount
                 })
@@ -5815,6 +5916,7 @@ class RouteAssistantPanel {
         const collapsed = wo.diagnosticsCollapsed === true
 
         const card = document.createElement("div")
+        card.dataset.aesWaveDiagnosticsCard = "1"
         card.style.cssText = "margin-top:10px;padding:0;"
             + "background:rgba(15,22,35,0.55);border:1px solid #1f2937;"
             + "border-radius:4px;color:#e5e7eb;font-size:11px;overflow:hidden;"
@@ -5891,7 +5993,7 @@ class RouteAssistantPanel {
         strip.append(connStat)
         if (!diag.hasFleetContext) {
             const note = document.createElement("span")
-            note.textContent = "Estimates without fleet context — pick an aircraft for $/wk."
+            note.textContent = "Estimates without fleet context — pick Fleet, type, or tail for $/wk."
             note.style.cssText = "color:#fbbf24;font-size:10px;font-style:italic;"
                 + "margin-left:auto;align-self:center;"
             strip.append(note)
@@ -5992,7 +6094,7 @@ class RouteAssistantPanel {
             + "font-family:var(--aes-font-mono,monospace);font-size:11px;text-align:right;"
         if (pw.profitMissing > 0) {
             prof.title = pw.profitMissing + " route(s) here have no profit estimate"
-                + " — pick an aircraft to populate."
+                + " — pick Fleet, type, or tail to populate."
         }
         row.append(prof)
 
@@ -6215,12 +6317,27 @@ class RouteAssistantPanel {
         const actions = document.createElement("div")
         actions.style.cssText = "display:flex;gap:3px;align-items:center;margin-top:1px;"
         if (category === "in-plan") {
-            actions.append(this._mkRouteFitButton(
-                "⏬ Demote", "Release this route from the plan (reverts to bucket-greedy assignment).",
-                "#7c2d12", "#fed7aa",
-                () => this._waveOverrideRelease(opts.hubIata, opts.presetId, row.destIata)
-            ))
+            if (fit.forced) {
+                actions.append(this._mkRouteFitButton(
+                    "📌 Release", "Release this pinned route back to greedy assignment.",
+                    "#4c1d95", "#ddd6fe",
+                    () => this._waveOverrideRelease(opts.hubIata, opts.presetId, row.destIata)
+                ))
+            } else {
+                actions.append(this._mkRouteFitButton(
+                    "⏬ Demote", "Exclude this route from the current wave build until restored or pinned.",
+                    "#7c2d12", "#fed7aa",
+                    () => this._waveOverrideExclude(opts.hubIata, opts.presetId, row.destIata)
+                ))
+            }
         } else if (category === "candidate") {
+            if (fit.excluded) {
+                actions.append(this._mkRouteFitButton(
+                    "↩ Restore", "Clear the demotion and let greedy assignment place this route again.",
+                    "#1f2937", "#cbd5e1",
+                    () => this._waveOverrideRelease(opts.hubIata, opts.presetId, row.destIata)
+                ))
+            }
             const targetWave = fit.suggestedWaveId
             const targetLabel = (waves.find(w => w.id === targetWave) || {}).label
                 || "wave"
@@ -6234,6 +6351,13 @@ class RouteAssistantPanel {
             }
         }
         if (category !== "in-plan") {
+            if (category !== "candidate" && fit.excluded) {
+                actions.append(this._mkRouteFitButton(
+                    "↩ Restore", "Clear the demotion and let greedy assignment consider this route again.",
+                    "#1f2937", "#cbd5e1",
+                    () => this._waveOverrideRelease(opts.hubIata, opts.presetId, row.destIata)
+                ))
+            }
             actions.append(this._mkRouteFitWavePicker(row, opts, waves))
         }
         if (actions.children.length) card.append(actions)
@@ -6314,7 +6438,7 @@ class RouteAssistantPanel {
             const baselineBuild = RouteAssistantWaveOverlay.buildSchedule(
                 baseline, this.scoredRows, {
                     server:            this.server,
-                    airlineCode:       (this.ownSchedule && this.ownSchedule.airline) || null,
+                    airlineCode:       this._currentAirlineCode(),
                     hubIata:           pickedHub,
                     selectedSpec:      this.selectedSpec,
                     topN:              Math.max(1, Math.min(100,
@@ -6511,7 +6635,7 @@ class RouteAssistantPanel {
                 preset, this.scoredRows, yieldHistoryByPair, {
                     hubIata:      pickedHub,
                     server:       this.server,
-                    airlineCode:  (this.ownSchedule && this.ownSchedule.airline) || null,
+                    airlineCode:  this._currentAirlineCode(),
                     selectedSpec: this.selectedSpec,
                     weeksWindow:  RouteAssistantWavePlanBacktest.DEFAULT_WEEKS,
                     topN:         50
@@ -6786,6 +6910,21 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Route-fit workspace — demote an auto-placed route by excluding it
+     * from this preset's generated build until the user restores or pins it.
+     */
+    async _waveOverrideExclude(hubIata, presetId, destIata) {
+        if (typeof RouteAssistantWaveOverridesStore === "undefined") return
+        if (typeof RouteAssistantWaveOverridesStore.exclude !== "function") return
+        await RouteAssistantWaveOverridesStore.exclude(hubIata, presetId, destIata)
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show(destIata + " demoted from this wave build",
+                {duration: 3000})
+        }
+        await this._afterWavePresetEdit()
+    }
+
+    /**
      * Slice E — drop one route's override and re-render. Toast offers a
      * quick-undo by re-placing on the same wave id we just released from.
      */
@@ -6886,6 +7025,228 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Wave automation strip — joins the already-built Wave View with the
+     * shared automation-readiness facade used by Fleet Hub and Canvas.
+     * This keeps the Wave tab centred on "can the automation act on this
+     * plan now?" instead of leaving the user to infer that from the Gantt.
+     */
+    async _buildWaveAutomationContext(pickedHub, preset, presetsBlock, hubRoutes) {
+        if (typeof window === "undefined") return null
+        if (!window.AesWaveAutomationContext
+                || typeof window.AesWaveAutomationContext.buildForHub !== "function") {
+            return null
+        }
+        try {
+            const fleetRows = (this.fleet && Array.isArray(this.fleet.aircraft))
+                ? this.fleet.aircraft.slice()
+                : []
+            const fleetCtx = (typeof this._fleetContext === "function")
+                ? this._fleetContext() : null
+            return await window.AesWaveAutomationContext.buildForHub({
+                hub:          pickedHub,
+                preset:       preset,
+                presetsBlock: presetsBlock || this._wavePresets || null,
+                demandRows:   Array.isArray(hubRoutes) ? hubRoutes : [],
+                rows:         fleetRows,
+                server:       this.server,
+                airlineCode:  this._currentAirlineCode(),
+                selectedSpec: this.selectedSpec || null,
+                fleetSpecs:   fleetCtx && fleetCtx.fleetSpecs || null
+            })
+        } catch (e) {
+            console.warn("[AES wave] automation context failed", e)
+            return null
+        }
+    }
+
+    _renderWaveAutomationStrip(ctx, preset, pickedHub, opts) {
+        const o = opts || {}
+        const status = ctx && ctx.readiness && ctx.readiness.status || "blocked"
+        const color = status === "ready" ? "#10b981"
+            : status === "attention" ? "#f59e0b"
+            : "#ef4444"
+        const label = status === "ready" ? "Ready"
+            : status === "attention" ? "Needs attention"
+            : "Blocked"
+
+        const wrap = document.createElement("div")
+        wrap.dataset.aesWaveAutomationStrip = "1"
+        wrap.style.cssText = "margin:8px 0;padding:8px 10px;"
+            + "background:rgba(15,22,35,0.58);border:1px solid " + color + "55;"
+            + "border-radius:4px;color:#e5e7eb;font-size:11px;"
+            + "display:flex;gap:10px;align-items:center;flex-wrap:wrap;"
+
+        const head = document.createElement("div")
+        head.style.cssText = "display:flex;flex-direction:column;gap:2px;min-width:180px;flex:1 1 240px;"
+        const title = document.createElement("div")
+        title.style.cssText = "display:flex;gap:8px;align-items:center;"
+        const strong = document.createElement("strong")
+        strong.textContent = "Wave automation"
+        strong.style.color = "#e5e7eb"
+        const badge = document.createElement("span")
+        badge.textContent = label
+        badge.style.cssText = "padding:1px 7px;border-radius:999px;color:" + color + ";"
+            + "border:1px solid " + color + "66;background:" + color + "14;"
+            + "font-size:10px;font-weight:700;"
+        title.append(strong, badge)
+        head.append(title)
+
+        const meta = document.createElement("div")
+        meta.style.cssText = "color:#9ca3af;font-size:10px;line-height:1.35;"
+        const cap = ctx.capacity || {}
+        const top = ctx.topRoutes || {}
+        const fleet = ctx.fleetSummary || {}
+        const parts = []
+        parts.push((top.count || 0) + " routes")
+        parts.push((cap.usedSlots || 0) + "/" + (cap.totalSlots || 0) + " slots")
+        if (cap.unplaced) parts.push(cap.unplaced + " unplaced")
+        parts.push((fleet.total || 0) + " hub aircraft")
+        if (ctx.readiness && ctx.readiness.score != null) {
+            parts.push("score " + ctx.readiness.score + "/100")
+        }
+        meta.textContent = parts.join(" · ")
+        head.append(meta)
+
+        const issues = []
+        const blockers = ctx.readiness && ctx.readiness.blockers || []
+        const warnings = ctx.readiness && ctx.readiness.warnings || []
+        for (const b of blockers.slice(0, 2)) issues.push(b.message || b.code)
+        for (const w of warnings.slice(0, Math.max(0, 2 - issues.length))) {
+            issues.push(w.message || w.code)
+        }
+        if (issues.length) {
+            const issueLine = document.createElement("div")
+            issueLine.style.cssText = "color:" + (blockers.length ? "#fca5a5" : "#fde68a")
+                + ";font-size:10px;line-height:1.35;"
+            issueLine.textContent = issues.join(" · ")
+            head.append(issueLine)
+        }
+        wrap.append(head)
+
+        const actions = document.createElement("div")
+        actions.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap;"
+        const actionState = ctx.actions || {}
+        actions.append(this._mkWaveAutomationButton(
+            "Diagnose",
+            (actionState.diagnose && actionState.diagnose.reason)
+                || "Show plan diagnostics.",
+            true,
+            () => this._focusWaveDiagnostics()
+        ))
+        actions.append(this._mkWaveAutomationButton(
+            "Preview",
+            (actionState.buildPreview && actionState.buildPreview.reason)
+                || "Rebuild the current wave preview.",
+            !!(actionState.buildPreview && actionState.buildPreview.enabled) && !o.hasValidationErrors,
+            () => this._previewWaveAutomation()
+        ))
+        actions.append(this._mkWaveAutomationButton(
+            "Open canvas",
+            (actionState.openCanvas && actionState.openCanvas.reason)
+                || "Open Schedule Canvas for this hub.",
+            !!(actionState.openCanvas && actionState.openCanvas.enabled),
+            () => this._openWaveAutomationCanvas(pickedHub)
+        ))
+        const fleetApplyLoaded = typeof window !== "undefined"
+            && typeof window.AesAfpFleetPickerModal !== "undefined"
+            && typeof window.AesAfpFleetApplyOrchestrator !== "undefined"
+        actions.append(this._mkWaveAutomationButton(
+            "Apply to fleet",
+            fleetApplyLoaded
+                ? ((actionState.applyToFleet && actionState.applyToFleet.reason)
+                    || "Apply this wave build to selected aircraft.")
+                : "Fleet apply modules are not loaded on this page.",
+            fleetApplyLoaded
+                && !!(actionState.applyToFleet && actionState.applyToFleet.enabled)
+                && !o.hasValidationErrors,
+            () => this._applyWaveToFleet(preset, pickedHub)
+        ))
+        wrap.append(actions)
+        return wrap
+    }
+
+    _mkWaveAutomationButton(label, title, enabled, onClick) {
+        const b = document.createElement("button")
+        b.type = "button"
+        b.textContent = label
+        b.title = title || ""
+        b.disabled = !enabled
+        b.style.cssText = "background:" + (enabled ? "#1f2937" : "#111827") + ";"
+            + "color:" + (enabled ? "#e5e7eb" : "#6b7280") + ";"
+            + "border:1px solid " + (enabled ? "#475569" : "#1f2937") + ";"
+            + "border-radius:3px;padding:3px 9px;font-size:11px;font-weight:600;"
+            + "cursor:" + (enabled ? "pointer" : "not-allowed") + ";"
+        if (enabled && typeof onClick === "function") {
+            b.addEventListener("click", (e) => {
+                e.preventDefault()
+                onClick()
+            })
+        }
+        return b
+    }
+
+    _focusWaveDiagnostics() {
+        const card = this.tableHost
+            ? this.tableHost.querySelector("[data-aes-wave-diagnostics-card]")
+            : null
+        if (!card) {
+            if (typeof RouteAssistantToast !== "undefined") {
+                RouteAssistantToast.show("Diagnostics are not available for this build yet.",
+                    {type: "warn", duration: 3000})
+            }
+            return
+        }
+        const body = card.children && card.children[1]
+        if (body && body.style && body.style.display === "none") {
+            body.style.display = "block"
+            const caret = card.querySelector("span")
+            if (caret) caret.textContent = "▾"
+            this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
+                {diagnosticsCollapsed: false})
+            try { RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+            catch (_) {}
+        }
+        try { card.scrollIntoView({block: "nearest", behavior: "smooth"}) }
+        catch (_) { card.scrollIntoView() }
+    }
+
+    async _previewWaveAutomation() {
+        this.settings.waveOverlay = Object.assign({}, this.settings.waveOverlay || {},
+            {subMode: "plan"})
+        try { await RouteAssistantSettings.save({waveOverlay: this.settings.waveOverlay}) }
+        catch (_) {}
+        this._waveBuild = null
+        if (typeof RouteAssistantToast !== "undefined") {
+            RouteAssistantToast.show("Wave preview rebuilt.", {duration: 2200})
+        }
+        this._renderRows()
+    }
+
+    _openWaveAutomationCanvas(pickedHub) {
+        const hub = String(pickedHub || this.hubIata || "").toUpperCase()
+        if (typeof window !== "undefined" && typeof window.CanvasModal !== "undefined") {
+            window.CanvasModal.open({
+                server:      this.server,
+                airlineCode: this._currentAirlineCode(),
+                selectedHub: hub || null,
+                railMode:    "builder"
+            }).catch(err => console.warn("[AES wave] open canvas failed", err))
+            return
+        }
+        try {
+            if (window.CentralHubBus && typeof window.CentralHubBus.emit === "function") {
+                window.CentralHubBus.emit("open-tile", {
+                    tileId: "fleet-schedule-canvas",
+                    filter: {hub: hub || null, railMode: "builder"}
+                })
+            }
+        } catch (_) {}
+        const url = "/app/fleets" + (hub ? "?aes-canvas-hub=" + encodeURIComponent(hub) : "")
+        try { window.open(url, "_blank", "noopener") }
+        catch (_) { window.location.href = url }
+    }
+
+    /**
      * Slice 2 — explicit Save schedule CTA. Hands the current in-memory
      * wave build to ScheduleStore so it surfaces in the dashboard's
      * Schedule Management history. Slice 1's invariant ("read-only
@@ -6907,7 +7268,7 @@ class RouteAssistantPanel {
             if (toastFn) toastFn.warn("No build to save — pick a preset and let the Gantt run first.")
             return
         }
-        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        const airlineCode = this._currentAirlineCode()
         if (!airlineCode) {
             if (toastFn) toastFn.warn("Airline not loaded — wait for fleet sync to finish.")
             return
@@ -6988,7 +7349,11 @@ class RouteAssistantPanel {
             }
             return
         }
-        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        const airlineCode = this._currentAirlineCode()
+        const maxHaulNm = this._waveBuild.flights.reduce((max, f) => {
+            const n = Number(f && f.distanceNm) || 0
+            return n > max ? n : max
+        }, 0)
         let pick
         try {
             pick = await window.AesAfpFleetPickerModal.open({
@@ -6996,7 +7361,8 @@ class RouteAssistantPanel {
                 hub:         hub,
                 title:       "Open wave plan in one aircraft's flight plan",
                 server:      this.server,
-                airlineCode: airlineCode
+                airlineCode: airlineCode,
+                maxHaulNm:   maxHaulNm
             })
         } catch (e) {
             console.warn("[RA-8c] picker threw", e)
@@ -7058,7 +7424,11 @@ class RouteAssistantPanel {
             }
             return
         }
-        const airlineCode = (this.ownSchedule && this.ownSchedule.airline) || null
+        const airlineCode = this._currentAirlineCode()
+        const maxHaulNm = flights.reduce((max, f) => {
+            const n = Number(f && f.distanceNm) || 0
+            return n > max ? n : max
+        }, 0)
         let pick
         try {
             pick = await window.AesAfpFleetPickerModal.open({
@@ -7066,7 +7436,8 @@ class RouteAssistantPanel {
                 hub:         hub,
                 title:       "Apply wave plan to fleet — " + (preset.name || "wave"),
                 server:      this.server,
-                airlineCode: airlineCode
+                airlineCode: airlineCode,
+                maxHaulNm:   maxHaulNm
             })
         } catch (e) {
             console.warn("[RA-8a] fleet picker threw", e)
@@ -7493,7 +7864,11 @@ class RouteAssistantPanel {
         acLbl.style.color = "#9ca3af"
         const acName = this.selectedSpec
             ? (this.selectedSpec.typeName || this.selectedSpec.name || "?")
-            : "(none)"
+            : ((this.settings && this.settings.aircraft
+                    && this.settings.aircraft.mode === "fleet"
+                    && this.fleetSpecs && this.fleetSpecs.length)
+                ? this._fleetSummaryLabel()
+                : "(none)")
         acLbl.innerHTML = "Aircraft: <strong style='color:#cbd5e1;'>" + escapeHtml(acName) + "</strong>"
         wrap.append(acLbl)
 
@@ -8164,7 +8539,12 @@ class RouteAssistantPanel {
             if (cargoSlider) {
                 const m = Number(cargoSlider.value) || 1
                 const cur = (route.ownPricing && route.ownPricing.prices && route.ownPricing.prices.Cargo) || null
-                if (cur != null) sliderPrices.Cargo = Math.round(cur * m)
+                if (cur != null) {
+                    const projectedCargo = cur * m
+                    sliderPrices.Cargo = Math.abs(projectedCargo) < 10
+                        ? Math.round(projectedCargo * 100) / 100
+                        : Math.round(projectedCargo)
+                }
             }
             // Capture the projected delta so the apply log carries the
             // sandbox's view of what should happen (basis for slice 3b
@@ -10270,7 +10650,7 @@ class RouteAssistantPanel {
      * Scanner, Q13 yield heatmap) can score offers / build cross-hub
      * grids without re-running the RA pipeline.
      *
-     * Two writes per render (both fire-and-forget):
+     * Writes per render (fire-and-forget):
      *   - `routeAssistant:topRoutes`           — single global key, current
      *     hub. Legacy contract; the Used Aircraft Scanner already reads
      *     this and we don't want to break it.
@@ -10278,10 +10658,25 @@ class RouteAssistantPanel {
      *     to build a hubs × destinations matrix from the user's
      *     `recentHubs` list. Each hub's most-recent panel-mount writes
      *     its own row here.
+     *   - `routeAssistant:topRoutes:acct:<id>:<HUB>` — scoped per-hub key
+     *     used by dashboard automation to avoid cross-account route noise.
      *
      * Only the fields downstream features need are kept, to bound the
      * write size. Capped at 50 rows per hub.
      */
+    _scheduleTopRoutesPublish(rows) {
+        if (!this.hubIata || this._disposed) return
+        this._pendingTopRoutesRows = Array.isArray(rows) ? rows.slice() : []
+        if (this._topRoutesPublishTimer) return
+        this._topRoutesPublishTimer = setTimeout(() => {
+            this._topRoutesPublishTimer = null
+            if (this._disposed) return
+            const snapshotRows = this._pendingTopRoutesRows || []
+            this._pendingTopRoutesRows = null
+            this._publishTopRoutes(snapshotRows)
+        }, 600)
+    }
+
     _publishTopRoutes(visible) {
         if (!this.hubIata) return
         const fin = v => typeof v === "number" && isFinite(v)
@@ -10297,24 +10692,44 @@ class RouteAssistantPanel {
             // Q13 heatmap consumers — cell metric options. Profit and pax
             // share are useful axes alongside score.
             profitPerWeek:  fin(r.profitPerWeek) ? r.profitPerWeek : null,
-            ourPaxShare:    fin(r.ourPaxShare)   ? r.ourPaxShare   : null
+            ourPaxShare:    fin(r.ourPaxShare)   ? r.ourPaxShare   : null,
+            orsRank:        fin(r.orsRankAny)    ? r.orsRankAny    : null,
+            orsRankNonstop: fin(r.orsRankNonstop)? r.orsRankNonstop: null,
+            orsRatingGapToTop: fin(r.orsRatingGapToTop) ? r.orsRatingGapToTop : null,
+            orsScrapedAt:   fin(r.orsScrapedAt)  ? r.orsScrapedAt  : null,
+            orsWarnings:    Array.isArray(r.orsWarnings) ? r.orsWarnings.slice(0, 4) : []
         }))
         const blob = {
             hub:       this.hubIata,
             server:    this.server,
+            accountId: (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null,
+            airlineCode: this._currentAirlineCode(),
             scrapedAt: Date.now(),
             count:     slim.length,
             rows:      slim
         }
         const hubU = String(this.hubIata).toUpperCase()
+        const legacyHubKey = "routeAssistant:topRoutes:" + hubU
         const writes = {
             "routeAssistant:topRoutes":          blob,
-            ["routeAssistant:topRoutes:" + hubU]: blob
+            [legacyHubKey]:                      blob
+        }
+        if (typeof acctKey === "function") {
+            const scopedHubKey = acctKey("routeAssistant:topRoutes", hubU)
+            if (scopedHubKey && scopedHubKey !== legacyHubKey) writes[scopedHubKey] = blob
         }
         // Fire-and-forget; failures here mustn't break the panel render.
         try {
-            chrome.storage.local.set(writes)
+            chrome.storage.local.set(writes, () => {
+                if (chrome.runtime && chrome.runtime.lastError) {
+                    const err = chrome.runtime.lastError
+                    if (window.AESSiteSkin?.handleInvalidatedContext?.(err)) return
+                    console.warn("[AES routeAssistant] topRoutes write failed:",
+                        err.message)
+                }
+            })
         } catch (e) {
+            if (window.AESSiteSkin?.handleInvalidatedContext?.(e)) return
             console.warn("[AES routeAssistant] topRoutes write failed:", e)
         }
     }
@@ -10887,13 +11302,13 @@ class RouteAssistantPanel {
         const showCanopy   = !compact && !!(this.settings
             && this.settings.canopyView
             && this.settings.canopyView.active === true)
-        // Per-class ORS columns (Y / C / F) need an extra gate on top of
+        // Per-class ORS columns (Y / C / F / Cargo) need an extra gate on top of
         // the ors-group gate. Compact view always hides them; user can
         // also turn them off via the More-options checkbox even in full view.
         const showOrsPerClass = !compact && (!this.settings || !this.settings.ors
             ? true
             : this.settings.ors.showPerClassColumns !== false)
-        const PER_CLASS_FIELDS = {orsClassY: 1, orsClassC: 1, orsClassF: 1}
+        const PER_CLASS_FIELDS = {orsClassY: 1, orsClassC: 1, orsClassF: 1, orsClassCargo: 1}
         const viewMode = this._currentViewMode()
         // U7 + U3 — user-driven column hide + group collapse. Frozen
         // columns ("score", "destIata") are immune both layers; chooser
@@ -12540,9 +12955,13 @@ class RouteAssistantPanel {
         let routeContext = null
 
         const overlay = document.createElement("div")
+        overlay.setAttribute("data-aes-modal", "pricing-audit-log")
         overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10004;"
             + "display:flex;align-items:center;justify-content:center;"
         const dialog = document.createElement("div")
+        dialog.setAttribute("role", "dialog")
+        dialog.setAttribute("aria-modal", "true")
+        dialog.setAttribute("aria-label", "Auto-pricing audit log")
         dialog.style.cssText = "background:#0f1623;color:#e5e7eb;border:1px solid #38bdf8;border-radius:6px;"
             + "width:880px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;"
             + "font:12px/1.4 sans-serif;overflow:hidden;"
@@ -13386,6 +13805,15 @@ class RouteAssistantPanel {
         const dryRunOnly = apply.dryRunOnly !== false
         const applyEnabled = !!apply.enabled
         const writesUnlocked = !dryRunOnly && applyEnabled && !breakerCooling
+        // Silent-auto needs a third gate beyond the manual-write pair:
+        // `apply.liveScopes.silentAuto` must be true. Without it the loop
+        // ticks but every proposal lands as `dry-run` even when the other
+        // two gates are open — easy to miss because the manual + bulk
+        // apply paths still POST. Surface the third gate explicitly so
+        // the banner can enumerate every blocker for silent-auto, not
+        // just the first one it hits.
+        const liveScopes = apply.liveScopes || {}
+        const silentAutoScopeLive = liveScopes.silentAuto === true
 
         const block = document.createElement("div")
         block.setAttribute("data-aes-pricing-diagnostics", "1")
@@ -13401,6 +13829,7 @@ class RouteAssistantPanel {
         block.append(this._buildPricingOutcomeBanner({
             writesUnlocked, applyEnabled, dryRunOnly,
             silentAutoEnabled: sa.silentAutoEnabled,
+            silentAutoScopeLive,
             breakerCooling, breakerRemainingMin,
             muted, muteRemainingMin,
             tickMin: sa.silentAutoTickMin
@@ -13453,6 +13882,14 @@ class RouteAssistantPanel {
         }))
         if (sa.silentAutoEnabled) {
             gates.append(this._buildPricingDiagnosticsGate({
+                ok:    silentAutoScopeLive,
+                label: "Live writes → Silent-auto",
+                state: silentAutoScopeLive ? "on" : "OFF",
+                hint:  !silentAutoScopeLive
+                    ? "Third gate, separate from manual writes. Tick the Silent-auto checkbox under Live writes scopes to commit loop ticks."
+                    : null
+            }))
+            gates.append(this._buildPricingDiagnosticsGate({
                 ok:    !muted,
                 label: "Auto-mute",
                 state: muted ? ("active (" + muteRemainingMin + " min)") : "inactive",
@@ -13486,10 +13923,17 @@ class RouteAssistantPanel {
             "≥2 cached competitors (Y)",
             stats.withCompetitors,
             stats.withCompetitors === 0 && stats.withOwnPricing > 0
-                ? "Silent-auto's competitor-median proposer requires ≥2 competitors per route."
+                ? "Competitor medians improve the per-class proposer and are required only by the Y-only competitor-median strategy."
                 : null
         ))
         data.append(this._buildPricingDiagnosticsLine("Watchlisted (★)", stats.starred))
+        data.append(this._buildPricingDiagnosticsLine(
+            "Manual price pins",
+            stats.pinned,
+            stats.pinned > 0
+                ? "Pinned routes are excluded from silent-auto until the pin is cleared or expires."
+                : null
+        ))
         const followLabel = sa.silentAutoFollowMode === "all" ? "all routes" : "watchlist"
         data.append(this._buildPricingDiagnosticsLine(
             "Eligible right now (follow: " + followLabel + ")",
@@ -13537,9 +13981,15 @@ class RouteAssistantPanel {
     }
 
     _buildPricingOutcomeBanner({writesUnlocked, applyEnabled, dryRunOnly,
-                                silentAutoEnabled, breakerCooling, breakerRemainingMin,
+                                silentAutoEnabled, silentAutoScopeLive,
+                                breakerCooling, breakerRemainingMin,
                                 muted, muteRemainingMin, tickMin}) {
         const banner = document.createElement("div")
+        // Silent-auto live = manual gates open AND its scope flag set.
+        // The two-gate `writesUnlocked` is enough for manual + bulk Apply,
+        // but the loop adds a third gate so an operator can keep manual
+        // writes hot without the autonomous loop firing.
+        const silentAutoLive = writesUnlocked && silentAutoEnabled && !!silentAutoScopeLive
         let bg, border, fg, msg
         if (breakerCooling) {
             bg = "rgba(239, 68, 68, 0.10)"; border = "rgba(239, 68, 68, 0.40)"; fg = "#fca5a5"
@@ -13549,20 +13999,40 @@ class RouteAssistantPanel {
             bg = "rgba(239, 68, 68, 0.10)"; border = "rgba(239, 68, 68, 0.40)"; fg = "#fca5a5"
             msg = "🔴 SILENT-AUTO MUTED — auto-disabled after 5 consecutive failures · "
                 + muteRemainingMin + " min remaining."
-        } else if (writesUnlocked && silentAutoEnabled) {
+        } else if (silentAutoLive) {
             bg = "rgba(34, 197, 94, 0.10)"; border = "rgba(34, 197, 94, 0.40)"; fg = "#86efac"
             msg = "🟢 LIVE — silent-auto will POST price updates to AS every "
                 + (tickMin || 30) + " min while this panel is open."
         } else if (writesUnlocked) {
             bg = "rgba(34, 197, 94, 0.10)"; border = "rgba(34, 197, 94, 0.40)"; fg = "#86efac"
-            msg = "🟢 MANUAL LIVE — manual Apply (modal / row right-click) will POST. "
-                + "Silent-auto loop is OFF."
+            msg = silentAutoEnabled
+                // Manual + bulk live, but silent-auto loop dry-run because
+                // the third (loop-scope) gate is closed. Spell out the
+                // exact toggle so the user doesn't read "🟢 LIVE" and
+                // assume the loop is hot too.
+                ? "🟢 MANUAL LIVE · 🟡 SILENT-AUTO DRY-RUN — manual Apply will POST, "
+                    + "but the silent-auto loop is gated by its scope flag. "
+                    + "Check Live writes → Silent-auto in the Tier 3 block to commit loop ticks."
+                : "🟢 MANUAL LIVE — manual Apply (modal / row right-click) will POST. "
+                    + "Silent-auto loop is OFF."
         } else if (silentAutoEnabled) {
             bg = "rgba(251, 191, 36, 0.10)"; border = "rgba(251, 191, 36, 0.40)"; fg = "#fcd34d"
+            // Enumerate every blocker the loop has, not just the first.
+            // The original copy leaked one gate at a time, so a user who
+            // flipped Apply enabled and re-read the banner saw "Turn off
+            // Dry-run only" and assumed that was the last step — only to
+            // find the loop still dry-run because liveScopes.silentAuto
+            // was never checked.
+            const blockers = []
+            if (dryRunOnly)             blockers.push("turn OFF Dry-run only")
+            if (!applyEnabled)          blockers.push("turn ON Apply enabled")
+            if (!silentAutoScopeLive)   blockers.push("check Live writes → Silent-auto")
+            const lead = blockers.length === 1
+                ? "1 gate left to flip:"
+                : blockers.length + " gates left to flip:"
             msg = "🟡 SILENT-AUTO IS DRY-RUN — every tick logs a dry-run entry but no AS POST happens. "
-                + (!applyEnabled
-                    ? "Flip Apply enabled below to commit writes."
-                    : "Turn off Dry-run only below to commit writes.")
+                + lead + " " + blockers.join(" · ")
+                + " (in the Tier 3 block below)."
         } else {
             bg = "rgba(148, 163, 184, 0.08)"; border = "rgba(148, 163, 184, 0.30)"; fg = "#cbd5e1"
             msg = "⚪ NOTHING WILL HAPPEN — manual Apply is gated and silent-auto is off. "
@@ -13600,7 +14070,7 @@ class RouteAssistantPanel {
         const applyEnabled = !!apply.enabled
         const writesUnlocked = !dryRunOnly && applyEnabled && !breakerCooling
         const liveScopes = apply.liveScopes || {}
-        const manualLive = writesUnlocked && liveScopes.manual !== false
+        const manualLive = writesUnlocked && liveScopes.manual === true
         const bulkLive   = writesUnlocked && !!liveScopes.bulk
         const autoLive   = writesUnlocked && !!liveScopes.silentAuto && !!sa.silentAutoEnabled
 
@@ -13695,6 +14165,7 @@ class RouteAssistantPanel {
             return
         }
         const applier = this._getPricingApplier()
+        const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
         let result = null
         try {
             const endpointOpts = await this._resolveEndpointOpts(this.hubIata, target.dest)
@@ -13703,26 +14174,17 @@ class RouteAssistantPanel {
                 source:  "verify-cta",
                 reason:  "Pipeline verify (forced dry-run)",
                 scope:   Object.assign({}, RouteAssistantPricingApplier.DEFAULT_SCOPE),
-                rationale: target.rationale ? target.rationale.slice(0, 4) : null
+                rationale: target.rationale ? target.rationale.slice(0, 4) : null,
+                classGates: apply.classes || null
             }, endpointOpts))
         } catch (e) {
             result = {status: "failed", error: {code: "ctaThrew", message: String(e && e.message || e)}}
         }
-        const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
         const breakerArmed = !apply.circuitBreakerTrippedAt
         if (typeof RouteAssistantToast !== "undefined") {
             const route = String(this.hubIata).toUpperCase() + "→" + String(target.dest).toUpperCase()
             if (result && result.status === "dry-run") {
-                const prev = (result.prevPrices && result.prevPrices.Y) != null
-                    ? result.prevPrices.Y : "?"
-                const next = (result.newPrices && result.newPrices.Y) != null
-                    ? result.newPrices.Y : prev
-                const noop = prev === next || prev === "?" || next === "?"
-                const dPct = !noop && isFinite(prev) && prev > 0
-                    ? (((next - prev) / prev) * 100).toFixed(1) : null
-                const move = noop
-                    ? "no-op"
-                    : "Y " + prev + "→" + next + (dPct != null ? " (" + (dPct >= 0 ? "+" : "") + dPct + "%)" : "")
+                const move = this._summarisePriceMove(result.prevPrices, result.newPrices)
                 RouteAssistantToast.success(
                     "Pipeline OK · " + route + " · " + move
                         + " · breaker " + (breakerArmed ? "armed" : "tripped"),
@@ -13744,14 +14206,14 @@ class RouteAssistantPanel {
      * Pick a route for the verify CTA. Preference order:
      *   1. Watchlist eligible route with smallest |Δ%| from competitor median
      *   2. Any eligible route with smallest |Δ%|
-     *   3. Any visible route with cached own pricing — prices=current Y (no-op)
+     *   3. Any visible route with cached own pricing — current prices (no-op)
      * Returns `{dest, prices, rationale}` or null when nothing qualifies.
      */
     async _pickVerifyTarget() {
         const sa = this._silentAutoCfg()
         const proposerCtx = (typeof this._silentAutoBuildProposerContext === "function")
-            ? await this._silentAutoBuildProposerContext(sa).catch(() => ({now: Date.now(), strategy: sa.silentAutoStrategy || "competitor-median"}))
-            : {now: Date.now(), strategy: sa.silentAutoStrategy || "competitor-median"}
+            ? await this._silentAutoBuildProposerContext(sa).catch(() => ({now: Date.now(), strategy: sa.silentAutoStrategy || "per-class-elasticity"}))
+            : {now: Date.now(), strategy: sa.silentAutoStrategy || "per-class-elasticity"}
         for (const mode of ["watchlist", "all"]) {
             const rows = await this._silentAutoCollectEligibleRows(mode).catch(() => [])
             if (!rows.length) continue
@@ -13773,7 +14235,7 @@ class RouteAssistantPanel {
             }
         }
         // Fallback — pick any visible row with cached own pricing and synthesise
-        // a no-op apply (current Y → current Y). Still exercises GET handshake +
+        // a no-op apply (current Y/C/F/Cargo → same). Still exercises GET handshake +
         // parse + preflight + body construction + log write, so the user gets
         // confirmation the pipeline plumbing is alive even when no proposer
         // signal exists (e.g., zero competitors cached).
@@ -13783,12 +14245,14 @@ class RouteAssistantPanel {
             const prices = this._silentAutoPrices(cached)
             if (!prices || !Object.keys(prices).length) continue
             const noOp = {}
-            if (isFinite(prices.Y)) noOp.Y = Math.round(prices.Y)
+            for (const cls of ["Y", "C", "F", "Cargo"]) {
+                if (isFinite(prices[cls])) noOp[cls] = Math.round(prices[cls])
+            }
             if (!Object.keys(noOp).length) continue
             return {
                 dest:      String(r.destIata).toUpperCase(),
                 prices:    noOp,
-                rationale: ["[verify] no proposer signal — sending current Y as no-op to exercise pipeline"]
+                rationale: ["[verify] no proposer signal — sending current Y/C/F/Cargo prices as no-op to exercise pipeline"]
             }
         }
         return null
@@ -13867,11 +14331,23 @@ class RouteAssistantPanel {
      * mode-independent so the user can compare what would happen
      * under each mode without flipping the setting.
      */
+    _isRoutePricePinned(row) {
+        const ov = row && row.override
+        if (!ov || ov.pricePin == null) return false
+        if (typeof RouteAssistantRouteOverridesStore !== "undefined"
+                && RouteAssistantRouteOverridesStore.isExpired
+                && RouteAssistantRouteOverridesStore.isExpired(ov)) {
+            return false
+        }
+        return isFinite(Number(ov.pricePin))
+    }
+
     _computePricingDiagnostics(followMode) {
         const rows = (this.scoredRows || this.rows || []).filter(r => r && r.destIata)
         let withOwnPricing = 0
         let withCompetitors = 0
         let starred = 0
+        let pinned = 0
         let eligible = 0
         for (const r of rows) {
             const dest = String(r.destIata || "").toUpperCase()
@@ -13884,10 +14360,13 @@ class RouteAssistantPanel {
                 withCompetitors += 1
             }
             if (r._starred) starred += 1
+            const pricePinned = this._isRoutePricePinned(r)
+            if (pricePinned) pinned += 1
             if (followMode === "watchlist" && !r._starred) continue
+            if (pricePinned) continue
             if (hasOwn) eligible += 1
         }
-        return {totalRows: rows.length, withOwnPricing, withCompetitors, starred, eligible}
+        return {totalRows: rows.length, withOwnPricing, withCompetitors, starred, pinned, eligible}
     }
 
     _buildTier3LogRow(e) {
@@ -13939,9 +14418,56 @@ class RouteAssistantPanel {
             if (p == null || n == null) continue
             const d = n - p
             if (!d) continue
-            parts.push(cls + (d > 0 ? "+" : "") + d)
+            parts.push(cls + (d > 0 ? "+" : "") + this._formatRoutePrice(cls, d))
         }
         return parts.length ? parts.join(" ") : "no change"
+    }
+
+    _formatRoutePrice(cls, value) {
+        const n = Number(value)
+        if (!isFinite(n)) return ""
+        return cls === "Cargo"
+            ? (Math.round(n * 100) / 100).toFixed(2).replace(/\.?0+$/, "")
+            : String(Math.round(n))
+    }
+
+    _parseRoutePriceInput(cls, value) {
+        if (value === null || value === undefined || String(value).trim() === "") return NaN
+        const n = Number(value)
+        if (!isFinite(n)) return NaN
+        return cls === "Cargo" ? Math.round(n * 100) / 100 : Math.round(n)
+    }
+
+    _pricesEqualForClass(cls, a, b) {
+        const an = this._parseRoutePriceInput(cls, a)
+        const bn = this._parseRoutePriceInput(cls, b)
+        const tol = cls === "Cargo" ? 0.005 : 0.5
+        return isFinite(an) && isFinite(bn) && Math.abs(an - bn) < tol
+    }
+
+    _summarisePriceMove(prevPrices, nextPrices) {
+        const prev = prevPrices || {}
+        const next = nextPrices || {}
+        const parts = []
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
+            const p = prev[cls]
+            const n = next[cls]
+            if (n == null) continue
+            if (p == null) {
+                parts.push(cls + " → " + this._formatRoutePrice(cls, n))
+                continue
+            }
+            const pn = Number(p)
+            const nn = Number(n)
+            const same = cls === "Cargo"
+                ? Math.abs(nn - pn) < 0.005
+                : Math.round(pn) === Math.round(nn)
+            if (same) continue
+            const dPct = p > 0 ? ((n - p) / p * 100) : null
+            parts.push(cls + " " + this._formatRoutePrice(cls, p) + "→" + this._formatRoutePrice(cls, n)
+                + (dPct != null ? " (" + (dPct >= 0 ? "+" : "") + dPct.toFixed(1) + "%)" : ""))
+        }
+        return parts.length ? parts.join(" · ") : "no-op"
     }
 
     /** Lazy-init the apply-log singleton with the user's configured cap. */
@@ -13999,11 +14525,42 @@ class RouteAssistantPanel {
     }
 
     /** Build a fresh applier from current settings — kill switch is a setting. */
+    _pricingApplyGate(scopeName, opts) {
+        const cfg = (this.settings && this.settings.pricing && this.settings.pricing.apply) || {}
+        if (typeof RouteAssistantPricingPlumbing !== "undefined"
+                && RouteAssistantPricingPlumbing
+                && typeof RouteAssistantPricingPlumbing.resolveApplyGate === "function") {
+            return RouteAssistantPricingPlumbing.resolveApplyGate(cfg, scopeName || null, opts || {})
+        }
+        const liveScopes = cfg.liveScopes && typeof cfg.liveScopes === "object" ? cfg.liveScopes : {}
+        const scopeLiveAllowed = scopeName ? liveScopes[scopeName] === true : true
+        const applyEnabled = cfg.enabled !== false
+        const dryRunOnly = cfg.dryRunOnly !== false
+        const forcedDryRun = !!(opts && opts.forceDryRun)
+        const dryRun = forcedDryRun || dryRunOnly || !applyEnabled || !scopeLiveAllowed
+        return {
+            applyEnabled,
+            dryRunOnly,
+            scopeName: scopeName || null,
+            scopeLiveAllowed,
+            forcedDryRun,
+            dryRun,
+            liveWrites: !dryRun,
+            reason: forcedDryRun ? "forced-dry-run"
+                : dryRunOnly ? "dry-run-only"
+                : !applyEnabled ? "apply-disabled"
+                : !scopeLiveAllowed ? "scope-disabled:" + scopeName
+                : "live"
+        }
+    }
+
     _getPricingApplier() {
         const cfg = (this.settings && this.settings.pricing && this.settings.pricing.apply) || {}
+        const gate = this._pricingApplyGate(null)
         return new RouteAssistantPricingApplier(this.server, {
-            dryRunOnly:               cfg.dryRunOnly !== false,
-            applyEnabled:             !!cfg.enabled,
+            dryRunOnly:               gate.dryRunOnly,
+            applyEnabled:             gate.applyEnabled,
+            liveScopes:               cfg.liveScopes || {},
             cooldownMinPerRoute:      cfg.cooldownMinPerRoute,
             cooldownMinGlobal:        cfg.cooldownMinGlobal,
             warnAboveDeltaPct:        cfg.warnAboveDeltaPct,
@@ -15555,6 +16112,7 @@ class RouteAssistantPanel {
             if (bucket.competitors) {
                 const all = bucket.competitors.competitors || []
                 const competitorYs = []
+                const competitorByClass = {Y: [], C: [], F: [], Cargo: []}
                 // Distinct competitor airline prefixes derived from the
                 // route's flight list. Used to BACKFILL competitorEntries
                 // when the markets page didn't render a market-share
@@ -15565,8 +16123,15 @@ class RouteAssistantPanel {
                 const flightPrefixes = new Map()  // prefix → {prefix, flights, sampleType}
                 for (const c of all) {
                     if (c.isOurs) continue
-                    if (c.serviceClass === "Y" && typeof c.price === "number" && c.price > 0) {
-                        competitorYs.push(c.price)
+                    const clsRaw = String(c.serviceClass || "").trim().toUpperCase()
+                    const cls = clsRaw === "Y" || clsRaw === "ECONOMY" ? "Y"
+                        : clsRaw === "C" || clsRaw === "BUSINESS" ? "C"
+                        : clsRaw === "F" || clsRaw === "FIRST" ? "F"
+                        : clsRaw === "CARGO" || clsRaw === "FREIGHT" ? "Cargo"
+                        : null
+                    if (cls && typeof c.price === "number" && c.price > 0) {
+                        competitorByClass[cls].push(c.price)
+                        if (cls === "Y") competitorYs.push(c.price)
                     }
                     if (c.flightCode) {
                         const m = /^([A-Z0-9]+)/.exec(c.flightCode.trim().toUpperCase())
@@ -15592,6 +16157,20 @@ class RouteAssistantPanel {
                 } else {
                     r.competitorMedianPriceY = null
                     r.competitorYsCount = 0
+                }
+                r.competitorPricesByClass = {}
+                r.competitorCountsByClass = {}
+                for (const cls of ["Y", "C", "F", "Cargo"]) {
+                    const vals = competitorByClass[cls].slice().sort((a, b) => a - b)
+                    r.competitorCountsByClass[cls] = vals.length
+                    if (!vals.length) continue
+                    const mid = Math.floor(vals.length / 2)
+                    const median = vals.length % 2
+                        ? vals[mid]
+                        : (vals[mid - 1] + vals[mid]) / 2
+                    r.competitorPricesByClass[cls] = cls === "Cargo" && Math.abs(median) < 10
+                        ? Math.round(median * 100) / 100
+                        : Math.round(median)
                 }
                 // Stash the raw prefix → flight-count map; the popover
                 // can render this when the leaderboard is empty.
@@ -16460,6 +17039,10 @@ class RouteAssistantPanel {
             r.paxElasticity   = derived.paxElasticity
             r.cargoElasticity = derived.cargoElasticity
             r.rmTightness     = derived.rmTightness
+            r.demandPoolByClass     = derived.demandPoolByClass
+            r.avgPriceByClass       = derived.avgPriceByClass
+            r.priceElasticityByClass = derived.priceElasticityByClass
+            r.rmTightnessByClass    = derived.rmTightnessByClass
             r.demandDerivedAt = derived.scrapedAt
             r.demandNotes     = derived.derivationNotes
             // Slice 5b — slim PAX history series (last 12 periods) for the
@@ -17276,9 +17859,13 @@ class RouteAssistantPanel {
         if (!this.rows || !this.rows.length || !this.hubIata) return
         const cfg = (this.settings && this.settings.ors) || {}
         const pairs = this.rows.map(r => ({hub: this.hubIata, dest: r.destIata}))
-        const cache = await RouteAssistantOrsScraper.bulkLoadCache(pairs, {
-            maxAgeDays: cfg.rankMaxAgeDays
-        })
+        const cache = (typeof RouteAssistantOrsIntelligence !== "undefined")
+            ? await RouteAssistantOrsIntelligence.bulkLoadRecords(pairs, {
+                maxAgeDays: cfg.rankMaxAgeDays
+              })
+            : await RouteAssistantOrsScraper.bulkLoadCache(pairs, {
+                maxAgeDays: cfg.rankMaxAgeDays
+              })
 
         // Resolve composite weights ONCE per refresh. Capacity-weighted
         // method needs the picked aircraft's per-class seat config; fall
@@ -17303,6 +17890,7 @@ class RouteAssistantPanel {
             r.orsClassY = RouteAssistantPanel._resolveOrsPrimary(r.orsByClass.ECONOMY,  primaryCol)
             r.orsClassC = RouteAssistantPanel._resolveOrsPrimary(r.orsByClass.BUSINESS, primaryCol)
             r.orsClassF = RouteAssistantPanel._resolveOrsPrimary(r.orsByClass.FIRST,    primaryCol)
+            r.orsClassCargo = RouteAssistantPanel._resolveOrsPrimary(r.orsByClass.CARGO, primaryCol)
 
             // Composite — every flat metric the existing columns read is
             // computed from the per-class records using the user's combine
@@ -17344,6 +17932,24 @@ class RouteAssistantPanel {
                 }
             }
 
+            let pricingIndex = rec.pricingIndex || null
+            if (!pricingIndex && typeof RouteAssistantOrsPriceIndex !== "undefined"
+                    && RouteAssistantOrsPriceIndex.indexRecord) {
+                try {
+                    pricingIndex = RouteAssistantOrsPriceIndex.indexRecord(rec, {
+                        currentPrices: r.ownPricing && r.ownPricing.prices || r.ownPricing || {}
+                    })
+                } catch (_) { pricingIndex = null }
+            } else if (!pricingIndex && typeof RouteAssistantOrsScraper !== "undefined"
+                    && RouteAssistantOrsScraper.buildPricingIndex) {
+                try { pricingIndex = RouteAssistantOrsScraper.buildPricingIndex(rec) }
+                catch (_) { pricingIndex = null }
+            }
+            r.orsPriceIndex = pricingIndex || null
+            r.orsCompetitorPricesByClass = pricingIndex && pricingIndex.competitorPricesByClass || {}
+            r.orsCompetitorCountsByClass = pricingIndex && pricingIndex.competitorCountsByClass || {}
+            r.orsOwnPricesByClass = pricingIndex && pricingIndex.ownPricesByClass || {}
+
             // Apply min-rating display threshold (display-only filter).
             const minRating = cfg.minRatingThresholdDisplay
             if (minRating != null && r.orsOurTopRating != null && r.orsOurTopRating < minRating) {
@@ -17365,6 +17971,21 @@ class RouteAssistantPanel {
                     ratingGapToTop:    r.orsRatingGapToTop
                 }, primaryCol
             )
+            const warnings = []
+            const flown = Number(r.weeklyFlights || r.flights || r.frequency) > 0 || !!r.alreadyScheduled
+            if (flown && r.orsRankAny == null && r.orsRankNonstop == null) {
+                warnings.push("schedule-flown-rank-null")
+            }
+            const det = rec.oursDetection || {}
+            if (det.prefixFallbackOnly) warnings.push("prefix-fallback-only")
+            if (det.matchedOwnLegs === 0) warnings.push("no-own-leg-detected")
+            r.orsWarnings = warnings
+            r.orsReadiness = {
+                usable: warnings.indexOf("schedule-flown-rank-null") < 0
+                    && (r.orsTotalConnections != null),
+                warnings,
+                oursDetection: det
+            }
         }
         // Stash circuit-breaker timestamp + cooldown for the expander UI.
         RouteAssistantPanel._orsCircuitTrippedAt = cfg.circuitBreakerTrippedAt || null
@@ -17455,7 +18076,7 @@ class RouteAssistantPanel {
         const cfg = this.settings.ors = Object.assign(
             {showColumns: true, concurrency: 2, staggerMs: 1500, lastBulkScrapeAt: null,
              rankMaxAgeDays: null,
-             classesToScrape: ["ECONOMY", "BUSINESS", "FIRST"],
+             classesToScrape: ["ECONOMY", "BUSINESS", "FIRST", "CARGO"],
              defaultDepartureH: 0, defaultArrivalH: 72,
              defaultUseGround: true,
              combineMethod: "capacityWeighted",
@@ -17468,6 +18089,14 @@ class RouteAssistantPanel {
              showPerClassColumns: true,
              minRatingThresholdDisplay: null,
              airlineCarrierPrefixOverride: null,
+             playstyle: "adaptive",
+             monopolyOrsMultiplier: 0.35,
+             competitiveOrsMultiplier: 1.35,
+             competitiveRivalFlights: 6,
+             maxCompetitiveComfortDelta: 3,
+             aircraftAttractionNeutral: 500,
+             aircraftAttractionScale: 0.01,
+             aircraftAttractionMaxBonus: 3,
              circuitBreakerTrippedAt: null, circuitBreakerCooldownMs: 600000},
             this.settings.ors || {}
         )
@@ -17534,7 +18163,7 @@ class RouteAssistantPanel {
             ? "Syncing route + ORS…"
             : "Sync route data + ORS rank"
         syncAllBtn.addEventListener("click", () => this._runBulkRouteSync())
-        topRow.append(syncAllBtn)
+        topRow.insertBefore(syncAllBtn, scanBtn)
 
         // Recompute the sync button's label live whenever the user toggles
         // class checkboxes — wall-clock estimate scales with class count
@@ -17546,8 +18175,12 @@ class RouteAssistantPanel {
             const routes = (this.rows || []).length || 0
             // Conservative: ~10 routes/min for 3 classes; scales linearly.
             const minutes = Math.max(1, Math.ceil(routes / (30 / n)))
-            const labels = classes.map(c => c[0]).join("/") || "Y"
-            scanBtn.textContent = "Sync ORS rank for all visible routes ("
+            const labels = classes.map(c => c === "ECONOMY" ? "Y"
+                : c === "BUSINESS" ? "C"
+                : c === "FIRST" ? "F"
+                : c === "CARGO" ? "Cargo"
+                : c[0]).join("/") || "Y"
+            scanBtn.textContent = "Advanced: repair ORS only ("
                 + labels + " · ~" + minutes + " min)"
         }
         this._orsRecomputeSyncLabel()
@@ -17585,7 +18218,8 @@ class RouteAssistantPanel {
         const classKeys = [
             {key: "ECONOMY",  label: "Y", color: "#86efac"},
             {key: "BUSINESS", label: "C", color: "#fde68a"},
-            {key: "FIRST",    label: "F", color: "#fca5a5"}
+            {key: "FIRST",    label: "F", color: "#fca5a5"},
+            {key: "CARGO",    label: "Cargo", color: "#c4b5fd"}
         ]
         const classCbs = {}
         const updateSyncBtnLabel = () => {
@@ -17797,6 +18431,72 @@ class RouteAssistantPanel {
 
         wrap.append(combineRow)
 
+        // ----- ORS playstyle — controls how much service/ORS optimisation
+        // matters as competition changes. Strategy service and joint ORS
+        // tuners read these values; the scraper remains data-only.
+        const playRow = document.createElement("div")
+        playRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;align-items:center;"
+            + "font-size:11px;margin-bottom:4px;color:#fcd34d;"
+        const playSel = mkSelect([
+            {value: "adaptive",    label: "Adaptive"},
+            {value: "balanced",    label: "Balanced"},
+            {value: "monopoly",    label: "Monopoly"},
+            {value: "competitive", label: "Competitive"},
+            {value: "premium",     label: "Premium"}
+        ])
+        playSel.value = cfg.playstyle || "adaptive"
+        playSel.style.fontSize = "11px"
+        playSel.title = "Adaptive lowers ORS/service weight on monopoly lanes and raises it on contested lanes."
+        playSel.addEventListener("change", async () => {
+            this.settings.ors.playstyle = playSel.value
+            await RouteAssistantSettings.save({ors: this.settings.ors})
+        })
+        const playLbl = document.createElement("label")
+        playLbl.style.cssText = "display:flex;gap:4px;align-items:center;"
+        playLbl.append(document.createTextNode("Playstyle:"), playSel)
+        playRow.append(playLbl)
+
+        const monoInput = mkNumberInput(cfg.monopolyOrsMultiplier, {min: 0, max: 2, step: 0.05, width: "54px"})
+        monoInput.title = "ORS/service multiplier used when a lane has no meaningful rivals."
+        monoInput.addEventListener("change", async () => {
+            const n = Number(monoInput.value)
+            this.settings.ors.monopolyOrsMultiplier = isFinite(n) ? Math.max(0, Math.min(2, n)) : 0.35
+            monoInput.value = String(this.settings.ors.monopolyOrsMultiplier)
+            await RouteAssistantSettings.save({ors: this.settings.ors})
+        })
+        const monoLbl = document.createElement("label")
+        monoLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
+        monoLbl.append(document.createTextNode("Monopoly x"), monoInput)
+        playRow.append(monoLbl)
+
+        const compInput = mkNumberInput(cfg.competitiveOrsMultiplier, {min: 0, max: 3, step: 0.05, width: "54px"})
+        compInput.title = "ORS/service multiplier used when a lane is strongly contested."
+        compInput.addEventListener("change", async () => {
+            const n = Number(compInput.value)
+            this.settings.ors.competitiveOrsMultiplier = isFinite(n) ? Math.max(0, Math.min(3, n)) : 1.35
+            compInput.value = String(this.settings.ors.competitiveOrsMultiplier)
+            await RouteAssistantSettings.save({ors: this.settings.ors})
+        })
+        const compLbl = document.createElement("label")
+        compLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
+        compLbl.append(document.createTextNode("Contested x"), compInput)
+        playRow.append(compLbl)
+
+        const rivalsInput = mkNumberInput(cfg.competitiveRivalFlights, {min: 1, max: 100, step: 1, width: "54px"})
+        rivalsInput.title = "Rival weekly flights that count as fully contested for adaptive playstyle."
+        rivalsInput.addEventListener("change", async () => {
+            const n = Number(rivalsInput.value)
+            this.settings.ors.competitiveRivalFlights = isFinite(n) ? Math.max(1, Math.min(100, n)) : 6
+            rivalsInput.value = String(this.settings.ors.competitiveRivalFlights)
+            await RouteAssistantSettings.save({ors: this.settings.ors})
+        })
+        const rivalsLbl = document.createElement("label")
+        rivalsLbl.style.cssText = "display:flex;gap:4px;align-items:center;color:#9ca3af;"
+        rivalsLbl.append(document.createTextNode("Rivals"), rivalsInput)
+        playRow.append(rivalsLbl)
+
+        wrap.append(playRow)
+
         // ----- Advanced disclosure (collapsed by default) — per-column
         // visibility toggles + carrier prefix override + display threshold.
         // Tucked away because most users tune these once and never again,
@@ -17887,7 +18587,7 @@ class RouteAssistantPanel {
         pcCb.checked = cfg.showPerClassColumns !== false
         const pcLbl = document.createElement("label")
         pcLbl.style.cssText = "display:flex;gap:3px;align-items:center;"
-        pcLbl.append(pcCb, document.createTextNode("Show per-class columns (Y / C / F)"))
+        pcLbl.append(pcCb, document.createTextNode("Show per-class columns (Y / C / F / Cargo)"))
         pcCb.addEventListener("change", async () => {
             this.settings.ors.showPerClassColumns = pcCb.checked
             await RouteAssistantSettings.save({ors: this.settings.ors})
@@ -17971,7 +18671,22 @@ class RouteAssistantPanel {
             })
         }
 
-        const pairs = this.rows.map(r => ({hub: this.hubIata, dest: r.destIata}))
+        let pairs = this.rows.map(r => Object.assign({}, r, {hub: this.hubIata, dest: r.destIata || r.dest}))
+        let plan = null
+        if (typeof RouteAssistantOrsIntelligence !== "undefined") {
+            try {
+                const svc = new RouteAssistantOrsIntelligence(this.server, {settings: this.settings})
+                plan = await svc.planSync(pairs, {
+                    settings: this.settings,
+                    includeFresh: true,
+                    concurrency,
+                    staggerMs
+                })
+                if (plan && plan.routes && plan.routes.length) pairs = plan.routes
+            } catch (e) {
+                console.warn("[AES orsScraper] ORS planner failed; using visible order", e)
+            }
+        }
         this._orsScrapeRunning = true
         this._renderSettings()
 
@@ -18036,6 +18751,12 @@ class RouteAssistantPanel {
             console.warn("[AES orsScraper] circuit breaker tripped: " + haltReason)
         }
         await RouteAssistantSettings.save({ors: this.settings.ors})
+        if (typeof RouteAssistantOrsIntelligence !== "undefined") {
+            try {
+                const svc = new RouteAssistantOrsIntelligence(this.server, {settings: this.settings})
+                await svc.getCoverage(pairs, {settings: this.settings})
+            } catch (e) { /* health is best-effort */ }
+        }
 
         await this._applyCachedOrs()
         this._render()
@@ -18051,6 +18772,7 @@ class RouteAssistantPanel {
                 progressHandle.complete({
                     type:    "success",
                     message: "ORS sync complete · " + totalCount + " routes"
+                        + (plan ? " · " + plan.estimatedRequests + " requests planned" : "")
                 })
             }
         }
@@ -18108,7 +18830,31 @@ class RouteAssistantPanel {
             orsScraper:   this.orsScraper
         })
 
-        const pairs = this.rows.map(r => ({hub: this.hubIata, dest: r.destIata}))
+        let pairs = this.rows.map(r => Object.assign({}, r, {hub: this.hubIata, dest: r.destIata || r.dest}))
+        let plan = null
+        if (typeof RouteAssistantOrsIntelligence !== "undefined") {
+            try {
+                const svc = new RouteAssistantOrsIntelligence(this.server, {
+                    settings: this.settings,
+                    routeSync: orchestrator
+                })
+                plan = await svc.planSync(pairs, {
+                    settings: this.settings,
+                    includeFresh: true,
+                    concurrency: orsCfg.concurrency || 2,
+                    staggerMs:   orsCfg.staggerMs   || 1500
+                })
+                if (plan && plan.blocked) {
+                    if (this._orsStatusEl) {
+                        this._orsStatusEl.textContent = "ORS circuit breaker cooling down."
+                    }
+                    return
+                }
+                if (plan && plan.routes && plan.routes.length) pairs = plan.routes
+            } catch (e) {
+                console.warn("[AES routeSync] ORS planner failed; using visible order", e)
+            }
+        }
         this._routeSyncRunning   = true
         this._priceScrapeRunning = true
         this._orsScrapeRunning   = true
@@ -18190,6 +18936,12 @@ class RouteAssistantPanel {
             pricing: this.settings.pricing,
             ors:     this.settings.ors
         })
+        if (typeof RouteAssistantOrsIntelligence !== "undefined") {
+            try {
+                const svc = new RouteAssistantOrsIntelligence(this.server, {settings: this.settings})
+                await svc.getCoverage(pairs, {settings: this.settings})
+            } catch (e) { /* health is best-effort */ }
+        }
 
         await this._applyCachedPrices()
         await this._applyCachedOrs()
@@ -19863,6 +20615,37 @@ class RouteAssistantPanel {
                 fromFlightsFrom: true
             }))
         }
+        // 5. Airport-overview fallback — when no per-route data exists
+        //    but the user has visited the destination's AS airport page,
+        //    surface the AS Stations table (every carrier operating from
+        //    the destination, with weeklyDepartures and IL flag). Sorted
+        //    by weeklyDepartures desc so the top operator is on top.
+        let usingAirportOverviewFallback = false
+        if (!shares.length && row.airportId != null
+                && this._airportOverviewByStationId instanceof Map) {
+            const rec = this._airportOverviewByStationId.get(String(row.airportId))
+            if (rec && Array.isArray(rec.carriers) && rec.carriers.length) {
+                usingAirportOverviewFallback = true
+                const baseLogoUrl = `https://${this.server}.airlinesim.aero/app/logo/`
+                shares = rec.carriers
+                    .slice()
+                    .sort((a, b) => (b.weeklyDepartures || 0) - (a.weeklyDepartures || 0))
+                    .map(c => ({
+                        enterpriseId:             c.enterpriseId,
+                        name:                     c.enterpriseName || "(unknown)",
+                        allianceId:               c.allianceId || null,
+                        bannerUrl:                baseLogoUrl + String(c.enterpriseId) + "/enterprise-s.png?strict=true",
+                        allianceLogoUrl:          c.allianceId ? baseLogoUrl + String(c.allianceId) + "/enterprise-s.png?strict=true" : null,
+                        airportWeeklyDepartures:  c.weeklyDepartures || 0,
+                        isInterliningAtAirport:   !!c.isInterlining,
+                        paxShare:                 null,
+                        cargoShare:               null,
+                        paxRank:                  null,
+                        cargoRank:                null,
+                        fromAirportOverview:      true
+                    }))
+            }
+        }
         // Render an EMPTY popover with a clear "no data" message rather than
         // returning silently — fixes the user-reported "hover doesn't register"
         // bug where the rich popover bailed but the native title fallback also
@@ -19915,6 +20698,9 @@ class RouteAssistantPanel {
         let label
         if (!shares.length) {
             label = "No detail data yet"
+        } else if (usingAirportOverviewFallback) {
+            label = shares.length + " carrier" + (shares.length === 1 ? "" : "s")
+                + " @ destination (AS Stations table)"
         } else if (usingAirlinesListFallback) {
             const known = shares.filter(e => e.name && e.name !== "?" && e.name !== "(name not on listing)").length
             label = shares.length + " real-world airline" + (shares.length === 1 ? "" : "s")
@@ -19950,6 +20736,13 @@ class RouteAssistantPanel {
                 note.innerHTML = "↑ partial real-world list from the flightsfrom listing scan — only the primary carrier name is available. "
                     + "Open <em>Settings → Carriers</em> and click <em>Sync carriers</em> to fill in the rest, "
                     + "or <em>Settings → Market Analysis</em> for the AS in-game leaderboard."
+                pop.append(note)
+            } else if (usingAirportOverviewFallback) {
+                const note = document.createElement("div")
+                note.style.cssText = "color:#a78bfa;font-size:10px;margin-top:6px;font-style:italic;"
+                note.innerHTML = "↑ carriers operating from the destination airport (AS <em>Stations</em> table). "
+                    + "For the per-route market-share leaderboard, open <em>Settings → Market Analysis</em> "
+                    + "and click <em>Sync market analysis</em>."
                 pop.append(note)
             }
         } else {
@@ -20122,10 +20915,14 @@ class RouteAssistantPanel {
         // F slice 3 — partner glyphs sourced from the user's own
         // enterprise(s) contractual partners table. Inline next to the
         // name so a quick scan of the popover surfaces who you can
-        // codeshare with at a glance.
+        // codeshare with at a glance. The airport-overview record also
+        // exposes a generic `isInterliningAtAirport` flag (open IL at
+        // the destination) which surfaces an outline ⇄ glyph when the
+        // user's own contractual-partners cache hasn't been seeded.
         const partnersMap = this._partnersByEnterpriseId
         const partnerKey = entry.enterpriseId != null ? String(entry.enterpriseId) : null
         const relations = (partnersMap && partnerKey) ? partnersMap.get(partnerKey) : null
+        let renderedIlGlyph = false
         if (relations && relations.length) {
             if (relations.indexOf("INTERLINING") !== -1 && cfgC.showInterliningGlyph !== false) {
                 const il = document.createElement("span")
@@ -20133,6 +20930,7 @@ class RouteAssistantPanel {
                 il.title = "Interlining partner"
                 il.style.cssText = "color:#16a34a;font-size:11px;font-weight:700;flex-shrink:0;"
                 nameRow.append(il)
+                renderedIlGlyph = true
             }
             if (relations.indexOf("ALLIANCE") !== -1 && cfgC.showAllianceGlyph) {
                 const al = document.createElement("span")
@@ -20141,6 +20939,13 @@ class RouteAssistantPanel {
                 al.style.cssText = "color:#a78bfa;font-size:11px;font-weight:700;flex-shrink:0;"
                 nameRow.append(al)
             }
+        }
+        if (!renderedIlGlyph && entry.isInterliningAtAirport && cfgC.showInterliningGlyph !== false) {
+            const il = document.createElement("span")
+            il.textContent = "⇄"
+            il.title = "Open for interlining at this airport (per AS Stations table)"
+            il.style.cssText = "color:#94a3b8;font-size:11px;font-weight:600;flex-shrink:0;"
+            nameRow.append(il)
         }
         middle.append(nameRow)
 
@@ -20211,8 +21016,23 @@ class RouteAssistantPanel {
             rankEl.style.cssText = "color:#6b7280;font-size:8px;"
             right.append(rankEl)
         }
-        // Empty fallback when the entry somehow has neither share.
-        if (!paxLine && !cargoLine) {
+        // Airport-overview activity: weekly departures the carrier
+        // operates from this destination station. Sourced from the AS
+        // Stations table on `/app/info/airports/<id>`. Surfaces below
+        // the share/rank lines when present, and stands in as the
+        // primary signal when no per-route market-share data exists
+        // (instead of a bare "—").
+        const airportDeps = entry.airportWeeklyDepartures != null && isFinite(entry.airportWeeklyDepartures)
+            ? Number(entry.airportWeeklyDepartures) : null
+        if (airportDeps != null && airportDeps > 0) {
+            const depEl = document.createElement("div")
+            depEl.textContent = airportDeps.toLocaleString() + "/wk @ airport"
+            depEl.title = "Weekly departures from the destination airport (AS Stations table)"
+            depEl.style.cssText = "color:#94a3b8;font-size:8px;"
+            right.append(depEl)
+        }
+        // Empty fallback when the entry has neither share nor airport activity.
+        if (!paxLine && !cargoLine && !(airportDeps != null && airportDeps > 0)) {
             const dash = document.createElement("div")
             dash.textContent = "—"
             dash.style.cssText = "color:#6b7280;"
@@ -21356,12 +22176,13 @@ class RouteAssistantPanel {
         title.style.cssText = "color:#a78bfa;display:block;margin-bottom:4px;font-size:13px;"
         const sub = document.createElement("div")
         sub.style.cssText = "color:#9ca3af;font-size:11px;margin-bottom:10px;"
-        sub.textContent = "Pin route-specific values. Empty = use demand-driven LF curve / configured base yield."
+        sub.textContent = "Pin route-specific values. Empty = use demand-driven LF curve / configured base yield. Price pin excludes the route from auto-pricing."
 
         const paxLfInput   = mkNumberInput(numOrNull(existing.paxLF),             {min: 0, max: 1,   step: 0.05,   width: "70px"})
         const cargoLfInput = mkNumberInput(numOrNull(existing.cargoLF),           {min: 0, max: 1,   step: 0.05,   width: "70px"})
         const yldInput     = mkNumberInput(numOrNull(existing.yieldPerKm),        {min: 0, max: 10,  step: 0.01,   width: "70px"})
         const cyldInput    = mkNumberInput(numOrNull(existing.cargoYieldPerKgKm), {min: 0, max: 1,   step: 0.0001, width: "85px"})
+        const pricePinInput = mkNumberInput(numOrNull(existing.pricePin),          {min: 50, max: 200, step: 1,      width: "70px"})
         const noteInput    = document.createElement("input")
         noteInput.type = "text"
         noteInput.maxLength = 200
@@ -21390,6 +22211,7 @@ class RouteAssistantPanel {
         addRow("Cargo LF",          cargoLfInput, "0–1, e.g. 0.70")
         addRow("Yield AS$/pax-km",  yldInput,     "Beats base yield for this route only")
         addRow("Cargo AS$/kg-km",   cyldInput,    "Beats base cargo yield for this route only")
+        addRow("Price pin %",       pricePinInput, "50-200; auto-pricing skips this route")
         addRow("Note",              noteInput,    "")
 
         // Q3 — Expires-in-days input. Empty = never expires (default
@@ -21525,6 +22347,7 @@ class RouteAssistantPanel {
                 cargoLF:           numOrNull(cargoLfInput.value),
                 yieldPerKm:        numOrNull(yldInput.value),
                 cargoYieldPerKgKm: numOrNull(cyldInput.value),
+                pricePin:          numOrNull(pricePinInput.value),
                 note:              noteInput.value,
                 expiresAt:         expiresAt
             }
@@ -21639,8 +22462,12 @@ class RouteAssistantPanel {
 
         const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
         const dryRunOnly = apply.dryRunOnly !== false
-        const stage = dryRunOnly ? "Dry-run only" : (apply.enabled ? "LIVE writes" : "Live writes disabled")
-        const stageColor = dryRunOnly ? "#fbbf24" : (apply.enabled ? "#34d399" : "#9ca3af")
+        const manualGate = this._pricingApplyGate("manual")
+        const stage = dryRunOnly ? "Dry-run only"
+            : (!manualGate.applyEnabled ? "Live writes disabled"
+                : (manualGate.scopeLiveAllowed ? "LIVE writes" : "Manual scope dry-run"))
+        const stageColor = dryRunOnly ? "#fbbf24"
+            : (manualGate.liveWrites ? "#34d399" : "#9ca3af")
 
         const close = () => this._closePricingApplyModal()
         const onKey = (e) => { if (e.key === "Escape") close() }
@@ -21702,18 +22529,19 @@ class RouteAssistantPanel {
             const input = document.createElement("input")
             input.type = "number"
             input.min = "0"
-            input.value = seedPrice(cls) === "" ? "" : String(Math.round(seedPrice(cls)))
+            input.step = cls === "Cargo" ? "0.01" : "1"
+            input.value = seedPrice(cls) === "" ? "" : this._formatRoutePrice(cls, seedPrice(cls))
             input.style.cssText = "width:100%;background:#1f2937;color:#f3f4f6;border:1px solid #374151;"
                 + "border-radius:3px;padding:3px 6px;font-size:12px;font-variant-numeric:tabular-nums;"
             inputs[cls] = input
             const curEl = document.createElement("span")
-            curEl.textContent = cur[cls] != null ? String(cur[cls]) : "—"
+            curEl.textContent = cur[cls] != null ? this._formatRoutePrice(cls, cur[cls]) : "—"
             curEl.style.cssText = "color:#9ca3af;font-variant-numeric:tabular-nums;text-align:right;"
             curEls[cls] = curEl
             const deltaEl = document.createElement("span")
             deltaEl.style.cssText = "color:#cbd5e1;font-variant-numeric:tabular-nums;font-size:11px;text-align:right;min-width:60px;"
             const updateDelta = () => {
-                const newV = parseInt(input.value, 10)
+                const newV = this._parseRoutePriceInput(cls, input.value)
                 const c = cur[cls]
                 if (!isFinite(newV) || c == null || c <= 0) { deltaEl.textContent = ""; return }
                 const pct = ((newV - c) / c) * 100
@@ -21728,6 +22556,19 @@ class RouteAssistantPanel {
             input.addEventListener("input", updateDelta)
             const r = sliderRanges[cls]
             if (r) lbl.title = cls + " allowed range " + r[0] + " – " + r[1]
+            // Detect cargo-incapable routes: when no current cargo price AND
+            // no slider range AND no seed value, AS doesn't accept a cargo
+            // price for this route. Disable the input so accidental entry
+            // doesn't produce a body that AS rejects (or worse, silently
+            // drops). The detection is per-modal-open — the refreshCacheNote
+            // path below will re-evaluate after a Refresh data click.
+            if (cls === "Cargo" && cur[cls] == null && !r && (seedPrice(cls) === "" || seedPrice(cls) == null)) {
+                input.disabled = true
+                input.placeholder = "n/a"
+                input.title = "This route does not carry cargo (no current price, no slider range)."
+                lbl.style.color = "#6b7280"
+                lbl.title = "Cargo not offered on this route"
+            }
             pricesGrid.append(lbl, input, curEl, deltaEl)
         }
         dialog.append(pricesGrid)
@@ -21747,13 +22588,21 @@ class RouteAssistantPanel {
             for (const cls of ["Y", "C", "F", "Cargo"]) {
                 const old  = cur[cls]
                 const next = freshPrices[cls]
-                if (curEls[cls]) curEls[cls].textContent = next != null ? String(next) : "—"
-                const inputVal = parseInt(inputs[cls].value, 10)
-                const inputMatchedOld = old != null && isFinite(inputVal) && inputVal === Math.round(old)
+                if (curEls[cls]) curEls[cls].textContent = next != null ? this._formatRoutePrice(cls, next) : "—"
+                const inputVal = this._parseRoutePriceInput(cls, inputs[cls].value)
+                const inputMatchedOld = old != null && isFinite(inputVal)
+                    && this._pricesEqualForClass(cls, inputVal, old)
                 cur[cls] = next != null ? next : null
-                if (inputMatchedOld && next != null) inputs[cls].value = String(Math.round(next))
+                if (inputMatchedOld && next != null) inputs[cls].value = this._formatRoutePrice(cls, next)
                 if (freshRanges[cls]) sliderRanges[cls] = freshRanges[cls]
                 if (updateDeltas[cls]) updateDeltas[cls]()
+                if (cls === "Cargo" && inputs[cls]) {
+                    // Re-evaluate cargo-capability after refresh: if AS now
+                    // reports a cargo price or range, re-enable the input.
+                    const stillIncapable = cur[cls] == null && !sliderRanges[cls]
+                    inputs[cls].disabled = stillIncapable
+                    if (!stillIncapable) inputs[cls].placeholder = ""
+                }
             }
             refreshCacheNote()
         }
@@ -21860,7 +22709,7 @@ class RouteAssistantPanel {
         dryBtn.style.cssText = "background:#374151;color:#cbd5e1;border:1px solid #475569;"
             + "border-radius:3px;padding:5px 14px;font-size:11px;cursor:pointer;"
 
-        const liveAvailable = !dryRunOnly && apply.enabled
+        const liveAvailable = manualGate.liveWrites
         const applyBtn = document.createElement("button")
         applyBtn.textContent = liveAvailable ? "Apply" : "Apply (gated)"
         applyBtn.disabled    = !liveAvailable
@@ -21868,7 +22717,9 @@ class RouteAssistantPanel {
             ? "POST new prices to AS"
             : (dryRunOnly
                 ? "Dry-run gate is on. Settings → Auto-Pricing → Tier 3 · Apply: turn off \"Dry-run only\" to commit a write."
-                : "Apply enabled is off. Settings → Auto-Pricing → Tier 3 · Apply: flip \"Apply enabled\" to commit a write.")
+                : (!manualGate.applyEnabled
+                    ? "Apply enabled is off. Settings → Auto-Pricing → Tier 3 · Apply: flip \"Apply enabled\" to commit a write."
+                    : "Manual live scope is off. Settings → Auto-Pricing → live scopes: enable Manual to commit a write."))
         applyBtn.style.cssText = "background:" + (liveAvailable ? "#7c3aed" : "#374151") + ";"
             + "color:" + (liveAvailable ? "#fff" : "#9ca3af") + ";"
             + "border:1px solid " + (liveAvailable ? "#6d28d9" : "#475569") + ";"
@@ -21945,7 +22796,7 @@ class RouteAssistantPanel {
         const collectArgs = (forcedDryRun, lastApplyAt, lastApplyAtGlobal) => {
             const prices = {}
             for (const cls of ["Y", "C", "F", "Cargo"]) {
-                const v = parseInt(inputs[cls].value, 10)
+                const v = this._parseRoutePriceInput(cls, inputs[cls].value)
                 if (isFinite(v) && v >= 0) prices[cls] = v
             }
             const scope = {}
@@ -21958,7 +22809,8 @@ class RouteAssistantPanel {
                     dryRun: !!forcedDryRun,
                     submitButton:      apply.submitButton || "submit-prices",
                     lastApplyAt:       lastApplyAt       || null,
-                    lastApplyAtGlobal: lastApplyAtGlobal || null
+                    lastApplyAtGlobal: lastApplyAtGlobal || null,
+                    classGates:        apply.classes     || null
                 }
             }
         }
@@ -22177,7 +23029,8 @@ class RouteAssistantPanel {
         this._closePricingApplyModal()
         const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
         const dryRunOnly = apply.dryRunOnly !== false
-        const liveAvailable = !dryRunOnly && !!apply.enabled
+        const bulkGate = this._pricingApplyGate("bulk")
+        const liveAvailable = bulkGate.liveWrites
 
         const rows = this._collectBulkApplyRows()
         const state = {
@@ -22198,8 +23051,11 @@ class RouteAssistantPanel {
         dialog.style.cssText = "background:#0f1623;color:#e5e7eb;border:1px solid #475569;border-radius:6px;"
             + "padding:14px 18px;width:880px;max-width:95vw;font:12px/1.4 sans-serif;"
             + "max-height:calc(100vh - 80px);overflow-y:auto;"
-        const stage = dryRunOnly ? "Dry-run only" : (apply.enabled ? "LIVE writes" : "Live writes disabled")
-        const stageColor = dryRunOnly ? "#fbbf24" : (apply.enabled ? "#34d399" : "#9ca3af")
+        const stage = dryRunOnly ? "Dry-run only"
+            : (!bulkGate.applyEnabled ? "Live writes disabled"
+                : (bulkGate.scopeLiveAllowed ? "LIVE writes" : "Bulk scope dry-run"))
+        const stageColor = dryRunOnly ? "#fbbf24"
+            : (bulkGate.liveWrites ? "#34d399" : "#9ca3af")
         const head = document.createElement("div")
         head.innerHTML = "<strong style='font-size:13px;'>Bulk apply price · " + (this.hubIata || "?") + "</strong>"
             + " <span style='color:" + stageColor + ";font-size:10px;font-weight:normal;'>" + stage + "</span>"
@@ -22420,7 +23276,7 @@ class RouteAssistantPanel {
                 routeTd.textContent = dest
                 routeTd.style.cssText = "padding:3px 6px;color:#cbd5e1;font-weight:600;"
                 trr.append(routeTd)
-                const p = cached.prices || {}
+                const p = this._silentAutoPrices(cached) || {}
                 for (const cls of ["Y", "C", "F", "Cargo"]) {
                     const cur = p[cls]
                     const td = document.createElement("td")
@@ -22428,14 +23284,15 @@ class RouteAssistantPanel {
                     if (cur == null) {
                         td.textContent = "—"
                     } else {
-                        const prop = this._computeBulkProposedPrice(cur, state.deltaPct[cls])
+                        const prop = this._computeBulkProposedPrice(cur, state.deltaPct[cls], cls)
                         if (prop === cur) {
-                            td.textContent = String(cur)
+                            td.textContent = this._formatRoutePrice(cls, cur)
                         } else {
                             const arrow = prop > cur ? "↑" : "↓"
                             const color = prop > cur ? "#34d399" : "#f87171"
-                            td.innerHTML = String(cur) + " → <span style='color:" + color + ";font-weight:600;'>"
-                                + String(prop) + " " + arrow + "</span>"
+                            td.innerHTML = this._formatRoutePrice(cls, cur)
+                                + " → <span style='color:" + color + ";font-weight:600;'>"
+                                + this._formatRoutePrice(cls, prop) + " " + arrow + "</span>"
                         }
                     }
                     trr.append(td)
@@ -22509,7 +23366,9 @@ class RouteAssistantPanel {
             applyBtn.title = !liveAvailable
                 ? (dryRunOnly
                     ? "Dry-run gate is on. Settings → Auto-Pricing → turn off \"Dry-run only\" to commit writes."
-                    : "Apply enabled is off. Settings → Auto-Pricing → flip \"Apply enabled\" to commit writes.")
+                    : (!bulkGate.applyEnabled
+                        ? "Apply enabled is off. Settings → Auto-Pricing → flip \"Apply enabled\" to commit writes."
+                        : "Bulk live scope is off. Settings → Auto-Pricing → live scopes: enable Bulk to commit writes."))
                 : (n === 0 ? "Select at least one route." : "POST new prices to AS for " + n + " routes.")
             dryBtn.disabled = !armed
             dryBtn.title = n === 0 ? "Select at least one route." : "Dry-run preflight + body for " + n + " routes (no POST)."
@@ -22577,11 +23436,20 @@ class RouteAssistantPanel {
         return out
     }
 
-    _computeBulkProposedPrice(currentPrice, deltaPct) {
+    _computeBulkProposedPrice(currentPrice, deltaPct, cls) {
         if (!isFinite(currentPrice) || currentPrice <= 0) return currentPrice
         if (!isFinite(deltaPct) || deltaPct === 0) return currentPrice
         const factor = 1 + (deltaPct / 100)
-        return Math.max(1, Math.round(currentPrice * factor))
+        const target = currentPrice * factor
+        // Cargo prices are sub-$1/kg in AS; integer rounding wipes the move.
+        // Match silent-auto-proposer-per-class _roundPriceForClass: 2-decimal
+        // rounding when cls === "Cargo" or current < 10. Pax classes round to
+        // integer (the form accepts both).
+        const useDecimals = cls === "Cargo" || currentPrice < 10
+        const minVal = useDecimals ? 0.01 : 1
+        return useDecimals
+            ? Math.max(minVal, Math.round(target * 100) / 100)
+            : Math.max(minVal, Math.round(target))
     }
 
     /**
@@ -22683,12 +23551,13 @@ class RouteAssistantPanel {
                     if (cur == null) {
                         td.textContent = "—"
                     } else {
-                        const prop = this._computeBulkProposedPrice(cur, deltaPct[cls])
-                        if (prop === cur) td.textContent = String(cur)
+                        const prop = this._computeBulkProposedPrice(cur, deltaPct[cls], cls)
+                        if (prop === cur) td.textContent = this._formatRoutePrice(cls, cur)
                         else {
                             const color = prop > cur ? "#34d399" : "#f87171"
-                            td.innerHTML = String(cur) + " → <span style='color:" + color + ";font-weight:600;'>"
-                                + String(prop) + "</span>"
+                            td.innerHTML = this._formatRoutePrice(cls, cur)
+                                + " → <span style='color:" + color + ";font-weight:600;'>"
+                                + this._formatRoutePrice(cls, prop) + "</span>"
                         }
                     }
                     trr.append(td)
@@ -22817,15 +23686,8 @@ class RouteAssistantPanel {
         // Lets the user unlock manual writes first and trial silent-auto +
         // bulk separately. Surface the override in a toast so the user
         // isn't surprised by their bulk applies all landing as dry-runs.
-        const liveScopes = apply.liveScopes || {}
-        const bulkLiveAllowed = liveScopes.bulk !== false
-        const liveScopeOverride = !dryRun && !bulkLiveAllowed
-        if (liveScopeOverride) {
-            dryRun = true
-            if (typeof RouteAssistantToast !== "undefined") {
-                RouteAssistantToast.info("Bulk live writes are off (Settings → Auto-Pricing → Live scopes) — running as dry-run")
-            }
-        }
+        const bulkGate = this._pricingApplyGate("bulk", {forceDryRun: !!dryRun})
+        dryRun = bulkGate.dryRun
         // Tier 3.4 — every entry written by this bulk pass carries the same
         // `batchId` so the audit modal can collapse the group. Generated
         // up-front so synthetic "skipped" entries (orchestrator halt) also
@@ -22921,12 +23783,12 @@ class RouteAssistantPanel {
                 continue
             }
 
-            const p = cached.prices || {}
+            const p = this._silentAutoPrices(cached) || {}
             const prices = {}
             for (const cls of ["Y", "C", "F", "Cargo"]) {
                 const cur = p[cls]
                 if (cur == null) continue
-                prices[cls] = this._computeBulkProposedPrice(cur, deltaPct[cls])
+                prices[cls] = this._computeBulkProposedPrice(cur, deltaPct[cls], cls)
             }
             let lastApplyAt = null
             try {
@@ -22943,7 +23805,8 @@ class RouteAssistantPanel {
                 const opts = {
                     scope, source: "bulk", submitButton,
                     lastApplyAt, lastApplyAtGlobal: null, dryRun,
-                    batchId, batchSize
+                    batchId, batchSize,
+                    classGates: apply.classes || null
                 }
                 if (preSync) opts.preApplySync = preSync
                 Object.assign(opts, await this._resolveEndpointOpts(this.hubIata, dest))
@@ -23177,7 +24040,7 @@ class RouteAssistantPanel {
             silentAutoMaxPerHour:    isFinite(p.silentAutoMaxPerHour)   ? p.silentAutoMaxPerHour   : 5,
             silentAutoMinDeltaPct:   isFinite(p.silentAutoMinDeltaPct)  ? p.silentAutoMinDeltaPct  : 3,
             silentAutoMaxStepPct:    isFinite(p.silentAutoMaxStepPct)   ? p.silentAutoMaxStepPct   : 10,
-            silentAutoStrategy:      p.silentAutoStrategy || "competitor-median",
+            silentAutoStrategy:      p.silentAutoStrategy || "per-class-elasticity",
             silentAutoFollowMode:    p.silentAutoFollowMode || "watchlist",
             silentAutoConfirmedAt:   isFinite(p.silentAutoConfirmedAt)  ? p.silentAutoConfirmedAt  : null,
             silentAutoLastTickAt:    isFinite(p.silentAutoLastTickAt)   ? p.silentAutoLastTickAt   : null,
@@ -23193,7 +24056,23 @@ class RouteAssistantPanel {
                 ? apply.silentAutoStaleCompetitorWarnDays : 7,
             silentAutoBlockOnStaleCompetitors:   !!apply.silentAutoBlockOnStaleCompetitors,
             silentAutoStrategySnapshotMaxAgeMin: isFinite(apply.silentAutoStrategySnapshotMaxAgeMin)
-                ? apply.silentAutoStrategySnapshotMaxAgeMin : 10
+                ? apply.silentAutoStrategySnapshotMaxAgeMin : 10,
+            silentAutoControlVariablesEnabled: apply.silentAutoControlVariablesEnabled !== false,
+            silentAutoPerClassEnabled: Object.assign(
+                {Y: true, C: true, F: true, Cargo: true},
+                p.silentAutoPerClassEnabled || {}
+            ),
+            silentAutoPerClassMaxStepPct: Object.assign(
+                {},
+                p.silentAutoPerClassMaxStepPct || {}
+            ),
+            silentAutoPerClassMinDemandPool: Object.assign(
+                {},
+                p.silentAutoPerClassMinDemandPool || {}
+            ),
+            orsCompetition: (this.settings && this.settings.ors) || null,
+            applyClassGates: (apply && apply.classes && typeof apply.classes === "object")
+                ? apply.classes : null
         }
     }
 
@@ -23240,9 +24119,9 @@ class RouteAssistantPanel {
             // dryRunOnly=false), keep silent-auto dry-run unless its
             // scope flag is explicitly true. The operator should sign off
             // separately on autonomous writes vs manual.
-            const liveScopes = apply.liveScopes || {}
-            const silentLiveAllowed = liveScopes.silentAuto === true
-            const dryRun = apply.dryRunOnly !== false || !apply.enabled || !silentLiveAllowed
+            const silentGate = this._pricingApplyGate("silentAuto")
+            const silentLiveAllowed = silentGate.scopeLiveAllowed
+            const dryRun = silentGate.dryRun
             result.dryRun = dryRun
             result.silentLiveAllowed = silentLiveAllowed
             // Breaker — if Tier 3 breaker is tripped, we still tick (so
@@ -23316,6 +24195,7 @@ class RouteAssistantPanel {
                     })
                     continue
                 }
+                prop.prevPrices = Object.assign({}, prices)
                 proposals.push(prop)
             }
             result.proposed = proposals.length
@@ -23339,7 +24219,8 @@ class RouteAssistantPanel {
                         dest:    prop.dest,
                         stage:   "blocked",
                         reason:  "tick cap exhausted before dispatch",
-                        prevY:   prop.prevY, newY: prop.newY, deltaPct: prop.deltaPct
+                        prevY:   prop.prevY, newY: prop.newY, deltaPct: prop.deltaPct,
+                        priceSummary: this._summarisePriceMove(prop.prevPrices, prop.prices)
                     })
                 }
                 return
@@ -23353,7 +24234,8 @@ class RouteAssistantPanel {
                     dest:    prop.dest,
                     stage:   "capped",
                     reason:  "over per-tick budget (" + budget + " applied this tick)",
-                    prevY:   prop.prevY, newY: prop.newY, deltaPct: prop.deltaPct
+                    prevY:   prop.prevY, newY: prop.newY, deltaPct: prop.deltaPct,
+                    priceSummary: this._summarisePriceMove(prop.prevPrices, prop.prices)
                 })
             }
 
@@ -23398,10 +24280,11 @@ class RouteAssistantPanel {
                         lastApplyAtGlobal,
                         dryRun,
                         reason:           prop.reason,
-                        proposerStrategy: cfg.silentAutoStrategy || "competitor-median",
+                        proposerStrategy: cfg.silentAutoStrategy || "per-class-elasticity",
                         rationale:        prop.rationale  || null,
                         objective:        prop.objective  || null,
-                        projectedDelta:   prop.projectedDelta || null
+                        projectedDelta:   prop.projectedDelta || null,
+                        classGates:       apply.classes || null
                     }, silentEndpointOpts))
                 } catch (e) {
                     applyResult = {status: "failed", error: {code: "applierThrew", message: String(e && e.message || e)}}
@@ -23418,6 +24301,7 @@ class RouteAssistantPanel {
                     prevY:       prop.prevY,
                     newY:        prop.newY,
                     deltaPct:    prop.deltaPct,
+                    priceSummary: this._summarisePriceMove(prop.prevPrices, prop.prices),
                     errorCode:   (applyResult && applyResult.error && applyResult.error.code) || null
                 })
                 if (ok) {
@@ -23500,6 +24384,7 @@ class RouteAssistantPanel {
                 const inSet = starredKeys ? starredKeys.has(key) : !!r._starred
                 if (!inSet) continue
             }
+            if (this._isRoutePricePinned(r)) continue
             const cached = this._lookupCachedOwnPricing(this.hubIata, dest)
             // `_lookupCachedOwnPricing` returns the per-route ownPricing
             // record. Two shapes survive in the codebase: the descriptor
@@ -23548,14 +24433,19 @@ class RouteAssistantPanel {
      *   {ok: false, dest, skipReason}
      */
     _silentAutoProposeForRoute(r, prices, cfg, ctx) {
-        const strategy = cfg.silentAutoStrategy || "competitor-median"
+        const strategy = (cfg && cfg.silentAutoStrategy) || "per-class-elasticity"
         if (typeof window !== "undefined" && window.RouteAssistantSilentAutoProposers
             && typeof window.RouteAssistantSilentAutoProposers.dispatch === "function") {
             return window.RouteAssistantSilentAutoProposers.dispatch(strategy, r, prices, cfg, ctx)
         }
         // Defensive fallback — registry script missing from manifest. Keep
-        // competitor-median working so silent-auto doesn't go dark on a
-        // load-order regression.
+        // the default per-class path working when its module loaded, then
+        // fall back to the legacy Y-only proposer.
+        if (strategy === "per-class-elasticity" && typeof window !== "undefined"
+                && window.RouteAssistantPerClassProposer
+                && typeof window.RouteAssistantPerClassProposer.propose === "function") {
+            return window.RouteAssistantPerClassProposer.propose(r, prices, cfg || {}, ctx || {})
+        }
         if (strategy === "competitor-median") {
             return this._silentAutoProposeCompetitorMedian(r, prices, cfg)
         }
@@ -23577,7 +24467,7 @@ class RouteAssistantPanel {
      * route record.
      */
     async _silentAutoBuildProposerContext(cfg) {
-        const strategy = (cfg && cfg.silentAutoStrategy) || "competitor-median"
+        const strategy = (cfg && cfg.silentAutoStrategy) || "per-class-elasticity"
         const ctx = {
             now:      Date.now(),
             strategy,
@@ -23613,24 +24503,30 @@ class RouteAssistantPanel {
             }
             ctx.strategySnapshot = snapshot || null
 
-            // Pre-resolve PriceMoves to a Map keyed by HUB-DEST → move.
-            // Filtered to classKey: "Y" — silent-auto v1 is Y-only.
+            // Pre-resolve PriceMoves to a Map keyed by HUB-DEST → {Y,C,F,Cargo}.
             // The proposer then looks up its route in O(1) without
-            // re-running the full proposer per route.
+            // re-running the full proposer per route. Keep every class so
+            // strategy-objective can distinguish economy, business, first,
+            // and cargo instead of collapsing the result into Y-only.
             if (snapshot && window.AesStrategy
                 && typeof window.AesStrategy.proposePriceMoves === "function") {
                 try {
                     const moves = window.AesStrategy.proposePriceMoves(snapshot, {
                         deadband:         cfg.silentAutoMinDeltaPct  || 3,
                         maxMovePerWindow: cfg.silentAutoMaxStepPct   || 10,
-                        includeCargo:     false
+                        includeCargo:     true
                     })
                     const byPair = new Map()
                     for (const m of (moves || [])) {
-                        if (!m || m.classKey !== "Y") continue
+                        if (!m || !m.classKey) continue
                         const key = String(m.hub || "").toUpperCase()
                                   + "-" + String(m.dest || "").toUpperCase()
-                        byPair.set(key, m)
+                        let bucket = byPair.get(key)
+                        if (!bucket) {
+                            bucket = {Y: null, C: null, F: null, Cargo: null}
+                            byPair.set(key, bucket)
+                        }
+                        if (bucket.hasOwnProperty(m.classKey)) bucket[m.classKey] = m
                     }
                     ctx.strategyMovesByPair = byPair
                 } catch (e) {
@@ -23847,7 +24743,7 @@ class RouteAssistantPanel {
             + "border:1px solid rgba(244, 114, 182, 0.30);border-radius:4px;"
         const sa = this._silentAutoCfg()
         const apply = (cfg && cfg.apply) || {}
-        const dryRun = apply.dryRunOnly !== false || !apply.enabled
+        const dryRun = this._pricingApplyGate("silentAuto").dryRun
 
         const head = document.createElement("div")
         head.style.cssText = "color:#f9a8d4;font-size:11px;margin-bottom:4px;display:flex;"
@@ -23901,7 +24797,7 @@ class RouteAssistantPanel {
                 this.settings.pricing.silentAutoConfirmedAt = Date.now()
             }
             this.settings.pricing.silentAutoEnabled = want
-            await RouteAssistantSettings.save({pricing: this.settings.pricing})
+            this.settings = await RouteAssistantSettings.save({pricing: this.settings.pricing})
             this._restartSilentAutoLoop()
             this._renderSettings()
         })
@@ -23939,13 +24835,16 @@ class RouteAssistantPanel {
         stratSel.style.cssText = "background:#1e293b;color:#fff;border:1px solid #475569;border-radius:3px;padding:2px 4px;font-size:11px;"
         // Tier 3.4 — pull options from the proposer registry so adding a
         // new strategy is one entry in silent-auto-proposers.js. Falls
-        // back to the legacy single-option list if the registry isn't
-        // loaded (script-order regression in manifest).
+        // back to the two built-in options if the registry isn't loaded
+        // (script-order regression in manifest).
         const stratOptions = (typeof window !== "undefined"
                               && window.RouteAssistantSilentAutoProposers
                               && typeof window.RouteAssistantSilentAutoProposers.list === "function")
             ? window.RouteAssistantSilentAutoProposers.list()
-            : [{key: "competitor-median", label: "Competitor median (Y only)", description: ""}]
+            : [
+                {key: "per-class-elasticity", label: "Per-class elasticity (Y / C / F / Cargo)", description: "Default Y/C/F/Cargo demand-aware autopricer."},
+                {key: "competitor-median", label: "Competitor median (Y only)", description: "Legacy Y-only competitor-median tracker."}
+            ]
         for (const so of stratOptions) {
             const opt = document.createElement("option")
             opt.value = so.key
@@ -23965,6 +24864,8 @@ class RouteAssistantPanel {
             this.settings.pricing.silentAutoStrategy = stratSel.value
             setStratHint(stratSel.value)
             await RouteAssistantSettings.save({pricing: this.settings.pricing})
+            this.settings = await RouteAssistantSettings.load()
+            this._renderSettings()
         })
         stratLbl.append(stratSel)
         selectorsRow.append(stratLbl)
@@ -23983,7 +24884,7 @@ class RouteAssistantPanel {
         }
         followSel.addEventListener("change", async () => {
             this.settings.pricing.silentAutoFollowMode = followSel.value
-            await RouteAssistantSettings.save({pricing: this.settings.pricing})
+            this.settings = await RouteAssistantSettings.save({pricing: this.settings.pricing})
         })
         followLbl.append(followSel)
         selectorsRow.append(followLbl)
@@ -24004,7 +24905,7 @@ class RouteAssistantPanel {
                 const clamped = Math.max(min, Math.min(max, v))
                 this.settings.pricing[key] = clamped
                 inp.value = String(clamped)
-                await RouteAssistantSettings.save({pricing: this.settings.pricing})
+                this.settings = await RouteAssistantSettings.save({pricing: this.settings.pricing})
                 if (key === "silentAutoTickMin") this._restartSilentAutoLoop()
             })
             lbl.append(inp)
@@ -24021,6 +24922,80 @@ class RouteAssistantPanel {
         capsRow.append(numField("Max step %", "silentAutoMaxStepPct", 0.5, 50, 0.5,
             "Per-tick clamp on |Δ%|. The proposer never moves a route more than this in a single tick — convergence over multiple ticks is intentional."))
         block.append(capsRow)
+
+        if (sa.silentAutoStrategy === "per-class-elasticity") {
+            const pcWrap = document.createElement("div")
+            pcWrap.style.cssText = "margin:6px 0 8px 0;padding:6px 8px;background:rgba(15,23,42,0.55);"
+                + "border:1px solid #1f2937;border-radius:3px;font-size:10px;"
+            const pcGrid = document.createElement("div")
+            pcGrid.style.cssText = "display:grid;grid-template-columns:58px 66px 92px 92px;gap:4px 8px;align-items:center;"
+            for (const h of ["Class", "Enabled", "Max step", "Min pool"]) {
+                const hd = document.createElement("div")
+                hd.textContent = h
+                hd.style.cssText = "color:#94a3b8;text-transform:uppercase;letter-spacing:0.04em;"
+                pcGrid.append(hd)
+            }
+            const saveClassMap = async (key, cls, value) => {
+                const map = Object.assign({}, this.settings.pricing[key] || {})
+                map[cls] = value
+                this.settings.pricing[key] = map
+                this.settings = await RouteAssistantSettings.save({pricing: this.settings.pricing})
+            }
+            for (const cls of ["Y", "C", "F", "Cargo"]) {
+                const clsEl = document.createElement("div")
+                clsEl.textContent = cls
+                clsEl.style.cssText = "color:#e2e8f0;font-weight:600;font-variant-numeric:tabular-nums;"
+
+                const enabled = document.createElement("input")
+                enabled.type = "checkbox"
+                enabled.checked = !sa.silentAutoPerClassEnabled
+                    || sa.silentAutoPerClassEnabled[cls] !== false
+                enabled.title = cls + " proposer gate"
+                enabled.addEventListener("change", async () => {
+                    await saveClassMap("silentAutoPerClassEnabled", cls, !!enabled.checked)
+                })
+
+                const cap = mkNumberInput(
+                    sa.silentAutoPerClassMaxStepPct && sa.silentAutoPerClassMaxStepPct[cls],
+                    {min: 0, max: 50, step: 0.5, width: "70px"}
+                )
+                cap.placeholder = "global"
+                cap.title = cls + " max step %. Empty uses global Max step."
+                cap.addEventListener("change", async () => {
+                    const v = parseFloat(cap.value)
+                    if (!isFinite(v)) {
+                        cap.value = ""
+                        await saveClassMap("silentAutoPerClassMaxStepPct", cls, null)
+                        return
+                    }
+                    const clamped = Math.max(0, Math.min(50, v))
+                    cap.value = String(clamped)
+                    await saveClassMap("silentAutoPerClassMaxStepPct", cls, clamped)
+                })
+
+                const minPool = mkNumberInput(
+                    sa.silentAutoPerClassMinDemandPool && sa.silentAutoPerClassMinDemandPool[cls],
+                    {min: 0, max: 1000000, step: cls === "Cargo" ? 100 : 1, width: "74px"}
+                )
+                minPool.placeholder = "default"
+                minPool.title = cls + " minimum demand pool. Empty uses the per-class default."
+                minPool.addEventListener("change", async () => {
+                    const v = parseFloat(minPool.value)
+                    if (!isFinite(v)) {
+                        minPool.value = ""
+                        await saveClassMap("silentAutoPerClassMinDemandPool", cls, null)
+                        return
+                    }
+                    const clamped = Math.max(0, Math.min(1000000, v))
+                    minPool.value = String(clamped)
+                    await saveClassMap("silentAutoPerClassMinDemandPool", cls, clamped)
+                })
+
+                pcGrid.append(clsEl, enabled, cap, minPool)
+            }
+            pcWrap.append(pcGrid)
+            block.append(pcWrap)
+        }
 
         // Activity feed host — refreshed in-place by `_refreshSilentAutoActivity`.
         const activityHost = document.createElement("div")
@@ -24214,7 +25189,10 @@ class RouteAssistantPanel {
             const detail = document.createElement("span")
             detail.style.cssText = "color:#94a3b8;flex:1;"
             const moveBits = []
-            if (isFinite(entry.prevY) && isFinite(entry.newY) && entry.prevY !== entry.newY) {
+            if (entry.priceSummary && entry.priceSummary !== "no-op") {
+                moveBits.push(entry.priceSummary)
+            }
+            if (!entry.priceSummary && isFinite(entry.prevY) && isFinite(entry.newY) && entry.prevY !== entry.newY) {
                 moveBits.push("Y " + entry.prevY + "→" + entry.newY)
             }
             if (isFinite(entry.deltaPct)) {
@@ -24290,9 +25268,8 @@ class RouteAssistantPanel {
             dot.style.cssText = "width:6px;height:6px;border-radius:50%;background:" + (palette[e.status] || "#9ca3af")
             const ago = Math.max(0, Math.round((Date.now() - (e.ts || 0)) / 60000))
             const pair = (e.hub || "?") + "→" + (e.dest || "?")
-            const ny = e.newPrices && e.newPrices.Y
-            const py = e.prevPrices && e.prevPrices.Y
-            const move = (isFinite(ny) && isFinite(py)) ? (" · Y " + py + "→" + ny) : ""
+            const summary = this._summarisePriceMove(e.prevPrices, e.newPrices)
+            const move = summary !== "no-op" ? (" · " + summary) : ""
             const label = pair + " · " + (e.status || "?") + move + " · " + ago + "m"
             const txt = document.createElement("span")
             txt.textContent = label
@@ -24315,7 +25292,7 @@ class RouteAssistantPanel {
         return new Promise((resolve) => {
             const cfg = this._silentAutoCfg()
             const apply = (this.settings.pricing && this.settings.pricing.apply) || {}
-            const dryRun = apply.dryRunOnly !== false || !apply.enabled
+            const dryRun = this._pricingApplyGate("silentAuto").dryRun
 
             const overlay = document.createElement("div")
             overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10003;"
@@ -24782,6 +25759,11 @@ RouteAssistantPanel.COLUMNS = [
      title: "AS in-game pax demand for the destination (0–10) — from /action/info/country",
      render(td, row) {
         td.textContent = row.paxScore === null ? "—" : row.paxScore
+        if (row.demandSource === "flightsfrom") {
+            td.style.color = "#93c5fd"
+            td.title = "Inferred from FlightsFrom frequency"
+                + (row.demandBasis ? ": " + row.demandBasis : "")
+        }
         if (row.paxScore !== null) _appendDiffBadge(td, "paxScore", row)
     }},
     {field: "cargoScore", label: "Crg", group: "as", align: "right",
@@ -25429,7 +26411,7 @@ RouteAssistantPanel.COLUMNS = [
 
     // ----- Per-class ORS columns (only render in non-Compact view AND
     // when settings.ors.showPerClassColumns is on). Each shows the user's
-    // chosen primaryColumn metric for ONE cabin class. Same color rules as
+    // chosen primaryColumn metric for ONE payload class. Same color rules as
     // the composite ORS column. Hover/click tooltip notes which class.
     {field: "orsClassY", label: "Y", group: "ors", align: "right", defaultDir: -1,
      title: "Economy-class ORS metric (your selected primary metric, applied to byClass.ECONOMY).",
@@ -25440,6 +26422,9 @@ RouteAssistantPanel.COLUMNS = [
     {field: "orsClassF", label: "F", group: "ors", align: "right", defaultDir: -1,
      title: "First-class ORS metric (your selected primary metric, applied to byClass.FIRST).",
      render(td, row) { _renderOrsClassCell(td, row, "F", "orsClassF", "FIRST", "#fca5a5") }},
+    {field: "orsClassCargo", label: "Cg", group: "ors", align: "right", defaultDir: -1,
+     title: "Cargo ORS metric (your selected primary metric, applied to byClass.CARGO).",
+     render(td, row) { _renderOrsClassCell(td, row, "Cargo", "orsClassCargo", "CARGO", "#c4b5fd") }},
 
     // ----- Demand depth (Letter K — markets-historic + inventory derivation) -----
     {field: "paxDemandPool", label: "Pool", group: "demand", align: "right", defaultDir: -1,
@@ -25689,8 +26674,8 @@ RouteAssistantPanel._composeOrsAllMetrics = function(byClass, method, weights) {
 }
 
 /**
- * Per-class ORS cell renderer used by the Y / C / F columns. Reads the
- * row's pre-computed per-class metric (orsClassY / orsClassC / orsClassF)
+ * Per-class ORS cell renderer used by the Y / C / F / Cargo columns. Reads the
+ * row's pre-computed per-class metric
  * and colors it the same way the composite ORS column does.
  */
 function _renderOrsClassCell(td, row, label, rowField, classKey, accent) {
@@ -25755,6 +26740,9 @@ function formatOrsRanksTooltip(row) {
     }
     if (row.orsScrapedAt) {
         lines.push("Last scraped: " + new Date(row.orsScrapedAt).toLocaleString())
+    }
+    if (Array.isArray(row.orsWarnings) && row.orsWarnings.length) {
+        lines.push("Warnings: " + row.orsWarnings.join(", "))
     }
     lines.push("Click ▾ to drill into the connection list.")
     return lines.join("\n")
@@ -26609,6 +27597,7 @@ function formatOverrideSummary(override) {
     if (typeof override.cargoLF === "number")           parts.push("Cargo LF " + override.cargoLF.toFixed(2))
     if (typeof override.yieldPerKm === "number")        parts.push("Yield AS$" + override.yieldPerKm.toFixed(3) + "/pax-km")
     if (typeof override.cargoYieldPerKgKm === "number") parts.push("Cargo AS$" + override.cargoYieldPerKgKm.toFixed(4) + "/kg-km")
+    if (typeof override.pricePin === "number")          parts.push("Price pin " + Math.round(override.pricePin) + "%")
     let s = "Override: " + (parts.length ? parts.join(" · ") : "(no values)")
     if (override.note) s += "\n— " + override.note
     return s
@@ -26788,4 +27777,8 @@ function _median(arr) {
     if (!xs.length) return null
     const mid = Math.floor(xs.length / 2)
     return (xs.length % 2) ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantPanel = RouteAssistantPanel
 }

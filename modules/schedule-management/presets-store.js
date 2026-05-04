@@ -1,3 +1,11 @@
+"use strict"
+
+;(function () {
+    if (typeof window !== "undefined") {
+        if (window.SchedulePresets) return
+    }
+    const ScheduleFactors = (typeof window !== "undefined" && window.ScheduleFactors) || globalThis.ScheduleFactors
+
 /**
  * CRUD wrapper for `settings.scheduleManagement` — the per-extension
  * configuration block holding wave/composition presets plus a few
@@ -126,28 +134,77 @@ class SchedulePresets {
         }
     }
 
+    static _enqueueWrite(fn) {
+        if (!SchedulePresets._writeQueue) SchedulePresets._writeQueue = Promise.resolve()
+        const run = SchedulePresets._writeQueue.catch(() => {}).then(fn)
+        SchedulePresets._writeQueue = run.catch(() => {})
+        return run
+    }
+
+    static async _getArea() {
+        if (typeof window !== "undefined"
+                && window.AesSettings
+                && typeof window.AesSettings.getArea === "function") {
+            return await window.AesSettings.getArea("scheduleManagement")
+        }
+        const data = await chrome.storage.local.get(["settings"])
+        const settings = data && data.settings && typeof data.settings === "object"
+            ? data.settings
+            : {}
+        const area = settings.scheduleManagement
+        return area && typeof area === "object" && !Array.isArray(area) ? area : {}
+    }
+
+    static async _saveArea(block) {
+        if (typeof window !== "undefined"
+                && window.AesSettings
+                && typeof window.AesSettings.saveArea === "function") {
+            await window.AesSettings.saveArea("scheduleManagement", block)
+            return block
+        }
+        const data = await chrome.storage.local.get(["settings"])
+        const settings = data && data.settings && typeof data.settings === "object"
+            ? Object.assign({}, data.settings)
+            : {}
+        settings.scheduleManagement = block
+        await chrome.storage.local.set({settings})
+        return block
+    }
+
+    static async _readBlock() {
+        const stored = await SchedulePresets._getArea()
+        return Object.assign({}, SchedulePresets._defaults(), stored)
+    }
+
+    static async _writeBlock(block) {
+        const current = Object.assign({}, SchedulePresets._defaults(), block || {})
+        await SchedulePresets._saveArea(current)
+        return current
+    }
+
     /** Reads `settings.scheduleManagement`, lazily initialising it if missing. */
     static async load() {
-        const stored = await window.AesSettings.getArea("scheduleManagement")
+        const stored = await SchedulePresets._getArea()
         const merged = Object.assign({}, SchedulePresets._defaults(), stored)
         // Lazy-init: if the area was never written, persist defaults so the
         // shape exists for subsequent reads.
         if (!stored || Object.keys(stored).length === 0) {
-            await window.AesSettings.saveArea("scheduleManagement", merged)
+            await SchedulePresets._saveArea(merged)
         }
         return merged
     }
 
     /** Persists a partial update to settings.scheduleManagement. */
     static async save(partial) {
-        const stored = await window.AesSettings.getArea("scheduleManagement")
-        const current = Object.assign(
-            {}, SchedulePresets._defaults(),
-            stored,
-            partial
-        )
-        await window.AesSettings.saveArea("scheduleManagement", current)
-        return current
+        return SchedulePresets._enqueueWrite(async () => {
+            const current = Object.assign(
+                {}, SchedulePresets._defaults(),
+                await SchedulePresets._getArea(),
+                partial
+            )
+            await SchedulePresets._saveArea(current)
+            return current
+        })
     }
 
     /**
@@ -155,15 +212,18 @@ class SchedulePresets {
      * @param {object} partial - any fields to override on the default preset
      */
     static async create(partial) {
-        const block = await SchedulePresets.load()
-        const preset = Object.assign(SchedulePresets.newPreset(partial?.name), partial || {})
-        // newPreset() already set createdAt/updatedAt; keep them consistent
-        preset.createdAt = preset.createdAt || Date.now()
-        preset.updatedAt = Date.now()
-        block.presets.push(preset)
-        if (!block.defaultPresetId) block.defaultPresetId = preset.id
-        await SchedulePresets.save({presets: block.presets, defaultPresetId: block.defaultPresetId})
-        return preset
+        return SchedulePresets._enqueueWrite(async () => {
+            const block = await SchedulePresets._readBlock()
+            block.presets = Array.isArray(block.presets) ? block.presets.slice() : []
+            const preset = Object.assign(SchedulePresets.newPreset(partial?.name), partial || {})
+            // newPreset() already set createdAt/updatedAt; keep them consistent
+            preset.createdAt = preset.createdAt || Date.now()
+            preset.updatedAt = Date.now()
+            block.presets.push(preset)
+            if (!block.defaultPresetId) block.defaultPresetId = preset.id
+            await SchedulePresets._writeBlock(block)
+            return preset
+        })
     }
 
     /**
@@ -175,31 +235,34 @@ class SchedulePresets {
      * marker without diffing the whole wave list.
      */
     static async update(id, fields) {
-        const block = await SchedulePresets.load()
-        const preset = block.presets.find(p => p.id === id)
-        if (!preset) return null
-        const wavesChanged = fields && Object.prototype.hasOwnProperty.call(fields, "waves")
-        Object.assign(preset, fields, {updatedAt: Date.now()})
-        if (wavesChanged) {
-            preset.templateRevision = Number(preset.templateRevision || 0) + 1
-        }
-        await SchedulePresets.save({presets: block.presets})
-        return preset
+        return SchedulePresets._enqueueWrite(async () => {
+            const block = await SchedulePresets._readBlock()
+            block.presets = Array.isArray(block.presets) ? block.presets.slice() : []
+            const preset = block.presets.find(p => p.id === id)
+            if (!preset) return null
+            const wavesChanged = fields && Object.prototype.hasOwnProperty.call(fields, "waves")
+            Object.assign(preset, fields, {updatedAt: Date.now()})
+            if (wavesChanged) {
+                preset.templateRevision = Number(preset.templateRevision || 0) + 1
+            }
+            await SchedulePresets._writeBlock(block)
+            return preset
+        })
     }
 
     static async remove(id) {
-        const block = await SchedulePresets.load()
-        const before = block.presets.length
-        block.presets = block.presets.filter(p => p.id !== id)
-        if (block.presets.length === before) return false
-        if (block.defaultPresetId === id) {
-            block.defaultPresetId = block.presets[0]?.id || null
-        }
-        await SchedulePresets.save({
-            presets: block.presets,
-            defaultPresetId: block.defaultPresetId
+        return SchedulePresets._enqueueWrite(async () => {
+            const block = await SchedulePresets._readBlock()
+            block.presets = Array.isArray(block.presets) ? block.presets : []
+            const before = block.presets.length
+            block.presets = block.presets.filter(p => p.id !== id)
+            if (block.presets.length === before) return false
+            if (block.defaultPresetId === id) {
+                block.defaultPresetId = block.presets[0]?.id || null
+            }
+            await SchedulePresets._writeBlock(block)
+            return true
         })
-        return true
     }
 
     /**
@@ -246,20 +309,30 @@ class SchedulePresets {
      * name. Useful for letting users derive variants from a working preset.
      */
     static async duplicate(id) {
-        const block = await SchedulePresets.load()
-        const source = block.presets.find(p => p.id === id)
-        if (!source) return null
-        const copy = JSON.parse(JSON.stringify(source))
-        copy.id = "p" + Date.now().toString(36)
-        copy.name = source.name + " (copy)"
-        copy.createdAt = Date.now()
-        copy.updatedAt = Date.now()
-        // Re-key waves so wave ids are unique within the new preset.
-        copy.waves = (copy.waves || []).map(w => Object.assign({}, w, {
-            id: "w" + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36)
-        }))
-        block.presets.push(copy)
-        await SchedulePresets.save({presets: block.presets})
-        return copy
+        return SchedulePresets._enqueueWrite(async () => {
+            const block = await SchedulePresets._readBlock()
+            block.presets = Array.isArray(block.presets) ? block.presets.slice() : []
+            const source = block.presets.find(p => p.id === id)
+            if (!source) return null
+            const copy = JSON.parse(JSON.stringify(source))
+            copy.id = "p" + Date.now().toString(36)
+            copy.name = source.name + " (copy)"
+            copy.createdAt = Date.now()
+            copy.updatedAt = Date.now()
+            // Re-key waves so wave ids are unique within the new preset.
+            copy.waves = (copy.waves || []).map(w => Object.assign({}, w, {
+                id: "w" + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36)
+            }))
+            block.presets.push(copy)
+            await SchedulePresets._writeBlock(block)
+            return copy
+        })
     }
 }
+
+SchedulePresets._writeQueue = Promise.resolve()
+
+if (typeof window !== "undefined") {
+    window.SchedulePresets = SchedulePresets
+}
+})()

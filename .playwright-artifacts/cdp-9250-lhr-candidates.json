@@ -1,0 +1,164 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets/aircraft/22035/0?25",
+  "tools": "Plan from:\nOpen station\n▾\nOpen Route Assistant\n↻ Update\n☆ Watchlist this hub",
+  "candidatesText": "Range-fit only\nHide scheduled\n★ Watchlist\n🌊 Waves\nTop 10 ▾\nDEST\tDist\tTime\tPax\tCargo\tWkly\tAir\tSize\tFuel\tαY\tScore ▾\tR!\tDep\n⋮⋮☆DUBⓘ\t—\t—\t★8\t—\t140\t2\t—\t—\t—\t67\t—\t\n⋮⋮☆AMSⓘ\t—\t—\t★8\t—\t112\t2\t—\t—\t—\t64\t—\t\n⋮⋮☆JFKⓘ\t—\t—\t★9\t—\t154\t5\t—\t—\t—\t60\t—\t\n⋮⋮☆EDIⓘ\t—\t—\t★7\t—\t84\t1\t—\t—\t—\t59\t—\t\n⋮⋮☆GLAⓘ\t—\t—\t★7\t—\t84\t1\t—\t—\t—\t59\t—\t\n⋮⋮☆MADⓘ\t—\t—\t★7\t—\t98\t2\t—\t—\t—\t56\t—\t\n⋮⋮☆CDGⓘ\t—\t—\t★7\t—\t98\t2\t—\t—\t—\t56\t—\t\n⋮⋮☆GVAⓘ\t—\t—\t★7\t—\t91\t2\t—\t—\t—\t55\t—\t\n⋮⋮☆LISⓘ\t—\t—\t★7\t—\t84\t2\t—\t—\t—\t54\t—\t\n⋮⋮☆ZRHⓘ\t—\t—\t★7\t—\t84\t2\t—\t—\t—\t54\t—\t\n10 of 224 · sorted by Score desc",
+  "candidates": [
+    {
+      "i": 0,
+      "iata": "DUB",
+      "text": "⋮⋮☆DUBⓘ\t—\t—\t★8\t—\t140\t2\t—\t—\t—\t67\t—"
+    },
+    {
+      "i": 1,
+      "iata": "AMS",
+      "text": "⋮⋮☆AMSⓘ\t—\t—\t★8\t—\t112\t2\t—\t—\t—\t64\t—"
+    },
+    {
+      "i": 2,
+      "iata": "JFK",
+      "text": "⋮⋮☆JFKⓘ\t—\t—\t★9\t—\t154\t5\t—\t—\t—\t60\t—"
+    },
+    {
+      "i": 3,
+      "iata": "EDI",
+      "text": "⋮⋮☆EDIⓘ\t—\t—\t★7\t—\t84\t1\t—\t—\t—\t59\t—"
+    },
+    {
+      "i": 4,
+      "iata": "GLA",
+      "text": "⋮⋮☆GLAⓘ\t—\t—\t★7\t—\t84\t1\t—\t—\t—\t59\t—"
+    },
+    {
+      "i": 5,
+      "iata": "MAD",
+      "text": "⋮⋮☆MADⓘ\t—\t—\t★7\t—\t98\t2\t—\t—\t—\t56\t—"
+    },
+    {
+      "i": 6,
+      "iata": "CDG",
+      "text": "⋮⋮☆CDGⓘ\t—\t—\t★7\t—\t98\t2\t—\t—\t—\t56\t—"
+    },
+    {
+      "i": 7,
+      "iata": "GVA",
+      "text": "⋮⋮☆GVAⓘ\t—\t—\t★7\t—\t91\t2\t—\t—\t—\t55\t—"
+    },
+    {
+      "i": 8,
+      "iata": "LIS",
+      "text": "⋮⋮☆LISⓘ\t—\t—\t★7\t—\t84\t2\t—\t—\t—\t54\t—"
+    },
+    {
+      "i": 9,
+      "iata": "ZRH",
+      "text": "⋮⋮☆ZRHⓘ\t—\t—\t★7\t—\t84\t2\t—\t—\t—\t54\t—"
+    }
+  ],
+  "buttons": [
+    {
+      "i": 0,
+      "tag": "BUTTON",
+      "text": "Range-fit only",
+      "title": "Drop destinations the picked aircraft can't reach (5% margin via ScheduleFactors).",
+      "disabled": false
+    },
+    {
+      "i": 1,
+      "tag": "BUTTON",
+      "text": "Hide scheduled",
+      "title": "Drop destinations that already appear in the aircraft's current visual flight plan.",
+      "disabled": false
+    },
+    {
+      "i": 2,
+      "tag": "BUTTON",
+      "text": "★ Watchlist",
+      "title": "Show only routes starred in the Route Assistant watchlist (click ★ on a row to add).",
+      "disabled": false
+    },
+    {
+      "i": 3,
+      "tag": "BUTTON",
+      "text": "🌊 Waves",
+      "title": "Toggle the wave-pattern overlay above the table. Drag bands to move; drag edges to resize.",
+      "disabled": false
+    },
+    {
+      "i": 4,
+      "tag": "BUTTON",
+      "text": "Top 10 ▾",
+      "title": "Cycle the result cap: 5 → 10 → 25 → 50 → all.",
+      "disabled": false
+    },
+    {
+      "i": 5,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    },
+    {
+      "i": 6,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    },
+    {
+      "i": 7,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    },
+    {
+      "i": 8,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    },
+    {
+      "i": 9,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    },
+    {
+      "i": 10,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    },
+    {
+      "i": 11,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    },
+    {
+      "i": 12,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    },
+    {
+      "i": 13,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    },
+    {
+      "i": 14,
+      "tag": "INPUT",
+      "text": "09:00",
+      "title": "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply.",
+      "disabled": false
+    }
+  ]
+}

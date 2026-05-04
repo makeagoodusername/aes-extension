@@ -25,8 +25,9 @@ class CentralHubFleetHubTile extends window.CentralHubTile {
 
     watchedStorageKeys(ctx) {
         const server = String(ctx && ctx.server || "")
-        const airline = String(ctx && ctx.airline || "")
-        if (server && airline) return [server + airline + "aircraftFleet"]
+        if (!server) return []
+        const keys = this._fleetKeyCandidates(ctx).map(a => server + a + "aircraftFleet")
+        if (keys.length) return keys
         return server ? [server] : []
     }
 
@@ -37,40 +38,82 @@ class CentralHubFleetHubTile extends window.CentralHubTile {
         this.subscribeBus("focus-aircraft", ({aircraftId}) => {
             if (!aircraftId) return
             this._focusedAircraftId = String(aircraftId)
-            if (!this.expanded) this.toggle()
+            // toggle() kicks off its own async _renderBodySafe when expanding
+            // — only fire a second render when the tile was already expanded,
+            // otherwise the two async renders race and double-append the
+            // focus banner + focused-aircraft block into the same body host.
+            const wasExpanded = this.expanded
+            if (!wasExpanded) this.toggle()
             if (this.root) this.root.scrollIntoView({behavior: "smooth", block: "start"})
-            this._renderBodySafe()
+            if (wasExpanded) this._renderBodySafe()
         })
     }
 
     async _findFleetRecord() {
         const server = (this.ctx && this.ctx.server) || ""
-        const airline = (this.ctx && this.ctx.airline) || ""
         if (!server) return null
-        // Prefer the exact (server, airline) key when ctx supplies an airline;
-        // otherwise fall back to the legacy "newest by max time on this server"
-        // heuristic so single-airline users still see their fleet.
-        if (airline) {
-            const key = server + airline + "aircraftFleet"
-            const blob = await chrome.storage.local.get(key)
-            const rec = blob && blob[key]
-            if (rec && Array.isArray(rec.fleet) && rec.fleet.length) {
-                return {key, record: rec}
+        const candidates = this._fleetKeyCandidates(this.ctx)
+        // Prefer the exact key(s) the fleet scraper writes. On the dashboard
+        // ctx.airline is often the short airline code (e.g. CFA), while
+        // content_fleetManagement writes the sanitized top-nav identity
+        // (e.g. CFLAIR), so try both before scanning.
+        if (candidates.length) {
+            const exactKeys = candidates.map(a => server + a + "aircraftFleet")
+            const blob = await chrome.storage.local.get(exactKeys)
+            for (const key of exactKeys) {
+                const rec = blob && blob[key]
+                if (rec && Array.isArray(rec.fleet) && rec.fleet.length) {
+                    return {key, record: rec}
+                }
             }
-            return null
         }
         const all = await chrome.storage.local.get(null)
         let best = null
         let bestTime = ""
+        const wanted = new Set(candidates.map(a => this._normaliseAirline(a)))
         for (const k in all) {
             if (k.indexOf(server) !== 0) continue
             if (k.lastIndexOf("aircraftFleet") !== k.length - "aircraftFleet".length) continue
             const rec = all[k]
             if (!rec || !Array.isArray(rec.fleet) || !rec.fleet.length) continue
+            const recAirline = this._normaliseAirline(rec.airline || "")
+            if (wanted.size && recAirline && !wanted.has(recAirline)) continue
             const latest = rec.fleet.reduce((acc, a) => (a && a.time && a.time > acc) ? a.time : acc, "")
             if (!best || latest > bestTime) { best = {key: k, record: rec}; bestTime = latest }
         }
         return best
+    }
+
+    _fleetKeyCandidates(ctx) {
+        const out = []
+        const push = (value) => {
+            const clean = this._sanitizeAirlineKey(value)
+            if (clean && out.indexOf(clean) === -1) out.push(clean)
+        }
+        try {
+            if (typeof AES !== "undefined" && typeof AES.getAirlineIdentity === "function") {
+                push(AES.getAirlineIdentity())
+            }
+        } catch (_) { /* fall through */ }
+        try {
+            if (typeof AES !== "undefined" && typeof AES.getAirlineCode === "function") {
+                const a = AES.getAirlineCode()
+                push(a && a.name)
+                push(a && a.code)
+            }
+        } catch (_) { /* fall through */ }
+        push(ctx && ctx.airlineIdentity)
+        push(ctx && ctx.airline)
+        push(ctx && ctx.airlineCode)
+        return out
+    }
+
+    _sanitizeAirlineKey(value) {
+        return String(value || "").trim().replace(/[^A-Za-z0-9]/g, "")
+    }
+
+    _normaliseAirline(value) {
+        return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "")
     }
 
     async loadStatus() {
@@ -97,8 +140,14 @@ class CentralHubFleetHubTile extends window.CentralHubTile {
 
     async renderBody(ctx, host) {
         const T = window.AESTokens
+        // Re-entrancy guard — see notes in mount() handler. The shell's
+        // open-tile flow + concurrent refresh paths can fire two renders
+        // back-to-back before the first finishes its `_findFleetRecord`
+        // await, doubling the focused-aircraft block in the same body.
+        const gen = (this._renderGen = (this._renderGen || 0) + 1)
         host.textContent = ""
         const found = await this._findFleetRecord()
+        if (gen !== this._renderGen) return
         if (!found) {
             const empty = document.createElement("p")
             empty.style.cssText = "color:" + T.color.slate + ";margin:0;"

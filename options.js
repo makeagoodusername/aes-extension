@@ -231,7 +231,7 @@ function displayScheduleData(server, airline, type, div) {
     const tbody = $("<tbody></tbody>");
     const dates = ((dataPoints[server] || {})[airline] || {})[type] || [];
     dates.forEach(function (date) {
-        const blob = data[type + server + airline];
+        const blob = data[server + airline + type] || data[type + server + airline];
         const count = blob && blob.data && blob.data[date] && blob.data[date].schedule
             ? blob.data[date].schedule.length
             : 0;

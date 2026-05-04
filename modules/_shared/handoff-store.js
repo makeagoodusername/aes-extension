@@ -53,6 +53,10 @@
  *       aircraftId:  "12345",
  *       destIata:    "MIA",
  *       dropMin:     540,            // 0..1439, optional
+ *       depTime:     "09:00",        // optional; preferred over dropMin
+ *       dayMask:     [true,false,…], // optional Mon..Sun operating days
+ *       flightNumberText: "42",      // optional 1..4 digit suffix
+ *       fillForm:    true,           // optional; AFP page may pre-fill form
  *       source:      "dnd-grid",
  *       writtenAt:   1714123456789
  *     }
@@ -81,6 +85,21 @@ class AesHandoffStore {
                 payload.dropMin = Math.max(0, Math.min(1439, Math.round(Number(record.dropMin))))
             }
             if (record.hub) payload.hub = String(record.hub).toUpperCase()
+            if (record.depTime && /^(\d{1,2}):(\d{2})$/.test(String(record.depTime))) {
+                payload.depTime = String(record.depTime)
+            }
+            if (Array.isArray(record.dayMask) && record.dayMask.length >= 7) {
+                payload.dayMask = record.dayMask.slice(0, 7).map(Boolean)
+            }
+            if (record.flightNumberText != null) {
+                payload.flightNumberText = String(record.flightNumberText)
+                    .replace(/[^0-9]/g, "").slice(0, 4)
+            }
+            if (record.pricePct != null && isFinite(record.pricePct)) {
+                payload.pricePct = Number(record.pricePct)
+            }
+            if (typeof record.service === "string") payload.service = record.service
+            if (record.fillForm === true) payload.fillForm = true
         } else {
             if (!record.presetId) {
                 throw new Error("AesHandoffStore.set: presetId required for " + source + " source")

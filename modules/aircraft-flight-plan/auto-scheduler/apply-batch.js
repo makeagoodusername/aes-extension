@@ -58,9 +58,12 @@
         results:    [],
         legs:       [],
         ctx:        null,
+        source:     null,
+        reloadOnDone: false,
         progressListener: null,
         startResolve:     null
     }
+    const _BATCH_RESULT_STORE_KEY = "aircraftFlightPlan:autoApplyBatchResults"
 
     function _emit(name, payload) {
         const bus = window.AesAfp && window.AesAfp.bus
@@ -101,6 +104,151 @@
             if (found) return found
         }
         return {}
+    }
+
+    function _hasResultFor(legIdx, seq) {
+        return (_state.results || []).some(r => {
+            if (!r) return false
+            if (typeof legIdx === "number" && typeof r.legIdx === "number"
+                    && r.legIdx === legIdx) return true
+            return seq != null && r.seq != null && String(r.seq) === String(seq)
+        })
+    }
+
+    function _recountResults() {
+        const results = _state.results || []
+        _state.completed = results.length
+        _state.succeeded = results.filter(r => r && r.ok).length
+        _state.failed = results.filter(r => r && !r.ok).length
+    }
+
+    function _recordLegOutcome(msg, opts) {
+        const m = msg || {}
+        const legIdx = (typeof m.legIdx === "number") ? m.legIdx : null
+        const seq = m.seq
+        if (_hasResultFor(legIdx, seq)) return false
+        if (m.ok) _markAppliedInDraft(seq)
+        else if (m.error && !_state.lastError) _state.lastError = m.error
+        _state.results.push({
+            legIdx: legIdx,
+            seq:    seq,
+            ok:     !!m.ok,
+            error:  m.error || null,
+            flightId: m.flightId || null,
+            flightNumberText: m.flightNumberText || null,
+            verifyWarning: m.verifyWarning || null,
+            at:     Date.now(),
+            synthetic: !!(opts && opts.synthetic)
+        })
+        _recountResults()
+        const meta = _legMetaForIdx(legIdx, seq)
+        _logEntry({
+            batchId:    _state.batchId,
+            server:     _state.ctx && _state.ctx.server,
+            aircraftId: _state.ctx && _state.ctx.aircraftId,
+            hub:        _state.ctx && _state.ctx.currentLocationIata,
+            status:     m.ok ? "ok" : "failed",
+            legIdx:     legIdx,
+            seq:        seq,
+            origin:     meta.origin,
+            dest:       meta.destination,
+            depTime:    meta.depTime,
+            pricePct:   meta.pricePct,
+            service:    meta.service,
+            direction:  meta.direction,
+            waveLabel:  meta.waveLabel,
+            error:      m.ok ? null : m.error,
+            source:     opts && opts.synthetic ? "apply-batch-reconcile" : "apply-batch"
+        })
+        return true
+    }
+
+    function _reconcileFinalResults(resp) {
+        const list = Array.isArray(resp && resp.results) ? resp.results : []
+        for (const r of list) {
+            if (!r) continue
+            _recordLegOutcome({
+                legIdx: typeof r.legIdx === "number" ? r.legIdx : null,
+                seq:    r.seq,
+                ok:     !!r.ok,
+                error:  r.error || null,
+                flightId: r.flightId || null,
+                flightNumberText: r.flightNumberText || null,
+                verifyWarning: r.verifyWarning || null
+            }, {synthetic: true})
+        }
+        _recountResults()
+        if (resp && resp.error && !_state.lastError) _state.lastError = resp.error
+    }
+
+    async function _readStoredBatchResult(batchId) {
+        if (!batchId || typeof chrome === "undefined"
+                || !chrome.storage || !chrome.storage.local) return null
+        const got = await chrome.storage.local.get([_BATCH_RESULT_STORE_KEY])
+        const rec = got && got[_BATCH_RESULT_STORE_KEY]
+        const entry = rec && rec.entries && rec.entries[String(batchId)]
+        return entry && entry.response ? entry.response : null
+    }
+
+    function _settleBatchError(generatedBatchId, errorMessage, resolve) {
+        _state.finishedAt = _state.finishedAt || Date.now()
+        _state.lastError = errorMessage || "runtime error"
+        _emit("error", {batchId: generatedBatchId, error: _state.lastError})
+        _markScheduleStale(_state.ctx)
+        const out = {ok: false, error: _state.lastError, batchId: generatedBatchId,
+                     results: _state.results.slice(), total: _state.total,
+                     succeeded: _state.succeeded, failed: _state.failed}
+        _resetForNextBatch()
+        resolve(out)
+    }
+
+    function _settleBatchResponse(generatedBatchId, resp, resolve) {
+        _state.finishedAt = _state.finishedAt || Date.now()
+        _reconcileFinalResults(resp)
+        const ok = !!(resp && resp.ok)
+        if (resp && resp.aborted) _state.aborted = true
+        _emit(_state.aborted ? "aborted" : "done", {
+            batchId:   generatedBatchId,
+            ok:        ok,
+            results:   _state.results.slice(),
+            succeeded: _state.succeeded,
+            failed:    _state.failed,
+            aborted:   _state.aborted,
+            error:     _state.lastError,
+            finishedAt: _state.finishedAt
+        })
+        if (_state.reloadOnDone && !_state.aborted && _state.succeeded > 0) {
+            _reloadCurrentAfpPage(_state.source)
+        }
+        // Slice 5e — close out the batch lifecycle entry.
+        _logEntry({
+            ts:         _state.finishedAt,
+            batchId:    generatedBatchId,
+            server:     _state.ctx && _state.ctx.server,
+            aircraftId: _state.ctx && _state.ctx.aircraftId,
+            hub:        _state.ctx && _state.ctx.currentLocationIata,
+            status:     _state.aborted ? "aborted"
+                      : _state.lastError ? "error"
+                      : "done",
+            total:      _state.total,
+            succeeded:  _state.succeeded,
+            failed:     _state.failed,
+            elapsedMs:  _state.finishedAt - _state.startedAt,
+            error:      _state.lastError || null,
+            source:     "apply-batch"
+        })
+        const out = Object.assign({},
+            resp || {ok: false},
+            {
+                batchId:   generatedBatchId,
+                results:   _state.results.slice(),
+                succeeded: _state.succeeded,
+                failed:    _state.failed,
+                total:     _state.total
+            })
+        _markScheduleStale(_state.ctx)
+        _resetForNextBatch()
+        resolve(out)
     }
 
     function _resetForNextBatch() {
@@ -144,45 +292,32 @@
             .catch(err => console.warn("[AES auto-5c] mark-applied persist failed", err))
     }
 
+    function _isFlightStudioSource(source) {
+        return /^flight-studio(?:$|[-:])/.test(String(source || ""))
+    }
+
+    function _reloadCurrentAfpPage(reason) {
+        if (typeof window === "undefined" || !window.location) return
+        try {
+            const url = String(window.location && window.location.href || "")
+            if (!/\/app\/fleets\/aircraft\/\d+\/0\b/.test(url)) return
+            setTimeout(() => {
+                try { window.location.reload() }
+                catch (e) { console.warn("[AES auto-5c] post-apply reload failed", e) }
+            }, 1200)
+            console.info("[AES auto-5c] scheduled post-apply AFP reload", reason || "")
+        } catch (e) {
+            console.warn("[AES auto-5c] post-apply reload scheduling threw", e)
+        }
+    }
+
     function _onProgressMessage(msg /*, sender, sendResponse */) {
         if (!msg || msg.type !== "aes:afp:apply-batch:progress") return
         if (msg.batchId !== _state.batchId) return
         if (msg.phase === "leg-done") {
-            _state.completed++
-            if (msg.ok) {
-                _state.succeeded++
-                _markAppliedInDraft(msg.seq)
-            } else {
-                _state.failed++
-                if (msg.error && !_state.lastError) _state.lastError = msg.error
-            }
-            _state.results.push({
-                legIdx: msg.legIdx,
-                seq:    msg.seq,
-                ok:     !!msg.ok,
-                error:  msg.error || null,
-                at:     Date.now()
-            })
-            // Slice 5e — persist per-leg outcome for the retry queue.
-            const meta = _legMetaForIdx(msg.legIdx, msg.seq)
-            _logEntry({
-                batchId:    _state.batchId,
-                server:     _state.ctx && _state.ctx.server,
-                aircraftId: _state.ctx && _state.ctx.aircraftId,
-                hub:        _state.ctx && _state.ctx.currentLocationIata,
-                status:     msg.ok ? "ok" : "failed",
-                legIdx:     msg.legIdx,
-                seq:        msg.seq,
-                origin:     meta.origin,
-                dest:       meta.destination,
-                depTime:    meta.depTime,
-                pricePct:   meta.pricePct,
-                service:    meta.service,
-                direction:  meta.direction,
-                waveLabel:  meta.waveLabel,
-                error:      msg.ok ? null : msg.error,
-                source:     "apply-batch"
-            })
+            _recordLegOutcome(msg)
+        } else if (msg.phase === "done" && Array.isArray(msg.results)) {
+            _reconcileFinalResults(msg)
         }
         _emit("progress", msg)
     }
@@ -201,6 +336,8 @@
             return {ok: false, error: "batch already in flight (id " + _state.batchId + ")"}
         }
         const p = payload || {}
+        const source = (p.source && String(p.source).slice(0, 64)) || "preview-panel"
+        const isFlightStudio = _isFlightStudioSource(source)
         const ctxR = (p.ctx && typeof p.ctx === "object")
             ? p.ctx
             : ((window.AesAfp && AesAfp.ctx) || {})
@@ -237,11 +374,14 @@
         }
 
         // Defensive tier-gate re-check (slice 5b also enforces).
+        // Flight Studio is a separate, user-confirmed route-creation surface:
+        // its Apply button already opens the mandatory confirmation modal and
+        // should not be blocked by the auto-scheduler preview/apply tier.
         if (typeof AesAfpSettings !== "undefined") {
             try {
                 const s = await AesAfpSettings.load()
                 const a = s && s.autoScheduler
-                if (!a || a.enabled !== true || a.tier !== "apply-on-confirm") {
+                if (!isFlightStudio && (!a || a.enabled !== true || a.tier !== "apply-on-confirm")) {
                     const reason = "autoScheduler tier gate dormant"
                         + " (enabled=" + ((a && a.enabled) ? "true" : "false")
                         + ", tier=" + ((a && a.tier) || "?") + ")"
@@ -272,9 +412,12 @@
         _state.lastError  = null
         _state.results    = []
         _state.legs       = legs.slice()
+        _state.source     = source
+        _state.reloadOnDone = !!p.reloadOnDone || isFlightStudio
         _state.ctx        = {
             server:               ctxR.server               || "",
             aircraftId:           String(ctxR.aircraftId    || ""),
+            registration:         ctxR.registration         || "",
             currentLocationIata:  ctxR.currentLocationIata  || ""
         }
 
@@ -315,57 +458,27 @@
                 chrome.runtime.sendMessage({
                     type:       "aes:afp:apply-batch",
                     aircraftId: _state.ctx.aircraftId,
+                    registration: _state.ctx.registration,
                     batchId:    generatedBatchId,
                     legs:       _state.legs
                 }, (resp) => {
                     const lastErr = chrome.runtime.lastError
-                    _state.finishedAt = Date.now()
-                    if (lastErr) {
-                        _state.lastError = lastErr.message || "runtime error"
-                        _emit("error", {batchId: generatedBatchId, error: _state.lastError})
-                        _markScheduleStale(_state.ctx)
-                        const out = {ok: false, error: _state.lastError, batchId: generatedBatchId,
-                                     results: _state.results.slice(), total: _state.total}
-                        _resetForNextBatch()
-                        resolve(out)
-                        return
-                    }
-                    const ok = !!(resp && resp.ok)
-                    if (resp && resp.error && !_state.lastError) _state.lastError = resp.error
-                    if (resp && resp.aborted) _state.aborted = true
-                    _emit(_state.aborted ? "aborted" : "done", {
-                        batchId:   generatedBatchId,
-                        ok:        ok,
-                        results:   _state.results.slice(),
-                        succeeded: _state.succeeded,
-                        failed:    _state.failed,
-                        aborted:   _state.aborted,
-                        error:     _state.lastError,
-                        finishedAt: _state.finishedAt
+                    ;(async () => {
+                        _state.finishedAt = Date.now()
+                        if (lastErr) {
+                            const stored = await _readStoredBatchResult(generatedBatchId).catch(() => null)
+                            if (stored) {
+                                _settleBatchResponse(generatedBatchId, stored, resolve)
+                            } else {
+                                _settleBatchError(generatedBatchId,
+                                    lastErr.message || "runtime error", resolve)
+                            }
+                            return
+                        }
+                        _settleBatchResponse(generatedBatchId, resp, resolve)
+                    })().catch(e => {
+                        _settleBatchError(generatedBatchId, (e && e.message) || String(e), resolve)
                     })
-                    // Slice 5e — close out the batch lifecycle entry.
-                    _logEntry({
-                        ts:         _state.finishedAt,
-                        batchId:    generatedBatchId,
-                        server:     _state.ctx && _state.ctx.server,
-                        aircraftId: _state.ctx && _state.ctx.aircraftId,
-                        hub:        _state.ctx && _state.ctx.currentLocationIata,
-                        status:     _state.aborted ? "aborted"
-                                  : _state.lastError ? "error"
-                                  : "done",
-                        total:      _state.total,
-                        succeeded:  _state.succeeded,
-                        failed:     _state.failed,
-                        elapsedMs:  _state.finishedAt - _state.startedAt,
-                        error:      _state.lastError || null,
-                        source:     "apply-batch"
-                    })
-                    const out = Object.assign({},
-                        resp || {ok: false},
-                        {batchId: generatedBatchId, results: _state.results.slice()})
-                    _markScheduleStale(_state.ctx)
-                    _resetForNextBatch()
-                    resolve(out)
                 })
             } catch (e) {
                 _state.lastError = (e && e.message) || String(e)

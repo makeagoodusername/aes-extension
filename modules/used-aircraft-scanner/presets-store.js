@@ -394,8 +394,7 @@ class UsedAircraftPresets {
         block.watchlist   = Array.isArray(stored.watchlist) ? stored.watchlist.slice() : []
         block.schedule    = Object.assign({}, defaults.schedule,   stored.schedule    || {})
         if (!settings.usedAircraftScanner) {
-            settings.usedAircraftScanner = block
-            await chrome.storage.local.set({settings: settings})
+            await window.AesSettings.saveArea("usedAircraftScanner", block)
         }
         return block
     }
@@ -405,15 +404,12 @@ class UsedAircraftPresets {
      * Pass an object with only the fields you want to change.
      */
     static async save(partial) {
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
         const current = Object.assign(
             {}, UsedAircraftPresets._defaults(),
-            settings.usedAircraftScanner || {},
+            await window.AesSettings.getArea("usedAircraftScanner"),
             partial
         )
-        settings.usedAircraftScanner = current
-        await chrome.storage.local.set({settings: settings})
+        await window.AesSettings.saveArea("usedAircraftScanner", current)
         return current
     }
 
@@ -499,4 +495,8 @@ class UsedAircraftPresets {
             blurb:      source.blurb
         })
     }
+}
+
+if (typeof window !== "undefined") {
+    window.UsedAircraftPresets = UsedAircraftPresets
 }

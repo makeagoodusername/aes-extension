@@ -33,6 +33,53 @@ class CentralHubToolsTile extends window.CentralHubTile {
     async renderBody(ctx, host) {
         const T = window.AESTokens
         host.textContent = ""
+
+        // F-DASH-505 — utility actions row (in-extension tools, not links).
+        const actions = document.createElement("div")
+        actions.style.cssText = [
+            "display:flex",
+            "flex-wrap:wrap",
+            "gap:" + T.sp[2],
+            "margin-bottom:" + T.sp[3]
+        ].join(";")
+        const palAvail = !!(window.AESCommandPalette && typeof window.AESCommandPalette.open === "function")
+        const palBtn = this._actionBtn(T, "Open command palette", () => {
+            if (palAvail) window.AESCommandPalette.open()
+        })
+        palBtn.disabled = !palAvail
+        if (!palAvail) palBtn.title = "Command palette not loaded."
+        actions.append(palBtn)
+
+        const cleanAvail = !!(window.AesCleanup && typeof window.AesCleanup.runAll === "function")
+        const cleanBtn = this._actionBtn(T, "Run all cleanups", async () => {
+            if (!cleanAvail) return
+            cleanBtn.disabled = true
+            const orig = cleanBtn.textContent
+            cleanBtn.textContent = "Running…"
+            try { await window.AesCleanup.runAll({reason: "manual-tools-tile"}) }
+            catch (e) { console.warn("[AES tools] runAll failed", e) }
+            cleanBtn.textContent = "Done"
+            setTimeout(() => { cleanBtn.textContent = orig; cleanBtn.disabled = false }, 1500)
+        })
+        cleanBtn.disabled = !cleanAvail
+        if (!cleanAvail) cleanBtn.title = "Cleanup registry not loaded."
+        actions.append(cleanBtn)
+
+        const clHistAvail = !!(window.AesDataBus && typeof window.AesDataBus.clearHistory === "function")
+        const clHistBtn = this._actionBtn(T, "Clear bus history", () => {
+            if (clHistAvail) window.AesDataBus.clearHistory()
+        })
+        clHistBtn.disabled = !clHistAvail
+        if (!clHistAvail) clHistBtn.title = "Data bus not loaded."
+        actions.append(clHistBtn)
+
+        const optsBtn = this._actionBtn(T, "Open options page →", () => {
+            try { chrome.runtime.openOptionsPage() }
+            catch (_) { window.open(chrome.runtime.getURL("options.html"), "_blank") }
+        })
+        actions.append(optsBtn)
+        host.appendChild(actions)
+
         const links = [
             {label: "Handbook (Google Docs)", href: "https://docs.google.com/document/d/1hzMHb3hTBXSZNtuDKoBuvx1HP9CgB7wVYR59yDYympg/", external: true},
             {label: "GitHub repo",             href: "https://github.com/ZoeBijl/airlinesim-enhancement-suite", external: true},
@@ -96,6 +143,24 @@ class CentralHubToolsTile extends window.CentralHubTile {
             list.appendChild(li)
         }
         host.appendChild(list)
+    }
+
+    _actionBtn(T, label, onClick) {
+        const b = document.createElement("button")
+        b.type = "button"
+        b.textContent = label
+        b.style.cssText = [
+            "background:" + T.color.bone,
+            "color:" + T.color.oxide,
+            "border:" + T.geom.bw1 + " solid " + T.color.oxide,
+            "border-radius:" + T.geom.radius,
+            "padding:" + T.sp[1] + " " + T.sp[3],
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body,
+            "cursor:pointer"
+        ].join(";")
+        b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); onClick() })
+        return b
     }
 
     _bugReportUrl() {

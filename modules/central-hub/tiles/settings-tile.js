@@ -19,6 +19,13 @@ class CentralHubSettingsTile extends window.CentralHubTile {
 
     openHandler() {
         return () => {
+            // Prefer the in-page Unified Settings modal — the body CTAs use it,
+            // and bouncing to the legacy options page on the title-bar arrow
+            // makes the two paths inconsistent.
+            if (window.AesUnifiedSettings && typeof window.AesUnifiedSettings.open === "function") {
+                window.AesUnifiedSettings.open()
+                return
+            }
             try { chrome.runtime.openOptionsPage() }
             catch (_) { window.open(chrome.runtime.getURL("options.html"), "_blank") }
         }
@@ -123,6 +130,34 @@ class CentralHubSettingsTile extends window.CentralHubTile {
             openBtn.style.cssText += ";background:" + T.color.oxide + ";color:" + T.color.bone + ";border-color:" + T.color.oxide
             usWrap.append(lbl, openBtn)
             host.appendChild(usWrap)
+
+            // F-DASH-504 — quick-jump to common tabs without leaving the hub.
+            const tabs = [
+                ["customisation", "Customisation"],
+                ["modules",       "Modules"],
+                ["account",       "Account"],
+                ["data",          "Data"],
+                ["about",         "About"]
+            ]
+            const tabRow = document.createElement("div")
+            tabRow.style.cssText = [
+                "display:flex",
+                "flex-wrap:wrap",
+                "gap:" + T.sp[2],
+                "margin-top:" + T.sp[3]
+            ].join(";")
+            for (const [tabId, label] of tabs) {
+                const btn = this._actionBtn(T, label, () => {
+                    if (typeof window.AesUnifiedSettings.setActiveTab === "function") {
+                        window.AesUnifiedSettings.open()
+                        window.AesUnifiedSettings.setActiveTab(tabId)
+                    } else {
+                        window.AesUnifiedSettings.open()
+                    }
+                })
+                tabRow.appendChild(btn)
+            }
+            host.appendChild(tabRow)
             return
         }
 

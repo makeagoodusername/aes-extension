@@ -229,3 +229,6 @@ class MarketScanPriceHistory {
 })()
 
 if (typeof module !== "undefined" && module.exports) module.exports = MarketScanPriceHistory
+if (typeof window !== "undefined") {
+    window.MarketScanPriceHistory = MarketScanPriceHistory
+}

@@ -173,3 +173,7 @@ class RouteAssistantYieldHistoryStore {
     /** L3 deprecated — preserve for any reader still doing key arithmetic. */
     static get CACHE_PREFIX() { return RouteAssistantYieldHistoryStore.LEGACY_PREFIX }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantYieldHistoryStore = RouteAssistantYieldHistoryStore
+}

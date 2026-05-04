@@ -59,24 +59,31 @@ class Validation {
     }
 
     /**
-     * Check that all "Service Classes" are selected. Anchored on the
-     * fieldset's `<legend>` text plus the inputs' stable
-     * `name="serviceClasses"`.
+     * Check that at least one "Service Classes" filter is selected. The
+     * inventory auto-pricer works per class, so routes can legitimately be
+     * analyzed with only Y/C/F/Cargo subsets visible.
      */
     checkServiceClasses() {
         let valid
-        const messages = []
+        let total = 0
+        let checked = 0
         const labels = Validation._fieldsetByLegend("Service Classes").find('label')
         labels.each(function () {
             const input = $('input[name="serviceClasses"]', this)[0]
-            if (!input || !input.checked) {
-                valid = false
-                messages.push(`Please check “${$(this).text().trim()}” under “Service Classes” in the “Data”-panel`)
+            if (!input) {
+                return
+            }
+            total++
+            if (input.checked) {
+                checked++
             }
         })
+        if (total > 0 && checked === 0) {
+            valid = false
+        }
         if (valid === false) {
             this.valid = valid
-            this.errors.push(...messages)
+            this.errors.push("Please select at least one Service Class in the Data-panel")
         }
     }
 

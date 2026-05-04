@@ -53,11 +53,14 @@
     }
 
     /**
-     * Pull the longest haul from a preset by reading its waves' composition
-     * + matching against the rangeBuckets factor. Falls back to 6500nm
-     * (~12000km, A380 territory) when the preset has no buckets defined.
+     * Pull the longest haul. Prefer caller-provided built-plan distance so
+     * range-fit reflects the actual legs, not the preset bucket ceiling.
+     * Falls back to the preset's waves composition + rangeBuckets factor,
+     * then 6500nm (~12000km, A380 territory).
      */
-    function _maxHaulNm(preset) {
+    function _maxHaulNm(preset, opts) {
+        const explicit = Number(opts && opts.maxHaulNm)
+        if (isFinite(explicit) && explicit > 0) return explicit
         if (!preset || !preset.factors) return 6500
         const buckets = preset.factors.rangeBuckets
         if (!buckets || typeof buckets !== "object") return 6500
@@ -152,6 +155,12 @@
         body.appendChild(empty)
     }
 
+    function _aircraftLocation(aircraft) {
+        return String((aircraft && (aircraft.currentLocationIata
+            || aircraft.locationIata
+            || aircraft.location)) || "").trim().toUpperCase()
+    }
+
     /**
      * Build one aircraft row (header + checkbox + meta). Returns the row
      * element + a `applyState({checked})` mutator the caller invokes when
@@ -159,8 +168,9 @@
      */
     function _buildRow(aircraft, ctx) {
         const tr = document.createElement("tr")
+        const loc = _aircraftLocation(aircraft)
         tr.dataset.aircraftId = String(aircraft.aircraftId || "")
-        tr.dataset.location   = String(aircraft.currentLocationIata || aircraft.locationIata || "")
+        tr.dataset.location   = loc
         tr.dataset.fitOk      = "1"   // updated below
 
         const tdSel = document.createElement("td")
@@ -175,7 +185,7 @@
         const cells = [
             {key: "registration", text: aircraft.registration || "(no reg)"},
             {key: "equipment",    text: aircraft.equipment    || "(no type)"},
-            {key: "location",     text: aircraft.currentLocationIata || aircraft.locationIata || "—"},
+            {key: "location",     text: loc || "—"},
             {key: "range",        text: "…"},   // filled async
             {key: "fit",          text: "…"},
             {key: "badges",       text: ""}
@@ -363,7 +373,7 @@
             // Async fleet load
             _renderEmptyBody(body, "Loading fleet…")
 
-            const maxHaulNm = _maxHaulNm(preset)
+            const maxHaulNm = _maxHaulNm(preset, o)
             const ctx = {
                 server: server,
                 airlineCode: airlineCode,
@@ -415,7 +425,7 @@
             fNone.addEventListener("click", () => {
                 body.querySelectorAll('input[data-aes-picker]').forEach(cb => { cb.checked = false })
                 ctx.applyFilters()
-            })
+            });
 
             // Load + render. Catches all to ensure modal still resolves on storage errors.
             (async () => {
@@ -434,6 +444,17 @@
                 if (!aircraft.length) {
                     _renderEmptyBody(body, "No aircraft in fleet roster. Visit /app/fleets to populate it.")
                     return
+                }
+
+                if (hub && fHubCb.checked) {
+                    const hasHubMatch = aircraft.some(a => _aircraftLocation(a) === hub)
+                    if (!hasHubMatch) {
+                        const hasLocationData = aircraft.some(a => !!_aircraftLocation(a))
+                        fHubCb.checked = false
+                        fHub.title = hasLocationData
+                            ? "No cached aircraft location matches " + hub + "."
+                            : "Cached fleet has no aircraft locations; showing all range-fit aircraft."
+                    }
                 }
 
                 body.textContent = ""

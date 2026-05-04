@@ -1,3 +1,10 @@
+"use strict"
+
+;(function () {
+    if (typeof window !== "undefined") {
+        if (window.ScheduleFactors) return
+    }
+
 /**
  * Shared utilities for the schedule-management module.
  *
@@ -148,3 +155,8 @@ class ScheduleFactors {
         return t >= s || t <= e
     }
 }
+
+if (typeof window !== "undefined") {
+    window.ScheduleFactors = ScheduleFactors
+}
+})()

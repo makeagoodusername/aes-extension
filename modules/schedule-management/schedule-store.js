@@ -110,3 +110,7 @@ class ScheduleStore {
         await chrome.storage.local.remove(keys)
     }
 }
+
+if (typeof window !== "undefined") {
+    window.ScheduleStore = ScheduleStore
+}

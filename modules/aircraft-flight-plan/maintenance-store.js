@@ -46,10 +46,23 @@ class AesAfpMaintenanceStore {
         }
     }
 
+    static _contextInvalidated(err) {
+        const msg = err && err.message ? err.message : String(err || "")
+        return /Extension context invalidated/i.test(msg)
+    }
+
     static async load(server, aircraftId) {
         if (!server || !aircraftId) return AesAfpMaintenanceStore._empty(server, aircraftId)
         const key = AesAfpMaintenanceStore._key(server, aircraftId)
-        const out = await chrome.storage.local.get([key])
+        let out = {}
+        try {
+            out = await chrome.storage.local.get([key])
+        } catch (err) {
+            if (AesAfpMaintenanceStore._contextInvalidated(err)) {
+                return AesAfpMaintenanceStore._empty(server, aircraftId)
+            }
+            throw err
+        }
         const rec = out[key]
         if (!rec || typeof rec !== "object") {
             return AesAfpMaintenanceStore._empty(server, aircraftId)
@@ -108,23 +121,50 @@ class AesAfpMaintenanceStore {
         }
 
         const key = AesAfpMaintenanceStore._key(server, aircraftId)
-        await chrome.storage.local.set({[key]: next})
-        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
-            window.AesDataBus.emit("data:afp:maintenance:updated", {
-                server,
-                aircraftId:  next.aircraftId,
-                ratioStatus: next.ratioStatus
-            })
-            if (next.ratioStatus === "bad" || next.ratioStatus === "warn") {
-                window.AesDataBus.emit("signal:strategy:wear-pressure", {
-                    server,
-                    aircraftId: next.aircraftId,
-                    severity:   next.ratioStatus === "bad" ? 1 : 0.5,
-                    ratio:      next.ratio
-                })
+        const events = AesAfpMaintenanceStore._eventsFor(server, next)
+        try {
+            if (window.AesWriteThrough && typeof window.AesWriteThrough.put === "function") {
+                await window.AesWriteThrough.put(key, next, {events})
+            } else {
+                await chrome.storage.local.set({[key]: next})
+                AesAfpMaintenanceStore._emitEvents(events)
             }
+        } catch (err) {
+            if (AesAfpMaintenanceStore._contextInvalidated(err)) return null
+            throw err
         }
         return next
+    }
+
+    static _eventsFor(server, rec) {
+        const events = [{
+            topic: "data:afp:maintenance:updated",
+            hint:  {
+                server,
+                aircraftId:  rec.aircraftId,
+                ratioStatus: rec.ratioStatus
+            }
+        }]
+        if (rec.ratioStatus === "bad" || rec.ratioStatus === "warn") {
+            events.push({
+                topic: "signal:strategy:wear-pressure",
+                hint:  {
+                    server,
+                    aircraftId: rec.aircraftId,
+                    severity:   rec.ratioStatus === "bad" ? 1 : 0.5,
+                    ratio:      rec.ratio
+                }
+            })
+        }
+        return events
+    }
+
+    static _emitEvents(events) {
+        if (!window.AesDataBus || typeof window.AesDataBus.emit !== "function") return
+        for (const ev of events || []) {
+            if (!ev || !ev.topic) continue
+            window.AesDataBus.emit(ev.topic, ev.hint || {})
+        }
     }
 
     /**

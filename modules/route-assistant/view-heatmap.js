@@ -234,6 +234,10 @@ class RouteAssistantHeatmapView {
     }
 }
 
+if (typeof window !== "undefined") {
+    window.RouteAssistantHeatmapView = RouteAssistantHeatmapView
+}
+
 /**
  * Three-stop interpolated cell colour: deep blue (cold) → muted amber (mid)
  * → vibrant green (hot). Avoids the green→red traffic-light convention

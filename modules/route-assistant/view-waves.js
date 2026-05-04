@@ -28,3 +28,7 @@ class RouteAssistantWaveView {
         return panel._renderWaveOverlay(sorted)
     }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantWaveView = RouteAssistantWaveView
+}

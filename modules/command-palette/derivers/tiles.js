@@ -49,7 +49,7 @@
             if (registered.has(spec.id)) continue;
 
             const tileId = spec.id;
-            const label = "Open " + tileLabel(tileId);
+            const label = "Open " + tileLabel(tileId) + " tile";
             const unreg = reg.register({
                 id: "tile.open." + tileId,
                 scope: "dashboard",

@@ -126,12 +126,26 @@ class AesRouteLauncherAircraftPicker {
 
     async _resolveHubs(aircraft) {
         this._hubByAcId.clear()
-        if (!window.AesAfpActiveDraftStore) return
         await Promise.all(aircraft.map(async a => {
-            try {
-                const d = await window.AesAfpActiveDraftStore.load(this.server, a.aircraftId)
-                if (d && d.hub) this._hubByAcId.set(String(a.aircraftId), d.hub)
-            } catch (_) { /* skip */ }
+            if (window.AesAfpActiveDraftStore) {
+                try {
+                    const d = await window.AesAfpActiveDraftStore.load(this.server, a.aircraftId)
+                    if (d && d.hub) this._hubByAcId.set(String(a.aircraftId), d.hub)
+                } catch (_) { /* skip */ }
+            }
+            if (!this._hubByAcId.has(String(a.aircraftId)) && window.AesAfpStateStore) {
+                try {
+                    const s = await window.AesAfpStateStore.load(this.server, a.aircraftId)
+                    const loc = s && /^[A-Z]{3}$/.test(String(s.currentLocationIata || "").toUpperCase())
+                        ? String(s.currentLocationIata).toUpperCase() : null
+                    if (loc) this._hubByAcId.set(String(a.aircraftId), loc)
+                } catch (_) { /* skip */ }
+            }
+            if (!this._hubByAcId.has(String(a.aircraftId))) {
+                const loc = /^[A-Z]{3}$/.test(String(a.location || "").toUpperCase())
+                    ? String(a.location).toUpperCase() : null
+                if (loc) this._hubByAcId.set(String(a.aircraftId), loc)
+            }
         }))
     }
 

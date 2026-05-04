@@ -67,6 +67,20 @@
         try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
     }
 
+    /**
+     * H-004 — Tail-Promise queue per storage key. Serializes read-modify-write
+     * mutators (append/update/clear) so two concurrent callers cannot both
+     * read the same baseline array and have the second clobber the first's
+     * write. Pure reads (all/active/findActive) skip the queue.
+     */
+    const _tails = Object.create(null)
+    function _enqueue(key, work) {
+        const prev = _tails[key] || Promise.resolve()
+        const next = prev.then(work, work)
+        _tails[key] = next.catch(() => { /* drop chain errors */ })
+        return next
+    }
+
     async function all(host) {
         return await _read(_key(host))
     }
@@ -84,25 +98,31 @@
     async function append(host, instance) {
         const key = _key(host)
         if (!key || !instance) return
-        const arr = await _read(key)
-        arr.push(instance)
-        await _write(key, arr)
+        return _enqueue(key, async () => {
+            const arr = await _read(key)
+            arr.push(instance)
+            await _write(key, arr)
+        })
     }
 
     async function update(host, instance) {
         const key = _key(host)
         if (!key || !instance) return
-        const arr = await _read(key)
-        const idx = arr.findIndex(i => i && i.instanceId === instance.instanceId)
-        if (idx < 0) arr.push(instance)
-        else         arr[idx] = instance
-        await _write(key, arr)
+        return _enqueue(key, async () => {
+            const arr = await _read(key)
+            const idx = arr.findIndex(i => i && i.instanceId === instance.instanceId)
+            if (idx < 0) arr.push(instance)
+            else         arr[idx] = instance
+            await _write(key, arr)
+        })
     }
 
     async function clear(host) {
         const key = _key(host)
         if (!key) return
-        try { await chrome.storage.local.set({[key]: []}) } catch (_) { /* noop */ }
+        return _enqueue(key, async () => {
+            try { await chrome.storage.local.set({[key]: []}) } catch (_) { /* noop */ }
+        })
     }
 
     window.AesConductorRoutineStore = {all, active, findActive, append, update, clear, PREFIX, CAP}

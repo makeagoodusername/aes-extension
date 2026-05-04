@@ -233,7 +233,24 @@ class RouteAssistantSettings {
                 crewCostPerHour:        0,       // AS$ per block hour (default 0 = disabled)
                 maintenanceCostPerHour: 0,       // AS$ per block hour (default 0 = disabled)
                 otherFixedPerFlight:    0,       // AS$ per round-trip — leasing/insurance amortised
-                falloffYieldMultiplier: 0.85
+                falloffYieldMultiplier: 0.85,
+
+                // Per-cabin pax economics. When set, the profit estimator
+                // partitions paxSeats across Y/C/F using `classShares` and
+                // prices each cabin with its own yield + LF range driven off
+                // the same paxScore. Cargo is sized via `cargoYieldPerKgKm`
+                // (above) and reported alongside in `breakdown.byClass.Cargo`.
+                // Defaults match a generic two-cabin widebody — adjust per
+                // route-class via the Settings → Economics panel.
+                classYields: {
+                    Y: { yieldPerKm: 0.10, loadFactorMin: 0.55, loadFactorMax: 0.92, demandSensitivity: 0 },
+                    C: { yieldPerKm: 0.32, loadFactorMin: 0.45, loadFactorMax: 0.85, demandSensitivity: 0 },
+                    F: { yieldPerKm: 0.65, loadFactorMin: 0.30, loadFactorMax: 0.75, demandSensitivity: 0 }
+                },
+                // Cabin allocation when AS aircraft config doesn't expose
+                // per-class seat counts. Auto-normalised, so values that
+                // don't sum to 1 still produce a sensible split.
+                classShares: { Y: 0.78, C: 0.16, F: 0.06 }
             },
             pricing: {
                 // Tier 1 — visibility layer.
@@ -251,7 +268,7 @@ class RouteAssistantSettings {
                 // without any AS-side effect. Tier 3.2 flips dryRunOnly's
                 // default to false; Tier 3.3 adds the silent-auto loop.
                 apply: {
-                    enabled:               false,   // top-level kill switch — false = no writes regardless of dryRunOnly
+                    enabled:               true,
                     dryRunOnly:            false,   // 3.2 default; user can re-enable via Settings → Auto-Pricing toggle
                     // Endpoint dispatch — "markets" (default) targets the
                     // route-level form at `/app/com/markets/<HUB><DEST>`;
@@ -338,7 +355,22 @@ class RouteAssistantSettings {
                     silentAutoOrsMaxAgeMin:               60,
                     silentAutoStaleCompetitorWarnDays:    7,
                     silentAutoBlockOnStaleCompetitors:    false,
-                    silentAutoStrategySnapshotMaxAgeMin:  10
+                    silentAutoStrategySnapshotMaxAgeMin:  10,
+
+                    // Per-class apply gates. `enabled` skips the class
+                    // entirely (price preserved at AS-current); `deadband`
+                    // and `maxMove` override the route-level thresholds for
+                    // that one class only. null = inherit. The proposer
+                    // (price-moves.js) reads `enabled` to decide whether to
+                    // emit a move; the applier preflight reads `deadband`
+                    // for its largeDelta warning. Default cargo to enabled
+                    // since user explicitly asked for cargo coverage.
+                    classes: {
+                        Y:     { enabled: true,  deadband: null, maxMove: null },
+                        C:     { enabled: true,  deadband: null, maxMove: null },
+                        F:     { enabled: true,  deadband: null, maxMove: null },
+                        Cargo: { enabled: true,  deadband: null, maxMove: null }
+                    }
                 },
 
                 // Silent auto-pricing loop. The first flip of
@@ -357,12 +389,22 @@ class RouteAssistantSettings {
                 silentAutoMaxPerHour:   5,   // hard cap in any 1h window; 0 = disabled
                 silentAutoMinDeltaPct:  3,   // |Δ%| below this is skipped (proposer noise floor)
                 silentAutoMaxStepPct:   10,  // |Δ%| clamp — single biggest move per route per tick
-                silentAutoStrategy:     "competitor-median",  // pluggable; v1 ships one
+                silentAutoStrategy:     "per-class-elasticity",  // Y/C/F/Cargo demand-aware default; existing users keep their persisted setting via deep-merge
                 silentAutoFollowMode:   "watchlist",          // "watchlist" (★-only) | "all" (every eligible route)
                 silentAutoConfirmedAt:  null,                 // ms epoch; non-null skips the confirm modal on subsequent flips
                 silentAutoLastTickAt:   null,                 // ms epoch — last tick run; surfaces in the panel sub-block
                 silentAutoLastTickResult: null,               // {ranAt, eligible, proposed, applied, capped, blocked, skipped, error?}
                 silentAutoMutedUntil:   null,                 // ms epoch; while non-null and in the future, ticks no-op (auto-disable on N consecutive errors)
+                // Per-class proposer config (silentAutoStrategy="per-class-elasticity").
+                // Per-class enable lets users opt out of pricing a specific cabin
+                // even when the proposer runs (e.g. Cargo off if no freight ops).
+                // Per-class step cap overrides the global silentAutoMaxStepPct
+                // when present — null falls back to the global. Min demand pool
+                // gates pricing on that class behind a thin-data threshold so we
+                // don't price F off a 3-pax/wk historic.
+                silentAutoPerClassEnabled:        {Y: true, C: true, F: true, Cargo: true},
+                silentAutoPerClassMaxStepPct:     {Y: null, C: null, F: null, Cargo: null},
+                silentAutoPerClassMinDemandPool:  {Y: 50,   C: 10,   F: 5,    Cargo: 1000},
                 targetMargin:       null,
                 competitorAdjust:   null
             },
@@ -470,7 +512,7 @@ class RouteAssistantSettings {
                 // class), walks all result pages, computes per-class rank
                 // flavors + ratings, then projects a composite score using
                 // user-configurable class weights. Storage lives at
-                // `routeAssistant:ors:<HUB>-<DEST>.byClass.{ECONOMY,BUSINESS,FIRST}`.
+                // `routeAssistant:ors:<HUB>-<DEST>.byClass.{ECONOMY,BUSINESS,FIRST,CARGO}`.
                 showColumns:          true,
                 concurrency:          2,        // ORS = expensive AS solver, be gentle
                 staggerMs:            1500,
@@ -478,7 +520,8 @@ class RouteAssistantSettings {
                 rankMaxAgeDays:       null,
 
                 // Default scrape parameters (user-tunable in expander):
-                classesToScrape:      ["ECONOMY", "BUSINESS", "FIRST"],   // 1-3, multi-select
+                classesToScrape:      ["ECONOMY", "BUSINESS", "FIRST", "CARGO"],   // 1-4, multi-select
+                cargoClassMigrationSeen: false,
                 defaultDepartureH:    0,         // 0..48
                 defaultArrivalH:      72,        // 24..72
                 defaultUseGround:     true,
@@ -513,6 +556,24 @@ class RouteAssistantSettings {
                 // Carrier identification — flight-number set is primary, prefix is
                 // fallback. User can override comma-separated list e.g. "FN,NY".
                 airlineCarrierPrefixOverride: null,
+
+                // ORS playstyle. Adaptive mode damps ORS/service-profile
+                // spending on monopoly lanes and raises it on contested
+                // lanes. Strategy service + joint ORS tuners read these
+                // knobs from the same settings block the scraper uses.
+                playstyle:                 "adaptive",  // adaptive | balanced | monopoly | competitive | premium
+                monopolyOrsMultiplier:     0.35,
+                competitiveOrsMultiplier:  1.35,
+                competitiveRivalFlights:   6,
+                maxCompetitiveComfortDelta: 3,
+
+                // Aircraft type-spec ORS attraction. Parsed from the AS
+                // aircraft specs page when present; applied as a small rating
+                // shift in the ORS model so aircraft preference can differ
+                // by type without hand-editing each route.
+                aircraftAttractionNeutral:  500,
+                aircraftAttractionScale:    0.01,
+                aircraftAttractionMaxBonus: 3,
 
                 // Circuit breaker telemetry. If trip is recent, bulk button is
                 // disabled for 10 min and a red banner shows in the expander.
@@ -658,8 +719,7 @@ class RouteAssistantSettings {
             (block.filters && block.filters.statuses) || {})
 
         if (!settings.routeAssistant) {
-            settings.routeAssistant = merged
-            await chrome.storage.local.set({settings: settings})
+            await window.AesSettings.saveArea("routeAssistant", merged)
         }
         return merged
     }
@@ -707,6 +767,32 @@ class RouteAssistantSettings {
             {},
             defApply.defaultScope || {},
             bApply.defaultScope   || {}
+        )
+        // Per-class proposer maps — deep-merge so a saved partial like
+        // {Cargo: false} doesn't wipe the Y/C/F defaults. Same pattern
+        // as serviceProfiles.classYieldMult / classCostPerPax above.
+        const mergeClassMap = (defMap, bMap, valueFilter) => {
+            const o = Object.assign({}, defMap || {})
+            for (const k in (bMap || {})) {
+                const v = bMap[k]
+                if (valueFilter(v)) o[k] = v
+            }
+            return o
+        }
+        out.silentAutoPerClassEnabled = mergeClassMap(
+            def.silentAutoPerClassEnabled,
+            b.silentAutoPerClassEnabled,
+            v => typeof v === "boolean"
+        )
+        out.silentAutoPerClassMaxStepPct = mergeClassMap(
+            def.silentAutoPerClassMaxStepPct,
+            b.silentAutoPerClassMaxStepPct,
+            v => v === null || (typeof v === "number" && isFinite(v) && v >= 0)
+        )
+        out.silentAutoPerClassMinDemandPool = mergeClassMap(
+            def.silentAutoPerClassMinDemandPool,
+            b.silentAutoPerClassMinDemandPool,
+            v => typeof v === "number" && isFinite(v) && v >= 0
         )
         return out
     }
@@ -756,8 +842,15 @@ class RouteAssistantSettings {
         const VALID = {ECONOMY: 1, BUSINESS: 1, FIRST: 1, CARGO: 1}
         if (Array.isArray(block && block.classesToScrape)) {
             const filtered = block.classesToScrape.filter(c => VALID[c])
+            // Lazy one-time migration for users who saved settings before
+            // Cargo had its own checkbox. Once the migrated settings are
+            // saved, the sentinel lets a deliberate Cargo opt-out persist.
+            if (block.cargoClassMigrationSeen !== true && filtered.indexOf("CARGO") < 0) {
+                filtered.push("CARGO")
+            }
             out.classesToScrape = filtered.length ? filtered : defaults.classesToScrape
         }
+        out.cargoClassMigrationSeen = true
         // classWeights — merge with defaults so a partial save (e.g. only Y
         // changed) doesn't drop C/F. Renormalise to sum to 1.0 so a stored
         // partial like {ECONOMY: 1.00} doesn't end up as {1.00, 0.20, 0.05}
@@ -765,6 +858,20 @@ class RouteAssistantSettings {
         const merged = Object.assign({}, defaults.classWeights || {},
             (block && block.classWeights) || {})
         out.classWeights = RouteAssistantSettings._renormaliseWeights(merged, defaults.classWeights)
+        const validPlaystyles = {adaptive: 1, balanced: 1, monopoly: 1, competitive: 1, premium: 1}
+        if (!validPlaystyles[out.playstyle]) out.playstyle = defaults.playstyle || "adaptive"
+        const finite = (key, min, max) => {
+            const n = Number(out[key])
+            const fallback = defaults[key]
+            out[key] = isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback
+        }
+        finite("monopolyOrsMultiplier", 0, 2)
+        finite("competitiveOrsMultiplier", 0, 3)
+        finite("competitiveRivalFlights", 1, 100)
+        finite("maxCompetitiveComfortDelta", 0, 5)
+        finite("aircraftAttractionNeutral", 0, 1000)
+        finite("aircraftAttractionScale", 0, 1)
+        finite("aircraftAttractionMaxBonus", 0, 20)
         return out
     }
 
@@ -949,19 +1056,10 @@ class RouteAssistantSettings {
      * which `load()` will then surface via the legacy fallback.
      */
     static async save(partial) {
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
         const current = await RouteAssistantSettings.load()
         const next = Object.assign({}, current, partial || {})
         const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
-        if (id) {
-            settings.acct = (settings.acct && typeof settings.acct === "object") ? settings.acct : {}
-            settings.acct[id] = (settings.acct[id] && typeof settings.acct[id] === "object") ? settings.acct[id] : {}
-            settings.acct[id].routeAssistant = next
-        } else {
-            settings.routeAssistant = next
-        }
-        await chrome.storage.local.set({settings: settings})
+        await window.AesSettings.saveAreaScoped("routeAssistant", next, id)
         // Slice-1 foundation — broadcast on the cross-module data bus so
         // consumers in other surfaces (scanner panel, dashboard tiles) react
         // without polling. Pure additive — chrome.storage.onChanged still
@@ -1000,4 +1098,8 @@ RouteAssistantSettings.ORS_WEIGHT_PRESETS = {
                          description: "Derived from picked aircraft's cabin config. Falls back to Standard when no aircraft selected."},
     "custom":           {label: "Custom",            weights: null,
                          description: "Manually tuned via the per-class weight inputs in More options."}
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantSettings = RouteAssistantSettings
 }

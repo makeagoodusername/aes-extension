@@ -613,3 +613,7 @@ function numOrDefault(v, fallback) {
 function isFiniteNumber(v) {
     return typeof v === "number" && isFinite(v)
 }
+
+if (typeof window !== "undefined") {
+    window.MarketScanDealMetrics = MarketScanDealMetrics
+}

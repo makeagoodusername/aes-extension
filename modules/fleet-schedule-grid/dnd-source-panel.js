@@ -7,13 +7,12 @@
  * Sources, in priority order:
  *   1. Free-text IATA input — types any 3-letter code, presses Enter to add
  *      it as a one-off card. Always available, no setup required.
- *   2. RouteAssistantWatchlistStore — entries the user has starred elsewhere.
- *   3. Recent route-candidates output — populated as a side-effect of the
- *      aircraft-flight-plan candidate engine; cached per (server, aircraftId).
+ *   2. Cached hub routes from Route Assistant top-routes / FlightsFrom.
+ *   3. RouteAssistantWatchlistStore — entries the user has starred elsewhere.
  *
  * Each card is `draggable=true` and stamps a JSON payload onto
  * `dataTransfer` under `application/x-aes-dnd-dest`:
- *   {destIata, destName, sourceWaveLayerId?}
+ *   {destIata, destName, distanceKm?, score?, source?}
  *
  * The panel doesn't own the drop bridge — that lives in `dnd-grid-bridge.js`.
  */
@@ -25,9 +24,19 @@ class FleetScheduleGridDndSourcePanel {
         const o = opts || {}
         this.server      = o.server || ""
         this.airlineCode = o.airlineCode || ""
+        this.activeHub   = o.activeHub ? String(o.activeHub).toUpperCase() : ""
+        this.schedules   = o.schedules instanceof Map ? o.schedules : new Map()
+        this.fleet       = Array.isArray(o.fleet) ? o.fleet : []
         this.paneEl      = null
         this._listEl     = null
         this._customCards = []   // user-typed, in-memory only
+    }
+
+    update(opts) {
+        const o = opts || {}
+        if (o.activeHub !== undefined) this.activeHub = o.activeHub ? String(o.activeHub).toUpperCase() : ""
+        if (o.schedules !== undefined) this.schedules = o.schedules instanceof Map ? o.schedules : new Map()
+        if (o.fleet !== undefined) this.fleet = Array.isArray(o.fleet) ? o.fleet : []
     }
 
     buildPane() {
@@ -93,7 +102,7 @@ class FleetScheduleGridDndSourcePanel {
 
         const note = document.createElement("div")
         note.style.cssText = "font-size:10px;color:" + (T ? T.color.slate : "#7A6F66") + ";font-style:italic;"
-        note.textContent = "Drag a card onto any aircraft-day lane to schedule a flight at that time."
+        note.textContent = "Drag a route card onto any aircraft-wave cell."
         pane.appendChild(note)
 
         // List host.
@@ -124,42 +133,204 @@ class FleetScheduleGridDndSourcePanel {
             for (const c of this._customCards) this._listEl.appendChild(this._buildCard(c, T, true))
         }
 
-        // Watchlist section.
-        const watchlistCards = await this._loadWatchlist()
-        if (watchlistCards.length) {
+        const routeCards = await this._loadRouteCards()
+        if (routeCards.length) {
             const h = document.createElement("div")
             h.style.cssText = this._sectionTitleCss(T) + "margin-top:8px;"
-            h.textContent = "Watchlist (" + watchlistCards.length + ")"
+            h.textContent = "Routes (" + routeCards.length + ")"
             this._listEl.appendChild(h)
-            for (const c of watchlistCards) this._listEl.appendChild(this._buildCard(c, T, false))
+            for (const c of routeCards) this._listEl.appendChild(this._buildCard(c, T, false))
         }
 
-        if (!this._customCards.length && !watchlistCards.length) {
+        if (!this._customCards.length && !routeCards.length) {
             const empty = document.createElement("div")
             empty.style.cssText = "font-size:11px;color:" + (T ? T.color.slate : "#7A6F66") + ";"
                 + "font-style:italic;padding:8px 0;"
-            empty.textContent = "No destinations yet — type an IATA above to add one."
+            empty.textContent = this.activeHub
+                ? "No cached routes for " + this.activeHub + " yet — type an IATA above to add one."
+                : "No destinations yet — type an IATA above to add one."
             this._listEl.appendChild(empty)
         }
+    }
+
+    async _loadRouteCards() {
+        const byDest = new Map()
+        const scheduled = this._scheduledDestinations()
+        const [topRoutes, ffRoutes, watchlistCards] = await Promise.all([
+            this._loadTopRoutes(),
+            this._loadFlightsFromRoutes(),
+            this._loadWatchlist()
+        ])
+        for (const c of topRoutes) this._mergeCard(byDest, c)
+        for (const c of ffRoutes) this._mergeCard(byDest, c)
+        for (const c of watchlistCards) this._mergeCard(byDest, c)
+
+        const cards = Array.from(byDest.values())
+        if (typeof RouteAssistantDemandStore !== "undefined") {
+            try {
+                const demand = await RouteAssistantDemandStore.getMany(cards.map(c => c.destIata))
+                for (const c of cards) {
+                    const d = demand && demand.get ? demand.get(c.destIata) : null
+                    if (d) {
+                        if (!c.destName && d.name) c.destName = d.name
+                        if (c.paxScore == null && typeof d.paxScore === "number") c.paxScore = d.paxScore
+                        if (c.cargoScore == null && typeof d.cargoScore === "number") c.cargoScore = d.cargoScore
+                    }
+                }
+            } catch (_) { /* non-fatal */ }
+        }
+
+        for (const c of cards) c.alreadyScheduled = scheduled.has(c.destIata)
+        cards.sort((a, b) => {
+            if (!!a.alreadyScheduled !== !!b.alreadyScheduled) return a.alreadyScheduled ? 1 : -1
+            const as = Number.isFinite(Number(a.score)) ? Number(a.score) : -Infinity
+            const bs = Number.isFinite(Number(b.score)) ? Number(b.score) : -Infinity
+            if (bs !== as) return bs - as
+            return String(a.destIata).localeCompare(String(b.destIata))
+        })
+        return cards.slice(0, 60)
+    }
+
+    _mergeCard(map, card) {
+        if (!map || !card) return
+        const code = String(card.destIata || "").toUpperCase()
+        if (!/^[A-Z]{3}$/.test(code)) return
+        if (this.activeHub && code === this.activeHub) return
+        const prev = map.get(code)
+        if (!prev) {
+            map.set(code, Object.assign({}, card, {
+                destIata: code,
+                destName: card.destName || "",
+                sources:  new Set(card.source ? [card.source] : [])
+            }))
+            return
+        }
+        if (card.source) prev.sources.add(card.source)
+        if (!prev.destName && card.destName) prev.destName = card.destName
+        const fields = ["distanceKm", "distanceNm", "blockMin", "score", "paxScore", "cargoScore", "weeklyFlights", "suggestedDepTime", "stationTurnMin"]
+        for (const f of fields) {
+            if (prev[f] == null && card[f] != null) prev[f] = card[f]
+        }
+    }
+
+    async _loadTopRoutes() {
+        const hub = this.activeHub
+        if (!hub || typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return []
+        const keys = ["routeAssistant:topRoutes:" + hub, "routeAssistant:topRoutes"]
+        if (typeof acctKey === "function") {
+            try {
+                const scoped = acctKey("routeAssistant:topRoutes", hub)
+                if (scoped && keys.indexOf(scoped) < 0) keys.unshift(scoped)
+            } catch (_) {}
+        }
+        try {
+            const out = await chrome.storage.local.get(keys)
+            const cards = []
+            for (const key of keys) {
+                const blob = out && out[key]
+                if (!blob || !Array.isArray(blob.rows)) continue
+                if (blob.hub && String(blob.hub).toUpperCase() !== hub) continue
+                for (const r of blob.rows) {
+                    const code = String(r && r.destIata || "").toUpperCase()
+                    if (!/^[A-Z]{3}$/.test(code)) continue
+                    cards.push({
+                        destIata:      code,
+                        destName:      r.destName || "",
+                        distanceKm:    this._numberOrNull(r.distanceKm),
+                        score:         this._numberOrNull(r.score),
+                        paxScore:      this._numberOrNull(r.paxScore),
+                        cargoScore:    this._numberOrNull(r.cargoScore),
+                        weeklyFlights: this._numberOrNull(r.weeklyFlights),
+                        source:        "top"
+                    })
+                }
+                if (cards.length) break
+            }
+            return cards
+        } catch (_) { return [] }
+    }
+
+    async _loadFlightsFromRoutes() {
+        const hub = this.activeHub
+        if (!hub || typeof FlightsFromStore === "undefined") return []
+        try {
+            const rec = await FlightsFromStore.loadAirport(hub)
+            const routes = rec && Array.isArray(rec.routes) ? rec.routes : []
+            return routes.map(r => ({
+                destIata:      String(r && r.destIata || "").toUpperCase(),
+                destName:      (r && (r.destName || r.name)) || "",
+                distanceKm:    this._numberOrNull(r && r.distanceKm),
+                weeklyFlights: this._numberOrNull(r && r.weeklyFlights),
+                source:        "ff"
+            })).filter(c => /^[A-Z]{3}$/.test(c.destIata))
+        } catch (_) { return [] }
     }
 
     async _loadWatchlist() {
         if (typeof RouteAssistantWatchlistStore === "undefined") return []
         try {
-            const list = await RouteAssistantWatchlistStore.list()
-            if (!Array.isArray(list)) return []
-            // Deduplicate by destIata; map to card shape.
-            const seen = new Set()
-            const out = []
-            for (const e of list) {
-                const code = String((e && (e.destIata || e.iata)) || "").toUpperCase()
-                if (!/^[A-Z]{3}$/.test(code)) continue
-                if (seen.has(code)) continue
-                seen.add(code)
-                out.push({destIata: code, destName: e.destName || e.name || code, source: "watchlist"})
+            if (typeof RouteAssistantWatchlistStore.loadAll === "function") {
+                const map = await RouteAssistantWatchlistStore.loadAll()
+                const out = []
+                if (map && typeof map.forEach === "function") {
+                    map.forEach((rec, key) => {
+                        const parsed = this._parseRouteKey(key)
+                        if (!parsed) return
+                        if (this.activeHub && parsed.hub && parsed.hub !== this.activeHub) return
+                        out.push({
+                            destIata: parsed.dest,
+                            destName: (rec && (rec.destName || rec.name)) || parsed.dest,
+                            source:   "watch"
+                        })
+                    })
+                }
+                return out
             }
-            return out
+            if (typeof RouteAssistantWatchlistStore.list === "function") {
+                const list = await RouteAssistantWatchlistStore.list()
+                if (!Array.isArray(list)) return []
+                return list.map(e => ({
+                    destIata: String((e && (e.destIata || e.iata)) || "").toUpperCase(),
+                    destName: (e && (e.destName || e.name)) || "",
+                    source:   "watch"
+                })).filter(c => /^[A-Z]{3}$/.test(c.destIata))
+            }
         } catch (_) { return [] }
+        return []
+    }
+
+    _parseRouteKey(key) {
+        const text = String(key || "").toUpperCase()
+        const dash = text.indexOf("-")
+        if (dash > 0) {
+            const hub = text.slice(0, dash)
+            const dest = text.slice(dash + 1)
+            if (/^[A-Z]{3}$/.test(hub) && /^[A-Z]{3}$/.test(dest)) return {hub, dest}
+        }
+        if (/^[A-Z]{3}$/.test(text)) return {hub: "", dest: text}
+        return null
+    }
+
+    _scheduledDestinations() {
+        const set = new Set()
+        const hub = this.activeHub
+        if (!this.schedules || typeof this.schedules.forEach !== "function") return set
+        this.schedules.forEach((schedule) => {
+            const legs = schedule && Array.isArray(schedule.legs) ? schedule.legs : []
+            for (const leg of legs) {
+                const origin = String(leg && leg.origin || "").toUpperCase()
+                const dest = String(leg && leg.destination || "").toUpperCase()
+                if (!/^[A-Z]{3}$/.test(dest)) continue
+                if (!hub || origin === hub) set.add(dest)
+                else if (dest === hub && /^[A-Z]{3}$/.test(origin)) set.add(origin)
+            }
+        })
+        return set
+    }
+
+    _numberOrNull(value) {
+        const n = Number(value)
+        return Number.isFinite(n) ? n : null
     }
 
     _buildCard(card, T, isCustom) {
@@ -176,11 +347,22 @@ class FleetScheduleGridDndSourcePanel {
         code.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";"
             + "font-size:13px;font-weight:700;color:" + (T ? T.color.oxide : "#2B2520") + ";flex:0 0 auto;"
         code.textContent = card.destIata
+        const text = document.createElement("span")
+        text.style.cssText = "flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;"
         const name = document.createElement("span")
-        name.style.cssText = "flex:1 1 auto;font-size:11px;color:" + (T ? T.color.oxide2 : "#4A413B") + ";"
+        name.style.cssText = "font-size:11px;color:" + (T ? T.color.oxide2 : "#4A413B") + ";"
             + "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
         name.textContent = card.destName || ""
-        el.append(code, name)
+        text.appendChild(name)
+        const metaText = this._cardMetaText(card)
+        if (metaText) {
+            const meta = document.createElement("span")
+            meta.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";font-size:9px;color:" + (T ? T.color.slate : "#7A6F66") + ";"
+                + "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+            meta.textContent = metaText
+            text.appendChild(meta)
+        }
+        el.append(code, text)
         if (isCustom) {
             const rm = document.createElement("button")
             rm.type = "button"; rm.textContent = "×"
@@ -196,7 +378,20 @@ class FleetScheduleGridDndSourcePanel {
             el.appendChild(rm)
         }
         el.addEventListener("dragstart", e => {
-            const payload = JSON.stringify({destIata: card.destIata, destName: card.destName || card.destIata})
+            const sourceList = card.sources && typeof card.sources.forEach === "function"
+                ? Array.from(card.sources) : (card.source ? [card.source] : [])
+            const payload = JSON.stringify({
+                destIata:      card.destIata,
+                destName:      card.destName || card.destIata,
+                distanceKm:    card.distanceKm || null,
+                distanceNm:    card.distanceNm || null,
+                blockMin:      card.blockMin || null,
+                score:         card.score || null,
+                paxScore:      card.paxScore || null,
+                cargoScore:    card.cargoScore || null,
+                weeklyFlights: card.weeklyFlights || null,
+                source:        sourceList.join("+")
+            })
             try { e.dataTransfer.setData(FleetScheduleGridDndSourcePanel.DT_TYPE, payload) }
             catch (_) {}
             try { e.dataTransfer.setData("text/plain", card.destIata) } catch (_) {}
@@ -205,6 +400,20 @@ class FleetScheduleGridDndSourcePanel {
         })
         el.addEventListener("dragend", () => { el.style.opacity = "1" })
         return el
+    }
+
+    _cardMetaText(card) {
+        const parts = []
+        if (card.sources && typeof card.sources.forEach === "function") {
+            const labels = Array.from(card.sources).map(s => String(s || "")).filter(Boolean)
+            if (labels.length) parts.push(labels.join("+"))
+        } else if (card.source) {
+            parts.push(card.source)
+        }
+        if (Number.isFinite(Number(card.score))) parts.push("score " + Math.round(Number(card.score)))
+        if (Number.isFinite(Number(card.weeklyFlights))) parts.push(Number(card.weeklyFlights) + "x")
+        if (card.alreadyScheduled) parts.push("scheduled")
+        return parts.join(" · ")
     }
 
     _sectionTitleCss(T) {

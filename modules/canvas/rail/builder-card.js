@@ -7,10 +7,10 @@
  *   - Name + scoreDelta
  *   - Rationale (one-liner)
  *   - Edit count (e.g. "9 routes across 3 aircraft, 3 waves")
- *   - [Adopt]  [Adopt fragment]  [Dismiss]
+ *   - [Stage plan]  [Choose aircraft]  [Dismiss]
  *
- * Adopt:           emits one canvas:edit-staged batch with all edits.
- * Adopt fragment:  expands an inline checkbox tree (per-aircraft).
+ * Stage plan:      emits one canvas:edit-staged batch with all edits.
+ * Choose aircraft: expands an inline checkbox tree (per-aircraft).
  *                  V1 simplification: ships a "select all" / per-aircraft
  *                  toggles only — per-wave is overkill for first cut.
  * Dismiss:         removes the card (not bus-emitted; cards are ephemeral).
@@ -56,11 +56,19 @@ class CanvasBuilderCard {
             card.append(lead)
         }
 
+        const diag = CanvasBuilderCard._diagnosticLine(proposal.diagnostics)
+        if (diag) {
+            const line = document.createElement("div")
+            line.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";color:" + (T ? T.color.slate : "#7A6F66") + ";font-size:10px;line-height:1.35;"
+            line.textContent = diag
+            card.append(line)
+        }
+
         const edits = (proposal.plan && Array.isArray(proposal.plan.edits)) ? proposal.plan.edits : []
         if (proposal.empty || !edits.length) {
             const note = document.createElement("div")
             note.style.cssText = "font-size:11px;color:" + (T ? T.color.slate : "#7A6F66") + ";font-style:italic;"
-            note.textContent = "Nothing to apply."
+            note.textContent = CanvasBuilderCard._emptyDetail(proposal.diagnostics) || "Nothing to apply."
             card.append(note)
             const dismiss = document.createElement("button")
             dismiss.type = "button"
@@ -77,14 +85,18 @@ class CanvasBuilderCard {
         meta.textContent = edits.length + " routes · "
             + stats.aircraftCount + " aircraft · "
             + stats.waveCount + " waves"
+            + (stats.stationText ? " · " + stats.stationText : "")
         card.append(meta)
+
+        const preview = CanvasBuilderCard._buildPreviewList(edits, T)
+        if (preview) card.append(preview)
 
         const actions = document.createElement("div")
         actions.style.cssText = "display:flex;gap:6px;margin-top:6px;"
 
         const adoptBtn = document.createElement("button")
         adoptBtn.type = "button"
-        adoptBtn.textContent = "Adopt"
+        adoptBtn.textContent = "Stage plan"
         adoptBtn.style.cssText = CanvasBuilderCard._btnStyle(T, "primary")
         adoptBtn.addEventListener("click", () => {
             if (cb.onAdopt) cb.onAdopt(edits, proposal)
@@ -93,7 +105,7 @@ class CanvasBuilderCard {
 
         const fragBtn = document.createElement("button")
         fragBtn.type = "button"
-        fragBtn.textContent = "Adopt fragment…"
+        fragBtn.textContent = "Choose aircraft…"
         fragBtn.style.cssText = CanvasBuilderCard._btnStyle(T, "ghost")
         fragBtn.addEventListener("click", () => {
             CanvasBuilderCard._toggleFragmentPanel(card, edits, cb)
@@ -134,11 +146,74 @@ class CanvasBuilderCard {
     static _summarise(edits) {
         const aircraftSet = new Set()
         const waveSet = new Set()
+        let stationOpen = 0, stationMissing = 0, stationUnknown = 0
         for (const e of edits) {
             if (e.aircraftId) aircraftSet.add(String(e.aircraftId))
             if (e.waveId) waveSet.add(String(e.waveId))
+            if (e.stationStatus === "open") stationOpen++
+            else if (e.stationStatus === "missing") stationMissing++
+            else stationUnknown++
         }
-        return {aircraftCount: aircraftSet.size, waveCount: waveSet.size}
+        const parts = []
+        if (stationOpen) parts.push(stationOpen + " station open")
+        if (stationMissing) parts.push(stationMissing + " need station")
+        if (stationUnknown) parts.push(stationUnknown + " station unknown")
+        return {aircraftCount: aircraftSet.size, waveCount: waveSet.size, stationText: parts.join(" · ")}
+    }
+
+    static _diagnosticLine(d) {
+        if (!d) return ""
+        const parts = []
+        if (d.demandRows != null) parts.push(d.demandRows + " demand")
+        if (d.hubFleetCount != null) parts.push(d.hubFleetCount + " aircraft")
+        if (d.waveCount != null) parts.push(d.waveCount + " waves")
+        if (d.waveScore != null && isFinite(d.waveScore)) parts.push("wave score " + Math.round(d.waveScore))
+        if (d.unplacedCount) parts.push(d.unplacedCount + " unplaced")
+        if (d.emptyCells != null) parts.push(d.emptyCells + " empty cells")
+        if (d.stationKnown) {
+            const n = d.openStationCount == null ? "?" : d.openStationCount
+            parts.push(n + " open stations")
+        } else {
+            parts.push("stations unknown")
+        }
+        return parts.join(" · ")
+    }
+
+    static _emptyDetail(d) {
+        if (!d) return ""
+        const skips = []
+        if (d.skippedRange) skips.push(d.skippedRange + " range skips")
+        if (d.skippedDuplicate) skips.push(d.skippedDuplicate + " duplicate skips")
+        if (Array.isArray(d.waveBlockers) && d.waveBlockers.length) {
+            skips.push("wave blockers: " + d.waveBlockers.slice(0, 2).join("; "))
+        }
+        const suffix = skips.length ? " (" + skips.join(", ") + ")" : ""
+        if (d.reason) return d.reason + suffix + "."
+        return suffix ? "No route edits generated" + suffix + "." : ""
+    }
+
+    static _buildPreviewList(edits, T) {
+        if (!Array.isArray(edits) || !edits.length) return null
+        const list = document.createElement("div")
+        list.style.cssText = "display:flex;flex-direction:column;gap:2px;margin-top:2px;font-family:" + (T ? T.font.mono : "monospace") + ";font-size:9px;color:" + (T ? T.color.oxide2 : "#4A413B") + ";"
+        const max = Math.min(4, edits.length)
+        for (let i = 0; i < max; i++) {
+            const e = edits[i]
+            const row = document.createElement("div")
+            const station = e.stationStatus === "open" ? "station open"
+                : e.stationStatus === "missing" ? "needs station"
+                : "station unknown"
+            row.textContent = (e.aircraftId || "?") + " -> " + (e.destIata || "?")
+                + " · " + (e.waveId || "wave") + " · " + station
+            list.append(row)
+        }
+        if (edits.length > max) {
+            const more = document.createElement("div")
+            more.style.cssText = "color:" + (T ? T.color.slate : "#7A6F66") + ";"
+            more.textContent = "+" + (edits.length - max) + " more"
+            list.append(more)
+        }
+        return list
     }
 
     static _dismiss(card) {
@@ -150,7 +225,7 @@ class CanvasBuilderCard {
         const T = (typeof window !== "undefined" && window.AESTokens) || null
         const banner = document.createElement("div")
         banner.style.cssText = "margin-top:6px;font-size:10px;color:" + (T ? T.color.moss : "#2F5F3F") + ";"
-        banner.textContent = "✓ Staged " + count + " edit" + (count === 1 ? "" : "s")
+        banner.textContent = "Staged " + count + " route" + (count === 1 ? "" : "s") + " for Apply"
         card.append(banner)
     }
 
@@ -187,7 +262,7 @@ class CanvasBuilderCard {
 
         const apply = document.createElement("button")
         apply.type = "button"
-        apply.textContent = "Adopt selected"
+        apply.textContent = "Stage selected"
         apply.style.cssText = CanvasBuilderCard._btnStyle(T, "primary") + ";align-self:flex-start;margin-top:4px;"
         apply.addEventListener("click", () => {
             const allowed = new Set()

@@ -1334,7 +1334,6 @@ class MarketPanel {
      * as "scope can't drive a scan, fall back to preset/scanCurrent".
      */
     _resolveScopeTypes() {
-        if (typeof TypeFamilyMap === "undefined") return []
         const u = this.uiState
         const cats = u.categories    instanceof Set && u.categories.size    ? u.categories    : null
         const mfrs = u.manufacturers instanceof Set && u.manufacturers.size ? u.manufacturers : null
@@ -1342,8 +1341,10 @@ class MarketPanel {
         const tps  = u.types         instanceof Set && u.types.size         ? u.types         : null
         if (!cats && !mfrs && !fams && !tps) return []
         const overrides = this.settings.typeFamilyOverrides || {}
+        const dim = TypeFamilyMap.marketDimensions(overrides)
         const out = []
-        for (const e of TypeFamilyMap.allTypes(overrides)) {
+        for (const e of dim.typeOptions) {
+            if (dim.liveTypeSet && !dim.liveTypeSet.has(e.type)) continue
             if (cats && !cats.has(e.category || "other")) continue
             if (fams && !fams.has(e.family || "")) continue
             if (tps  && !tps.has(e.type)) continue
@@ -1367,8 +1368,8 @@ class MarketPanel {
         const type = typeEl && typeEl.options[typeEl.selectedIndex]
             ? (typeEl.options[typeEl.selectedIndex].textContent || "").trim()
             : ""
-        if (!family || family.toLowerCase() === "any aircraft family") return null
-        if (!type || type.toLowerCase().indexOf("any") === 0) return null
+        if (!family || TypeFamilyMap.isAnyFamilyLabel(family)) return null
+        if (!type || TypeFamilyMap.isAnyTypeLabel(type)) return null
         return "Scan this view (" + type + ")"
     }
 

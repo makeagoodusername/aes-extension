@@ -46,9 +46,17 @@ catch (e) { console.warn('[bg] failed to import alarms', e); }
 try { importScripts('modules/_background/afp-submit-queue.js'); }
 catch (e) { console.warn('[bg] failed to import afp-submit-queue', e); }
 
+// Flight-number group creation/sorting hidden-tab pipeline. Independent.
+try { importScripts('modules/_background/flight-number-groups.js'); }
+catch (e) { console.warn('[bg] failed to import flight-number-groups', e); }
+
 // Q16 long-op notification bridge. Independent.
 try { importScripts('modules/_background/notifications.js'); }
 catch (e) { console.warn('[bg] failed to import notifications', e); }
+
+// Broadcast site-skin sync changes to open AS tabs. Independent.
+try { importScripts('modules/_background/site-skin-sync.js'); }
+catch (e) { console.warn('[bg] failed to import site-skin-sync', e); }
 
 // L1 single-writer for aesAccounts blob + L2.2 migration setters.
 // Independent.
@@ -72,6 +80,11 @@ catch (e) { console.warn('[bg] failed to import silent-auto-alarm', e); }
 // Command Bridge open/focus dedup. Independent.
 try { importScripts('modules/_background/bridge-tab.js'); }
 catch (e) { console.warn('[bg] failed to import bridge-tab', e); }
+
+// Allows content scripts in extension-owned scrape tabs to close themselves
+// without relying on page-script window.close() heuristics.
+try { importScripts('modules/_background/tab-lifecycle.js'); }
+catch (e) { console.warn('[bg] failed to import tab-lifecycle', e); }
 
 // chrome.tabs.captureVisibleTab bridge. Independent.
 try { importScripts('modules/_background/vision-capture.js'); }

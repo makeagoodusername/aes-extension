@@ -1,17 +1,124 @@
 /** Shared logic */
 class AES {
+    static isPlainObject(value) {
+        return !!value && typeof value === "object" && !Array.isArray(value)
+    }
+
+    static cloneValue(value) {
+        if (value === undefined) return undefined
+        try { return JSON.parse(JSON.stringify(value)) }
+        catch (_) {
+            if (Array.isArray(value)) return value.slice()
+            if (AES.isPlainObject(value)) return Object.assign({}, value)
+            return value
+        }
+    }
+
+    static applyDefaults(defaults, raw) {
+        const source = AES.isPlainObject(raw) ? raw : {}
+        const out = {}
+        for (const key of Object.keys(defaults || {})) {
+            const def = defaults[key]
+            const val = source[key]
+            if (AES.isPlainObject(def)) {
+                out[key] = AES.applyDefaults(def, val)
+            } else if (Array.isArray(def)) {
+                out[key] = Array.isArray(val) ? AES.cloneValue(val) : AES.cloneValue(def)
+            } else {
+                out[key] = val === undefined ? AES.cloneValue(def) : val
+            }
+        }
+        for (const key of Object.keys(source)) {
+            if (!(key in out)) out[key] = AES.cloneValue(source[key])
+        }
+        return out
+    }
+
+    static defaultInvPricingSettings() {
+        const steps = [
+            { min:  0, max:  40, name: "Drop High",    step: -8 },
+            { min: 40, max:  60, name: "Drop Medium",  step: -4 },
+            { min: 60, max:  70, name: "Drop Low",     step: -2 },
+            { min: 70, max:  80, name: "Keep",         step:  0 },
+            { min: 80, max:  90, name: "Raise Low",    step:  1 },
+            { min: 90, max:  99, name: "Raise Medium", step:  2 },
+            { min: 99, max: 100, name: "Raise High",   step:  5 }
+        ]
+        const recommendation = {}
+        for (const cmp of ["Y", "C", "F", "Cargo"]) {
+            recommendation[cmp] = {
+                maxPrice: 200,
+                minPrice: 60,
+                steps: AES.cloneValue(steps)
+            }
+        }
+        return {
+            autoAnalysisSave: 1,
+            autoPriceUpdate: 0,
+            autoClose: 0,
+            recommendation,
+            historyTable: {
+                showNow: 1,
+                showOnlyPricing: 0,
+                numberOfDates: "5"
+            }
+        }
+    }
+
+    static defaultSettings() {
+        return {
+            invPricing: AES.defaultInvPricingSettings(),
+            general: { defaultDashboard: "general" },
+            schedule: { autoExtract: 0 },
+            stationAutomation: {
+                defaultPaxThreshold: 0,
+                defaultCargoThreshold: 0,
+                thresholds: [0, 1000, 5000, 10000, 50000, 100000, 500000, 1000000],
+                countriesCache: {}
+            },
+            usedAircraftScanner: {
+                presets: [],
+                typeFamilyOverrides: {},
+                concurrency: 6,
+                staggerMs: 2000,
+                lastScanId: null
+            },
+            flightInfo: { autoClose: 0 },
+            personelManagement: {
+                value: 0,
+                type: "absolute",
+                auto: 0,
+                alreadyUpdated: []
+            }
+        }
+    }
+
+    static normalizeSettings(raw) {
+        return AES.applyDefaults(AES.defaultSettings(), raw)
+    }
+
     /**
      * Returns the airline name and code from the dashboard
      * @returns {object} {name: string, code: string}
      */
     static getAirlineCode() {
         const factsTable = document.querySelector(".facts table")
-        const nameElement = factsTable.querySelector("tr:nth-child(1) td:last-child")
-        const codeElement = factsTable.querySelector("tr:nth-child(2) td:last-child")
+        const nameElement = factsTable?.querySelector("tr:nth-child(1) td:last-child")
+        const codeElement = factsTable?.querySelector("tr:nth-child(2) td:last-child")
+        const name = (nameElement?.innerText || "").trim()
+        const code = (codeElement?.innerText || "").trim()
+
+        if (!name && !code) {
+            const identity = AES.getAirlineIdentity()
+            return {
+                name: identity,
+                code: identity
+            }
+        }
 
         return {
-            name: nameElement.innerText,
-            code: codeElement.innerText
+            name: name || code,
+            code: code || name
         }
     }
 
@@ -153,13 +260,32 @@ class AES {
      * @returns {object} datetime - { date: "20240607", time: "16:24 UTC" }
      */
     static getServerDate() {
-        const source = document.querySelector(".as-navbar-bottom span:has(.fa-clock-o)").innerText.trim()
+        const fallback = (reason) => {
+            if (typeof window !== "undefined" && window.AesInit && typeof window.AesInit.record === "function") {
+                window.AesInit.record("helpers.getServerDate", reason)
+            } else {
+                try { console.warn("[AES helpers] getServerDate degraded:", reason) } catch (_) {}
+            }
+            const now = new Date()
+            const pad = (n) => String(n).padStart(2, "0")
+            return {
+                date: String(now.getUTCFullYear()) + pad(now.getUTCMonth() + 1) + pad(now.getUTCDate()),
+                time: pad(now.getUTCHours()) + ":" + pad(now.getUTCMinutes()) + " UTC"
+            }
+        }
+
+        const clockEl = document.querySelector(".as-navbar-bottom span:has(.fa-clock-o)")
+            || document.querySelector(".as-navbar-bottom .fa-clock-o")?.closest("span")
+        if (!clockEl) return fallback("server clock element missing")
+
+        const source = (clockEl.innerText || clockEl.textContent || "").trim()
+        if (!source) return fallback("server clock text missing")
         const sourceAsNumbers = source.toString().replace(/\D/g, "")
         
         // The source always consists of 12 numbers
         const expectedLength = 12
         if (sourceAsNumbers.length != expectedLength) {
-            throw new Error(`Unexpected length for source (${sourceAsNumbers.length}). There might’ve been a UI update. Check AES.getServerDate()`)
+            return fallback(`Unexpected length for source (${sourceAsNumbers.length}). There might've been a UI update. Check AES.getServerDate()`)
         }
         
         // Splits the date component from the data,
@@ -225,6 +351,10 @@ class AES {
     }
 }
 
+if (typeof window !== "undefined") {
+    window.AES = AES
+}
+
 /**
  * HTML-escape a string for safe insertion via innerHTML. Coerces null/undefined
  * to "" so callers can pass possibly-missing fields directly. Defined as a
@@ -260,10 +390,18 @@ function escapeHtml(s) {
 // for typeof undefined and silently bails.
 ;(function _aesL1ScheduleAccountBootstrap() {
     setTimeout(async function () {
-        if (typeof AesAccountRegistry === "undefined") return
-        await AesAccountRegistry.bootstrapFromPage()
-        if (typeof AesMigrateLegacy !== "undefined") {
-            AesMigrateLegacy.runIfNeeded()
+        const boot = async function () {
+            if (typeof AesAccountRegistry === "undefined") return
+            await AesAccountRegistry.bootstrapFromPage()
+            if (typeof AesMigrateLegacy !== "undefined") {
+                await AesMigrateLegacy.runIfNeeded()
+            }
+        }
+        if (typeof window !== "undefined" && window.AesInit && typeof window.AesInit.safe === "function") {
+            await window.AesInit.safe("account.bootstrap", boot)
+        } else {
+            try { await boot() }
+            catch (err) { console.warn("[AES account] bootstrap failed", err) }
         }
     }, 0)
 })()

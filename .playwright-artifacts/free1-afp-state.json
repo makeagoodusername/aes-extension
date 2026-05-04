@@ -1,0 +1,30 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets/aircraft/13536/0?1",
+  "title": "N001FGM | Free1 | AirlineSim",
+  "modules": {
+    "AesAfp": false,
+    "AesAfpRouteCandidates": false,
+    "AesAfpFormDriver": false,
+    "AesAfpWaveApplier": false,
+    "AesAfpSubmitBridge": false,
+    "AesAfpAutoApplyBatch": false,
+    "RouteAssistantWaveOverlay": false,
+    "SchedulePresets": false,
+    "ScheduleBuilder": false,
+    "AesAfpScheduleApplyOrchestrator": false,
+    "AesAfpDragToSchedule": false
+  },
+  "routeBuilderVisible": false,
+  "rows": [],
+  "slots": [],
+  "h3": [
+    "Assign a new flight",
+    "Flight Plan",
+    "Transfer Flight Plan",
+    "Aircraft Info",
+    "Settings",
+    "Schedule transfer flight",
+    "Cabin"
+  ],
+  "form": false
+}

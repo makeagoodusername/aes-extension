@@ -138,6 +138,13 @@ class CentralHubTile {
             "border-radius:" + T.geom.radius,
             "margin-bottom:" + T.sp[3],
             "box-sizing:border-box",
+            // Containment: clip anything that overflows the tile's column slot
+            // so wide tables / long unbreakable text never visually escape into
+            // the next column. The body itself adds horizontal scroll for the
+            // rare cases where users do need to read the wide content.
+            "min-width:0",
+            "max-width:100%",
+            "overflow:hidden",
             "transition:border-color " + (T.tr && T.tr.fast ? T.tr.fast : "80ms linear")
         ].join(";")
 
@@ -146,11 +153,17 @@ class CentralHubTile {
         header.style.cssText = [
             "display:flex",
             "align-items:center",
+            // Wrap the action cluster onto a second row when title + summary +
+            // badge + actions don't fit at narrow tile widths. Stops the
+            // open/pin/toggle buttons from being pushed off-screen.
+            "flex-wrap:wrap",
+            "row-gap:" + T.sp[1],
             "gap:" + T.sp[3],
             "padding:" + T.sp[2] + " " + T.sp[3],
             "background:transparent",
             "cursor:pointer",
-            "user-select:none"
+            "user-select:none",
+            "min-width:0"
         ].join(";")
         header.addEventListener("click", (e) => {
             if (e.target.closest(".aes-central-hub-tile__open")) return
@@ -170,7 +183,14 @@ class CentralHubTile {
             "text-transform:uppercase",
             "letter-spacing:" + T.track.caps,
             "color:" + T.color.oxide,
-            "flex:0 0 auto"
+            // Allow title to shrink with ellipsis on very narrow tiles rather
+            // than push siblings off-row.
+            "flex:0 1 auto",
+            "min-width:0",
+            "max-width:100%",
+            "overflow:hidden",
+            "text-overflow:ellipsis",
+            "white-space:nowrap"
         ].join(";")
 
         const summary = document.createElement("div")
@@ -188,7 +208,16 @@ class CentralHubTile {
 
         const badge = document.createElement("div")
         badge.className = "aes-central-hub-tile__badge"
-        badge.style.cssText = "flex:0 0 auto;"
+        // flex:0 1 auto lets the badge shrink as needed; ellipsis on overflow
+        // keeps the badge label readable but inside the column.
+        badge.style.cssText = [
+            "flex:0 1 auto",
+            "min-width:0",
+            "max-width:100%",
+            "overflow:hidden",
+            "text-overflow:ellipsis",
+            "white-space:nowrap"
+        ].join(";")
 
         const actions = document.createElement("div")
         actions.className = "aes-central-hub-tile__actions"
@@ -262,7 +291,18 @@ class CentralHubTile {
         body.className = "aes-central-hub-tile__body"
         body.style.cssText = [
             "padding:" + T.sp[3],
-            "display:" + (this.expanded ? "block" : "none")
+            "display:" + (this.expanded ? "block" : "none"),
+            // Allow horizontal scroll for the rare wide content (tables,
+            // pre-formatted blocks) while everything else wraps inside the
+            // column. `min-width:0` is what actually lets the body shrink to
+            // the column width when nested in a flex/grid parent.
+            "min-width:0",
+            "max-width:100%",
+            "overflow-x:auto",
+            "overflow-y:visible",
+            "overflow-wrap:anywhere",
+            "word-break:break-word",
+            "box-sizing:border-box"
         ].join(";")
 
         root.append(header, body)
@@ -313,8 +353,24 @@ class CentralHubTile {
         btn.addEventListener("click", (e) => {
             e.stopPropagation()
             if (handler) {
-                try { handler(this.ctx) }
-                catch (err) { console.warn("[AES Hub] tile open handler threw", this.id, err) }
+                const before = this._openEffectSignature()
+                const fallback = () => {
+                    setTimeout(() => this._expandIfOpenHadNoVisibleEffect(before), 120)
+                }
+                try {
+                    const result = handler(this.ctx)
+                    if (result && typeof result.catch === "function") {
+                        result
+                            .catch((err) => console.warn("[AES Hub] tile open handler rejected", this.id, err))
+                            .finally(fallback)
+                    } else {
+                        fallback()
+                    }
+                }
+                catch (err) {
+                    console.warn("[AES Hub] tile open handler threw", this.id, err)
+                    fallback()
+                }
                 return
             }
             const url = typeof href === "function" ? href(this.ctx) : href
@@ -322,6 +378,83 @@ class CentralHubTile {
             window.location.href = url
         })
         return btn
+    }
+
+    _openEffectSignature() {
+        const visibleSurfaces = []
+        const selector = [
+            ".modal",
+            "[role='dialog']",
+            ".aes-skin-help",
+            "#aes-command-palette",
+            ".aes-command-palette",
+            "#aes-competitor-intel-overlay",
+            ".aes-competitor-intel",
+            ".aes-strategy-panel",
+            ".aes-strategy-modal",
+            "body > div[style*='position: fixed']",
+            "body > div[style*='position:fixed']"
+        ].join(",")
+        document.querySelectorAll(selector).forEach(el => {
+            try {
+                const cs = getComputedStyle(el)
+                const rect = el.getBoundingClientRect()
+                if (cs.display === "none" || cs.visibility === "hidden") return
+                if (rect.width <= 0 || rect.height <= 0) return
+                visibleSurfaces.push((el.id || el.className || el.tagName || "").toString())
+            } catch (_) { /* ignore detached nodes */ }
+        })
+        return {
+            url: window.location.href,
+            expanded: !!this.expanded,
+            bodyText: this.bodyEl ? this.bodyEl.textContent : "",
+            visibleSurfaceCount: visibleSurfaces.length,
+            visibleSurfaceKey: visibleSurfaces.join("|")
+        }
+    }
+
+    _expandIfOpenHadNoVisibleEffect(before) {
+        if (!before || !this.root || !document.contains(this.root)) return
+        const after = this._openEffectSignature()
+        const changed = after.url !== before.url
+            || after.visibleSurfaceCount !== before.visibleSurfaceCount
+            || after.visibleSurfaceKey !== before.visibleSurfaceKey
+            || after.bodyText !== before.bodyText
+        if (changed) return
+        if (!this.expanded) this.toggle()
+        else this._showOpenFallbackFeedback()
+    }
+
+    _showOpenFallbackFeedback() {
+        if (!this.bodyEl || !this.root || !document.contains(this.root)) return
+        const T = window.AESTokens
+        const existing = this.bodyEl.querySelector(".aes-central-hub-tile__open-feedback")
+        if (existing) {
+            existing.textContent = "Showing this tile's details."
+            existing.dataset.refreshedAt = String(Date.now())
+            return
+        }
+        const note = document.createElement("div")
+        note.className = "aes-central-hub-tile__open-feedback"
+        note.dataset.refreshedAt = String(Date.now())
+        note.textContent = "Showing this tile's details."
+        note.style.cssText = [
+            "margin-top:" + T.sp[2],
+            "padding:" + T.sp[1] + " " + T.sp[2],
+            "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+            "border-radius:" + T.geom.radius,
+            "background:" + T.color.bone2,
+            "color:" + T.color.oxide2,
+            "font:" + T.fs.body + " " + T.font.display
+        ].join(";")
+        this.bodyEl.appendChild(note)
+        try { this.root.scrollIntoView({behavior: "smooth", block: "center"}) }
+        catch (_) { /* best effort */ }
+        setTimeout(() => {
+            if (!note.parentNode) return
+            const age = Date.now() - Number(note.dataset.refreshedAt || 0)
+            if (age >= 1400) note.remove()
+        }, 1600)
     }
 
     toggle() {
@@ -409,8 +542,14 @@ class CentralHubTile {
     }
 
     _attachStorageListener() {
-        const prefixes = this.watchedStorageKeys(this.ctx)
-        if (!prefixes || !prefixes.length) return
+        let prefixes = this.watchedStorageKeys(this.ctx)
+        if (!Array.isArray(prefixes) || !prefixes.length) return
+        // Defensive: drop empty/non-string entries — `"".indexOf("") === 0`
+        // matches every storage write, so an empty prefix causes a global
+        // refresh storm (F-9223-015 family). Similarly, an undefined/null
+        // entry crashes `k.indexOf(p)`. Drop them silently.
+        prefixes = prefixes.filter((p) => typeof p === "string" && p.length > 0)
+        if (!prefixes.length) return
         if (this._storageBusDisposers || this._storageListener) return
 
         if (typeof window.AesDataBus !== "undefined" && typeof window.AesDataBus.bridgeStorage === "function") {
@@ -437,11 +576,13 @@ class CentralHubTile {
 
     _attachFeedSubscriptions() {
         if (typeof window.HubFeed === "undefined") return
+        if (typeof window.HubFeed.subscribe !== "function") return
         const slices = this.feedSlices(this.ctx)
-        if (!slices || !slices.length) return
+        if (!Array.isArray(slices) || !slices.length) return
         for (const slice of slices) {
+            if (typeof slice !== "string" || !slice) continue
             const off = window.HubFeed.subscribe(slice, (e) => {
-                this._feedFreshness = {stale: !!e.stale, ageMs: e.ageMs, error: e.error || null}
+                this._feedFreshness = {stale: !!(e && e.stale), ageMs: e && e.ageMs, error: (e && e.error) || null}
                 this.refresh()
             })
             if (typeof off === "function") this._feedDisposers.push(off)
@@ -537,6 +678,7 @@ CentralHubTile._tableTileIds = new Set([
     "fleet-hub",
     "general",
     "inventory",
+    "route-management",
     "service-profile",
     "strategy"
 ])

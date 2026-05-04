@@ -28,15 +28,31 @@ class CentralHubAccountingTile extends window.CentralHubTile {
         const server = String(ctx && ctx.server || "")
         const airline = String(ctx && ctx.airline || "")
         if (server && airline) return [server + airline + "accounting:"]
-        return server ? [server] : []
+        // No airline yet → don't watch the bare server prefix; that prefix
+        // matches every other tile's writes (F-9223-015) and triggers
+        // refresh storms. Returning [] is safe — refresh() still fires on
+        // the HubFeed slice subscription below once cash-feed lands a value.
+        return []
     }
+
+    /**
+     * Subscribe to the cash-feed slice so the tile refreshes whenever a new
+     * weekly snapshot lands. Without this the tile only re-reads on direct
+     * accounting:* storage writes; HubFeed's freshness dot also lights up
+     * via the base-class header renderer when the slice goes stale.
+     */
+    feedSlices() { return ["hub:cash:weekly"] }
 
     openHref() { return "/app/finance/accounting" }
 
     _airlineKey() {
+        // Finance content scripts (content_finance_*.js) and panel.js write
+        // accounting snapshots keyed by AES.getAirlineIdentity() — the
+        // top-nav airline NAME, not the code from .facts. Mirror that here
+        // so the tile reads the same records the scrapers wrote.
         try {
-            const a = AES.getAirlineCode()
-            if (a && a.code) return a.code
+            const id = AES.getAirlineIdentity()
+            if (id) return id
         } catch (_) { /* fall through */ }
         return (this.ctx && this.ctx.airline) || ""
     }
@@ -134,7 +150,7 @@ class CentralHubAccountingTile extends window.CentralHubTile {
             {type: "leasing",  href: "/app/finance/leasing",   label: "Leasing"},
             {type: "capital",  href: "/app/finance/capital",   label: "Capital"},
             {type: "assets",   href: "/app/finance/assets",    label: "Assets"},
-            {type: "cashflow", href: "/app/finance/cashflow", label: "Cash flow"}
+            {type: "cashflow", href: "/action/enterprise/schedule", label: "Cash flow"}
         ]
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;flex-wrap:wrap;gap:" + T.sp[2] + ";"

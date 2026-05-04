@@ -51,7 +51,7 @@ class CanvasFirstRunOverlay {
             },
             {
                 title:   "2. The rail builds for you",
-                body:    "In Builder mode the assistant streams plan candidates with rationales. Hit Adopt to stage every edit; Commit when you're ready."
+                body:    "In Builder mode the assistant streams plan candidates with rationales. Stage a plan, then Apply when you're ready."
             },
             {
                 title:   "3. Drag anything → rail flips to Advisor",

@@ -43,6 +43,8 @@ class AccountingAggregator {
             routes: [],
             aircraft: [],
             periodActuals: null,
+            balanceActuals: null,
+            bankActuals: null,
             sisters: {leasing: null, capital: null, assets: null, cashflow: null}
         }
         if (!server || !airline) return ledger
@@ -67,9 +69,35 @@ class AccountingAggregator {
         ])
         ledger.snapshotIndexCount = index.length
 
+        const wantAccountId = (typeof currentAccountIdSync === "function")
+            ? (currentAccountIdSync() || null)
+            : null
+        const topRoutesByHub = new Map()
         for (const [key, blob] of Object.entries(topRouteData)) {
             if (!blob || !Array.isArray(blob.rows)) continue
-            const hub = key.substring(AccountingAggregator.TOP_ROUTES_PREFIX.length)
+            const hub = String(blob.hub || key.substring(AccountingAggregator.TOP_ROUTES_PREFIX.length) || "")
+                .toUpperCase()
+            if (!hub) continue
+            const scopedAccountId = AccountingAggregator._accountIdFromTopRoutesKey(key)
+            const isScoped = !!scopedAccountId || key.indexOf(":acct:") !== -1
+            if (isScoped && wantAccountId && scopedAccountId !== wantAccountId) continue
+            if (isScoped && !wantAccountId) continue
+            if (!isScoped && wantAccountId && blob.accountId && blob.accountId !== wantAccountId) continue
+            const prev = topRoutesByHub.get(hub) || null
+            const isWantedScoped = !!(wantAccountId && scopedAccountId === wantAccountId)
+            if (!prev) {
+                topRoutesByHub.set(hub, {blob, isScoped, isWantedScoped})
+                continue
+            }
+            if (isWantedScoped && !prev.isWantedScoped) {
+                topRoutesByHub.set(hub, {blob, isScoped, isWantedScoped})
+                continue
+            }
+        }
+
+        for (const [hub, pick] of topRoutesByHub.entries()) {
+            const blob = pick && pick.blob
+            if (!blob || !Array.isArray(blob.rows)) continue
             ledger.hubs.push({
                 hub,
                 server: blob.server || null,
@@ -117,6 +145,23 @@ class AccountingAggregator {
             }
             ledger._latestIncomeRows = latestPeriod.income.payload.rows || []
         }
+        if (latestPeriod && latestPeriod.balance?.payload) {
+            ledger.balanceActuals = {
+                weekId: latestPeriod.weekId,
+                payload: latestPeriod.balance.payload,
+                rows: latestPeriod.balance.payload.rows || [],
+                scrapedAt: latestPeriod.balance.scrapedAt
+            }
+        }
+        if (latestPeriod && latestPeriod.bank?.payload) {
+            ledger.bankActuals = {
+                weekId: latestPeriod.weekId,
+                payload: latestPeriod.bank.payload,
+                cashBalance: AccountingAggregator._numOrNull(latestPeriod.bank.payload.cashBalance),
+                rows: latestPeriod.bank.payload.rows || [],
+                scrapedAt: latestPeriod.bank.scrapedAt
+            }
+        }
         ledger.sisters = sisters || ledger.sisters
 
         return ledger
@@ -132,8 +177,20 @@ class AccountingAggregator {
         return await chrome.storage.local.get(keys)
     }
 
+    static _accountIdFromTopRoutesKey(key) {
+        const prefix = "routeAssistant:topRoutes:acct:"
+        if (typeof key !== "string" || key.indexOf(prefix) !== 0) return null
+        const tail = key.substring(prefix.length)
+        const cut = tail.indexOf(":")
+        return cut > 0 ? tail.substring(0, cut) : null
+    }
+
     static _numOrNull(v) {
         const n = Number(v)
         return Number.isFinite(n) ? n : null
     }
+}
+
+if (typeof window !== "undefined") {
+    window.AccountingAggregator = AccountingAggregator
 }

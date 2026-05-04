@@ -18,7 +18,10 @@
  *                 × slackPenaltyPerHour
  *                 + max(0, projectedDailyHours − maxDailyBlockHours)
  *                 × dailyOverrunPenaltyPerHour
- *   total         = gross × grossWeight − fuelCost × fuelWeight − slackPenalty
+ *   efficiency    = ((gross × grossWeight − fuelCost × fuelWeight) / blockHours)
+ *                 × efficiencyWeight
+ *   total         = gross × grossWeight − fuelCost × fuelWeight
+ *                 − slackPenalty − underUtilPenalty + efficiency
  *
  * `slackPenalty` is the lever the allocator uses to honour the weekly /
  * daily block-hour budget (Track 2's slack budget) without a hard rejection
@@ -136,8 +139,9 @@
         }
         const fuelCost = fuelKg * fuelCostPerKg
 
-        // Slack penalty — projected weekly/daily hours after this leg.
         const blockHours = _num(leg.blockMinutes, 0) / 60
+
+        // Slack penalty — projected weekly/daily hours after this leg.
         const usedWeekly = (grid && typeof grid.weeklyBlockHours === "function")
             ? grid.weeklyBlockHours() : 0
         const usedDaily  = (grid && typeof grid.dailyBlockHours === "function" && Number.isInteger(leg.dayIdx))
@@ -164,7 +168,12 @@
             ? Math.max(0, targetWeekly - projectedWeekly) : 0
         const underUtilPenalty  = underUtilHours * underUtilWeight
 
-        const total = gross * grossWeight - fuelCost * fuelWeight - slackPenalty - underUtilPenalty
+        const operatingScore = gross * grossWeight - fuelCost * fuelWeight
+        const efficiencyWeight = _num(w.efficiencyWeight, 0)
+        const profitPerBlockHour = blockHours > 0 ? operatingScore / blockHours : 0
+        const efficiencyBonus = profitPerBlockHour * efficiencyWeight
+
+        const total = operatingScore - slackPenalty - underUtilPenalty + efficiencyBonus
         return {
             total: total,
             parts: {
@@ -172,6 +181,8 @@
                 fuelCost:         fuelCost,
                 slackPenalty:     slackPenalty,
                 underUtilPenalty: underUtilPenalty,
+                profitPerBlockHour: profitPerBlockHour,
+                efficiencyBonus:  efficiencyBonus,
                 distanceFactor:   distanceFactor
             }
         }

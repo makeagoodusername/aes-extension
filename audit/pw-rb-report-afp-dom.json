@@ -1,0 +1,869 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31",
+  "title": "N001CFA | Free1 | AirlineSim",
+  "headings": [
+    "Aircraft:\n        N001CFA /\n        Boeing 767-300ER (winglets)",
+    "Assign a new flight",
+    "Flight Plan",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Turnaround Activities",
+    "Transfer Flight Plan",
+    "Aircraft Info",
+    "Settings",
+    "Schedule transfer flight",
+    "Cabin",
+    "Modal title"
+  ],
+  "slots": [],
+  "candidates": [],
+  "buttons": [
+    {
+      "i": 17,
+      "tag": "A",
+      "text": "Forbidden Routes",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/info/rules/routes"
+    },
+    {
+      "i": 42,
+      "tag": "A",
+      "text": "Casper Flight Logistics",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?select=770"
+    },
+    {
+      "i": 48,
+      "tag": "A",
+      "text": "Flight Numbers",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers"
+    },
+    {
+      "i": 49,
+      "tag": "A",
+      "text": "Route Evaluation",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/routes/evaluation"
+    },
+    {
+      "i": 51,
+      "tag": "A",
+      "text": "Pricing",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/action/enterprise/flightsPrices"
+    },
+    {
+      "i": 64,
+      "tag": "A",
+      "text": "Stations",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/ops/stations"
+    },
+    {
+      "i": 65,
+      "tag": "A",
+      "text": "Facilities",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/action/enterprise/buildings"
+    },
+    {
+      "i": 76,
+      "tag": "A",
+      "text": "Cash Flow",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/action/enterprise/schedule"
+    },
+    {
+      "i": 84,
+      "tag": "A",
+      "text": "Flight Plan",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0"
+    },
+    {
+      "i": 85,
+      "tag": "A",
+      "text": "Flights",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/1"
+    },
+    {
+      "i": 88,
+      "tag": "A",
+      "text": "Existing Flight Number",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-newFlight-flightNumber-toggle~existing-link"
+    },
+    {
+      "i": 89,
+      "tag": "A",
+      "text": "New Flight Number",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-newFlight-flightNumber-toggle~new-link"
+    },
+    {
+      "i": 91,
+      "tag": "A",
+      "text": "",
+      "title": "find first available",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-newFlight-flightNumber-newNumber-aircraft.newflight.number-number-number_body-number~find~first"
+    },
+    {
+      "i": 92,
+      "tag": "A",
+      "text": "",
+      "title": "find available",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-newFlight-flightNumber-newNumber-aircraft.newflight.number-number-number_body-number~find"
+    },
+    {
+      "i": 94,
+      "tag": "A",
+      "text": "Add via",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-newFlight-flightNumber-newNumber-aircraft.newflight.number-add~via~container-link"
+    },
+    {
+      "i": 96,
+      "tag": "A",
+      "text": "Reverse origin and destination",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-newFlight-flightNumber-newNumber-aircraft.newflight.number-toggle~stations"
+    },
+    {
+      "i": 97,
+      "tag": "INPUT",
+      "text": "Create new flight number",
+      "title": "",
+      "disabled": false,
+      "href": ""
+    },
+    {
+      "i": 98,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9385?segment=0"
+    },
+    {
+      "i": 99,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-0-content-overlay-edit"
+    },
+    {
+      "i": 100,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-0-content-overlay-delete"
+    },
+    {
+      "i": 110,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9386?segment=0"
+    },
+    {
+      "i": 111,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-5-content-overlay-edit"
+    },
+    {
+      "i": 112,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-5-content-overlay-delete"
+    },
+    {
+      "i": 122,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9381?segment=0"
+    },
+    {
+      "i": 123,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-10-content-overlay-edit"
+    },
+    {
+      "i": 124,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-10-content-overlay-delete"
+    },
+    {
+      "i": 130,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9382?segment=0"
+    },
+    {
+      "i": 131,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-14-content-overlay-edit"
+    },
+    {
+      "i": 132,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-14-content-overlay-delete"
+    },
+    {
+      "i": 138,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9385?segment=0"
+    },
+    {
+      "i": 139,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-18-content-overlay-edit"
+    },
+    {
+      "i": 140,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-0-blocks-18-content-overlay-delete"
+    },
+    {
+      "i": 141,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9385?segment=0"
+    },
+    {
+      "i": 142,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-0-content-overlay-edit"
+    },
+    {
+      "i": 143,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-0-content-overlay-delete"
+    },
+    {
+      "i": 153,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9386?segment=0"
+    },
+    {
+      "i": 154,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-5-content-overlay-edit"
+    },
+    {
+      "i": 155,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-5-content-overlay-delete"
+    },
+    {
+      "i": 165,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9381?segment=0"
+    },
+    {
+      "i": 166,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-10-content-overlay-edit"
+    },
+    {
+      "i": 167,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-10-content-overlay-delete"
+    },
+    {
+      "i": 173,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9382?segment=0"
+    },
+    {
+      "i": 174,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-14-content-overlay-edit"
+    },
+    {
+      "i": 175,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-14-content-overlay-delete"
+    },
+    {
+      "i": 181,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9385?segment=0"
+    },
+    {
+      "i": 182,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-18-content-overlay-edit"
+    },
+    {
+      "i": 183,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-1-blocks-18-content-overlay-delete"
+    },
+    {
+      "i": 184,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9385?segment=0"
+    },
+    {
+      "i": 185,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-0-content-overlay-edit"
+    },
+    {
+      "i": 186,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-0-content-overlay-delete"
+    },
+    {
+      "i": 196,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9386?segment=0"
+    },
+    {
+      "i": 197,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-5-content-overlay-edit"
+    },
+    {
+      "i": 198,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-5-content-overlay-delete"
+    },
+    {
+      "i": 208,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9381?segment=0"
+    },
+    {
+      "i": 209,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-10-content-overlay-edit"
+    },
+    {
+      "i": 210,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-10-content-overlay-delete"
+    },
+    {
+      "i": 216,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9382?segment=0"
+    },
+    {
+      "i": 217,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-14-content-overlay-edit"
+    },
+    {
+      "i": 218,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-14-content-overlay-delete"
+    },
+    {
+      "i": 224,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9385?segment=0"
+    },
+    {
+      "i": 225,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-18-content-overlay-edit"
+    },
+    {
+      "i": 226,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-2-blocks-18-content-overlay-delete"
+    },
+    {
+      "i": 227,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9385?segment=0"
+    },
+    {
+      "i": 228,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-3-blocks-0-content-overlay-edit"
+    },
+    {
+      "i": 229,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-3-blocks-0-content-overlay-delete"
+    },
+    {
+      "i": 239,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9386?segment=0"
+    },
+    {
+      "i": 240,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-3-blocks-5-content-overlay-edit"
+    },
+    {
+      "i": 241,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-3-blocks-5-content-overlay-delete"
+    },
+    {
+      "i": 251,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9381?segment=0"
+    },
+    {
+      "i": 252,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-3-blocks-10-content-overlay-edit"
+    },
+    {
+      "i": 253,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-3-blocks-10-content-overlay-delete"
+    },
+    {
+      "i": 259,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9382?segment=0"
+    },
+    {
+      "i": 260,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-3-blocks-14-content-overlay-edit"
+    },
+    {
+      "i": 261,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-3-blocks-14-content-overlay-delete"
+    },
+    {
+      "i": 271,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9381?segment=0"
+    },
+    {
+      "i": 272,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-4-blocks-3-content-overlay-edit"
+    },
+    {
+      "i": 273,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-4-blocks-3-content-overlay-delete"
+    },
+    {
+      "i": 279,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9382?segment=0"
+    },
+    {
+      "i": 280,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-4-blocks-7-content-overlay-edit"
+    },
+    {
+      "i": 281,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-4-blocks-7-content-overlay-delete"
+    },
+    {
+      "i": 291,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9381?segment=0"
+    },
+    {
+      "i": 292,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-5-blocks-3-content-overlay-edit"
+    },
+    {
+      "i": 293,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-5-blocks-3-content-overlay-delete"
+    },
+    {
+      "i": 299,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9382?segment=0"
+    },
+    {
+      "i": 300,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-5-blocks-7-content-overlay-edit"
+    },
+    {
+      "i": 301,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-5-blocks-7-content-overlay-delete"
+    },
+    {
+      "i": 311,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9381?segment=0"
+    },
+    {
+      "i": 312,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-6-blocks-3-content-overlay-edit"
+    },
+    {
+      "i": 313,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-6-blocks-3-content-overlay-delete"
+    },
+    {
+      "i": 319,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9382?segment=0"
+    },
+    {
+      "i": 320,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-6-blocks-7-content-overlay-edit"
+    },
+    {
+      "i": 321,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-6-blocks-7-content-overlay-delete"
+    },
+    {
+      "i": 327,
+      "tag": "A",
+      "text": "",
+      "title": "View flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/com/numbers/9385?segment=0"
+    },
+    {
+      "i": 328,
+      "tag": "A",
+      "text": "",
+      "title": "Set planner to this flight number",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-6-blocks-11-content-overlay-edit"
+    },
+    {
+      "i": 329,
+      "tag": "A",
+      "text": "",
+      "title": "Delete flight assignment for this day",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-visualFlightPlan-days-6-blocks-11-content-overlay-delete"
+    },
+    {
+      "i": 331,
+      "tag": "A",
+      "text": "",
+      "title": "Flight Plan Transfer Tool",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/docs-render?article=FlightPlanTransfer"
+    },
+    {
+      "i": 332,
+      "tag": "A",
+      "text": "all fleets",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-flightPlanTransfer-fleet~selector-content-fleet~none~select"
+    },
+    {
+      "i": 333,
+      "tag": "A",
+      "text": "Default",
+      "title": "",
+      "disabled": false,
+      "href": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?31-1.-tabs-panel-flightPlanTransfer-fleet~selector-content-fleet~default-link"
+    },
+    {
+      "i": 335,
+      "tag": "INPUT",
+      "text": "Transfer Flight Plan",
+      "title": "",
+      "disabled": false,
+      "href": ""
+    },
+    {
+      "i": 336,
+      "tag": "INPUT",
+      "text": "Transfer flight plan and display target aircraft",
+      "title": "",
+      "disabled": false,
+      "href": ""
+    },
+    {
+      "i": 342,
+      "tag": "BUTTON",
+      "text": "Apply...",
+      "title": "",
+      "disabled": false,
+      "href": ""
+    },
+    {
+      "i": 346,
+      "tag": "BUTTON",
+      "text": "Book transfer flight...",
+      "title": "",
+      "disabled": false,
+      "href": ""
+    }
+  ],
+  "textHead": "AirlineSim\n Database \n Help \n Community \n Private Messages 26\n halleu \nCFLAIR \n339,823 AS$\nCommercial \nOperations \nManagement \nAircraft: N001CFA / Boeing 767-300ER (winglets)\nWithdraw pilots Aircraft type Performance tool back to fleet next \nFlight Plan\nFlights\nHistory\nConversion\nAssign a new flight\nExisting Flight Number\nNew Flight Number\nFlight number\n \nFrom \nChoose One\nChoose One\nAberdeen, SD, US (ABR)\nAbilene (ABI)\nAdak Island (ADK)\nAguadilla (BQN)\nAkhiok (AKK)\nAkiak (AKI)\nAkron/Canton (CAK)\nAlakanuk (AUK)\nAlamogordo (ALM)\nAlamosa (ALS)\nAlbany, GA, US (ABY)\nAlbany, NY, US (ALB)\nAlbuquerque (ABQ)\nAleknagik (WKK)\nAlexandria, LA (AEX)\nAllakaket (AET)\nAllentown (ABE)\nAlliance (AIA)\nAlliance Ft. Worth (AFW)\nAlpena (APN)\nAltoona (AOO)\nAmarillo (AMA)\nAmbler (ABL)\nAnacortes (OTS)\nAnaktuvuk (AKP)\nAnchorage (ANC)\nAniak (ANI)\nAnvik (ANV)\nAppleton (ATW)\nArcata (ACV)\nArctic Village (ARC)\nAsheville (AVL)\nAspen (ASE)\nAthens, GA, US (AHN)\nAtka (AKB)\nAtlanta (ATL)\nAtlantic City (ACY)\nAtmautluak (ATT)\nAtqasuk (ATK)\nAugusta (AGS)\nAugusta State (AUG)\nAustin (AUS)\nBakersfield (BFL)\nBaltimore (BWI)\nBangor (BGR)\nBar Harbor (BHB)\nBarrow (BRW)\nBarter Island (BTI)\nBaton Rouge (BTR)\nBeaufort County (BFT)\nBeaumont (BPT)\nBeaver (WBQ)\nBeckley (BKW)\nBedford (BED)\nBelleville (BLV)\nBellingham (BLI)\nBemidji (BJI)\nBethel (BET)\nBettles (BTT)\nBillings (BIL)\nBinghamton (BGM)\nBirch Creek (KBC)\nBirmingham, AL, US (BHM)\nBismarck (BIS)\nBlakely Island (BYW)\nBlock Island (BID)\nBloomington-Normal (BMI)\nBluefield (BL"
+}

@@ -146,7 +146,8 @@
             const placed = _squarify(items, 0, 0, W, H)
 
             for (const p of placed) {
-                const d = p.dest
+                const d = p.item && p.item.dest
+                if (!d) continue
                 const rect = p.rect
                 const press = ws.pressureColor(d.competition && d.competition.score)
                 const glyph = ws.carrierGlyph(d.carrierClass)

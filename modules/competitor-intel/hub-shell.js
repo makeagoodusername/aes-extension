@@ -16,6 +16,7 @@
     if (window.AesCompetitorIntelShell) return
 
     const TABS = [
+        {id: "map",           label: "Map",           glyph: "🗺"},
         {id: "companies",     label: "Companies",     glyph: "🏢"},
         {id: "routes",        label: "Routes",        glyph: "↔"},
         {id: "ors",           label: "ORS",           glyph: "◎"},
@@ -28,6 +29,25 @@
         if (_instance) {
             // Re-mount with the new context.
             _instance.ctx = ctx
+            if (_instance.state) {
+                _instance.state.ctx = ctx
+                if (_validTab(ctx && ctx.initialTab)) {
+                    _instance.state.tab = ctx.initialTab
+                    _instance.state.sort = _defaultSortFor(ctx.initialTab)
+                }
+                if (ctx && typeof ctx.initialSearch === "string") {
+                    _instance.state.search = ctx.initialSearch
+                }
+                // Re-open with a fresh airline focus when caller supplies one.
+                // null is a valid clear; undefined means "preserve existing".
+                if (ctx && Object.prototype.hasOwnProperty.call(ctx, "initialAirlineId")) {
+                    _instance.state.airlineId = ctx.initialAirlineId
+                        ? String(ctx.initialAirlineId) : null
+                } else if (ctx && Object.prototype.hasOwnProperty.call(ctx, "airlineId")) {
+                    _instance.state.airlineId = ctx.airlineId
+                        ? String(ctx.airlineId) : null
+                }
+            }
             _instance.render()
             return
         }
@@ -47,10 +67,13 @@
     function isOpen() { return !!_instance }
 
     function _build(ctx) {
+        const initialAirline = ctx && (ctx.initialAirlineId || ctx.airlineId)
+            ? String(ctx.initialAirlineId || ctx.airlineId) : null
         const state = {
-            tab:    "companies",
-            search: "",
-            sort:   _defaultSortFor("companies"),
+            tab:    _validTab(ctx && ctx.initialTab) ? ctx.initialTab : "companies",
+            search: (ctx && typeof ctx.initialSearch === "string") ? ctx.initialSearch : "",
+            sort:   _defaultSortFor(_validTab(ctx && ctx.initialTab) ? ctx.initialTab : "companies"),
+            airlineId: initialAirline,
             ctx
         }
 
@@ -174,8 +197,14 @@
         // Storage onChange listener — refresh when underlying data mutates.
         const onStorage = (changes, area) => {
             if (area !== "local") return
+            const server = state.ctx && state.ctx.server ? String(state.ctx.server) : ""
             for (const k in changes) {
                 if (k.startsWith("competitorIntel:") || k.startsWith("routeAssistant:ors:")) {
+                    _refreshData()
+                    break
+                }
+                if (k.endsWith("competitorMonitoring")
+                        || (server && k.startsWith(server) && k.endsWith("schedule"))) {
                     _refreshData()
                     break
                 }
@@ -194,10 +223,32 @@
             } catch (e) { /* graceful */ }
         }
 
+        // Subscribe to the cross-tile focus-enterprise event so clicking an
+        // airline on the world-map / competitor-monitoring tile / alliance
+        // tile drops the user straight into the airline-detail view.
+        // Returns the unsubscribe handle for cleanup.
+        let focusOff = null
+        if (window.CentralHubBus && typeof window.CentralHubBus.on === "function") {
+            try {
+                focusOff = window.CentralHubBus.on("focus-enterprise", (payload) => {
+                    const id = payload && (payload.enterpriseId || payload.id)
+                    if (!id) return
+                    state.airlineId = String(id)
+                    renderTabs()
+                    renderActiveView()
+                })
+            } catch (e) {
+                console.warn("[AES competitor-intel] focus-enterprise subscribe failed", e)
+            }
+        }
+
         const cleanup = () => {
             document.removeEventListener("keydown", onKey)
             if (chrome && chrome.storage && chrome.storage.onChanged) {
                 chrome.storage.onChanged.removeListener(onStorage)
+            }
+            if (typeof focusOff === "function") {
+                try { focusOff() } catch (_) {}
             }
             if (window.AesCompetitorIntelDrilldown) window.AesCompetitorIntelDrilldown.close()
             if (window.AesCompetitorIntelFlightNumbersView
@@ -211,19 +262,47 @@
             tabBar.innerHTML = ""
             for (const t of TABS) {
                 const btn = document.createElement("button")
-                const active = state.tab === t.id
-                btn.style.cssText = "background:transparent;border:none;color:" + (active ? "#67e8f9" : "#94a3b8") + ";"
-                    + "padding:8px 14px;font-size:12px;cursor:pointer;border-bottom:2px solid "
-                    + (active ? "#67e8f9" : "transparent") + ";font-weight:" + (active ? "600" : "400") + ";"
-                    + "display:flex;align-items:center;gap:6px;"
+                // When airlineId is focused the static tabs render dim (the
+                // airline-detail view owns the content area); a separate
+                // "Detail · <name>" pill on the right is the active one.
+                const dim = !!state.airlineId
+                const active = !dim && state.tab === t.id
+                const color = active ? "#67e8f9" : (dim ? "#475569" : "#94a3b8")
+                const border = active ? "#67e8f9" : "transparent"
+                btn.style.cssText = "background:transparent;border:none;color:" + color + ";"
+                    + "padding:8px 14px;font-size:12px;cursor:pointer;border-bottom:2px solid " + border + ";"
+                    + "font-weight:" + (active ? "600" : "400") + ";display:flex;align-items:center;gap:6px;"
                 btn.innerHTML = `<span>${t.glyph}</span><span>${t.label}</span>`
                 btn.addEventListener("click", () => {
+                    state.airlineId = null
                     state.tab = t.id
                     state.sort = _defaultSortFor(t.id)
                     renderTabs()
                     renderActiveView()
                 })
                 tabBar.append(btn)
+            }
+            if (state.airlineId) {
+                const data = state.ctx && state.ctx.data
+                const rec = data && data.enterprises ? data.enterprises.get(String(state.airlineId)) : null
+                const name = (rec && rec.name) || ("#" + state.airlineId)
+                const pill = document.createElement("button")
+                pill.style.cssText = "margin-left:auto;background:#1e3a8a;border:1px solid #67e8f9;color:#67e8f9;"
+                    + "padding:6px 12px;font-size:11px;cursor:default;border-radius:3px;font-weight:600;"
+                    + "display:flex;align-items:center;gap:6px;"
+                pill.innerHTML = `<span>✈</span><span>${name.replace(/[<>&]/g, "")}</span>`
+                tabBar.append(pill)
+                const exitBtn = document.createElement("button")
+                exitBtn.title = "Close airline detail"
+                exitBtn.textContent = "✕"
+                exitBtn.style.cssText = "background:transparent;border:1px solid #334155;color:#94a3b8;"
+                    + "padding:6px 8px;font-size:11px;cursor:pointer;border-radius:3px;margin-left:6px;"
+                exitBtn.addEventListener("click", () => {
+                    state.airlineId = null
+                    renderTabs()
+                    renderActiveView()
+                })
+                tabBar.append(exitBtn)
             }
         }
 
@@ -260,14 +339,57 @@
             const opts = {
                 search: state.search,
                 sort:   state.sort,
+                airlineId: state.airlineId,
                 onSort: (next) => { state.sort = next; renderActiveView() },
                 onSelect: (sel) => {
+                    // openAirline — switch the content area to the airline-detail
+                    // view for the given enterprise id. Tab state is preserved
+                    // so the back button returns to the right list. Triggered
+                    // from Companies row click (via drilldown's "Open detail"),
+                    // Map tab carrier panel, and the focus-enterprise bus event.
+                    if (sel && sel.kind === "openAirline" && sel.airlineId) {
+                        state.airlineId = String(sel.airlineId)
+                        renderTabs()
+                        renderActiveView()
+                        return
+                    }
+                    // The map view emits {kind:"switchTab", tab, search?} — used
+                    // when the user clicks an airline row's "Filter ↑" button so
+                    // the Companies tab opens pre-filtered to that airline. All
+                    // other selection envelopes (company / route / ors row) flow
+                    // through the existing drilldown side-panel.
+                    if (sel && sel.kind === "switchTab" && _validTab(sel.tab)) {
+                        // Switching tabs always exits the airline-detail
+                        // overlay so the user sees the requested list view.
+                        state.airlineId = null
+                        state.tab = sel.tab
+                        state.sort = _defaultSortFor(sel.tab)
+                        if (typeof sel.search === "string") {
+                            state.search = sel.search
+                            searchInput.value = sel.search
+                        }
+                        renderTabs()
+                        renderActiveView()
+                        return
+                    }
                     if (window.AesCompetitorIntelDrilldown) {
                         window.AesCompetitorIntelDrilldown.open(dialog, sel, state.ctx)
                     }
                 }
             }
             const data = state.ctx.data
+            // Airline-detail overlay takes precedence over the tab views: when
+            // a specific airline is selected, render the rich detail view in
+            // the content area and skip the tab dispatch.
+            if (state.airlineId) {
+                const detail = window.AesCompetitorIntelAirlineDetailView
+                if (detail && typeof detail.render === "function") {
+                    detail.render(contentHost, data, opts)
+                    return
+                }
+                contentHost.textContent = "Airline detail view not loaded."
+                return
+            }
             const view = _viewFor(state.tab)
             if (!view) {
                 contentHost.textContent = "View not loaded: " + state.tab
@@ -279,6 +401,7 @@
         }
 
         function render() {
+            searchInput.value = state.search || ""
             renderServerPicker()
             renderTabs()
             renderActiveView()
@@ -291,6 +414,7 @@
 
     function _viewFor(tabId) {
         switch (tabId) {
+            case "map":           return window.AesCompetitorIntelExploreMapView
             case "companies":     return window.AesCompetitorIntelCompaniesView
             case "routes":        return window.AesCompetitorIntelRoutesView
             case "ors":           return window.AesCompetitorIntelOrsView
@@ -302,6 +426,11 @@
     function _defaultSortFor(tabId) {
         const v = _viewFor(tabId)
         return (v && v.DEFAULT_SORT) ? Object.assign({}, v.DEFAULT_SORT) : null
+    }
+
+    function _validTab(tabId) {
+        if (!tabId) return false
+        return TABS.some(t => t.id === tabId) ? tabId : false
     }
 
     function _fmtRelative(ts) {

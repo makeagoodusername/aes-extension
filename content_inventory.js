@@ -3,16 +3,111 @@
 //Global vars
 var settings, pricingData, todayDate, analysis;
 var aesmodule = { valid: true, error: [] };
+const INVENTORY_CLASS_ORDER = ["Y", "C", "F", "Cargo"];
+const INVENTORY_DEFAULT_RECOMMENDATION_STEPS = [
+    { min:  0, max:  40, name: "Drop High",   step: -8 },
+    { min: 40, max:  60, name: "Drop Medium", step: -4 },
+    { min: 60, max:  70, name: "Drop Low",    step: -2 },
+    { min: 70, max:  80, name: "Keep",        step:  0 },
+    { min: 80, max:  90, name: "Raise Low",   step:  1 },
+    { min: 90, max:  99, name: "Raise Medium",step:  2 },
+    { min: 99, max: 100, name: "Raise High",  step:  5 }
+];
+const INVENTORY_CLASS_PROFILES = {
+    Y: {
+        label: "Economy",
+        targetLoad: 84,
+        elasticity: 1.00,
+        maxStep: 7,
+        deadband: 4,
+        floorCaution: 76,
+        ceilingCaution: 158,
+        confidenceCap: 1200
+    },
+    C: {
+        label: "Business",
+        targetLoad: 76,
+        elasticity: 0.82,
+        maxStep: 5,
+        deadband: 5,
+        floorCaution: 82,
+        ceilingCaution: 165,
+        confidenceCap: 220
+    },
+    F: {
+        label: "First",
+        targetLoad: 66,
+        elasticity: 0.62,
+        maxStep: 4,
+        deadband: 6,
+        floorCaution: 88,
+        ceilingCaution: 175,
+        confidenceCap: 80
+    },
+    Cargo: {
+        label: "Cargo",
+        targetLoad: 80,
+        elasticity: 0.92,
+        maxStep: 7,
+        deadband: 5,
+        floorCaution: 70,
+        ceilingCaution: 150,
+        confidenceCap: 900
+    }
+};
 
-window.addEventListener("load", async (event) => {
-    settings = await getSettings()
+function saveInvPricingSettings() {
+    return window.AesSettings.saveArea("invPricing", settings.invPricing)
+}
+
+function isInventoryExtensionContextInvalidated(error) {
+    const message = error && error.message ? error.message : String(error || "")
+    return /Extension context invalidated/i.test(message)
+}
+
+function inventoryStorageErrorMessage(error) {
+    if (isInventoryExtensionContextInvalidated(error)) {
+        return "Extension context was reloaded. Refresh Inventory and retry."
+    }
+    return error && error.message ? error.message : String(error)
+}
+
+async function setInventoryStorage(items) {
+    if (window.AesWriteThrough && typeof window.AesWriteThrough.set === "function") {
+        const result = await window.AesWriteThrough.set(items)
+        if (result && result.skipped) {
+            throw new Error("Extension context invalidated")
+        }
+        return result
+    }
+    try {
+        await chrome.storage.local.set(items)
+    } catch (error) {
+        throw error
+    }
+    return {keys: Object.keys(items || {})}
+}
+
+async function initInventory(ctx) {
+    settings = ctx && ctx.settings ? ctx.settings : await getSettings()
     aesmodule = new Validation()
 
     if (!aesmodule.valid) {
         displayValidationError()
         return
     }
-    displayInventory()
+    await displayInventory()
+}
+
+AesBoot.register({
+    id: "content-inventory",
+    matches: "inventory",
+    deps: [
+        "AesSettings",
+        function inventoryValidationReady(){ return typeof Validation !== "undefined" }
+    ],
+    anchor: "#inventory-table",
+    init: initInventory
 })
 
 /**
@@ -20,8 +115,12 @@ window.addEventListener("load", async (event) => {
  * @returns {object} data.settings
  */
 async function getSettings() {
+    if (window.AesBoot && typeof window.AesBoot.prepareContext === "function") {
+        const ctx = await window.AesBoot.prepareContext()
+        if (ctx && ctx.settings) return ctx.settings
+    }
     const data = await chrome.storage.local.get(['settings'])
-    return data.settings
+    return AES.normalizeSettings(data.settings)
 }
 
 async function displayInventory() {
@@ -98,16 +197,19 @@ async function displayInventory() {
  */
 function getFlights() {
     const flights = []
-    // TODO: also support grouped mode (#inventory-grouped-table)
-    const flightRows = document.querySelectorAll("#inventory-table tbody tr")
+    const flightTable = document.querySelector("#inventory-table")
 
-    if (!flightRows) {
+    if (!flightTable) {
         throw new Error("\"Group by flight\" needs to be unchecked")
     }
+
+    const flightRows = flightTable.querySelectorAll("tbody tr")
     
     for (const row of flightRows) {
         const flight = getFlight(row)
-        flights.push(flight)
+        if (flight) {
+            flights.push(flight)
+        }
     }
 
     return flights
@@ -116,13 +218,25 @@ function getFlights() {
 /**
  * Get flight information and return as an object
  * @param {HTMLElement} row - the <tr> with flight information
- * @returns {object} flight - object with the parsed flight information
+ * @returns {object|null} flight - object with the parsed flight information
  */
 function getFlight(row) {
     const cells = row.querySelectorAll("td")
-    const flightNumber = cells[1].querySelector("a[href*=numbers").innerText
+    if (cells.length < 11) {
+        return null
+    }
+
+    const flightLink = cells[1].querySelector("a[href*='numbers']")
+    if (!flightLink) {
+        return null
+    }
+
+    const flightNumber = flightLink.innerText
     const date = cells[2].innerText
     const compCode = getCompCode(cells[5].innerText)
+    if (!compCode) {
+        return null
+    }
     const capacity = cells[6].innerText
     const booked = cells[7].innerText
     const price = cells[9].innerText
@@ -134,28 +248,34 @@ function getFlight(row) {
         cmp: compCode,
         cap: AES.cleanInteger(capacity),
         bkd: AES.cleanInteger(booked),
-        price: AES.cleanInteger(price),
+        price: parseInventoryPrice(price, compCode),
         status: status
     }
     
     return flight
 }
 
-/**
- * Checks if the string is longer than one character and returns a string of "Cargo"
- * @param {string} text - localised word for "Cargo"
- * @returns {string} text - either passthrough of the input or "Cargo"
- */
 function getCompCode(text) {
-    if (!text) {
-        throw new Error("no value provided for getCompCode")
+    const raw = String(text || "").trim()
+    if (!raw) {
+        return null
     }
-    
-    if (text.length > 1) {
+
+    const normalized = raw.replace(/\s+/g, " ").toLowerCase()
+    if (/^cargo$/i.test(raw) || /cargo|freight|mail|fracht/.test(normalized)) {
         return "Cargo"
     }
-    
-    return text
+    if (/^y$/i.test(raw) || /\b(y|economy|eco|tourist)\b/i.test(raw)) {
+        return "Y"
+    }
+    if (/^c$/i.test(raw) || /\b(c|business|biz)\b/i.test(raw)) {
+        return "C"
+    }
+    if (/^f$/i.test(raw) || /\b(f|first)\b/i.test(raw)) {
+        return "F"
+    }
+
+    return raw.length > 1 ? "Cargo" : raw.toUpperCase()
 }
 
 /**
@@ -168,8 +288,14 @@ function getPriceDetails() {
     
     for (const row of pricingRows) {
         const cells = row.querySelectorAll("td")
+        if (!cells || cells.length < 5) {
+            continue
+        }
         const cmp = getCompCode(cells[0].innerText)
-        const price = getPrice(cells)
+        if (!cmp) {
+            continue
+        }
+        const price = getPrice(cells, cmp)
         
         prices[cmp] = price
     }
@@ -182,9 +308,9 @@ function getPriceDetails() {
  * @param {array} cells
  * @returns {object} price
  */
-function getPrice(cells) {
-    const currentPrice = AES.cleanInteger(cells[1].innerText)
-    const defaultPrice = AES.cleanInteger(cells[4].innerText.replace(/\s+/g, ''))
+function getPrice(cells, cmp) {
+    const currentPrice = parseInventoryPrice(cells[1].innerText, cmp)
+    const defaultPrice = parseInventoryPrice(cells[4].innerText.replace(/\s+/g, ''), cmp)
     const currentPricePoint = getCurrentPricePoint(currentPrice, defaultPrice)
     const newPriceInput = cells[2].querySelector("input")
     
@@ -204,7 +330,180 @@ function getPrice(cells) {
  * @returns {integer}
  */
 function getCurrentPricePoint(currentPrice, defaultPrice) {
+    if (!defaultPrice) {
+        return 0
+    }
     return Math.round((currentPrice / defaultPrice) * 100)
+}
+
+function cleanInventoryInteger(value) {
+    if (typeof AES !== "undefined" && AES.cleanInteger) {
+        const n = AES.cleanInteger(String(value || ""))
+        return isFinite(n) ? n : null
+    }
+    const n = parseInt(String(value || "").replace(/[^\d-]/g, ""), 10)
+    return isFinite(n) ? n : null
+}
+
+function parseInventoryPrice(value, cmp) {
+    if (cmp !== "Cargo") {
+        return cleanInventoryInteger(value)
+    }
+    const raw = String(value || "").trim().replace(/[^\d,.\-]/g, "")
+    if (!raw || raw === "-") return 0
+    const sign = raw.charAt(0) === "-" ? -1 : 1
+    const body = sign < 0 ? raw.slice(1) : raw
+    const sep = Math.max(body.lastIndexOf("."), body.lastIndexOf(","))
+    if (sep >= 0) {
+        const whole = body.slice(0, sep).replace(/\D/g, "")
+        const frac = body.slice(sep + 1).replace(/\D/g, "")
+        if (frac.length > 0 && frac.length <= 2) {
+            const n = Number((whole || "0") + "." + frac)
+            return isFinite(n) ? Math.round(sign * n * 100) / 100 : 0
+        }
+    }
+    const n = Number(body.replace(/\D/g, ""))
+    return isFinite(n) ? sign * n : 0
+}
+
+function roundInventoryPrice(cmp, value) {
+    const n = Number(value)
+    if (!isFinite(n)) return 0
+    if (cmp === "Cargo") {
+        return Math.round(n * 100) / 100
+    }
+    return Math.round(n)
+}
+
+function getInventoryClassProfile(cmp) {
+    return INVENTORY_CLASS_PROFILES[cmp] || INVENTORY_CLASS_PROFILES.Y
+}
+
+function getInventoryRecommendationConfig(cmp) {
+    const recommendation = settings && settings.invPricing && settings.invPricing.recommendation
+        ? settings.invPricing.recommendation
+        : {}
+    const config = recommendation[cmp] || recommendation.Y || {}
+    return {
+        minPrice: Number.isFinite(Number(config.minPrice)) ? Number(config.minPrice) : 60,
+        maxPrice: Number.isFinite(Number(config.maxPrice)) ? Number(config.maxPrice) : 200,
+        steps: Array.isArray(config.steps) && config.steps.length
+            ? config.steps
+            : INVENTORY_DEFAULT_RECOMMENDATION_STEPS
+    }
+}
+
+function createEmptyClassAnalysis(cmp, price) {
+    return {
+        classKey: cmp,
+        totalCap: 0,
+        totalBkd: 0,
+        flightCount: 0,
+        valid: 0,
+        served: !!price,
+        analysisPrice: price ? price.currentPrice : 0,
+        analysisPricePoint: price ? price.currentPricePoint : 0,
+        useCurrentPrice: 0,
+        demandFallback: 0,
+        demandSource: "",
+        currentPrice: price ? price.currentPrice : 0,
+        currentPricePoint: price ? price.currentPricePoint : 0,
+        defaultPrice: price ? price.defaultPrice : 0,
+        confidence: 0,
+        breakdown: null
+    }
+}
+
+function normalizeInventoryStatus(status) {
+    return String(status || "").toLowerCase().replace(/\s+/g, "")
+}
+
+function isInventoryDemandFlight(flight) {
+    const status = normalizeInventoryStatus(flight && flight.status)
+    return status === "finished"
+        || status === "inflight"
+        || status === "booked"
+        || status === "booking"
+        || status === "scheduled"
+        || status === "planned"
+}
+
+function isSettledInventoryFlight(flight) {
+    const status = normalizeInventoryStatus(flight && flight.status)
+    return status === "finished" || status === "inflight"
+}
+
+function averageInventoryFlightPrice(flights, cmp) {
+    let total = 0
+    let weight = 0
+    for (let i = 0; i < flights.length; i++) {
+        const flight = flights[i]
+        const cap = Number(flight && flight.cap) || 0
+        const price = Number(flight && flight.price) || 0
+        if (cap > 0 && price > 0) {
+            total += price * cap
+            weight += cap
+        }
+    }
+    return weight ? roundInventoryPrice(cmp, total / weight) : 0
+}
+
+function addInventoryFlightsToClass(data, flights) {
+    for (let i = 0; i < flights.length; i++) {
+        data.totalCap += Number(flights[i].cap) || 0
+        data.totalBkd += Number(flights[i].bkd) || 0
+    }
+    data.flightCount = flights.length
+    data.valid = data.totalCap > 0
+}
+
+async function getInventoryQuickPriceGate(scopeName) {
+    let stored = null
+    try {
+        if (window.AesSettings && typeof window.AesSettings.loadAll === "function") {
+            stored = await window.AesSettings.loadAll()
+        } else {
+            const data = await chrome.storage.local.get(["settings"])
+            stored = data && data.settings || null
+        }
+    } catch (_) {
+        stored = null
+    }
+    const ra = stored && stored.routeAssistant || {}
+    const apply = ra.pricing && ra.pricing.apply || {}
+    const scope = scopeName || "manual"
+    const gate = window.RouteAssistantPricingPlumbing
+        && typeof window.RouteAssistantPricingPlumbing.resolveApplyGate === "function"
+        ? window.RouteAssistantPricingPlumbing.resolveApplyGate(apply, scope)
+        : (function() {
+            const liveScopes = apply.liveScopes || {}
+            const scopeLiveAllowed = liveScopes[scope] !== false
+            const applyEnabled = apply.enabled !== false
+            const dryRunOnly = apply.dryRunOnly !== false
+            return {
+                applyEnabled,
+                dryRunOnly,
+                liveScopeAllowed: scopeLiveAllowed,
+                dryRun: dryRunOnly || !applyEnabled || !scopeLiveAllowed
+            }
+        })()
+    return {
+        applyEnabled: gate.applyEnabled && gate.scopeLiveAllowed,
+        dryRunOnly: gate.dryRun,
+        liveScope: scope,
+        liveScopeAllowed: gate.scopeLiveAllowed
+    }
+}
+
+function emptyInventoryHistoryClass(cmp) {
+    return createEmptyClassAnalysis(cmp, null)
+}
+
+function inventoryHistoryClassData(snapshot, cmp) {
+    if (!snapshot || !snapshot.data || !snapshot.data[cmp]) {
+        return emptyInventoryHistoryClass(cmp)
+    }
+    return snapshot.data[cmp]
 }
 
 //Get Analysis
@@ -212,25 +511,26 @@ function getAnalysis(flights, prices, storedData) {
     //Setup object
     let mostRecentDate
     let mostRecentData
-    let data = {
-        Y: 0,
-        C: 0,
-        F: 0,
-        Cargo: 0
-    }
+    let data = {}
+    INVENTORY_CLASS_ORDER.forEach(function(cmp) {
+        data[cmp] = 0
+    })
     let analysis = {
         data: data,
+        previousData: null,
         getLoad: function(cmp) {
-            if (this.data[cmp].valid) {
+            if (this.data[cmp] && this.data[cmp].valid) {
                 return this.data[cmp].totalBkd / this.data[cmp].totalCap;
             } else {
                 return 0;
             }
         },
         note: function(cmp) {
-            if (this.data[cmp].valid) {
-                if (this.data[cmp].useCurrentPrice) {
-                    return "Current price analysis";
+            if (this.data[cmp] && this.data[cmp].valid) {
+                if (this.data[cmp].demandFallback) {
+                    return "Observed demand fallback"
+                } else if (this.data[cmp].useCurrentPrice) {
+                    return "Current price demand"
                 } else {
                     return "No current price flights, using old price"
                 }
@@ -239,14 +539,14 @@ function getAnalysis(flights, prices, storedData) {
             }
         },
         displayLoad: function(cmp) {
-            if (this.data[cmp].valid) {
+            if (this.data[cmp] && this.data[cmp].valid) {
                 return this.data[cmp].totalBkd + " / " + this.data[cmp].totalCap + " (" + displayPerc(Math.round(this.getLoad(cmp) * 100), 'load') + ")";
             } else {
                 return '-';
             }
         },
         displayRec: function(cmp) {
-            if (this.data[cmp].recommendation) {
+            if (this.data[cmp] && this.data[cmp].recommendation) {
                 switch (this.data[cmp].recType) {
                     case 'good':
                         return '<span class="good">' + this.data[cmp].recommendation + '</span>';
@@ -262,18 +562,22 @@ function getAnalysis(flights, prices, storedData) {
             }
         },
         displayPrice: function(cmp, type) {
+            const row = this.data[cmp] || {}
             switch (type) {
                 case 'current':
-                    return formatCurrency(this.data[cmp].currentPrice) + ' AS$ (' + displayPerc(this.data[cmp].currentPricePoint, 'price') + ')';
+                    if (!row.currentPrice) {
+                        return '-';
+                    }
+                    return formatCurrency(row.currentPrice, cmp) + ' AS$ (' + displayPerc(row.currentPricePoint, 'price') + ')';
                 case 'new':
-                    if (this.data[cmp].newPrice) {
-                        return formatCurrency(this.data[cmp].newPrice) + ' AS$ (' + displayPerc(this.data[cmp].newPricePoint, 'price') + ')';
+                    if (row.newPrice) {
+                        return formatCurrency(row.newPrice, cmp) + ' AS$ (' + displayPerc(row.newPricePoint, 'price') + ')';
                     } else {
                         return '-';
                     }
                 case 'analysis':
-                    if (this.data[cmp].valid) {
-                        return formatCurrency(this.data[cmp].analysisPrice) + ' AS$ (' + displayPerc(this.data[cmp].analysisPricePoint, 'price') + ')';
+                    if (row.valid && row.analysisPrice) {
+                        return formatCurrency(row.analysisPrice, cmp) + ' AS$ (' + displayPerc(row.analysisPricePoint, 'price') + ')';
                     } else {
                         return '-';
                     }
@@ -282,7 +586,7 @@ function getAnalysis(flights, prices, storedData) {
             }
         },
         displayIndex: function(cmp) {
-            if (this.data[cmp].valid) {
+            if (this.data[cmp] && this.data[cmp].valid) {
                 let span = $('<span></span>');
                 if (this.data[cmp].index >= 90) {
                     return span.addClass('good').text(this.data[cmp].index);
@@ -311,7 +615,7 @@ function getAnalysis(flights, prices, storedData) {
             let load, cap, bkd;
             load = cap = bkd = 0;
             for (let i = 0; i < cmp.length; i++) {
-                if (this.data[cmp[i]].valid) {
+                if (this.data[cmp[i]] && this.data[cmp[i]].valid) {
                     cap += this.data[cmp[i]].totalCap;
                     bkd += this.data[cmp[i]].totalBkd;
                 }
@@ -339,7 +643,7 @@ function getAnalysis(flights, prices, storedData) {
             let count, totalIndex;
             count = totalIndex = 0;
             for (let i = 0; i < cmp.length; i++) {
-                if (this.data[cmp[i]].valid) {
+                if (this.data[cmp[i]] && this.data[cmp[i]].valid) {
                     count++;
                     totalIndex += this.data[cmp[i]].index;
                 }
@@ -360,7 +664,7 @@ function getAnalysis(flights, prices, storedData) {
         },
         hasValue: function(value) {
             for (let cmp in this.data) {
-                if (this.data[cmp][value]) {
+                if (this.data[cmp] && this.data[cmp][value]) {
                     return 1;
                 }
             }
@@ -368,10 +672,8 @@ function getAnalysis(flights, prices, storedData) {
         }
     };
 
-    //Filter flights
-    flights = flights.filter(function(flight) {
-        return flight.status == 'finished' || flight.status == 'inflight';
-    });
+    const observedFlights = flights.filter(isInventoryDemandFlight)
+    const settledFlights = observedFlights.filter(isSettledInventoryFlight)
 
     //Check historical data
     if (storedData) {
@@ -385,53 +687,56 @@ function getAnalysis(flights, prices, storedData) {
         dates.reverse();
         mostRecentDate = dates[0]
         mostRecentData = storedData[mostRecentDate]
+        analysis.previousData = mostRecentData
     }
 
     //extract each cmp analysis
     for (let cmp in analysis.data) {
-        analysis.data[cmp] = {
-            totalCap: 0,
-            totalBkd: 0,
-            valid: 0,
-            analysisPrice: 0,
-            analysisPricePoint: 0,
-            useCurrentPrice: 0,
-            currentPrice: prices[cmp].currentPrice,
-            currentPricePoint: prices[cmp].currentPricePoint
-        };
-        let price = prices[cmp].currentPrice;
+        const priceDetails = prices[cmp] || null
+        analysis.data[cmp] = createEmptyClassAnalysis(cmp, priceDetails)
+        let price = priceDetails ? priceDetails.currentPrice : 0
         //Only cmp flights
-        let cmpFlights = flights.filter(function(flight) {
+        let cmpFlights = observedFlights.filter(function(flight) {
             return flight.cmp == cmp;
         });
         //if no cmp flights
         if (cmpFlights.length) {
             //Check if current price flights avaialble
-            let flightsArray = cmpFlights.filter(function(flight) {
-                return (flight.price == price);
-            });
-            if (flightsArray.length) {
+            let flightsArray = price
+                ? cmpFlights.filter(function(flight) {
+                    return (flight.price == price);
+                })
+                : [];
+            if (flightsArray.length && priceDetails) {
                 analysis.data[cmp].useCurrentPrice = 1;
                 analysis.data[cmp].analysisPrice = price;
-                analysis.data[cmp].analysisPricePoint = Math.round(price / prices[cmp].defaultPrice * 100);
-                analysis.data[cmp].valid = true;
-            } else if (mostRecentData) {
-                // flightsArray = cmpFlights.filter(function(flight) {
-                //     return flight.price == mostRecentData.data[cmp].analysisPrice;
-                // });
-                flightsArray = cmpFlights
+                analysis.data[cmp].analysisPricePoint = priceDetails.currentPricePoint;
+                analysis.data[cmp].demandSource = "current price rows";
+            } else {
+                flightsArray = settledFlights.filter(function(flight) {
+                    return flight.cmp == cmp;
+                });
+                if (!flightsArray.length) {
+                    flightsArray = cmpFlights
+                }
                 if (flightsArray.length) {
-                    analysis.data[cmp].useCurrentPrice = 0;
-                    analysis.data[cmp].analysisPrice = mostRecentData.data[cmp].analysisPrice;
-                    analysis.data[cmp].analysisPricePoint = Math.round(mostRecentData.data[cmp].analysisPrice / prices[cmp].defaultPrice * 100);
-                    analysis.data[cmp].valid = true;
+                    analysis.data[cmp].useCurrentPrice = priceDetails ? 1 : 0;
+                    analysis.data[cmp].demandFallback = 1;
+                    analysis.data[cmp].demandSource = "observed rows";
+                    if (priceDetails) {
+                        analysis.data[cmp].analysisPrice = priceDetails.currentPrice;
+                        analysis.data[cmp].analysisPricePoint = priceDetails.currentPricePoint;
+                    } else {
+                        const avgPrice = averageInventoryFlightPrice(flightsArray, cmp)
+                        analysis.data[cmp].analysisPrice = avgPrice
+                        analysis.data[cmp].analysisPricePoint = avgPrice
+                            ? getCurrentPricePoint(avgPrice, analysis.data[cmp].defaultPrice)
+                            : 0
+                    }
                 }
             }
-            if (analysis.data[cmp].valid) {
-                flightsArray.forEach(function(flight) {
-                    analysis.data[cmp].totalCap += flight.cap;
-                    analysis.data[cmp].totalBkd += flight.bkd;
-                });
+            if (flightsArray.length) {
+                addInventoryFlightsToClass(analysis.data[cmp], flightsArray)
             }
         }
     }
@@ -447,62 +752,182 @@ function getAnalysis(flights, prices, storedData) {
 function generateRecommendation(analysis, prices) {
     for (let cmp in analysis.data) {
         analysis.data[cmp].recommendation = 0;
-        if (analysis.data[cmp].valid) {
-            if (analysis.data[cmp].useCurrentPrice) {
-                //Find recommendation
-                let load = Math.round(analysis.getLoad(cmp) * 100);
-                //Find step
-                let step;
-                for (let i in settings.invPricing.recommendation[cmp].steps) {
-                    step = settings.invPricing.recommendation[cmp].steps[i];
-                    if (load >= step.min && load <= step.max) {
-                        break;
-                    }
-                }
-                //Find new price point
-                let newPricePoint = prices[cmp].currentPricePoint + step.step;
-                //See if new price in bounds for Drop
-                if (step.step < 0) {
-                    analysis.data[cmp].recType = 'bad';
-                    if (newPricePoint < settings.invPricing.recommendation[cmp].minPrice) {
-                        newPricePoint = settings.invPricing.recommendation[cmp].minPrice;
-                    }
-                }
-                //See if new price in bounds for Raise
-                if (step.step > 0) {
-                    analysis.data[cmp].recType = 'good';
-                    if (newPricePoint > settings.invPricing.recommendation[cmp].maxPrice) {
-                        newPricePoint = settings.invPricing.recommendation[cmp].maxPrice;
-                    }
-                }
-                //see if already at highest/lowest price point
-                if (step.step != 0) {
-                    if (newPricePoint == prices[cmp].currentPricePoint) {
-                        if (newPricePoint == settings.invPricing.recommendation[cmp].minPrice) {
-                            //Already at lowest point
-                            analysis.data[cmp].recommendation = 'Already at lowest price!';
-                        }
-                        if (newPricePoint == settings.invPricing.recommendation[cmp].maxPrice) {
-                            //Already at highest point
-                            analysis.data[cmp].recommendation = 'Already at highest price!';
-                        }
-                    }
-                } else {
-                    analysis.data[cmp].recType = 'neutral';
-                }
-                //check if not set by exceptions
-                if (!analysis.data[cmp].recommendation) {
-                    analysis.data[cmp].recommendation = step.name;
-                    analysis.data[cmp].newPriceChange = step.step;
-                    if (step.step) {
-                        analysis.data[cmp].newPricePoint = newPricePoint;
-                        analysis.data[cmp].newPrice = Math.round(newPricePoint / 100 * prices[cmp].defaultPrice);
-                    }
-                }
-            }
+        const priceDetails = prices[cmp] || null
+        if (!analysis.data[cmp].valid || !priceDetails || !priceDetails.defaultPrice) {
+            continue
+        }
+        const result = suggestInventoryPriceMove(cmp, analysis.data[cmp], analysis.previousData)
+        analysis.data[cmp].confidence = result.confidence
+        analysis.data[cmp].breakdown = result.breakdown
+        analysis.data[cmp].rationale = result.rationale
+        analysis.data[cmp].recType = result.recType
+        analysis.data[cmp].recommendation = result.recommendation
+        analysis.data[cmp].newPriceChange = result.step
+
+        if (result.step) {
+            analysis.data[cmp].newPricePoint = result.newPricePoint
+            analysis.data[cmp].newPrice = roundInventoryPrice(cmp, result.newPricePoint / 100 * priceDetails.defaultPrice)
         }
     }
     return analysis;
+}
+
+function suggestInventoryPriceMove(cmp, classData, previousData) {
+    const profile = getInventoryClassProfile(cmp)
+    const config = getInventoryRecommendationConfig(cmp)
+    const load = Math.round(classData.totalBkd / classData.totalCap * 100)
+    const legacy = getInventoryLoadStep(load, config)
+    const pressure = load - profile.targetLoad
+    const demandStep = Math.round((pressure / 10) * profile.elasticity)
+    const previousClass = previousData && previousData.data ? previousData.data[cmp] : null
+    const trend = getInventoryTrendStep(classData, previousClass)
+    const magnitude = getInventoryMagnitudeStep(cmp, classData, load)
+    const routeIndex = getInventoryRoutePressureIndex(classData, load)
+    const routePressure = routeIndex - profile.targetLoad
+    const routeStep = getInventoryRoutePressureStep(routePressure)
+    let step = Math.round((demandStep * 0.60) + (legacy.step * 0.22)
+        + (routeStep * 0.18) + trend + magnitude)
+
+    if (Math.abs(pressure) <= profile.deadband && Math.abs(step) <= 1) {
+        step = 0
+    }
+    if (classData.demandFallback && Math.abs(step) > 1) {
+        step += step > 0 ? -1 : 1
+    }
+    if (classData.currentPricePoint <= profile.floorCaution && step < 0) {
+        step += 1
+    }
+    if (classData.currentPricePoint >= profile.ceilingCaution && step > 0) {
+        step -= 1
+    }
+
+    step = clampInventoryNumber(step, -profile.maxStep, profile.maxStep)
+    let newPricePoint = clampInventoryNumber(
+        classData.currentPricePoint + step,
+        config.minPrice,
+        config.maxPrice
+    )
+    if (newPricePoint === classData.currentPricePoint) {
+        step = 0
+    }
+
+    const confidence = getInventoryConfidence(classData, previousClass, profile)
+    const recType = step > 0 ? "good" : (step < 0 ? "bad" : "neutral")
+    const recommendation = formatInventoryRecommendation(cmp, step, load, profile, newPricePoint, confidence)
+    return {
+        step: step,
+        newPricePoint: newPricePoint,
+        recType: recType,
+        confidence: confidence,
+        recommendation: recommendation,
+        rationale: recommendation,
+        breakdown: {
+            loadPct: load,
+            targetLoadPct: profile.targetLoad,
+            demandPressurePct: pressure,
+            demandStep: demandStep,
+            settingsStep: legacy.step,
+            routeIndex: routeIndex,
+            routePressurePct: routePressure,
+            routeStep: routeStep,
+            trendStep: trend,
+            magnitudeStep: magnitude,
+            finalStep: step,
+            currentPricePoint: classData.currentPricePoint,
+            suggestedPricePoint: newPricePoint,
+            source: classData.demandSource || "inventory"
+        }
+    }
+}
+
+function getInventoryRoutePressureIndex(classData, load) {
+    const pricePoint = Number(classData && classData.analysisPricePoint)
+    const safePricePoint = isFinite(pricePoint) ? pricePoint : 0
+    const safeLoad = isFinite(load) ? load : 0
+    return Math.round((safePricePoint + (safeLoad * 3)) / 4)
+}
+
+function getInventoryRoutePressureStep(routePressure) {
+    const gap = Number(routePressure)
+    if (!isFinite(gap) || Math.abs(gap) < 10) {
+        return 0
+    }
+    if (gap >= 22) {
+        return 2
+    }
+    if (gap <= -22) {
+        return -2
+    }
+    return gap > 0 ? 1 : -1
+}
+
+function getInventoryLoadStep(load, config) {
+    const steps = config.steps || INVENTORY_DEFAULT_RECOMMENDATION_STEPS
+    for (let i = 0; i < steps.length; i++) {
+        const step = steps[i]
+        if (load >= step.min && load <= step.max) {
+            return step
+        }
+    }
+    return { min: 0, max: 100, name: "Keep", step: 0 }
+}
+
+function getInventoryTrendStep(classData, previousClass) {
+    if (!previousClass || !previousClass.valid || !previousClass.totalCap) {
+        return 0
+    }
+    const nowLoad = Math.round(classData.totalBkd / classData.totalCap * 100)
+    const previousLoad = Math.round(previousClass.totalBkd / previousClass.totalCap * 100)
+    const delta = nowLoad - previousLoad
+    if (delta >= 8) {
+        return 1
+    }
+    if (delta <= -8) {
+        return -1
+    }
+    return 0
+}
+
+function getInventoryMagnitudeStep(cmp, classData, load) {
+    if (!classData.flightCount) {
+        return 0
+    }
+    if (cmp === "Cargo") {
+        if (load >= 92 && classData.totalBkd >= 0.8 * classData.totalCap) {
+            return 1
+        }
+        if (load <= 38 && classData.totalBkd <= 0.4 * classData.totalCap) {
+            return -1
+        }
+        return 0
+    }
+    if (load >= 96 && classData.flightCount >= 4) {
+        return 1
+    }
+    if (load <= 35 && classData.flightCount >= 4) {
+        return -1
+    }
+    return 0
+}
+
+function getInventoryConfidence(classData, previousClass, profile) {
+    const sourceScore = classData.demandFallback ? 0.14 : 0.24
+    const flightScore = Math.min(0.30, classData.flightCount * 0.04)
+    const capScore = Math.min(0.24, (classData.totalCap / profile.confidenceCap) * 0.24)
+    const historyScore = previousClass && previousClass.valid ? 0.10 : 0
+    return Math.round(clampInventoryNumber(0.18 + sourceScore + flightScore + capScore + historyScore, 0.20, 0.96) * 100) / 100
+}
+
+function formatInventoryRecommendation(cmp, step, load, profile, newPricePoint, confidence) {
+    const action = step > 0 ? "Raise" : (step < 0 ? "Drop" : "Hold")
+    const move = step ? " " + Math.abs(step) + "pp to " + newPricePoint + "%" : ""
+    return action + move + " - " + profile.label + " demand "
+        + load + "% vs " + profile.targetLoad + "% target"
+        + " (conf " + Math.round(confidence * 100) + "%)"
+}
+
+function clampInventoryNumber(value, min, max) {
+    return Math.max(min, Math.min(max, value))
 }
 
 function generateRouteIndex(analysis) {
@@ -595,47 +1020,102 @@ function displayAnalysis(analysis, prices) {
         $("#aes-div-analysis").prepend(invPricingAnalysisBar);
         //create buttons
         //Save Data
-        let saveInvPricingBtn = $('<button class="btn btn-default" id="aes-btn-invPricing-save-snapshot"></button>');
-        $(saveInvPricingBtn).click(function() {
+        let saveInvPricingBtn = $('<button type="button" class="btn btn-default" id="aes-btn-invPricing-save-snapshot"></button>');
+        $(saveInvPricingBtn).click(async function(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
             $(this).closest("li").remove();
             invPricingAnalysisBarSpan.text('Saving analysis data...');
-            //Get updated time
-            let updateTime = AES.getServerDate().time;
-            pricingData.date[todayDate] = analysis;
-            pricingData.date[todayDate].updateTime = updateTime;
-            pricingData.date[todayDate].date = todayDate;
-            pricingData.date[todayDate].pricingUpdated = 0;
-            chrome.storage.local.set({
-                [pricingData.key]: pricingData }, function() {
+            try {
+                //Get updated time
+                let updateTime = AES.getServerDate().time;
+                pricingData.date[todayDate] = analysis;
+                pricingData.date[todayDate].updateTime = updateTime;
+                pricingData.date[todayDate].date = todayDate;
+                pricingData.date[todayDate].pricingUpdated = 0;
+                await setInventoryStorage({[pricingData.key]: pricingData});
                 invPricingAnalysisBarSpan.removeClass().addClass("good").text("Data Saved!");
                 //Automation
                 if (settings.invPricing.autoClose) {
                     close();
                 }
-            });
+            } catch (error) {
+                invPricingAnalysisBarSpan.removeClass().addClass("bad").text("Save failed: " + inventoryStorageErrorMessage(error));
+            }
         });
 
         //Update prices
-        let applyNewPriceInvPricingBtn = $('<button class="btn btn-default" id="aes-btn-invPricing-apply-new-prices">apply new prices (and save data)</button>');
-        $(applyNewPriceInvPricingBtn).click(function() {
+        let applyNewPriceInvPricingBtn = $('<button type="button" class="btn btn-default" id="aes-btn-invPricing-apply-new-prices">apply new prices (and save data)</button>');
+        $(applyNewPriceInvPricingBtn).click(async function(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
             $(this).closest("ul").find("li button").closest("li").remove();
             invPricingAnalysisBarSpan.text('Updating prices...');
             //Get updated time
             let updateTime = AES.getServerDate().time;
-            pricingData.date[todayDate] = analysis;
-            pricingData.date[todayDate].updateTime = updateTime;
-            pricingData.date[todayDate].date = todayDate;
-            pricingData.date[todayDate].pricingUpdated = 1;
-            chrome.storage.local.set({
-                [pricingData.key]: pricingData }, function() {
-                $('[name="submit-prices"]').click();
-            });
+            try {
+                if (!window.CentralInventoryQuickPriceApplier) {
+                    throw new Error("verified inventory price applier is unavailable");
+                }
+                const storageKey = getPricingInventoryKey();
+                const entries = [];
+                for (let cmp in analysis.data) {
+                    if (analysis.data[cmp].newPrice) {
+                        entries.push({
+                            hub: storageKey.origin,
+                            dest: storageKey.destination,
+                            classKey: cmp,
+                            newPrice: analysis.data[cmp].newPrice,
+                            server: storageKey.server
+                        });
+                    }
+                }
+                if (!entries.length) {
+                    throw new Error("no new prices to apply");
+                }
+                const gate = await getInventoryQuickPriceGate("manual");
+                const applier = new window.CentralInventoryQuickPriceApplier({
+                    applyEnabled: gate.applyEnabled,
+                    dryRunOnly: gate.dryRunOnly
+                });
+                const batch = await applier.applyBatch(entries, {interMs: 350, stopOnError: true});
+                const failed = batch.results.filter(function(result) {
+                    return !result
+                        || (result.status !== "verified"
+                            && result.status !== "posted");
+                });
+                if (failed.length) {
+                    const first = failed[0];
+                    const message = first && first.error && first.error.message
+                        ? first.error.message
+                        : (first && first.status ? first.status : "unknown failure");
+                    invPricingAnalysisBarSpan.removeClass().addClass("bad").text("Price update failed: " + message);
+                    return;
+                }
+                pricingData.date[todayDate] = analysis;
+                pricingData.date[todayDate].updateTime = updateTime;
+                pricingData.date[todayDate].date = todayDate;
+                pricingData.date[todayDate].pricingUpdated = 1;
+                await setInventoryStorage({[pricingData.key]: pricingData});
+                invPricingAnalysisBarSpan.removeClass().addClass("good").text("Prices updated and verified at: " + updateTime);
+                if (settings.invPricing.autoClose) {
+                    close();
+                } else {
+                    window.location.reload();
+                }
+            } catch (error) {
+                invPricingAnalysisBarSpan.removeClass().addClass("bad").text("Price update failed: " + (error && error.message || String(error)));
+            }
         });
         //Update new pricing input
         if (analysis.hasValue('newPrice')) {
             //Modify new price input
             for (let cmp in analysis.data) {
-                if (analysis.data[cmp].newPrice) {
+                if (analysis.data[cmp].newPrice && prices[cmp] && prices[cmp].newPriceInput) {
                     prices[cmp].newPriceInput.value = analysis.data[cmp].newPrice;
                 }
             }
@@ -689,7 +1169,7 @@ function displayHistory(analysis) {
         //History Options
         let fieldset = $('<fieldset></fieldset>').html('<legend>History Options</legend>');
         //Hide Now
-        let option1 = $('<div class="checkbox"></div>').html('<label><input id="aes-check-inventory-history-showNow" type="checkbox"> Show "Now" collumn</label>');
+        let option1 = $('<div class="checkbox"></div>').html('<label><input id="aes-check-inventory-history-showNow" type="checkbox"> Show "Now" column</label>');
         //Show only Priced
         let option2 = $('<div class="checkbox"></div>').html('<label><input id="aes-check-inventory-history-showOnlyPricing" type="checkbox"> Show only dates when pricing changed</label>');
 
@@ -715,7 +1195,7 @@ function displayHistory(analysis) {
             } else {
                 settings.invPricing.historyTable.showNow = 0;
             }
-            chrome.storage.local.set({ settings: settings }, function() {});
+            saveInvPricingSettings();
             buildHistoryTable();
         });
         $("#aes-check-inventory-history-showOnlyPricing").change(function() {
@@ -725,11 +1205,11 @@ function displayHistory(analysis) {
             } else {
                 settings.invPricing.historyTable.showOnlyPricing = 0;
             }
-            chrome.storage.local.set({ settings: settings }, function() {});
+            saveInvPricingSettings();
         });
         $("#aes-select-inventory-history-numberPastDates").change(function() {
             settings.invPricing.historyTable.numberOfDates = $('#aes-select-inventory-history-numberPastDates').val();
-            chrome.storage.local.set({ settings: settings }, function() {});
+            saveInvPricingSettings();
             buildHistoryTable();
         });
 
@@ -780,11 +1260,11 @@ function buildHistoryTable() {
             }
         }
     }
+    dates.sort();
+    dates.reverse();
     if (numberOfDates) {
         dates = dates.slice(0, numberOfDates);
     }
-    dates.sort();
-    dates.reverse();
     if (dates.length) {
 
         //Headrows
@@ -833,8 +1313,8 @@ function buildHistoryTable() {
             td.push($('<td></td>').text(cmp));
             if (showNow) {
                 //Now TDs
-                let data = analysis.data[cmp];
-                let prevData = pricingData.date[dates[dates.length - 1]].data[cmp];
+                let data = inventoryHistoryClassData(analysis, cmp);
+                let prevData = inventoryHistoryClassData(pricingData.date[dates[dates.length - 1]], cmp);
                 td.push($('<td class="text-nowrap text-right"></td>').html(displayHistoryPrice(data)));
                 td.push($('<td class="text-nowrap text-right"></td>').html(displayDifference(data, prevData).price));
                 td.push($('<td class="text-nowrap text-right"></td>').html(displayHistoryLoad(data)));
@@ -845,9 +1325,9 @@ function buildHistoryTable() {
             //Historical tds
             for (let i = 0; i < dates.length; i++) {
                 let date = dates[i];
-                let data = pricingData.date[date].data[cmp];
+                let data = inventoryHistoryClassData(pricingData.date[date], cmp);
                 if (i) {
-                    let prevData = pricingData.date[dates[i - 1]].data[cmp];
+                    let prevData = inventoryHistoryClassData(pricingData.date[dates[i - 1]], cmp);
                     //Not first data point
                     td.push($('<td class="text-nowrap text-right"></td>').html(displayHistoryPrice(data)));
                     td.push($('<td class="text-nowrap text-right"></td>').html(displayDifference(data, prevData).price));
@@ -889,7 +1369,7 @@ function buildHistoryTable() {
             }
             for (let i = 0; i < dates.length; i++) {
                 let date = dates[i];
-                let data = pricingData.date[date].data;
+                let data = (pricingData.date[date] && pricingData.date[date].data) || {};
                 if (i) {
                     tf.push('<td colspan="2"></td>');
                     tf.push($('<td></td>').html(historyDisplayTotal(data, type)));
@@ -930,6 +1410,7 @@ function displayValidationError() {
 
 //History Table functions
 function historyDisplayIndex(data, type) {
+    data = data || {}
     let cmp = [];
     let index = 0;
     switch (type) {
@@ -947,15 +1428,15 @@ function historyDisplayIndex(data, type) {
         //Multi index
         let count = 0;
         cmp.forEach(function(comp) {
-            if (data[comp].valid) {
+            if (data[comp] && data[comp].valid) {
                 index += data[comp].index;
                 count++;
             }
         });
-        index = Math.round(index / count);
+        index = count ? Math.round(index / count) : 0;
     } else {
         //one cmp index
-        if (data.valid) {
+        if (data && data.valid) {
             index = data.index;
         }
     }
@@ -983,6 +1464,7 @@ function historyDisplayTotalText(type) {
 }
 
 function historyDisplayTotal(data, type) {
+    data = data || {}
     let cmp = [];
     switch (type) {
         case 'all':
@@ -997,7 +1479,7 @@ function historyDisplayTotal(data, type) {
     let load, cap, bkd;
     load = cap = bkd = 0;
     cmp.forEach(function(comp) {
-        if (data[comp].valid) {
+        if (data[comp] && data[comp].valid) {
             cap += data[comp].totalCap;
             bkd += data[comp].totalBkd;
         }
@@ -1011,6 +1493,7 @@ function historyDisplayTotal(data, type) {
 }
 
 function displayHistoryLoad(data) {
+    data = data || {}
     if (data.valid) {
         let booked = data.totalBkd;
         let capacity = data.totalCap;
@@ -1022,16 +1505,19 @@ function displayHistoryLoad(data) {
 }
 
 function displayHistoryPrice(data) {
+    data = data || {}
     if (data.valid) {
         let price = data.analysisPrice;
         let pricePoint = data.analysisPricePoint;
-        return formatCurrency(price) + ' AS$ (' + displayPerc(pricePoint, 'price') + ')';
+        return formatCurrency(price, data.classKey) + ' AS$ (' + displayPerc(pricePoint, 'price') + ')';
     } else {
         return '-';
     }
 }
 
 function displayDifference(current, old) {
+    current = current || {}
+    old = old || {}
     if (current.valid && old.valid) {
         let currentLoad = Math.round(current.totalBkd / current.totalCap * 100);
         let oldLoad = Math.round(old.totalBkd / old.totalCap * 100);
@@ -1073,8 +1559,16 @@ function displayPerc(perc, type) {
     }
 }
 //Helper functions
-function formatCurrency(value) {
-    return Intl.NumberFormat().format(value)
+function formatCurrency(value, cmp) {
+    const n = Number(value)
+    if (!isFinite(n)) return "-"
+    if (cmp === "Cargo" && Math.abs(n) < 10) {
+        return n.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        })
+    }
+    return Intl.NumberFormat().format(n)
 }
 
 function getPricingInventoryKey() {

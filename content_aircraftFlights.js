@@ -8,10 +8,6 @@ let aircraftFlightData,
     infoPanel
 let aircraftFlightsInitStarted = false
 
-// F-9228-801: gate on document.readyState so that an extension reload
-// mid-session (which re-injects the content script after `load` has already
-// fired) still bootstraps the page. Plain window.addEventListener("load")
-// silently no-ops in that case and the table stays un-augmented.
 async function init() {
     if (aircraftFlightsInitStarted) return
     aircraftFlightsInitStarted = true
@@ -27,15 +23,25 @@ async function init() {
         console.warn("[AES /1 aircraft-flights] bootstrap failed", e)
     }
 }
-function scheduleInit() {
-    // The manifest loads this file before aircraft-data.js, info-panel.js,
-    // and the FlightData model. If the content script is injected after the
-    // page load event, calling init synchronously would run before those
-    // subsequent files execute. Defer one task and poll for dependencies.
-    setTimeout(() => { init() }, 0)
-}
-if (document.readyState === "complete") scheduleInit()
-else window.addEventListener("load", scheduleInit, {once: true})
+
+AesBoot.register({
+    id: "content-aircraft-flights",
+    matches: "aircraftFlights",
+    deps: [
+        function aircraftFlightsDepsReady() {
+            return typeof Aircraft !== "undefined"
+                && typeof FlightData !== "undefined"
+                && typeof InfoPanel !== "undefined"
+                && typeof AircraftStatisticsPanel !== "undefined"
+                && typeof AES !== "undefined"
+        }
+    ],
+    anchors: [
+        "#aircraft-flight-instances-table tbody",
+        ".as-page-aircraft .col-md-2"
+    ],
+    init
+})
 
 function waitForBootstrapReady(timeoutMs = 6000) {
     const started = Date.now()
@@ -204,8 +210,11 @@ function addFlightInfoToAircarftData() {
     const storedFlights = aircraftFlightInfoData
     for (const flightKey in storedFlights) {
         const storedFlight = storedFlights[flightKey]
+        if (!storedFlight || typeof storedFlight !== "object") continue
+        const storedFlightId = storedFlight.flightId != null ? storedFlight.flightId : storedFlight.id
+        if (storedFlightId == null) continue
         for (const flight of aircraftFlightData.flights) {
-            if (flight.id === storedFlight.flightId) {
+            if (String(flight.id) === String(storedFlightId)) {
                 flight.data = storedFlight
             }
         }
@@ -223,6 +232,7 @@ function getKeys() {
     const airline = aircraftFlightData.airline || ""
     for (const flight of aircraftFlightData.flights) {
         const id = flight.id
+        if (id == null) continue
         if (airline) keys.push(`${server}${airline}flightInfo${id}`)
         keys.push(`${server}flightInfo${id}`)
     }
@@ -319,7 +329,142 @@ function saveData() {
 
 function display() {
     displayFlightProfit()
+    displayRoutePricingContext().catch(e => console.warn("[AES /1 aircraft-flights] price context failed", e))
     createButtonOld()
+}
+
+function formatAesPrice(value, cls) {
+    const n = Number(value)
+    if (!isFinite(n)) return null
+    if (cls === "Cargo") {
+        const rounded = Math.round(n * 100) / 100
+        return n < 10 ? rounded.toFixed(2).replace(/\.?0+$/, "") : String(Math.round(rounded))
+    }
+    return String(Math.round(n))
+}
+
+function formatPriceMap(map) {
+    if (!map) return "--"
+    const parts = []
+    for (const cls of ["Y", "C", "F", "Cargo"]) {
+        const v = formatAesPrice(map[cls], cls)
+        if (v != null) parts.push(cls + " " + v)
+    }
+    return parts.length ? parts.join(" · ") : "--"
+}
+
+function flightRouteKey(flight) {
+    const origin = flight && flight.originIata
+    const dest = flight && flight.destinationIata
+    if (!origin || !dest) return null
+    return origin + "-" + dest
+}
+
+function compactRouteContextCell(ctx, kind) {
+    if (!ctx) return "--"
+    if (kind === "competition") {
+        return formatPriceMap(ctx.competitors && ctx.competitors.medians)
+    }
+    if (kind === "history") {
+        if (ctx.yieldHistory && ctx.yieldHistory.latestProfitPerFlight != null) {
+            return "AS$ " + ctx.yieldHistory.latestProfitPerFlight + "/flt"
+        }
+        const y = ctx.historyByClass && ctx.historyByClass.Y
+        return y && y.avgPrice != null ? "Y hist " + y.avgPrice : "--"
+    }
+    if (kind === "ors") {
+        return ctx.ors && ctx.ors.rankAny != null ? "#" + ctx.ors.rankAny : "--"
+    }
+    if (kind === "schedule") {
+        return ctx.schedule && ctx.schedule.weeklyFlights != null
+            ? ctx.schedule.weeklyFlights + "/wk"
+            : "--"
+    }
+    return "--"
+}
+
+async function displayRoutePricingContext() {
+    if (!aircraftFlightData || !Array.isArray(aircraftFlightData.flights)) return
+    if (!window.AesPriceDiagnostics || typeof window.AesPriceDiagnostics.buildRouteContext !== "function") return
+    const table = document.querySelector("#aircraft-flight-instances-table")
+    if (!table) return
+
+    const routes = []
+    const seen = new Set()
+    for (const flight of aircraftFlightData.flights) {
+        const key = flightRouteKey(flight)
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        const parts = key.split("-")
+        routes.push({key, hub: parts[0], dest: parts[1]})
+    }
+    if (!routes.length) return
+
+    let panel = document.getElementById("aes-aircraft-flights-price-context")
+    if (!panel) {
+        panel = document.createElement("div")
+        panel.id = "aes-aircraft-flights-price-context"
+        panel.className = "as-panel"
+        panel.style.cssText = "margin:10px 0;padding:8px 10px;"
+        const anchor = table.closest(".as-table-well") || table
+        anchor.parentNode.insertBefore(panel, anchor)
+    }
+    panel.textContent = ""
+
+    const title = document.createElement("h3")
+    title.style.cssText = "margin:0 0 6px;font-size:14px;"
+    title.textContent = "AES route pricing context"
+    panel.append(title)
+
+    const visibleRoutes = routes.slice(0, 16)
+    let contexts = []
+    if (typeof window.AesPriceDiagnostics.buildManyRouteContexts === "function") {
+        contexts = await window.AesPriceDiagnostics.buildManyRouteContexts(visibleRoutes).catch(() => [])
+    }
+    if (!Array.isArray(contexts) || contexts.length !== visibleRoutes.length) {
+        contexts = await Promise.all(visibleRoutes.map(route =>
+            window.AesPriceDiagnostics.buildRouteContext(route.hub, route.dest)
+                .catch(() => null)
+        ))
+    }
+
+    const wrap = document.createElement("div")
+    wrap.style.cssText = "overflow-x:auto;"
+    const tableEl = document.createElement("table")
+    tableEl.className = "table table-condensed table-striped"
+    tableEl.style.cssText = "margin-bottom:0;font-size:12px;"
+    const thead = document.createElement("thead")
+    thead.innerHTML = "<tr><th>Route</th><th>Current</th><th>Competition</th><th>History</th><th>ORS</th><th>Schedule</th></tr>"
+    const tbody = document.createElement("tbody")
+    visibleRoutes.forEach((route, idx) => {
+        const ctx = contexts[idx]
+        const tr = document.createElement("tr")
+        const cells = [
+            route.key,
+            formatPriceMap(ctx && ctx.currentPrices),
+            compactRouteContextCell(ctx, "competition"),
+            compactRouteContextCell(ctx, "history"),
+            compactRouteContextCell(ctx, "ors"),
+            compactRouteContextCell(ctx, "schedule")
+        ]
+        for (const cell of cells) {
+            const td = document.createElement("td")
+            td.className = "text-nowrap"
+            td.textContent = cell
+            tr.append(td)
+        }
+        tbody.append(tr)
+    })
+    tableEl.append(thead, tbody)
+    wrap.append(tableEl)
+    panel.append(wrap)
+
+    if (routes.length > 16) {
+        const foot = document.createElement("div")
+        foot.style.cssText = "font-size:11px;color:#777;margin-top:4px;"
+        foot.textContent = "Showing 16 of " + routes.length + " routes on this aircraft."
+        panel.append(foot)
+    }
 }
 
 function createButtonOld() {
@@ -401,11 +546,12 @@ function displayFlightProfit() {
             && flight.data.money.CM5 && flight.data.money.CM5.Total
         if (typeof total !== "number") return
         const profitCell = flight.row.querySelector("td:nth-child(13)")
+        const extractedCell = flight.row.querySelector("td:nth-child(14)")
+        if (!profitCell || !extractedCell) return
         profitCell.innerHTML = null
         profitCell.classList.remove("text-center")
         profitCell.classList.add("text-right")
         profitCell.append(AES.formatCurrency(total))
-        const extractedCell = flight.row.querySelector("td:nth-child(14)")
         extractedCell.innerHTML = null
         extractedCell.classList.remove("text-center")
         extractedCell.append(AES.formatDaysAgo(daysAgo))
@@ -497,7 +643,11 @@ class AircraftFlightsTab {
             // <server>flightInfo<flightId>; pre-existing bug, fixed here as
             // a prereq for the per-FN attribution slice.
             const idMatch = url.match(/[?&]id=(\d+)/)
-            flight.id = idMatch ? parseInt(idMatch[1]) : null
+            if (!idMatch) {
+                console.warn("[AES /1 aircraft-flights] skipping row with unparseable flight id", url)
+                continue
+            }
+            flight.id = parseInt(idMatch[1], 10)
             flight.flightNumber = flightNumber
 
             // Per-FN linkage (G slice 4) — preserve the FN→numeric-id map and

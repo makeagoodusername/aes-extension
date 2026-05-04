@@ -17,7 +17,24 @@
  *
  * Failures are non-fatal — an IATA that can't be resolved or whose country
  * page errors is added to `failedIatas` and the rest continue.
+ *
+ * Load-order: wrapped in idempotent IIFE guard (see audit FIX F-2 /
+ * streamline-A7.md). Manifest currently lists this file once; the guard
+ * matches the house style (silent-auto-proposers.js, AesAfpScheduleStore)
+ * so any future double-listing or SPA re-injection no-ops cleanly instead
+ * of throwing `SyntaxError: Identifier 'RouteAssistantParallelScanner'
+ * has already been declared`.
  */
+;(function () {
+    const root = (typeof window !== "undefined")
+        ? window
+        : ((typeof globalThis !== "undefined") ? globalThis : null)
+    if (typeof window !== "undefined") {
+        if (window.RouteAssistantParallelScanner) return
+    } else if (root && root.RouteAssistantParallelScanner) {
+        return
+    }
+
 class RouteAssistantParallelScanner {
     constructor(server, opts) {
         if (!server) throw new Error("RouteAssistantParallelScanner: server required")
@@ -200,3 +217,8 @@ class RouteAssistantParallelScanner {
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms))
 }
+
+if (root) {
+    root.RouteAssistantParallelScanner = RouteAssistantParallelScanner
+}
+})()

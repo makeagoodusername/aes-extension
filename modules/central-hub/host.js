@@ -12,12 +12,23 @@
  */
 ;(function () {
     if (typeof window === "undefined") return
+    // Subframes never host the hub. AS dashboard pages contain iframes that
+    // match the same content-script pattern; without this skip, the IIFE
+    // (and its mount path) re-fires per frame and the user sees N stacked
+    // hub roots in the top frame's DOM after subframe scripts inherit it.
+    if (window.top !== window) return
     if (window.__aesCentralHubMounted) return
     window.__aesCentralHubMounted = true
 
     const MAX_WAIT_MS = 15000
     const POLL_MS = 200
     let waited = 0
+
+    function record(label, err) {
+        if (window.AesInit && typeof window.AesInit.record === "function") {
+            window.AesInit.record(label, err)
+        }
+    }
 
     function findAnchor() {
         return document.getElementById("enterprise-dashboard")
@@ -46,23 +57,38 @@
         if (!anchor) return false
         if (typeof window.CentralHubShell !== "function") {
             console.warn("[AES Hub] CentralHubShell not loaded — check manifest order")
+            record("dashboard.hub.shell", "CentralHubShell not loaded")
             return true
         }
         const {server, airline} = resolveContext()
         const shell = new window.CentralHubShell({server, airline})
-        shell.mount(anchor).catch(err => console.warn("[AES Hub] shell mount failed", err))
+        shell.mount(anchor).catch(err => {
+            console.warn("[AES Hub] shell mount failed", err)
+            record("dashboard.hub.mount", err)
+        })
         window.__aesCentralHub = shell
         return true
     }
 
     function tick() {
-        if (mountIfReady()) return
-        waited += POLL_MS
-        if (waited >= MAX_WAIT_MS) {
-            console.warn("[AES Hub] anchor not found after", MAX_WAIT_MS, "ms; giving up")
-            return
+        const run = function () {
+            if (mountIfReady()) return
+            waited += POLL_MS
+            if (waited >= MAX_WAIT_MS) {
+                console.warn("[AES Hub] anchor not found after", MAX_WAIT_MS, "ms; giving up")
+                record("dashboard.hub.anchor", "anchor not found after " + MAX_WAIT_MS + "ms")
+                return
+            }
+            setTimeout(tick, POLL_MS)
         }
-        setTimeout(tick, POLL_MS)
+        if (window.AesInit && typeof window.AesInit.safe === "function") {
+            window.AesInit.safe("dashboard.hub.tick", run)
+        } else {
+            try { run() }
+            catch (err) {
+                console.warn("[AES Hub] boot tick failed", err)
+            }
+        }
     }
 
     if (document.readyState === "loading") {

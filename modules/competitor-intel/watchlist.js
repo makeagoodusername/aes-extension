@@ -130,13 +130,23 @@ class AesCompetitorWatchlist {
         if (typeof AesCompetitorStore === "undefined") return []
         const all = await chrome.storage.local.get(null)
         const prefix = "competitorIntel:enterprise:" + server + ":"
-        const out = []
+        const byId = new Map()
         for (const k in all) {
             if (k.indexOf(prefix) !== 0) continue
             const rec = all[k]
-            if (rec && typeof rec === "object") out.push(rec)
+            if (rec && typeof rec === "object") {
+                byId.set(String(rec.enterpriseId || k.slice(prefix.length)), rec)
+            }
         }
-        return out
+        if (typeof AesCompetitorStore.loadLegacyMonitoring === "function") {
+            const legacy = await AesCompetitorStore.loadLegacyMonitoring(server, all)
+            for (const rec of legacy) {
+                if (!rec || !rec.enterpriseId) continue
+                const id = String(rec.enterpriseId)
+                if (!byId.has(id)) byId.set(id, rec)
+            }
+        }
+        return Array.from(byId.values())
     }
 
     static async _loadSnapshotsSafe(server, enterpriseId) {

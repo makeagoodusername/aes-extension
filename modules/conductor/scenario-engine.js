@@ -24,13 +24,60 @@
         catch (_) { return [] }
     }
 
+    /** K11 — resolve current trust + tier-gate decision for this scenario.
+     *  Defensive: missing trust-store / tier-gate / globalMax setting all
+     *  collapse to "alert" + a no-op reason so the engine never blocks. */
+    async function _resolveTier(scenario, host) {
+        const fallback = {tier: "alert", reason: "trust stack not loaded"}
+        try {
+            const ts = window.AesConductorTrustStore
+            const tg = window.AesConductorTierGate
+            if (!ts || !tg || typeof ts.get !== "function" || typeof tg.gate !== "function") return fallback
+            const entry = await ts.get(host, scenario.id)
+            const settings = (window.AesConductorTrustSettings && window.AesConductorTrustSettings.read)
+                ? (await window.AesConductorTrustSettings.read(host)) : {}
+            const decision = tg.gate(scenario, entry, settings)
+            return {tier: decision.tier, reason: decision.reason}
+        } catch (_) { return fallback }
+    }
+
+    /** K14.1 — load the user/drift threshold overlay for this host and
+     *  reshape the flat `<scenarioId>.<key>` blob into a per-scenario map
+     *  the scenarios can read sync from `ctx.thresholds[id][key]`. Empty
+     *  blob (or store missing) returns an empty object — scenarios fall
+     *  back to their DEFAULT_* values. */
+    async function _loadThresholdsForHost(host) {
+        const out = {}
+        try {
+            const ts = window.AesConductorThresholdStore
+            if (!ts || typeof ts.load !== "function") return out
+            const blob = await ts.load(host) || {}
+            for (const composite of Object.keys(blob)) {
+                const e = blob[composite]
+                if (!e || typeof e.value !== "number" || !isFinite(e.value)) continue
+                const dot = composite.indexOf(".")
+                if (dot <= 0) continue
+                const sid = composite.slice(0, dot)
+                const key = composite.slice(dot + 1)
+                if (!out[sid]) out[sid] = {}
+                out[sid][key] = e.value
+            }
+        } catch (_) { /* noop — fall through to defaults */ }
+        return out
+    }
+
     async function _runOne(scenario, signal) {
+        const host = {server: signal.server, airline: signal.airline}
+        const thresholds = await _loadThresholdsForHost(host)
+        const ctx = {now: Date.now(), host, thresholds}
         let result = null
-        try { result = scenario.match(signal) }
+        try { result = scenario.match(signal, ctx) }
         catch (e) { console.warn("[AES Conductor] scenario match threw", scenario.id, e); return }
         if (!result) return
 
         const firedAt = Date.now()
+        const tierDecision = await _resolveTier(scenario, host)
+
         const fire = {
             id:              _fireId(firedAt),
             scenarioId:      scenario.id,
@@ -49,10 +96,15 @@
             acceptanceState: "open",
             acceptedAt:      null,
             outcome:         null,
-            outcomeAt:       null
+            outcomeAt:       null,
+            // K11 — tier the engine is allowed to operate at, derived from
+            // current trust-store posterior + tier-gate clamps. Stamped here
+            // (not later) so consumers see a stable tier for the fire's
+            // lifetime; trust changes update K11 tile + new fires only.
+            tier:            tierDecision.tier,
+            tierReason:      tierDecision.reason
         }
 
-        const host = {server: signal.server, airline: signal.airline}
         try { await window.AesConductorScenarioStore.append(host, fire) } catch (_) { /* noop */ }
         try {
             if (window.CentralHubBus && typeof window.CentralHubBus.emit === "function") {

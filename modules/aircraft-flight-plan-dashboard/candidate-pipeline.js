@@ -94,6 +94,14 @@ class AesAfpCandidatePipeline {
                 .map(s => String(s || "").toUpperCase())
                 .filter(Boolean)
         )
+        let scheduleLegs = []
+        if (typeof AesAfpScheduleStore !== "undefined"
+                && typeof AesAfpScheduleStore.load === "function") {
+            try {
+                const sched = await AesAfpScheduleStore.load(this.server, aircraftId)
+                scheduleLegs = sched && Array.isArray(sched.legs) ? sched.legs : []
+            } catch (_) { scheduleLegs = [] }
+        }
 
         // Compute candidates. AesAfpRouteCandidates.compute is async + bus-
         // safe (the emit is guarded). We don't store the result on
@@ -104,7 +112,8 @@ class AesAfpCandidatePipeline {
                 originIata: hub,
                 spec,
                 settings,
-                scheduledDestSet
+                scheduledDestSet,
+                scheduleLegs
             })
         } catch (e) {
             return {ok: false, error: {
@@ -156,6 +165,7 @@ class AesAfpCandidatePipeline {
         let build
         try {
             build = AesAfpWaveApplier.buildFromCandidates({preset, candidates, ctx, spec})
+            this._applyScheduleConflictValidation(build, scheduleLegs)
         } catch (e) {
             return {ok: false, error: {
                 code:    "buildThrew",
@@ -163,6 +173,125 @@ class AesAfpCandidatePipeline {
             }}
         }
         return {ok: true, build, candidates, preset, hub, spec}
+    }
+
+    _applyScheduleConflictValidation(build, scheduleLegs) {
+        if (!build || !Array.isArray(build.flights) || !build.flights.length) return
+        if (!Array.isArray(scheduleLegs) || !scheduleLegs.length) return
+        const conflicts = this._findScheduleConflicts(build.flights, scheduleLegs)
+        if (!conflicts.length) return
+
+        const samples = conflicts.slice(0, 4).map(c => {
+            return c.proposed.day + " " + c.proposed.route + " " + c.proposed.time
+                + " overlaps " + c.current.route + " " + c.current.time
+        })
+        const more = conflicts.length > samples.length ? " +" + (conflicts.length - samples.length) + " more" : ""
+        build.validation = Array.isArray(build.validation) ? build.validation.slice() : []
+        build.validation.push(
+            "Generated wave plan overlaps the current aircraft schedule: "
+            + samples.join("; ") + more
+            + ". Adjust the wave windows or pick a less-busy aircraft before dry-running these legs."
+        )
+        build.metadata = Object.assign({}, build.metadata || {}, {
+            scheduleConflictCount: conflicts.length
+        })
+    }
+
+    _findScheduleConflicts(proposedFlights, scheduleLegs) {
+        const current = []
+        for (const leg of scheduleLegs) {
+            const interval = this._intervalFromScheduleLeg(leg)
+            if (interval) current.push(interval)
+        }
+        if (!current.length) return []
+
+        const conflicts = []
+        for (const f of proposedFlights) {
+            const intervals = this._intervalsFromProposedFlight(f)
+            for (const p of intervals) {
+                const hit = current.find(c => p.start < c.end && c.start < p.end)
+                if (hit) conflicts.push({proposed: p, current: hit})
+            }
+        }
+        return conflicts
+    }
+
+    _intervalFromScheduleLeg(leg) {
+        if (!leg || !Number.isInteger(leg.dayIdx)) return null
+        const dep = this._parseHHMM(leg.depTimeLocal || leg.depTime)
+        const arr = this._parseHHMM(leg.arrTimeLocal || leg.arrTime)
+        if (dep == null || arr == null) return null
+        let start = leg.dayIdx * 1440 + dep
+        let end = leg.dayIdx * 1440 + arr
+        if (leg.spansIntoNext || end <= start) end += 1440
+        return {
+            start,
+            end,
+            day: this._dayName(leg.dayIdx),
+            route: this._routeLabel(leg),
+            time: this._fmtInterval(dep, arr)
+        }
+    }
+
+    _intervalsFromProposedFlight(flight) {
+        if (!flight) return []
+        const dep = this._parseHHMM(flight.depTimeLocal || flight.depTime)
+        const arr = this._parseHHMM(flight.arrTimeLocal || flight.arrTime)
+        if (dep == null || arr == null) return []
+        const days = this._dayMaskIndices(flight.dayMask)
+        const out = []
+        for (const dayIdx of days) {
+            let start = dayIdx * 1440 + dep
+            let end = dayIdx * 1440 + arr
+            if (end <= start) end += 1440
+            out.push({
+                start,
+                end,
+                day: this._dayName(dayIdx),
+                route: this._routeLabel(flight),
+                time: this._fmtInterval(dep, arr)
+            })
+        }
+        return out
+    }
+
+    _dayMaskIndices(mask) {
+        if (Array.isArray(mask) && mask.length) {
+            const out = []
+            for (let i = 0; i < Math.min(mask.length, 7); i++) {
+                if (mask[i]) out.push(i)
+            }
+            return out.length ? out : [0, 1, 2, 3, 4, 5, 6]
+        }
+        return [0, 1, 2, 3, 4, 5, 6]
+    }
+
+    _parseHHMM(v) {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || "").trim())
+        if (!m) return null
+        const h = Number(m[1])
+        const min = Number(m[2])
+        if (!isFinite(h) || !isFinite(min) || h < 0 || h > 23 || min < 0 || min > 59) return null
+        return h * 60 + min
+    }
+
+    _fmtInterval(depMin, arrMin) {
+        return this._fmtHHMM(depMin) + "-" + this._fmtHHMM(arrMin)
+    }
+
+    _fmtHHMM(min) {
+        const m = Math.max(0, Math.min(1439, Number(min) || 0))
+        return String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0")
+    }
+
+    _routeLabel(leg) {
+        const origin = String((leg && leg.origin) || "?").toUpperCase()
+        const dest = String((leg && leg.destination) || "?").toUpperCase()
+        return origin + "->" + dest
+    }
+
+    _dayName(idx) {
+        return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][idx] || ("D" + idx)
     }
 }
 

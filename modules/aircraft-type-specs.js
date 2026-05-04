@@ -2,9 +2,9 @@
  * Shared aircraft type-spec fetcher and parser.
  *
  * Loads /action/enterprise/aircraftsType?id=<typeId> and returns
- * {seats, cargoCapacity, speed, range, paxSatisfaction}. Both the used-aircraft
- * market scanner and the route-assistant need this; centralising avoids two
- * copies that drift apart.
+ * {seats, cargoCapacity, speed, range, paxSatisfaction, orsAttraction}. Both
+ * the used-aircraft market scanner and the route-assistant need this;
+ * centralising avoids two copies that drift apart.
  *
  * The detail page is server-rendered with label/value rows in Bootstrap tables.
  * Labels can vary (Seats / Capacity / PAX / Total / Cargo / Payload / Cruise
@@ -26,12 +26,16 @@
  *   paxSatisfaction — rows mentioning "popularity" (AS calls it "Popularity
  *                     with passengers") or comfort/satisfaction/rating —
  *                     take the largest numeric value.
+ *   orsAttraction   — rows mentioning "customer/passenger/ORS attraction" —
+ *                     take the largest numeric value. Kept separate from
+ *                     paxSatisfaction but mirrored to customerAttraction for
+ *                     callers that use the in-game label.
  */
 class AESAircraftTypeSpecs {
     /**
      * Fetch and parse the AS aircraft type detail page.
      * @param {number|string} typeId
-     * @returns {Promise<{seats, cargoCapacity, speed, range, paxSatisfaction}|null>}
+     * @returns {Promise<{seats, cargoCapacity, speed, range, paxSatisfaction, orsAttraction, customerAttraction}|null>}
      *   null on HTTP failure or parse failure. Never throws.
      */
     static async fetchById(typeId) {
@@ -63,6 +67,7 @@ class AESAircraftTypeSpecs {
         const speedCandidates = []
         const rangeCandidates = []
         let paxSatisfaction = null
+        let orsAttraction = null
 
         const trs = doc.querySelectorAll("table tr")
         for (const tr of trs) {
@@ -77,6 +82,8 @@ class AESAircraftTypeSpecs {
             const isCargoish   = /(cargo|payload|freight)/i.test(labelLow)
             const isSpeedish   = /\bspeed\b/i.test(labelLow) && !/stall/i.test(labelLow)
             const isRangeish   = /\brange\b/i.test(labelLow)
+            const isAttraction = /\b(attraction|attractiveness)\b/i.test(labelLow)
+                                 && !/(cargo|payload|crew|noise)/i.test(labelLow)
             const isComfortish = /\b(popularity|comfort|satisfaction|rating)\b/i.test(labelLow)
                                  && !/(cargo|payload|crew|noise)/i.test(labelLow)
 
@@ -104,6 +111,10 @@ class AESAircraftTypeSpecs {
                 rangeCandidates.push({num: num})
             }
 
+            if (isAttraction) {
+                if (orsAttraction === null || num > orsAttraction) orsAttraction = num
+            }
+
             if (isComfortish) {
                 if (paxSatisfaction === null || num > paxSatisfaction) paxSatisfaction = num
             }
@@ -122,12 +133,17 @@ class AESAircraftTypeSpecs {
             range = rangeCandidates.reduce((max, c) => c.num > max ? c.num : max, 0)
         }
 
+        if (paxSatisfaction === null && orsAttraction !== null) paxSatisfaction = orsAttraction
+        if (orsAttraction === null && paxSatisfaction !== null) orsAttraction = paxSatisfaction
+
         return {
             seats:           seats,
             cargoCapacity:   cargoCapacity,
             speed:           speed,
             range:           range,
-            paxSatisfaction: paxSatisfaction
+            paxSatisfaction: paxSatisfaction,
+            orsAttraction:   orsAttraction,
+            customerAttraction: orsAttraction
         }
     }
 

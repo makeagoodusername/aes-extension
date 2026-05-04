@@ -677,3 +677,7 @@ class RouteAssistantWaveEditor {
         return frag
     }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantWaveEditor = RouteAssistantWaveEditor
+}

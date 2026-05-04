@@ -51,7 +51,7 @@
  * when modifiers.locked). On the PROPOSED side they go into `add`.
  *
  * Public API (window.AesAfpScheduleDiff):
- *   .compare(currentLegs, proposedLegs)
+ *   .compare(currentLegs, proposedLegs, opts?)
  *     → {keep:[{currentSeq, proposedSeq, deltaMin, matchedBy:"flightId"|"time"}],
  *        delete:[currentLeg], add:[proposedLeg], moveTime:[], locked:[currentLeg]}
  *   .timeDeltaMin(aHHMM, bHHMM)
@@ -72,10 +72,13 @@
      * module header. Both arguments default to [] on bad input — the
      * caller never has to pre-validate.
      */
-    function compare(currentLegs, proposedLegs) {
+    function compare(currentLegs, proposedLegs, opts) {
         const cur = Array.isArray(currentLegs)  ? currentLegs  : []
         const pro = Array.isArray(proposedLegs) ? proposedLegs : []
         const result = {keep: [], delete: [], add: [], moveTime: [], locked: []}
+        const toleranceMin = (opts && isFinite(Number(opts.toleranceMin)) && Number(opts.toleranceMin) >= 0)
+            ? Number(opts.toleranceMin)
+            : TOLERANCE_MIN
 
         if (!cur.length && !pro.length) return result
 
@@ -130,7 +133,7 @@
 
         // Pass 2: for each remaining current leg, find the proposed leg
         // with the smallest absolute time delta among same-O/D unclaimed
-        // candidates within ±TOLERANCE_MIN. Greedy: a current leg never
+        // candidates within ±toleranceMin. Greedy: a current leg never
         // re-shops once it claims a proposed leg.
         for (let ci = 0; ci < curMatch.length; ci++) {
             if (claimedCurrent.has(ci)) continue
@@ -144,7 +147,7 @@
                 if (c.destination !== p.destination) continue
                 const d = timeDeltaMin(c.depTimeLocal, p.depTimeLocal)
                 if (d == null)            continue
-                if (d > TOLERANCE_MIN)    continue
+                if (d > toleranceMin)     continue
                 if (d < bestDelta) { bestDelta = d; bestIdx = i }
             }
             if (bestIdx >= 0) {

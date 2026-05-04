@@ -12,7 +12,7 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
         super()
         this.id = "crew-management"
         this.title = "Crew"
-        this.section = "tools"
+        this.section = "operations"
         this.priority = 30
         this.requiresAirline = true
     }
@@ -62,13 +62,17 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
         const overview = window.CrewMgmtStaffOverviewStore
             ? await window.CrewMgmtStaffOverviewStore.loadLatest()
             : null
+        const reputation = window.AesCompanyReputationStore
+            ? await window.AesCompanyReputationStore.loadLatest()
+            : null
         const costSummary = CentralHubCrewManagementTile._formatCostSummary(overview)
+        const reputationSummary = CentralHubCrewManagementTile._formatReputationSummary(reputation)
 
         if (!rec || !Array.isArray(rec.categories) || !rec.categories.length) {
             return {
                 badge:     "—",
                 badgeKind: KIND.MUTED,
-                summary:   "No crew data — visit /action/enterprise/staffPilots to seed." + costSummary
+                summary:   "No crew data — visit /action/enterprise/staffPilots to seed." + costSummary + reputationSummary
             }
         }
         const cats = rec.categories
@@ -79,13 +83,13 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
             return {
                 badge:     missing + " SHORT",
                 badgeKind: KIND.ALERT,
-                summary:   employed + "/" + required + " pilots employed · " + missing + " short across " + cats.length + " categor" + (cats.length === 1 ? "y" : "ies") + costSummary
+                summary:   employed + "/" + required + " pilots employed · " + missing + " short across " + cats.length + " categor" + (cats.length === 1 ? "y" : "ies") + costSummary + reputationSummary
             }
         }
         return {
             badge:     employed + "/" + required,
             badgeKind: KIND.OK,
-            summary:   cats.length + " categor" + (cats.length === 1 ? "y" : "ies") + " · all rated" + costSummary
+            summary:   cats.length + " categor" + (cats.length === 1 ? "y" : "ies") + " · all rated" + costSummary + reputationSummary
         }
     }
 
@@ -101,6 +105,11 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
         return ` · payroll ${fmt(wk)}/wk${tail}`
     }
 
+    static _formatReputationSummary(reputation) {
+        if (!reputation || !reputation.ratingLabel) return ""
+        return " · rating " + reputation.ratingLabel
+    }
+
     async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
         host.textContent = ""
@@ -111,6 +120,15 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
         }
 
         const rec = await this._loadRecord()
+        const overview = window.CrewMgmtStaffOverviewStore
+            ? await window.CrewMgmtStaffOverviewStore.loadLatest()
+            : null
+        const reputation = window.AesCompanyReputationStore
+            ? await window.AesCompanyReputationStore.loadLatest()
+            : null
+        const repStrip = this._renderReputationPayrollStrip(reputation, overview, T)
+        if (repStrip) host.appendChild(repStrip)
+
         if (!rec || !Array.isArray(rec.categories) || !rec.categories.length) {
             const empty = document.createElement("p")
             empty.style.cssText = "color:" + T.color.slate + ";margin:0;"
@@ -172,6 +190,68 @@ class CentralHubCrewManagementTile extends window.CentralHubTile {
         meta.style.cssText = "margin-top:" + T.sp[3] + ";color:" + T.color.slate + ";font-family:" + T.font.mono + ";font-size:" + T.fs.body + ";"
         meta.textContent = "Last scraped " + new Date(rec.scrapedAt || 0).toLocaleString()
         host.appendChild(meta)
+    }
+
+    _renderReputationPayrollStrip(reputation, overview, T) {
+        if (!reputation && !overview) return null
+        const wrap = document.createElement("div")
+        wrap.style.cssText = [
+            "display:grid",
+            "grid-template-columns:repeat(auto-fit,minmax(160px,1fr))",
+            "gap:" + T.sp[2],
+            "margin:0 0 " + T.sp[3] + " 0",
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.body
+        ].join(";")
+        const cells = []
+        if (reputation && reputation.ratingLabel) {
+            cells.push(["Rating", reputation.ratingLabel + " / " + (reputation.ratingScore || "—")])
+        }
+        if (overview && overview.totals) {
+            const fmt = n => Number.isFinite(n) ? Math.round(n).toLocaleString() + " AS$/wk" : "—"
+            cells.push(["Payroll", fmt(overview.totals.weeklyTotal)])
+            if (Number.isFinite(overview.totals.nextWeekTotal)
+                    && overview.totals.nextWeekTotal !== overview.totals.weeklyTotal) {
+                cells.push(["Next week", fmt(overview.totals.nextWeekTotal)])
+            }
+        }
+        const risks = CentralHubCrewManagementTile._topPayRiskRoles(overview)
+        if (risks.length) cells.push(["Pay risks", risks.join(", ")])
+        for (const pair of cells) {
+            const box = document.createElement("div")
+            box.style.cssText = [
+                "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+                "padding:" + T.sp[1] + " " + T.sp[2],
+                "background:" + T.color.bone
+            ].join(";")
+            const label = document.createElement("div")
+            label.textContent = pair[0]
+            label.style.cssText = "color:" + T.color.slate + ";font-size:" + T.fs.micro + ";letter-spacing:" + T.track.caps + ";text-transform:uppercase;"
+            const value = document.createElement("div")
+            value.textContent = pair[1]
+            value.style.cssText = "color:" + T.color.oxide + ";margin-top:" + T.sp[0] + ";"
+            box.append(label, value)
+            wrap.appendChild(box)
+        }
+        return wrap.childNodes.length ? wrap : null
+    }
+
+    static _topPayRiskRoles(overview) {
+        if (!overview || !Array.isArray(overview.sections)) return []
+        const rows = []
+        for (const section of overview.sections) {
+            for (const role of (section && section.roles) || []) {
+                const shortfall = Math.max(0, (role.required || 0) - (role.active || 0))
+                const moodRisk = (role.moodDigit != null && role.moodDigit <= 2) ? 1 : 0
+                const trendRisk = role.moodTrend < 0 ? 1 : 0
+                const pending = role.pendingChange ? -0.5 : 0
+                const score = shortfall * 2 + moodRisk + trendRisk + pending
+                if (score <= 0) continue
+                rows.push({label: role.label || section.group, score})
+            }
+        }
+        rows.sort((a, b) => b.score - a.score)
+        return rows.slice(0, 3).map(r => r.label)
     }
 
     _renderShortBanner(count, T) {

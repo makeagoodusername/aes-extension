@@ -84,3 +84,7 @@ class RouteAssistantScore {
         return n
     }
 }
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = RouteAssistantScore
+}

@@ -120,6 +120,48 @@
         }
     }
 
+    function _resolveOrsPlaystyle(snapshot) {
+        const ors = (snapshot && snapshot.settings && snapshot.settings.ors) || {}
+        const mode = /^(adaptive|balanced|monopoly|competitive|premium)$/.test(String(ors.playstyle || ""))
+            ? String(ors.playstyle) : "adaptive"
+        return {
+            mode,
+            monopolyMultiplier: Math.max(0, Math.min(2, _num(ors.monopolyOrsMultiplier, 0.35))),
+            competitiveMultiplier: Math.max(0, Math.min(3, _num(ors.competitiveOrsMultiplier, 1.35))),
+            competitiveRivalFlights: Math.max(1, _num(ors.competitiveRivalFlights, 6))
+        }
+    }
+
+    function _competitionPressure(snapshot) {
+        const cfg = _resolveOrsPlaystyle(snapshot)
+        if (cfg.mode === "balanced") return {available: true, pressure: 0.5, multiplier: 1, mode: cfg.mode, sampleCount: 0}
+        if (cfg.mode === "monopoly") return {available: true, pressure: 0, multiplier: cfg.monopolyMultiplier, mode: cfg.mode, sampleCount: 0}
+        if (cfg.mode === "competitive" || cfg.mode === "premium") {
+            return {available: true, pressure: 1, multiplier: cfg.competitiveMultiplier, mode: cfg.mode, sampleCount: 0}
+        }
+        let pressureSum = 0
+        let sampleCount = 0
+        const hubs = (snapshot && snapshot.hubs) || []
+        for (const h of hubs) for (const r of (h && h.byRoute) || []) {
+            const c = r && r.competitor
+            if (!c || c.flightCount == null) continue
+            const rivals = Math.max(0, _num(c.flightCount, 0) - _num(c.ourFlightCount, 0))
+            pressureSum += Math.max(0, Math.min(1, rivals / cfg.competitiveRivalFlights))
+            sampleCount++
+        }
+        if (!sampleCount) return {available: false, pressure: null, multiplier: 1, mode: cfg.mode, sampleCount: 0}
+        const pressure = pressureSum / sampleCount
+        const multiplier = cfg.monopolyMultiplier
+            + (cfg.competitiveMultiplier - cfg.monopolyMultiplier) * pressure
+        return {
+            available: true,
+            pressure: pressure,
+            multiplier: multiplier,
+            mode: cfg.mode,
+            sampleCount: sampleCount
+        }
+    }
+
     function _classScore(p, key) {
         return p && p.classScore && _num(p.classScore[key], NaN)
     }
@@ -148,6 +190,17 @@
     // settings.serviceProfiles.classCostPerPax {Y:5, C:18, F:45} ratio so
     // the rank stays consistent with the rest of the cost model.
     const CLASS_COST_MULTIPLIER = Object.freeze({Y: 1, C: 3.6, F: 9})
+
+    const CATEGORY_REPUTATION_WEIGHT = Object.freeze({
+        drinks:              0.80,
+        snacks:              0.85,
+        entrees:             1.00,
+        additionalEntrees:   0.95,
+        foodPresentation:    0.90,
+        headphones:          0.65,
+        newspapersMagazines: 0.45,
+        flightMagazines:     0.40
+    })
 
     // Network-default class mix used when settings.serviceProfiles
     // .defaultClassMix isn't on the snapshot. Same skew the aggregator
@@ -183,6 +236,38 @@
             ? s.defaultCategoryCost
             : DEFAULT_CATEGORY_COST
         return {categoryWeights: cw, classMultipliers: cm, defaultCategoryCost: dc}
+    }
+
+    function _resolveReputation(snapshot) {
+        const planning = snapshot && snapshot.strategySettings
+            && snapshot.strategySettings.reputationPlanning || {}
+        if (planning.enabled === false) return {available: false, pressure: 0}
+        const rec = snapshot && snapshot.companyReputation
+        const score = _num(rec && rec.ratingScore, NaN)
+        const target = Math.max(1, Math.min(10, _num(planning.targetRatingScore, 8)))
+        if (!isFinite(score)) {
+            return {available: false, pressure: 0, targetRatingScore: target}
+        }
+        return {
+            available:          true,
+            pressure:           Math.max(0, Math.min(1, (target - score) / target)),
+            ratingScore:        score,
+            ratingLabel:        rec && rec.ratingLabel || null,
+            targetRatingScore:  target,
+            protectHighRating:  planning.protectHighRating !== false,
+            categoryWeights:    planning.categoryWeights || {}
+        }
+    }
+
+    function _categoryReputationWeight(snapshot, profileId, catKey, reputation) {
+        const profileMap = snapshot && snapshot.serviceCategoryProfiles
+        const profile = profileMap && profileMap[String(profileId)]
+        if (profile && profile.categoryWeights && profile.categoryWeights[catKey] != null) {
+            return _num(profile.categoryWeights[catKey], CATEGORY_REPUTATION_WEIGHT[catKey] || 0.5)
+        }
+        const overrides = reputation && reputation.categoryWeights || {}
+        if (overrides[catKey] != null) return _num(overrides[catKey], CATEGORY_REPUTATION_WEIGHT[catKey] || 0.5)
+        return CATEGORY_REPUTATION_WEIGHT[catKey] != null ? CATEGORY_REPUTATION_WEIGHT[catKey] : 0.5
     }
 
     /**
@@ -288,14 +373,19 @@
      * detail). Each cell is annotated with `demand` and `cost` so both
      * scorers + the post-pack objective comparison see the same numbers.
      */
-    function _buildAB(profile, targetLiftByClass, demandByClass, weights, costs) {
+    function _buildAB(profile, targetLiftByClass, demandByClass, weights, costs, reputationCtx) {
         const cells = _enumerateCells(profile)
         if (!cells.length) return null
         const resolved = costs || {categoryWeights: CATEGORY_COST_WEIGHT,
                                    classMultipliers: CLASS_COST_MULTIPLIER,
                                    defaultCategoryCost: DEFAULT_CATEGORY_COST}
         for (const c of cells) {
+            const repWeight = reputationCtx && reputationCtx.weightFor
+                ? reputationCtx.weightFor(c.catKey)
+                : 0
+            c.reputationWeight = repWeight
             c.demand = _num(demandByClass[c.cls], 0)
+                     * (1 + _num(reputationCtx && reputationCtx.pressure, 0) * repWeight * 0.35)
             c.cost   = _categoryCostFactor(c.catKey, resolved)
                      * (resolved.classMultipliers[c.cls] || 1)
         }
@@ -365,11 +455,20 @@
         const resolved = _resolveWeights(snapshot, o)
         const w        = resolved.weights
         const costs    = _resolveServiceCosts(snapshot)
+        const reputation = _resolveReputation(snapshot)
 
         // rankWeight ≈ how aggressive about upgrades. profitWeight tempers.
         // upgradeAggression in [0, 1] — 1 = take full gap, 0 = ignore moves.
         let upgradeAggression = Math.max(0, Math.min(1,
             0.5 + 0.5 * w.rankWeight - 0.3 * w.profitWeight + 0.2 * w.shareWeight))
+        if (reputation.available && reputation.pressure > 0) {
+            upgradeAggression = Math.min(1, upgradeAggression + reputation.pressure * 0.25)
+        }
+        const competitionTuning = _competitionPressure(snapshot)
+        if (competitionTuning.available) {
+            upgradeAggression = Math.max(0, Math.min(1,
+                upgradeAggression * competitionTuning.multiplier))
+        }
 
         // Anti-spiral guard (§4.17): if competitor profit is broadly below
         // the configurable floor across our network, dampen aggression so a
@@ -446,6 +545,28 @@
             } else {
                 rationale.push("[anti-spiral] competitor-income data unavailable — using legacy weights")
             }
+            if (competitionTuning.available) {
+                rationale.push("[ors-playstyle] " + competitionTuning.mode
+                    + " mode · competition pressure "
+                    + _round((competitionTuning.pressure || 0) * 100, 0)
+                    + "% across " + competitionTuning.sampleCount
+                    + " sampled routes · service aggression ×"
+                    + _round(competitionTuning.multiplier, 2))
+            } else {
+                rationale.push("[ors-playstyle] adaptive mode waiting for competitor intel")
+            }
+            if (reputation.available) {
+                if (reputation.pressure > 0) {
+                    rationale.push("[reputation] company rating " + (reputation.ratingLabel || reputation.ratingScore)
+                        + " below target " + reputation.targetRatingScore
+                        + " — service aggression +" + _round(reputation.pressure * 0.25, 2))
+                } else if (reputation.protectHighRating) {
+                    rationale.push("[reputation] company rating " + (reputation.ratingLabel || reputation.ratingScore)
+                        + " at/above target — protect current service posture")
+                }
+            } else {
+                rationale.push("[reputation] company rating unavailable — reputation term neutral")
+            }
             if (crewDamper < 1) {
                 rationale.push("[crew-pressure] severity "
                     + _round(crewPressure.severity, 2)
@@ -462,7 +583,10 @@
                 C: isFinite(cNow) ? Math.max(0, target.C - cNow) : 0,
                 F: isFinite(fNow) ? Math.max(0, target.F - fNow) : 0
             }
-            const ab = _buildAB(p, targetLiftByClass, demandByClass, w, costs)
+            const ab = _buildAB(p, targetLiftByClass, demandByClass, w, costs, {
+                pressure: reputation.pressure || 0,
+                weightFor: catKey => _categoryReputationWeight(snapshot, p.id, catKey, reputation)
+            })
             let changes        = {}
             let deliveredLift  = targetLift
             if (ab && ab.picks && ab.picks.length) {
@@ -479,6 +603,12 @@
                     .join(", ")
                 if (top) rationale.push("[picks] " + top
                     + (ab.picks.length > 3 ? " +" + (ab.picks.length - 3) + " more" : ""))
+                const repTop = ab.picks
+                    .filter(c => c.reputationWeight > 0.7)
+                    .slice(0, 3)
+                    .map(c => c.catKey + "·" + c.cls)
+                    .join(", ")
+                if (repTop) rationale.push("[reputation-picks] brand-sensitive service cells: " + repTop)
             } else {
                 rationale.push("[s7] no per-category change set — profile lacks scraped category detail (advisory only)")
             }
@@ -490,6 +620,8 @@
                 targetClassScore:  target,
                 changes:           changes,
                 predictedOrsDelta: deliveredLift,
+                reputationPressure: reputation.pressure || 0,
+                reputationRating:   reputation.ratingLabel || null,
                 rationale:         rationale,
                 objective:         {kind: resolved.kind, weights: w}
             })

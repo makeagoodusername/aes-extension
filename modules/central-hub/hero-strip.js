@@ -48,7 +48,8 @@ class CentralHubHeroStrip {
             {
                 id:          "fleet",
                 label:       "Fleet",
-                prefixes:    ["aircraftFleet"],
+                prefixes:    [],
+                suffixes:    ["aircraftFleet"],
                 resolver:    "_resolveFleet",
                 focusEvent:  "open-tile",
                 focusPayload:{tileId: "fleet-hub", expand: true, scrollIntoView: true, source: "hero-fleet"}
@@ -322,12 +323,13 @@ class CentralHubHeroStrip {
         const allPrefixes = []
         for (const spec of this._cards) {
             for (const p of spec.prefixes) allPrefixes.push({id: spec.id, prefix: p})
+            for (const s of (spec.suffixes || [])) allPrefixes.push({id: spec.id, suffix: s})
         }
         this._storageListener = (changes, area) => {
             if (area !== "local") return
             for (const k in changes) {
                 for (const entry of allPrefixes) {
-                    if (k === entry.prefix || k.indexOf(entry.prefix) === 0) {
+                    if (CentralHubHeroStrip._storageEntryMatches(k, entry)) {
                         this._dirty.add(entry.id)
                         break
                     }
@@ -391,15 +393,24 @@ class CentralHubHeroStrip {
     async _resolveFleet() {
         if (!this.server) return {value: "—", sub: "no server", kind: "muted"}
         const all = await chrome.storage.local.get(null)
-        let aircraft = []
+        const airline = this._airlineIdentityKey()
+        let chosen = null
         const suffix = "aircraftFleet"
         for (const key in all) {
             if (key.indexOf(this.server) !== 0) continue
             if (key.lastIndexOf(suffix) !== key.length - suffix.length) continue
             const rec = all[key]
             if (!rec || rec.type !== "aircraftFleet" || !Array.isArray(rec.fleet)) continue
-            if (rec.fleet.length > aircraft.length) aircraft = rec.fleet
+            if (airline) {
+                if (this._fleetRecordMatchesAirline(key, rec, airline)) {
+                    chosen = rec
+                    break
+                }
+                continue
+            }
+            if (!chosen || rec.fleet.length > chosen.fleet.length) chosen = rec
         }
+        const aircraft = chosen && Array.isArray(chosen.fleet) ? chosen.fleet : []
         if (!aircraft.length) return {value: "—", sub: "no fleet record", kind: "muted"}
 
         let utilSum = 0, utilCount = 0
@@ -416,27 +427,57 @@ class CentralHubHeroStrip {
     async _resolveTopRoute() {
         const all = await chrome.storage.local.get(null)
         const prefix = "routeAssistant:topRoutes:"
-        let best = null
-        let bestHub = null
+        const currentAcct = (typeof window !== "undefined" && window.__aesAccountId) || null
+        // Two-pass picker. The aggregator only computes profitPerWeek for
+        // routes we already fly (freq > 0 gate in the profit estimator), so
+        // a "NEW" opportunity row with the highest score has profitPerWeek
+        // null by design. Picking purely by score lands on those rows and
+        // leaves the card with no dollar figure to display.
+        // Pass A: highest profitPerWeek across rows we actually fly — the
+        // most actionable "top route".
+        // Pass B (fallback): highest score, used only when nothing in cache
+        // has a real profit figure (cold start, all-NEW network).
+        let bestProfit = null, bestProfitHub = null
+        let bestScore = null,  bestScoreHub  = null
         for (const k in all) {
             if (k.indexOf(prefix) !== 0) continue
             const blob = all[k]
             if (!blob || !Array.isArray(blob.rows)) continue
+            // Filter to the active account. Records tagged with a different
+            // accountId are stale snapshots from another airline on this
+            // browser profile; including them lets a foreign hub's row win
+            // the picker and surfaces a route the user can't act on.
+            // Untagged (legacy) blobs are kept for back-compat.
+            if (blob.accountId && currentAcct && blob.accountId !== currentAcct) continue
+            const hub = blob.hub || k.substring(prefix.length)
             for (const r of blob.rows) {
-                const score = Number(r && r.score)
-                if (!Number.isFinite(score)) continue
-                if (!best || score > best.score) {
-                    best = {score, destIata: r.destIata, profitPerWeek: r.profitPerWeek}
-                    bestHub = blob.hub || k.substring(prefix.length)
+                if (!r) continue
+                const score = Number(r.score)
+                if (Number.isFinite(score) && (!bestScore || score > bestScore.score)) {
+                    bestScore = {score, destIata: r.destIata, profitPerWeek: r.profitPerWeek}
+                    bestScoreHub = hub
+                }
+                const profit = Number(r.profitPerWeek)
+                if (r.profitPerWeek != null && Number.isFinite(profit) && profit > 0
+                        && (!bestProfit || profit > bestProfit.profitPerWeek)) {
+                    bestProfit = {score: Number.isFinite(score) ? score : null,
+                                  destIata: r.destIata, profitPerWeek: profit}
+                    bestProfitHub = hub
                 }
             }
         }
+        const best    = bestProfit || bestScore
+        const bestHub = bestProfit ? bestProfitHub : bestScoreHub
         if (!best) return {value: "—", sub: "open RA on a hub", kind: "muted"}
 
         const value = String(bestHub || "?") + "→" + String(best.destIata || "?")
-        const profit = Number(best.profitPerWeek)
-        const sub = "★" + Math.round(best.score)
-            + (Number.isFinite(profit) ? " · " + CentralHubHeroStrip._formatCompactAS(profit) + "/wk" : "")
+        const hasProfit = best.profitPerWeek != null && Number.isFinite(Number(best.profitPerWeek))
+        const scoreSeg  = best.score != null && Number.isFinite(Number(best.score))
+            ? "★" + Math.round(best.score) : ""
+        const profitSeg = hasProfit
+            ? CentralHubHeroStrip._formatCompactAS(Number(best.profitPerWeek)) + "/wk"
+            : ""
+        const sub = [scoreSeg, profitSeg].filter(s => s).join(" · ")
         return {value, sub, kind: "ok"}
     }
 
@@ -473,15 +514,28 @@ class CentralHubHeroStrip {
     }
 
     async _resolveOrs() {
-        const all = await chrome.storage.local.get(null)
+        let records = null
+        let svc = null
+        if (typeof RouteAssistantOrsIntelligence !== "undefined"
+                && typeof RouteAssistantOrsIntelligence.listCachedRoutes === "function") {
+            svc = new RouteAssistantOrsIntelligence(this.server)
+            const map = await RouteAssistantOrsIntelligence.listCachedRoutes(this.server)
+            records = Array.from(map.values())
+        }
+        if (!records) {
+            const all = await chrome.storage.local.get(null)
+            records = []
+            for (const k in all) {
+                if (k.indexOf("routeAssistant:ors:") !== 0) continue
+                const rec = all[k]
+                if (rec && typeof rec === "object") records.push(rec)
+            }
+        }
         let total = 0
         let low = 0
-        for (const k in all) {
-            if (k.indexOf("routeAssistant:ors:") !== 0) continue
-            // Skip namespaced sub-keys that aren't ORS records (e.g. settings).
-            const rec = all[k]
+        for (const rec of records) {
             if (!rec || typeof rec !== "object") continue
-            const rank = Number(rec.rankAny)
+            const rank = this._orsRankFromRecord(rec, svc)
             if (!Number.isFinite(rank)) continue
             total++
             if (rank >= 4) low++
@@ -489,6 +543,18 @@ class CentralHubHeroStrip {
         if (!total) return {value: "—", sub: "no ORS scrapes", kind: "muted"}
         const kind = low === 0 ? "ok" : (low >= Math.max(3, Math.ceil(total * 0.25)) ? "alert" : "warn")
         return {value: String(low), sub: "below rank 3 · of " + total, kind}
+    }
+
+    _orsRankFromRecord(rec, svc) {
+        if (svc && rec && (rec.byClass || rec.orsByClass)) {
+            try {
+                const composite = svc.getComposite({orsByClass: rec.byClass || rec.orsByClass})
+                const rank = composite && (composite.rankAny != null ? composite.rankAny : composite.rankNonstop)
+                if (Number.isFinite(Number(rank))) return Number(rank)
+            } catch (_) { /* legacy fallback below */ }
+        }
+        const rank = rec && (rec.rankAny != null ? rec.rankAny : rec.rankNonstop)
+        return Number(rank)
     }
 
     async _resolveMaintenance() {
@@ -517,6 +583,40 @@ class CentralHubHeroStrip {
             if (a && a.code) return a.code
         } catch (_) { /* fall through */ }
         return this.airline || ""
+    }
+
+    _airlineIdentityKey() {
+        try {
+            if (typeof AES !== "undefined" && typeof AES.getAirlineIdentity === "function") {
+                const id = AES.getAirlineIdentity()
+                if (id) return id
+            }
+        } catch (_) { /* fall through */ }
+        return this.airline || ""
+    }
+
+    _fleetRecordMatchesAirline(key, rec, airline) {
+        const want = CentralHubHeroStrip._normaliseAirlineKey(airline)
+        if (!want) return false
+        if (CentralHubHeroStrip._normaliseAirlineKey(rec && rec.airline) === want) return true
+        const suffix = "aircraftFleet"
+        const rawKeyAirline = String(key || "").slice(
+            String(this.server || "").length,
+            Math.max(String(this.server || "").length, String(key || "").length - suffix.length)
+        )
+        return CentralHubHeroStrip._normaliseAirlineKey(rawKeyAirline) === want
+    }
+
+    static _normaliseAirlineKey(value) {
+        return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "")
+    }
+
+    static _storageEntryMatches(key, entry) {
+        if (!entry) return false
+        if (entry.prefix && (key === entry.prefix || key.indexOf(entry.prefix) === 0)) return true
+        if (entry.suffix && key.lastIndexOf(entry.suffix) === key.length - entry.suffix.length) return true
+        if (entry.contains && key.indexOf(entry.contains) >= 0) return true
+        return false
     }
 
     static _formatCompactAS(value) {

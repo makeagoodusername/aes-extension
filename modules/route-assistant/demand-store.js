@@ -97,10 +97,12 @@ class RouteAssistantDemandStore {
         const toStore = Object.assign({scrapedAt: Date.now()}, record, {iata: iata})
         const cache = RouteAssistantDemandStore._cache()
         if (cache) await cache.set(iata, toStore)
-        else       await chrome.storage.local.set({[RouteAssistantDemandStore._key(iata)]: toStore})
-        if (typeof AesDataBus !== "undefined") {
-            AesDataBus.emit("data:route-assistant:demand:saved", {iata: iata, count: 1})
+        else if (typeof AesWriteThrough !== "undefined") {
+            await AesWriteThrough.put(RouteAssistantDemandStore._key(iata), toStore)
+        } else {
+            await chrome.storage.local.set({[RouteAssistantDemandStore._key(iata)]: toStore})
         }
+        RouteAssistantDemandStore._emitSaved({iata: iata, count: 1})
         return toStore
     }
 
@@ -131,12 +133,20 @@ class RouteAssistantDemandStore {
             }
             count++
         }
-        if (count) await chrome.storage.local.set(writes)
-        if (count && typeof AesDataBus !== "undefined") {
-            AesDataBus.emit("data:route-assistant:demand:saved", {
+        if (count) {
+            const hint = {
                 countryId: countryId || null,
                 count:     count
-            })
+            }
+            if (typeof AesWriteThrough !== "undefined") {
+                await AesWriteThrough.set(writes, {
+                    topic: "data:route-assistant:demand:saved",
+                    hint:  hint
+                })
+            } else {
+                await chrome.storage.local.set(writes)
+                RouteAssistantDemandStore._emitSaved(hint)
+            }
         }
     }
 
@@ -149,11 +159,25 @@ class RouteAssistantDemandStore {
         for (const k in all) {
             if (k.indexOf(RouteAssistantDemandStore.KEY_PREFIX) === 0) drop.push(k)
         }
-        if (drop.length) await chrome.storage.local.remove(drop)
-        if (drop.length && typeof AesDataBus !== "undefined") {
-            AesDataBus.emit("data:route-assistant:demand:saved", {cleared: true, count: drop.length})
+        if (drop.length) {
+            const hint = {cleared: true, count: drop.length}
+            if (typeof AesWriteThrough !== "undefined") {
+                await AesWriteThrough.remove(drop, {
+                    topic: "data:route-assistant:demand:saved",
+                    hint:  hint
+                })
+            } else {
+                await chrome.storage.local.remove(drop)
+                RouteAssistantDemandStore._emitSaved(hint)
+            }
         }
         return drop.length
+    }
+
+    static _emitSaved(hint) {
+        if (typeof AesDataBus !== "undefined" && typeof AesDataBus.emit === "function") {
+            AesDataBus.emit("data:route-assistant:demand:saved", hint || {})
+        }
     }
 }
 
@@ -169,3 +193,7 @@ class RouteAssistantDemandStore {
         return {removed: 0, kept: 0}
     }, {everyMs: 24 * 3600e3})
 })()
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantDemandStore = RouteAssistantDemandStore
+}

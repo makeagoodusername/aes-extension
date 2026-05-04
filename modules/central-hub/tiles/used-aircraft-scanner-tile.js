@@ -24,27 +24,59 @@ class CentralHubUasTile extends window.CentralHubTile {
 
     watchedStorageKeys(ctx) {
         const server = (ctx && ctx.server) || ""
+        // F-9228-203: dropped the bare "settings" prefix — that key holds
+        // every module's settings slice, so watching it caused refreshes
+        // from completely unrelated modules. The mount() override below
+        // attaches a slice-aware listener that fires only on
+        // settings.usedAircraftScanner changes.
         return [
-            "settings",
             server + "marketScan:",
             server + "marketScan:digest:"
         ]
     }
 
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        // F-9228-203: scoped listener for the usedAircraftScanner slice of
+        // the global settings blob. Compares fingerprint before/after to
+        // skip refreshes on unrelated slice writes (RA, schedule-mgmt, …).
+        this._uasSettingsListener = (changes, area) => {
+            if (area !== "local" || !changes.settings) return
+            const oldSlice = changes.settings.oldValue && changes.settings.oldValue.usedAircraftScanner
+            const newSlice = changes.settings.newValue && changes.settings.newValue.usedAircraftScanner
+            if (JSON.stringify(oldSlice || null) === JSON.stringify(newSlice || null)) return
+            this.refresh()
+        }
+        try { chrome.storage.onChanged.addListener(this._uasSettingsListener) }
+        catch (_) { /* tile still works without it */ }
+    }
+
+    dispose() {
+        if (this._uasSettingsListener) {
+            try { chrome.storage.onChanged.removeListener(this._uasSettingsListener) }
+            catch (_) { /* noop */ }
+            this._uasSettingsListener = null
+        }
+        super.dispose()
+    }
+
     openHref() { return "/app/aircraft/market" }
 
     async _loadDigests() {
-        if (typeof window.MarketScanDiffStore !== "function") return []
+        // Class declarations in content scripts are lexical bindings in the
+        // shared realm — they don't attach to window. Probe by typeof on
+        // the bare identifier (matches market-panel/panel.js usage).
+        if (typeof MarketScanDiffStore === "undefined") return []
         const server = (this.ctx && this.ctx.server) || ""
         if (!server) return []
-        try { return await window.MarketScanDiffStore.loadAllDigests(server) }
+        try { return await MarketScanDiffStore.loadAllDigests(server) }
         catch (_) { return [] }
     }
 
     async _loadBlock() {
         try {
-            if (typeof window.UsedAircraftPresets === "function") {
-                return await window.UsedAircraftPresets.load()
+            if (typeof UsedAircraftPresets !== "undefined") {
+                return await UsedAircraftPresets.load()
             }
         } catch (_) { /* fall through */ }
         const data = await chrome.storage.local.get(["settings"])
@@ -58,8 +90,10 @@ class CentralHubUasTile extends window.CentralHubTile {
         const server = (this.ctx && this.ctx.server) || ""
         if (!server) return null
         try {
-            if (typeof window.MarketScanSession === "function") {
-                return await window.MarketScanSession.loadSession(server, scanId)
+            // Bare identifier — class decls don't pollute window. Matches
+            // content_marketScan.js / market-panel/panel.js access pattern.
+            if (typeof MarketScanSession !== "undefined") {
+                return await MarketScanSession.loadSession(server, scanId)
             }
         } catch (_) { /* fall through */ }
         const key = server + "marketScan:" + scanId
@@ -74,27 +108,33 @@ class CentralHubUasTile extends window.CentralHubTile {
      * highlight + status badge update without a full hub refresh.
      */
     async _activatePreset(presetId, host, ctx) {
-        if (typeof window.UsedAircraftPresets !== "function") return
+        if (typeof UsedAircraftPresets === "undefined") return
         const block = await this._loadBlock()
-        const patch = window.UsedAircraftPresets.apply(presetId, block)
+        const patch = UsedAircraftPresets.apply(presetId, block)
         if (!patch) return
         let merged = null
-        try { merged = await window.UsedAircraftPresets.save(patch) }
+        try { merged = await UsedAircraftPresets.save(patch) }
         catch (e) { console.error("AES UAS tile: preset apply failed:", e) }
-        await this.renderBody(ctx, host, merged)
+        // F-9228-204: cache the merged block on `this` instead of passing
+        // it positionally — the base class's renderBody contract uses the
+        // 3rd arg as `focusFilter`, and conflating the two parameters
+        // breaks any cross-tile drill-in to the UAS tile.
+        this._pendingBlock = merged
+        await this.renderBody(ctx, host)
     }
 
     async loadStatus() {
         const block = await this._loadBlock()
-        // Digests are only needed for the "finished session" branch, but
-        // kick the read off in parallel so it overlaps with _loadLastSession
-        // — both are independent of each other once we have the block.
-        const sessionP = this._loadLastSession(block && block.lastScanId)
-        const digestsP = this._loadDigests()
-        const session = await sessionP
+        // F-9228-200: only kick the digests read off when the path that
+        // consumes it (finished-session branch) is reachable. The previous
+        // unconditional parallel fetch fired even on running-scan and
+        // no-session paths where the result was orphaned — and the
+        // underlying loadAllDigests is a chrome.storage.local.get(null)
+        // full-storage scan, so the orphan read was non-trivial.
+        const session = await this._loadLastSession(block && block.lastScanId)
         const userCount   = (block && block.presets && block.presets.length) || 0
-        const builtIns    = (typeof window.UsedAircraftPresets === "function")
-            ? (window.UsedAircraftPresets.BUILT_IN_PRESETS || []).length : 0
+        const builtIns    = (typeof UsedAircraftPresets !== "undefined")
+            ? (UsedAircraftPresets.BUILT_IN_PRESETS || []).length : 0
         const presetCount = userCount + builtIns
         const watchCount  = (block && Array.isArray(block.watchlist)) ? block.watchlist.length : 0
         const sched       = (block && block.schedule) || null
@@ -112,9 +152,13 @@ class CentralHubUasTile extends window.CentralHubTile {
         }
         if (session && session.finishedAt) {
             const when = new Date(session.finishedAt).toISOString().substring(0, 10)
-            const digests = await digestsP
+            const digests = await this._loadDigests()
             const latest = digests[0]
-            const diffTail = (latest && latest.summary && !latest.diffCounts.firstScan)
+            // F-9228-201: guard diffCounts presence — `summary` is set by
+            // panel.js after a scan, but other writers (or future scans
+            // started before diff post-processing finishes) can produce a
+            // digest with summary but no diffCounts, which would crash here.
+            const diffTail = (latest && latest.summary && latest.diffCounts && !latest.diffCounts.firstScan)
                 ? " · " + latest.summary
                 : ""
             return {
@@ -150,17 +194,31 @@ class CentralHubUasTile extends window.CentralHubTile {
         return bits.join(" · ")
     }
 
-    async renderBody(ctx, host, preloadedBlock) {
+    async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
+        // Generation guard: shell.js's open-tile handler can fire two
+        // overlapping renders (toggle()'s _renderBodySafe + an explicit
+        // _renderBodySafe(filter)). Both clear synchronously, then both
+        // await; without this guard both append after their await, doubling
+        // the preset chip strip + steals list. Bail older renders.
+        const gen = (this._renderGen = (this._renderGen || 0) + 1)
         host.textContent = ""
-        const block = preloadedBlock || await this._loadBlock()
+        // F-9228-204: pull from the per-render cache populated by
+        // _activatePreset (skips a redundant _loadBlock right after a
+        // save). Cleared after consumption so subsequent refreshes go
+        // through the regular load path. focusFilter is reserved for the
+        // documented base-class drill-in contract.
+        const cached = this._pendingBlock
+        this._pendingBlock = null
+        const block = cached || await this._loadBlock()
+        if (gen !== this._renderGen) return
         // Kick the two reads that follow off in parallel — they're
         // independent of the synchronous DOM build below and depend only
         // on the block we just loaded.
         const sessionP = this._loadLastSession(block && block.lastScanId)
         const digestsP = this._loadDigests()
-        const presets = (typeof window.UsedAircraftPresets === "function")
-            ? window.UsedAircraftPresets.allPresets(block)
+        const presets = (typeof UsedAircraftPresets !== "undefined")
+            ? UsedAircraftPresets.allPresets(block)
             : ((block && block.presets) || [])
         const activeId  = (block && block.activePresetId) || null
         const watchlist = (block && Array.isArray(block.watchlist)) ? block.watchlist : []
@@ -233,6 +291,7 @@ class CentralHubUasTile extends window.CentralHubTile {
         }
 
         const session = await sessionP
+        if (gen !== this._renderGen) return
         if (session) {
             const T2 = window.AESTokens
             const note = document.createElement("div")
@@ -259,6 +318,7 @@ class CentralHubUasTile extends window.CentralHubTile {
         // the user "what's actually worth AS$ right now" without clicking
         // through to the market panel.
         const digests = await digestsP
+        if (gen !== this._renderGen) return
         const stealRows = CentralHubUasTile._topSteals(digests, 3)
         if (stealRows.length) {
             host.appendChild(CentralHubUasTile._stealsList(T, stealRows))
@@ -295,9 +355,19 @@ class CentralHubUasTile extends window.CentralHubTile {
         const list = document.createElement("div")
         list.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[1] + ";"
         for (const r of rows) {
-            const link = document.createElement("a")
-            link.href = r.offerUrl || "#"
-            if (r.offerUrl) { link.target = "_blank"; link.rel = "noopener" }
+            // F-9228-202: when offerUrl is missing, build a non-clickable
+            // <span> with greyed-out style instead of an anchor with
+            // href="#". The previous version rendered a styled link that
+            // navigated to the current page's #fragment in the same tab,
+            // losing the user's hub state.
+            const link = document.createElement(r.offerUrl ? "a" : "span")
+            if (r.offerUrl) {
+                link.href = r.offerUrl
+                link.target = "_blank"
+                link.rel = "noopener"
+            } else {
+                link.title = "Offer URL unavailable for this row"
+            }
             link.style.cssText = [
                 "display:flex", "gap:" + T.sp[2],
                 "padding:" + T.sp[1] + " " + T.sp[2],

@@ -15,7 +15,7 @@
  *
  * Output:
  *   [{destIata, distanceKm, weeklyFlights, paxScore, cargoScore,
- *     score, alreadyScheduled, hasDemandData}]
+ *     score, alreadyScheduled, hasDemandData, demandSource, demandBasis}]
  *
  * No range/runway fitness here yet — surfaced fields let the UI add a
  * fitness badge later. The dispatcher will fail loudly if the AS form
@@ -25,6 +25,7 @@
 class AesRouteLauncherRanker {
     static CACHE_PREFIX = "routeLauncher:rankCache:"
     static CACHE_TTL_MS = 24 * 60 * 60 * 1000
+    static CACHE_SCHEMA_VERSION = 2
 
     static _cacheKey(server, hub) {
         return AesRouteLauncherRanker.CACHE_PREFIX
@@ -50,11 +51,13 @@ class AesRouteLauncherRanker {
 
         const dests = []
         const seen = new Set()
+        const sourceRouteByDest = new Map()
         for (const r of ff.routes) {
             if (!r || !r.destIata) continue
             const d = String(r.destIata).toUpperCase()
             if (d === HUB || seen.has(d)) continue
             seen.add(d)
+            sourceRouteByDest.set(d, r)
             dests.push({
                 destIata:      d,
                 distanceKm:    Number(r.distanceKm) || null,
@@ -64,6 +67,10 @@ class AesRouteLauncherRanker {
             })
         }
 
+        const flightsFromDemandContext =
+            (typeof FlightsFromStore !== "undefined" && typeof FlightsFromStore.buildDemandContext === "function")
+                ? FlightsFromStore.buildDemandContext(ff.routes)
+                : null
         let demandMap = new Map()
         if (typeof RouteAssistantDemandStore !== "undefined" && dests.length) {
             try {
@@ -72,15 +79,25 @@ class AesRouteLauncherRanker {
         }
 
         for (const d of dests) {
-            const dem = demandMap.get(d.destIata) || null
+            let dem = demandMap.get(d.destIata) || null
+            if (!dem && typeof FlightsFromStore !== "undefined"
+                    && typeof FlightsFromStore.demandForRoute === "function") {
+                dem = FlightsFromStore.demandForRoute(
+                    sourceRouteByDest.get(d.destIata),
+                    flightsFromDemandContext
+                )
+            }
             d.paxScore   = dem && typeof dem.paxScore   === "number" ? dem.paxScore   : null
             d.cargoScore = dem && typeof dem.cargoScore === "number" ? dem.cargoScore : null
             d.hasDemandData = !!dem
+            d.demandSource = (dem && (dem.demandSource || dem.source)) || null
+            d.demandBasis  = (dem && dem.demandBasis) || null
             d.score = AesRouteLauncherRanker._scoreOf(d)
         }
         dests.sort((a, b) => (b.score || 0) - (a.score || 0))
 
         const entry = {
+            schemaVersion: AesRouteLauncherRanker.CACHE_SCHEMA_VERSION,
             entries:    dests,
             source:     "computed",
             hub:        HUB,
@@ -113,6 +130,7 @@ class AesRouteLauncherRanker {
         const out = await chrome.storage.local.get([key])
         const rec = out[key]
         if (!rec || !rec.computedAt) return null
+        if (rec.schemaVersion !== AesRouteLauncherRanker.CACHE_SCHEMA_VERSION) return null
         if (Date.now() - rec.computedAt > AesRouteLauncherRanker.CACHE_TTL_MS) return null
         return rec
     }

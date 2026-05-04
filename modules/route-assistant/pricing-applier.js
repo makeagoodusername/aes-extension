@@ -135,16 +135,30 @@ class RouteAssistantPricingApplier {
         returnAirportPair:   false,
         returnFlightNumbers: false
     }
+    static DECIMAL_CLASS_KEYS = {Cargo: true}
+
+    static _normaliseClassKey(label) {
+        const raw = String(label || "").trim()
+        if (!raw) return ""
+        const compact = raw.toUpperCase().replace(/\s+/g, " ")
+        if (compact === "Y" || compact === "ECONOMY" || compact === "ECONOMY CLASS") return "Y"
+        if (compact === "C" || compact === "BUSINESS" || compact === "BUSINESS CLASS") return "C"
+        if (compact === "F" || compact === "FIRST" || compact === "FIRST CLASS") return "F"
+        if (compact === "CARGO" || compact === "FREIGHT" || compact === "MAIL") return "Cargo"
+        return raw
+    }
 
     /**
      * @param {string} server  — `free1`, `tristar`, etc.
      * @param {object} [opts]
-     * @param {boolean} [opts.dryRunOnly=true]   — hard gate; when true, apply()
-     *   never POSTs even if `dryRun` arg is false. Tier 3.1 ships with this
-     *   true and `applyEnabled=false`; Tier 3.2 flips it.
-     * @param {boolean} [opts.applyEnabled=false] — secondary gate. The user
+     * @param {boolean} [opts.dryRunOnly=false]  — hard gate; when true, apply()
+     *   never POSTs even if `dryRun` arg is false. Route Assistant settings
+     *   pass their current `pricing.apply.dryRunOnly` value here.
+     * @param {boolean} [opts.applyEnabled=true] — secondary gate. The user
      *   has to flip this on AND `dryRunOnly` has to be off before any
      *   real write happens. Belt-and-braces.
+     * @param {object} [opts.liveScopes] — per-source live-write permissions
+     *   from settings.routeAssistant.pricing.apply.liveScopes.
      * @param {number} [opts.cooldownMinPerRoute=60] — minutes; preflight
      *   blocks an apply for the same route within this window.
      * @param {number} [opts.cooldownMinGlobal=5] — minutes; preflight
@@ -161,7 +175,10 @@ class RouteAssistantPricingApplier {
         opts = opts || {}
         this.server = server
         this.dryRunOnly         = opts.dryRunOnly !== false
-        this.applyEnabled       = !!opts.applyEnabled
+        this.applyEnabled       = opts.applyEnabled === true
+        this.liveScopes         = (opts.liveScopes && typeof opts.liveScopes === "object")
+            ? Object.assign({}, opts.liveScopes)
+            : {}
         this.cooldownMinPerRoute = isFinite(opts.cooldownMinPerRoute) ? Math.max(0, opts.cooldownMinPerRoute) : 60
         this.cooldownMinGlobal   = isFinite(opts.cooldownMinGlobal)   ? Math.max(0, opts.cooldownMinGlobal)   : 5
         this.warnAboveDeltaPct  = isFinite(opts.warnAboveDeltaPct) ? Math.max(0, opts.warnAboveDeltaPct) : 5
@@ -186,13 +203,36 @@ class RouteAssistantPricingApplier {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
+    static _scopeNameForSource(source) {
+        const s = String(source || "")
+        if (s === "silent-auto" || s === "silent_auto") return "silentAuto"
+        return s
+    }
+
+    static _routeToken(value) {
+        return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "")
+    }
+
+    static _routePath(hub, dest) {
+        let h = String(hub || "").trim().toUpperCase()
+        let d = String(dest || "").trim().toUpperCase()
+        const pair = h.match(/^([A-Z0-9]{3,4})[^A-Z0-9]+([A-Z0-9]{3,4})$/)
+        const cleanDest = RouteAssistantPricingApplier._routeToken(d)
+        if (pair && (!cleanDest || cleanDest === pair[2])) {
+            h = pair[1]
+            d = pair[2]
+        }
+        return RouteAssistantPricingApplier._routeToken(h)
+            + RouteAssistantPricingApplier._routeToken(d)
+    }
+
     static _baseUrl(server) {
         return "https://" + server + ".airlinesim.aero"
     }
 
     static _markUrl(server, hub, dest) {
         return RouteAssistantPricingApplier._baseUrl(server)
-            + "/app/com/markets/" + String(hub).toUpperCase() + String(dest).toUpperCase()
+            + "/app/com/markets/" + RouteAssistantPricingApplier._routePath(hub, dest)
     }
 
     static _numbersUrl(server, flightNumberId, legIndex) {
@@ -294,6 +334,8 @@ class RouteAssistantPricingApplier {
         const currentPrices = {}
         const defaults      = {}
         const sliderRanges  = {}
+        const observedFieldNames = {}
+        const classLabels   = {}
         const classOrder    = []   // ["Y", "C", "F", "Cargo"] in field-index order
 
         let pricingFs = null
@@ -308,27 +350,26 @@ class RouteAssistantPricingApplier {
             for (const tr of pricingFs.querySelectorAll("table tbody tr")) {
                 const cells = tr.querySelectorAll("td")
                 if (cells.length < 5) continue
-                const cls = (cells[0].textContent || "").trim()
-                const cur = RouteAssistantPricingApplier._parseInt(cells[1].textContent)
+                const rawCls = (cells[0].textContent || "").trim()
+                const cls = RouteAssistantPricingApplier._normaliseClassKey(rawCls)
+                const cur = RouteAssistantPricingApplier._parsePrice(cells[1].textContent, cls)
                 const newInp = cells[2].querySelector("input[type='text']")
                 const newName = newInp ? newInp.getAttribute("name") : null
-                const newVal = newInp ? RouteAssistantPricingApplier._parseInt(newInp.getAttribute("value")) : cur
+                const newVal = newInp ? RouteAssistantPricingApplier._parsePrice(newInp.getAttribute("value"), cls) : cur
                 const defSpan = cells[4].querySelector("span")
                 const defVal = defSpan
-                    ? RouteAssistantPricingApplier._parseInt(defSpan.textContent)
-                    : RouteAssistantPricingApplier._parseInt(cells[4].textContent)
+                    ? RouteAssistantPricingApplier._parsePrice(defSpan.textContent, cls)
+                    : RouteAssistantPricingApplier._parsePrice(cells[4].textContent, cls)
                 if (!cls) continue
-                classOrder.push(cls)
+                if (classOrder.indexOf(cls) < 0) classOrder.push(cls)
+                if (rawCls && rawCls !== cls) classLabels[cls] = rawCls
                 currentPrices[cls] = newVal != null ? newVal : cur
                 defaults[cls]      = defVal
                 if (newName) {
                     // Track the actual field name AS used. We trust this
                     // over our static FIELD_NAMES map when building the
                     // body — guards against AS reordering the table.
-                    if (!RouteAssistantPricingApplier._observedFieldNames) {
-                        RouteAssistantPricingApplier._observedFieldNames = {}
-                    }
-                    RouteAssistantPricingApplier._observedFieldNames[cls] = newName
+                    observedFieldNames[cls] = newName
                 }
             }
         }
@@ -336,11 +377,15 @@ class RouteAssistantPricingApplier {
         // Slider ranges (per-class min/max). Mirror of markets-page-scraper.js's
         // `_parseOwnPricing`. We need these for the preflight clamp check.
         const scriptText = RouteAssistantPricingApplier._collectScriptText(doc)
-        const sliderRe = /slider\(\s*\{[^}]*?value:\s*(\d+)\s*,\s*min:\s*(\d+)\s*,\s*max:\s*(\d+)/g
+        const sliderRe = /slider\(\s*\{[^}]*?value:\s*(-?\d+(?:[.,]\d+)?)\s*,\s*min:\s*(-?\d+(?:[.,]\d+)?)\s*,\s*max:\s*(-?\d+(?:[.,]\d+)?)/g
         const sliderMatches = []
         let sm
         while ((sm = sliderRe.exec(scriptText)) !== null) {
-            sliderMatches.push({value: +sm[1], min: +sm[2], max: +sm[3]})
+            sliderMatches.push({
+                value: RouteAssistantPricingApplier._parsePrice(sm[1], "Cargo"),
+                min:   RouteAssistantPricingApplier._parsePrice(sm[2], "Cargo"),
+                max:   RouteAssistantPricingApplier._parsePrice(sm[3], "Cargo")
+            })
         }
         for (let i = 0; i < classOrder.length && i < sliderMatches.length; i++) {
             sliderRanges[classOrder[i]] = [sliderMatches[i].min, sliderMatches[i].max]
@@ -379,9 +424,10 @@ class RouteAssistantPricingApplier {
             sliderRanges,
             generalSettings,
             classOrder,
+            classLabels: Object.keys(classLabels).length ? classLabels : null,
             // Echo the per-class field names AS exposed in this snapshot.
             // Trusted over FIELD_NAMES.prices when both differ.
-            observedFieldNames: RouteAssistantPricingApplier._observedFieldNames || null
+            observedFieldNames: Object.keys(observedFieldNames).length ? observedFieldNames : null
         }
     }
 
@@ -415,9 +461,11 @@ class RouteAssistantPricingApplier {
             const fieldName = observed[cls] || fallback[cls]
             if (!fieldName) continue
             const desired = prices && prices[cls] != null ? prices[cls] : formContext.currentPrices[cls]
-            if (desired == null) continue
-            merged[cls] = desired
-            body.set(fieldName, String(Math.round(desired)))
+            const blank = typeof desired === "string" && desired.trim() === ""
+            const numeric = blank ? NaN : Number(desired)
+            if (desired == null || !isFinite(numeric)) continue
+            merged[cls] = RouteAssistantPricingApplier._normalisePriceForClass(cls, numeric)
+            body.set(fieldName, RouteAssistantPricingApplier._formatPriceForForm(cls, numeric))
         }
 
         // General settings — round-trip every <select> at its current
@@ -446,7 +494,9 @@ class RouteAssistantPricingApplier {
         // Submit button. Required — Wicket disambiguates which submit
         // handler to invoke by which submit name is in the body.
         const sb = submitButton || RouteAssistantPricingApplier.DEFAULT_SUBMIT
-        body.set(sb, sb === "p::submit" ? "1" : "1")
+        // Native browser form submission sends an empty value for these
+        // Wicket buttons. Some AS handlers distinguish that from "1".
+        body.set(sb, "")
 
         return body
     }
@@ -463,10 +513,10 @@ class RouteAssistantPricingApplier {
         parts.push("h=" + String(hub || "").toUpperCase())
         parts.push("d=" + String(dest || "").toUpperCase())
         const p = prices || {}
-        parts.push("Y=" + (p.Y != null     ? Math.round(p.Y)     : ""))
-        parts.push("C=" + (p.C != null     ? Math.round(p.C)     : ""))
-        parts.push("F=" + (p.F != null     ? Math.round(p.F)     : ""))
-        parts.push("X=" + (p.Cargo != null ? Math.round(p.Cargo) : ""))
+        parts.push("Y=" + (p.Y != null     ? RouteAssistantPricingApplier._formatPriceForFingerprint("Y", p.Y)     : ""))
+        parts.push("C=" + (p.C != null     ? RouteAssistantPricingApplier._formatPriceForFingerprint("C", p.C)     : ""))
+        parts.push("F=" + (p.F != null     ? RouteAssistantPricingApplier._formatPriceForFingerprint("F", p.F)     : ""))
+        parts.push("X=" + (p.Cargo != null ? RouteAssistantPricingApplier._formatPriceForFingerprint("Cargo", p.Cargo) : ""))
         const s = scope || {}
         parts.push("ap=" + (s.airportPair         ? 1 : 0))
         parts.push("fn=" + (s.flightNumbers       ? 1 : 0))
@@ -581,8 +631,13 @@ class RouteAssistantPricingApplier {
     async apply(hub, dest, prices, opts) {
         opts = opts || {}
         const pair = RouteAssistantPricingApplier._pairKey(hub, dest)
-        const dryRun = !!opts.dryRun || this.dryRunOnly || !this.applyEnabled
         const source = opts.source || "manual"
+        const applyGate = RouteAssistantPricingApplier.resolveApplyGate({
+            enabled:    this.applyEnabled,
+            dryRunOnly: this.dryRunOnly,
+            liveScopes: this.liveScopes
+        }, RouteAssistantPricingApplier._scopeNameForSource(source), {forceDryRun: opts.dryRun})
+        const dryRun = applyGate.dryRun
         const scope  = Object.assign({}, RouteAssistantPricingApplier.DEFAULT_SCOPE, opts.scope || {})
         const submitButton = opts.submitButton || RouteAssistantPricingApplier.DEFAULT_SUBMIT
         const reason = (opts.reason || "").toString().slice(0, 240) || null
@@ -616,6 +671,7 @@ class RouteAssistantPricingApplier {
             fingerprint,
             requestedPrices:  prices,
             dryRun,
+            applyGate,
             // Tier 3.4 — pass-through observability fields. All optional;
             // the applier doesn't act on them, just threads them onto the
             // log entry so the audit modal can group / annotate.
@@ -709,7 +765,10 @@ class RouteAssistantPricingApplier {
             cooldownMinPerRoute: this.cooldownMinPerRoute,
             lastApplyAt:         opts.lastApplyAt || null,
             cooldownMinGlobal:   this.cooldownMinGlobal,
-            lastApplyAtGlobal:   opts.lastApplyAtGlobal || null
+            lastApplyAtGlobal:   opts.lastApplyAtGlobal || null,
+            // Per-class gates threaded through from the panel/silent-auto
+            // call site. When unset, preflight behaves identically to before.
+            classGates:          opts.classGates || null
         })
         baseEnvelope.preflight = preflight
         baseEnvelope.prevPrices = Object.assign({}, formContext.currentPrices)
@@ -739,10 +798,18 @@ class RouteAssistantPricingApplier {
         }
 
         // Step 3 — build the body. Always built (even in dry-run) so the
-        // log entry shows what would have been posted.
+        // log entry shows what would have been posted. Disabled classes
+        // are dropped here so buildBody falls back to currentPrices for
+        // them, leaving AS unchanged on those cabins.
+        const filteredPrices = {}
+        for (const cls in prices) {
+            const gate = opts.classGates && opts.classGates[cls]
+            if (gate && gate.enabled === false) continue
+            filteredPrices[cls] = prices[cls]
+        }
         const body = RouteAssistantPricingApplier.buildBody({
             formContext,
-            prices,
+            prices: filteredPrices,
             settings: opts.settings || null,
             scope,
             submitButton
@@ -755,14 +822,10 @@ class RouteAssistantPricingApplier {
             return await this._completeAsDryRun(baseEnvelope)
         }
 
-        // ------- Tier 3.2 path (gated; this branch will not execute in 3.1) -------
-        // Both gates have to be cleared:
+        // Live path. Both top-level gates have to be cleared:
         //   - this.dryRunOnly === false
         //   - this.applyEnabled === true
-        // Settings.applyEnabled is false by default in 3.1; flipping it
-        // alone won't unlock anything because dryRunOnly is also true.
-        // 3.2 ships with dryRunOnly defaulting to false; the user has to
-        // explicitly opt in via settings.applyEnabled to commit a write.
+        // Callers can still force rehearsal with opts.dryRun=true.
 
         const postUrl = url + "?" + formContext.formActionPath
         let respHtml = null
@@ -805,12 +868,10 @@ class RouteAssistantPricingApplier {
         // When the response doesn't carry the new values, fall back to a
         // separate verify() round-trip — Wicket sometimes returns just
         // a redirect-snippet response.
-        let verifiedPrices = null
-        const respContext = RouteAssistantPricingApplier.parseFormContext(respHtml, {endpoint})
-        if (respContext && respContext.currentPrices) {
-            verifiedPrices = respContext.currentPrices
-        } else {
-            verifiedPrices = await this._verify(hub, dest, {endpoint, flightNumberId, legIndex})
+        let verifiedPrices = await this._verify(hub, dest, {endpoint, flightNumberId, legIndex})
+        if (!verifiedPrices) {
+            const respContext = RouteAssistantPricingApplier.parseFormContext(respHtml, {endpoint})
+            if (respContext && respContext.currentPrices) verifiedPrices = respContext.currentPrices
         }
         const verifyOk = RouteAssistantPricingApplier._verifyMatches(baseEnvelope.newPrices, verifiedPrices)
 
@@ -830,8 +891,10 @@ class RouteAssistantPricingApplier {
      */
     static preflight({formContext, prices, warnAboveDeltaPct,
                       cooldownMinPerRoute, lastApplyAt,
-                      cooldownMinGlobal, lastApplyAtGlobal}) {
-        const out = {blockers: [], warnings: [], deltas: {}, percentDeltas: {}}
+                      cooldownMinGlobal, lastApplyAtGlobal, now,
+                      classGates}) {
+        const out = {blockers: [], warnings: [], deltas: {}, percentDeltas: {}, skippedClasses: []}
+        const nowMs = isFinite(now) ? Number(now) : Date.now()
         if (!formContext) {
             out.blockers.push({code: "noFormContext", message: "No form context"})
             return out
@@ -845,44 +908,79 @@ class RouteAssistantPricingApplier {
         const ranges = formContext.sliderRanges || {}
 
         for (const cls in prices) {
+            // Per-class gate: when the user has disabled this class via
+            // settings.routeAssistant.pricing.apply.classes.<cls>.enabled = false,
+            // skip preflight entirely. The body-builder will preserve the
+            // current price at apply time (missing classes round-trip), so
+            // the AS form receives an unchanged value for this cabin.
+            const gate = classGates && classGates[cls]
+            if (gate && gate.enabled === false) {
+                out.skippedClasses.push({cls, reason: "disabledByUser"})
+                continue
+            }
             const newVal = prices[cls]
-            if (newVal == null || !isFinite(newVal)) continue
-            const rounded = Math.round(newVal)
-            if (rounded < 0) {
-                out.blockers.push({code: "negativePrice", message: cls + " price " + rounded + " is negative", cls})
+            const blank = typeof newVal === "string" && newVal.trim() === ""
+            const numeric = blank ? NaN : Number(newVal)
+            if (newVal == null || !isFinite(numeric)) {
+                out.blockers.push({code: "invalidPrice", message: cls + " price is not a finite number", cls})
+                continue
+            }
+            const requested = RouteAssistantPricingApplier._normalisePriceForClass(cls, numeric)
+            if (requested < 0) {
+                out.blockers.push({code: "negativePrice", message: cls + " price " + requested + " is negative", cls})
                 continue
             }
             const r = ranges[cls]
-            if (r && (rounded < r[0] || rounded > r[1])) {
+            if (r && (requested < r[0] || requested > r[1])) {
                 out.blockers.push({
                     code:    "outOfSliderRange",
-                    message: cls + " price " + rounded + " is outside AS slider range [" + r[0] + ", " + r[1] + "]",
+                    message: cls + " price " + requested + " is outside AS slider range [" + r[0] + ", " + r[1] + "]",
                     cls,
                     sliderMin: r[0],
                     sliderMax: r[1],
-                    requested: rounded
+                    requested
                 })
             }
             const cv = cur[cls]
             if (cv != null && cv > 0) {
-                const delta = rounded - cv
+                const delta = requested - cv
                 const pct = (delta / cv) * 100
                 out.deltas[cls] = delta
                 out.percentDeltas[cls] = pct
-                if (Math.abs(pct) >= (warnAboveDeltaPct || 5)) {
+                // Per-class threshold takes precedence when set; falls back
+                // to the route-level `warnAboveDeltaPct` so existing setups
+                // keep their behaviour. `gate.maxMove` (when present) is a
+                // hard ceiling — exceeding it produces a blocker, not a
+                // warning, so the user's per-class trust contract holds.
+                const classThreshold = gate && isFinite(Number(gate.deadband))
+                    ? Math.max(0, Number(gate.deadband))
+                    : (warnAboveDeltaPct || 5)
+                if (Math.abs(pct) >= classThreshold) {
                     out.warnings.push({
                         code: "largeDelta",
                         message: cls + " price " + (pct > 0 ? "+" : "") + pct.toFixed(1)
-                            + "% (from " + cv + " to " + rounded + ")",
+                            + "% (from " + cv + " to " + requested + ")",
                         cls,
-                        deltaPct: pct
+                        deltaPct: pct,
+                        threshold: classThreshold
+                    })
+                }
+                if (gate && isFinite(Number(gate.maxMove)) && Number(gate.maxMove) > 0
+                        && Math.abs(pct) > Number(gate.maxMove)) {
+                    out.blockers.push({
+                        code:    "perClassMaxMoveExceeded",
+                        message: cls + " price |Δ%| " + Math.abs(pct).toFixed(1)
+                            + "% exceeds per-class max-move " + gate.maxMove + "%",
+                        cls,
+                        deltaPct: pct,
+                        maxMove:  Number(gate.maxMove)
                     })
                 }
             }
         }
 
         if (cooldownMinPerRoute > 0 && lastApplyAt) {
-            const minsSince = (Date.now() - lastApplyAt) / 60000
+            const minsSince = (nowMs - lastApplyAt) / 60000
             if (minsSince < cooldownMinPerRoute) {
                 const remaining = Math.ceil(cooldownMinPerRoute - minsSince)
                 out.blockers.push({
@@ -901,7 +999,7 @@ class RouteAssistantPricingApplier {
         // user who just wrote LAX→JFK can't immediately fire SFO→ORD
         // even though SFO→ORD has its own 0-minute history.
         if (cooldownMinGlobal > 0 && lastApplyAtGlobal) {
-            const minsSinceG = (Date.now() - lastApplyAtGlobal) / 60000
+            const minsSinceG = (nowMs - lastApplyAtGlobal) / 60000
             if (minsSinceG < cooldownMinGlobal) {
                 const remainingG = Math.ceil(cooldownMinGlobal - minsSinceG)
                 out.blockers.push({
@@ -915,6 +1013,34 @@ class RouteAssistantPricingApplier {
         }
 
         return out
+    }
+
+    static resolveApplyGate(apply, scopeName, opts) {
+        if (typeof window !== "undefined" && window.RouteAssistantPricingPlumbing
+                && typeof window.RouteAssistantPricingPlumbing.resolveApplyGate === "function") {
+            return window.RouteAssistantPricingPlumbing.resolveApplyGate(apply, scopeName, opts)
+        }
+        const src = apply && typeof apply === "object" ? apply : {}
+        const enabled = src.enabled !== false
+        const dryRunOnly = src.dryRunOnly !== false
+        const liveScopes = src.liveScopes && typeof src.liveScopes === "object" ? src.liveScopes : {}
+        const scopeLiveAllowed = scopeName ? liveScopes[scopeName] === true : true
+        const forcedDryRun = !!(opts && opts.forceDryRun)
+        const dryRun = forcedDryRun || dryRunOnly || !enabled || !scopeLiveAllowed
+        return {
+            applyEnabled: enabled,
+            dryRunOnly,
+            scopeName: scopeName || null,
+            scopeLiveAllowed,
+            forcedDryRun,
+            dryRun,
+            liveWrites: !dryRun,
+            reason: forcedDryRun ? "forced-dry-run"
+                : dryRunOnly ? "dry-run-only"
+                : !enabled ? "apply-disabled"
+                : !scopeLiveAllowed ? "scope-disabled:" + scopeName
+                : "live"
+        }
     }
 
     /**
@@ -946,7 +1072,7 @@ class RouteAssistantPricingApplier {
             const e = expected[k]
             const a = actual[k]
             if (e == null || a == null) continue
-            if (Math.round(e) !== Math.round(a)) return false
+            if (!RouteAssistantPricingApplier._pricesEqual(k, e, a)) return false
         }
         return true
     }
@@ -964,6 +1090,7 @@ class RouteAssistantPricingApplier {
 
     async _completeAsVerified(envelope) {
         this._resetBreakerCounter()
+        await this._syncVerifiedOwnPricingCache(envelope)
         const final = Object.assign({}, envelope, {status: "verified"})
         const written = await this._writeLog(final)
         this._schedulePostApplyOrsArchive(written)
@@ -1030,6 +1157,53 @@ class RouteAssistantPricingApplier {
     async _completeAsAborted(envelope, reason) {
         const final = Object.assign({}, envelope, {status: "aborted", error: reason})
         return await this._writeLog(final)
+    }
+
+    async _syncVerifiedOwnPricingCache(record) {
+        if (!record || !record.hub || !record.dest) return
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return
+        const verified = record.verifiedPrices || record.newPrices
+        if (!verified || !Object.keys(verified).length) return
+        const cleanPrices = {}
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
+            if (verified[cls] === null || verified[cls] === undefined || verified[cls] === "") continue
+            const n = RouteAssistantPricingApplier._normalisePriceForClass(cls, verified[cls])
+            if (isFinite(n)) cleanPrices[cls] = n
+        }
+        if (!Object.keys(cleanPrices).length) return
+        const pair = RouteAssistantPricingApplier._pairKey(record.hub, record.dest)
+        const legacyKey = "routeAssistant:markets:ownPricing:" + pair
+        let scopedKey = legacyKey
+        if (typeof window !== "undefined" && window.AesAccountKey
+                && typeof window.AesAccountKey.acctKey === "function") {
+            scopedKey = window.AesAccountKey.acctKey("routeAssistant:markets:ownPricing", pair)
+        }
+        try {
+            const reads = scopedKey === legacyKey ? [legacyKey] : [scopedKey, legacyKey]
+            const cur = await chrome.storage.local.get(reads)
+            const prev = cur[scopedKey] || cur[legacyKey] || {}
+            const next = Object.assign({}, prev, {
+                hub: String(record.hub).toUpperCase(),
+                dest: String(record.dest).toUpperCase(),
+                server: this.server,
+                scrapedAt: Date.now(),
+                source: "pricingApply:verified",
+                prices: Object.assign({}, prev.prices || {}, cleanPrices)
+            })
+            const writes = {}
+            writes[legacyKey] = next
+            if (scopedKey !== legacyKey) writes[scopedKey] = next
+            await chrome.storage.local.set(writes)
+            if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+                window.AesDataBus.emit("data:route-assistant:markets:updated", {
+                    hub: next.hub,
+                    dest: next.dest,
+                    keysTouched: ["ownPricing"]
+                })
+            }
+        } catch (e) {
+            console.warn("[AES pricingApplier] verified price cache sync failed", e)
+        }
     }
 
     /**
@@ -1110,6 +1284,62 @@ class RouteAssistantPricingApplier {
         return isFinite(n) ? n : null
     }
 
+    static _parsePrice(text, classKey) {
+        if (!RouteAssistantPricingApplier.DECIMAL_CLASS_KEYS[classKey]) {
+            return RouteAssistantPricingApplier._parseInt(text)
+        }
+        if (text == null) return null
+        const m = /-?\d[\d,.]*/.exec(String(text).replace(/[^\d,.\-]/g, " "))
+        if (!m) return null
+        const raw = m[0]
+        const sign = raw.charAt(0) === "-" ? -1 : 1
+        const body = sign < 0 ? raw.slice(1) : raw
+        const sep = Math.max(body.lastIndexOf("."), body.lastIndexOf(","))
+        if (sep >= 0) {
+            const whole = body.slice(0, sep).replace(/\D/g, "")
+            const frac = body.slice(sep + 1).replace(/\D/g, "")
+            if (frac.length > 0 && frac.length <= 2) {
+                const n = Number((whole || "0") + "." + frac)
+                return isFinite(n) ? sign * n : null
+            }
+        }
+        const n = Number(body.replace(/\D/g, ""))
+        return isFinite(n) ? sign * n : null
+    }
+
+    static _normalisePriceForClass(classKey, value) {
+        const n = Number(value)
+        if (!isFinite(n)) return NaN
+        if (RouteAssistantPricingApplier.DECIMAL_CLASS_KEYS[classKey]) {
+            return Math.round(n * 100) / 100
+        }
+        return Math.round(n)
+    }
+
+    static _formatPriceForForm(classKey, value) {
+        const n = RouteAssistantPricingApplier._normalisePriceForClass(classKey, value)
+        if (!isFinite(n)) return ""
+        if (RouteAssistantPricingApplier.DECIMAL_CLASS_KEYS[classKey]) {
+            return n.toFixed(2).replace(/\.?0+$/, "")
+        }
+        return String(Math.round(n))
+    }
+
+    static _formatPriceForFingerprint(classKey, value) {
+        const n = RouteAssistantPricingApplier._normalisePriceForClass(classKey, value)
+        if (!isFinite(n)) return ""
+        return RouteAssistantPricingApplier.DECIMAL_CLASS_KEYS[classKey]
+            ? n.toFixed(2).replace(/\.?0+$/, "")
+            : String(Math.round(n))
+    }
+
+    static _pricesEqual(classKey, a, b) {
+        const left = RouteAssistantPricingApplier._normalisePriceForClass(classKey, a)
+        const right = RouteAssistantPricingApplier._normalisePriceForClass(classKey, b)
+        const tolerance = RouteAssistantPricingApplier.DECIMAL_CLASS_KEYS[classKey] ? 0.005 : 0.5
+        return isFinite(left) && isFinite(right) && Math.abs(left - right) < tolerance
+    }
+
     static _collectScriptText(doc) {
         if (!doc) return ""
         const out = []
@@ -1138,7 +1368,7 @@ class RouteAssistantPricingApplier {
             if (!fieldName) continue
             const raw = body.get(fieldName)
             if (raw == null) continue
-            const n = parseInt(raw, 10)
+            const n = RouteAssistantPricingApplier._parsePrice(raw, cls)
             if (isFinite(n)) out[cls] = n
         }
         return out

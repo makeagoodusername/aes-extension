@@ -128,10 +128,33 @@
                 for (const t of wanted) cache.set(t, [])
             }
 
+            // K14.1 — prefetch the user/drift threshold overlay once per
+            // tick and reshape it into a per-scenario map. Pure-sync ctx
+            // reads on the evaluator hot path; defaults kick in if the
+            // store is missing or empty.
+            const thresholds = {}
+            try {
+                const tStore = window.AesConductorThresholdStore
+                if (tStore && typeof tStore.load === "function") {
+                    const blob = await tStore.load(host) || {}
+                    for (const composite of Object.keys(blob)) {
+                        const e = blob[composite]
+                        if (!e || typeof e.value !== "number" || !isFinite(e.value)) continue
+                        const dot = composite.indexOf(".")
+                        if (dot <= 0) continue
+                        const sid = composite.slice(0, dot)
+                        const key = composite.slice(dot + 1)
+                        if (!thresholds[sid]) thresholds[sid] = {}
+                        thresholds[sid][key] = e.value
+                    }
+                }
+            } catch (_) { /* noop — defaults */ }
+
             const ctx = {
-                now:    Date.now(),
-                host:   host,
-                byType: (t) => cache.get(t) || []
+                now:        Date.now(),
+                host:       host,
+                byType:     (t) => cache.get(t) || [],
+                thresholds: thresholds
             }
 
             let applied = 0

@@ -90,14 +90,24 @@ class RouteAssistantAggregator {
         }
         const fleetCtx            = (input && input.fleetContext) || null
         const interlineByPair     = (input && input.interlineByPair) || null
+        const ffDemandContext     = (typeof FlightsFromStore !== "undefined"
+            && typeof FlightsFromStore.buildDemandContext === "function")
+                ? FlightsFromStore.buildDemandContext(ffRoutes)
+                : null
 
         return ffRoutes.map(r => {
             const destIata = String(r.destIata || "").toUpperCase()
             const demand   = demandMap.get(destIata) || null
+            const hasPaxDemand = demand && demand.paxScore !== null && demand.paxScore !== undefined
+                && isFinite(Number(demand.paxScore))
+            const ffDemand = (!hasPaxDemand && ffDemandContext
+                    && typeof FlightsFromStore.demandForRoute === "function")
+                ? FlightsFromStore.demandForRoute(r, ffDemandContext)
+                : null
             const own      = ownByDest.get(destIata) || {paxFreq: 0, cargoFreq: 0}
             const totalFreq = (own.paxFreq || 0) + (own.cargoFreq || 0)
             const weeklyFlights = Number(r.weeklyFlights) || 0
-            const paxScore = demand ? demand.paxScore : null
+            const paxScore = hasPaxDemand ? demand.paxScore : (ffDemand ? ffDemand.paxScore : null)
             const distanceKm = typeof r.distanceKm === "number" ? r.distanceKm : null
             const override = overrideMap ? (overrideMap.get(hubIata + "-" + destIata) || null) : null
             const routeNote = routeNoteMap ? (routeNoteMap.get(hubIata + "-" + destIata) || null) : null
@@ -116,7 +126,9 @@ class RouteAssistantAggregator {
                 weeklyFlights: weeklyFlights || null,
                 seatsPerWeek:  typeof r.seatsPerWeek === "number" ? r.seatsPerWeek : null,
                 paxScore:      paxScore,
-                cargoScore:    demand ? demand.cargoScore : null,
+                cargoScore:    demand ? demand.cargoScore : (ffDemand ? ffDemand.cargoScore : null),
+                demandSource:  hasPaxDemand ? "route-assistant" : (ffDemand ? ffDemand.demandSource : null),
+                demandBasis:   hasPaxDemand ? null : (ffDemand ? ffDemand.demandBasis : null),
                 ownPaxFreq:    own.paxFreq || 0,
                 ownCargoFreq:  own.cargoFreq || 0,
                 ownTotalFreq:  totalFreq,

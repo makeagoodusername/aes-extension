@@ -350,9 +350,22 @@
 
         // Crew moves depend on the fleet plan's per-typeId leg counts.
         const planSoFar = {planId, perAircraft}
-        const crewMoves = (typeof ns.proposeCrewMoves === "function")
+        let crewMoves = (typeof ns.proposeCrewMoves === "function")
             ? ns.proposeCrewMoves(snapshot, planSoFar, o.crewMoves || {})
             : []
+        if (typeof ns.tuneCrewMoves === "function") {
+            try {
+                const tuned = ns.tuneCrewMoves(snapshot, Object.assign({},
+                    o.crewMoves || {}, {fleetPlan: planSoFar, skipService: true}))
+                if (tuned && Array.isArray(tuned.payMoves)) {
+                    const base = crewMoves.filter(m => m && m.action !== "raisePay" && m.action !== "cutPay")
+                    const pay = tuned.payMoves.map(_crewPayMoveToLegacy)
+                    crewMoves = base.concat(pay)
+                }
+            } catch (e) {
+                console.warn("[AES allocateFleet] tuneCrewMoves failed", e)
+            }
+        }
 
         // Slice 10 — competitor reactions are async (storage read for the
         // prior). Defensive: an empty array on missing module / failure.
@@ -384,6 +397,8 @@
                                                          .reduce((a, m) => a + (m.amount || 0), 0),
             crewTraining:            crewMoves.filter(m => m.action === "train")
                                                          .reduce((a, m) => a + (m.amount || 0), 0),
+            crewPayWeeklyCostDelta:  crewMoves.filter(m => m.action === "raisePay" || m.action === "cutPay")
+                                                         .reduce((a, m) => a + (m.weeklyCostDelta || 0), 0),
             routeCreationProposals:  routeCreations.length,
             competitorReactions:     competitorMoves.length,
             predictedWeeklyProfit:   totalProfit,
@@ -405,6 +420,44 @@
             // Phase 3 Lane C — preview-only rebalance proposals.
             rebalanceMoves: rebalanceMoves,
             summary:       summary
+        }
+    }
+
+    function _crewPayMoveToLegacy(move) {
+        const action = _num(move && move.payTierPp, 0) >= 0 ? "raisePay" : "cutPay"
+        const rationale = Array.isArray(move && move.rationale) ? move.rationale.slice() : []
+        if (move && move.weeklyCostDelta != null) {
+            rationale.push("[cost] weekly payroll delta "
+                + Math.round(_num(move.weeklyCostDelta, 0)).toLocaleString() + " AS$")
+        }
+        return {
+            skillLabel:       move && move.label || null,
+            skillId:          null,
+            typeId:           null,
+            positionId:       move && move.positionId || null,
+            group:            move && move.group || null,
+            responsibilityClass: move && move.responsibilityClass || null,
+            flightsNeeded:    move && move.required || null,
+            activeNow:        move && move.active || null,
+            reserveNow:       null,
+            action:           action,
+            amount:           move && move.payTierPp || 0,
+            currentSalary:    move && move.currentSalary || null,
+            recommendedSalary: move && move.recommendedSalary || null,
+            countryAverage:   move && move.countryAverage || null,
+            weeklyCostDelta:  move && move.weeklyCostDelta || 0,
+            expectedRecruitDelta: move && move.expectedRecruitDelta || null,
+            expectedOrsLiftPp: move && move.expectedOrsLiftPp || null,
+            expectedReputationLiftPp: move && move.expectedReputationLiftPp || null,
+            reputationValue:  move && move.reputationValue || null,
+            reputationRating: move && move.reputationRating || null,
+            accepted:         move ? move.accepted !== false : true,
+            rationale:        rationale,
+            payHypothesis: {
+                predictedRecruitDelta: move && move.expectedRecruitDelta || null,
+                confidence:            move && move.perceptionConfidence || null,
+                inputs:                move && move.perceptionHypothesis || null
+            }
         }
     }
 

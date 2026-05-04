@@ -1,5 +1,15 @@
 "use strict"
 
+;(function () {
+    const root = (typeof window !== "undefined")
+        ? window
+        : ((typeof globalThis !== "undefined") ? globalThis : null)
+    if (typeof window !== "undefined") {
+        if (window.AesAfpScheduleStore) return
+    } else if (root && root.AesAfpScheduleStore) {
+        return
+    }
+
 /**
  * Track 7 slice 7c — Persistent per-aircraft Schedule store.
  *
@@ -208,6 +218,7 @@ class AesAfpScheduleStore {
     }
 }
 
-if (typeof window !== "undefined") {
-    window.AesAfpScheduleStore = AesAfpScheduleStore
+if (root) {
+    root.AesAfpScheduleStore = AesAfpScheduleStore
 }
+})()

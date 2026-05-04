@@ -82,12 +82,15 @@ class ScanController {
      */
     async start(preset, opts) {
         const overrides = (opts && opts.typeFamilyOverrides) || {}
+        const anyFamily = TypeFamilyMap.anyFamilyLabel()
         const queue = preset.types.map(type => {
-            const family = TypeFamilyMap.resolve(type, overrides)
-            if (!family) {
-                return {type: type, family: null, status: "error", error: "no family mapping"}
+            const resolvedFamily = TypeFamilyMap.resolve(type, overrides)
+            return {
+                type: type,
+                family: resolvedFamily || anyFamily,
+                familyFallback: !resolvedFamily,
+                status: "pending"
             }
-            return {type: type, family: family, status: "pending"}
         })
 
         this.session = MarketScanSession.create({

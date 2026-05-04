@@ -34,7 +34,7 @@ function saveData() {
         }
         saveDataSpan.addClass('good').text('Flight info data saved!');
         chrome.storage.local.get(['settings'], function(result) {
-            let settings = result.settings;
+            let settings = AES.normalizeSettings(result.settings);
             if (settings.flightInfo) {
                 if (settings.flightInfo.autoClose) {
                     close();

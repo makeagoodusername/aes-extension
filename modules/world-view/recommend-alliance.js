@@ -146,9 +146,18 @@
                 + 8 * feedersAtHub
                 - 3 * Math.max(0, overlapHubs - feedersAtHub)
                 - 2 * contestedAt
+            // F-DASH-508: production AllianceOverviewScraper writes
+            // network.myAlliance with `name` only; enterprise-scraper writes
+            // alliance: {id, name} so bucket keys are stringified ids. The
+            // legacy myAllianceKey/slot.id paths therefore never match. Add a
+            // name-equal fallback so "MINE" surfaces when only names line up.
+            const myName = network.myAlliance && network.myAlliance.name
+                ? String(network.myAlliance.name).toLowerCase() : null
+            const slotName = slot.name ? String(slot.name).toLowerCase() : null
             const isMine = myAllianceKey === key
                 || (slot.id && network.myAlliance && network.myAlliance.id != null
                     && String(slot.id) === String(network.myAlliance.id))
+                || (myName && slotName && myName === slotName)
             const parts = {reach, feedersAtHub, overlapHubs, contestedAt, hub, isMine}
             const rationale = _renderRationale(parts, slot)
             out.push({

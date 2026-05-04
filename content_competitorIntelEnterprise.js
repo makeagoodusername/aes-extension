@@ -6,7 +6,7 @@
  * competitor's profile card (banner, alliance, base country), fleet summary,
  * hubs grouped by country, and top routes derived from RA market records.
  *
- * Coexists with the legacy `content_enterpriceOverview.js` (which writes the
+ * Coexists with the legacy `content_enterpriseOverview.js` (which writes the
  * `<server><airlineId>competitorMonitoring` storage key) by mounting under a
  * distinct DOM node. The legacy script's anchor is `.container-fluid:eq(2)
  * h2`; our panel mounts after the same heading via `:scope` selectors but

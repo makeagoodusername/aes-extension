@@ -20,7 +20,9 @@ class CentralHubAfpTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys(ctx) {
-        return ["aircraftFlightPlan:draft:" + (ctx && ctx.server || "") + ":"]
+        const server = (ctx && ctx.server) || ""
+        if (!server) return []
+        return ["aircraftFlightPlan:draft:" + server + ":"]
     }
 
     openHref() { return "/app/fleets" }
@@ -28,7 +30,11 @@ class CentralHubAfpTile extends window.CentralHubTile {
     async _loadDrafts() {
         const server = (this.ctx && this.ctx.server) || ""
         if (!server) return []
-        const entries = await this._loadByPrefix("aircraftFlightPlan:draft:" + server)
+        // F-9228-906: trailing colon matches the watchedStorageKeys prefix and
+        // the actual key shape (`aircraftFlightPlan:draft:<server>:<id>`). Without
+        // it, "free1" would also match "free10:..." / "free11:..." keys when AS
+        // runs overlapping-prefix server names in the same browser profile.
+        const entries = await this._loadByPrefix("aircraftFlightPlan:draft:" + server + ":")
         const drafts = entries.map(e => e.value).filter(rec => rec && rec.aircraftId)
         drafts.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
         return drafts
@@ -58,6 +64,15 @@ class CentralHubAfpTile extends window.CentralHubTile {
 
     async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
+
+        // Guard against the race where the shell's open-tile handler kicks
+        // off two concurrent renders (the first via tile.toggle() with no
+        // filter, the second via _renderBodySafe(filter)). Both clear the
+        // host synchronously before awaiting `_loadDrafts`, then both
+        // append after their await resolves — duplicating the focus
+        // banner + draft list in the same body. Tag each invocation with
+        // a generation counter so only the latest one wins.
+        const gen = (this._renderGen = (this._renderGen || 0) + 1)
         host.textContent = ""
 
         // CH-5d-3: pin tail filter on the instance.
@@ -66,6 +81,7 @@ class CentralHubAfpTile extends window.CentralHubTile {
         }
 
         const drafts = await this._loadDrafts()
+        if (gen !== this._renderGen) return
 
         if (this._tailFilter) {
             host.appendChild(this._renderTailBanner(T))

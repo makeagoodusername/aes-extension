@@ -23,14 +23,37 @@ class CentralHubCompetitorMonitoringTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys(ctx) {
+        // Storage keys are `<server><competitorEnterpriseId>competitorMonitoring`
+        // (see content_enterpriceOverview.js — `airlineId` there is the URL path
+        // id of the rival being viewed, NOT our airline). Scoping the prefix to
+        // `<server><ourAirline>` would filter out every tracked record. The
+        // legacy displayCompetitorMonitoringAirlinesTable() iterates the whole
+        // storage and matches by `v.server === server`; we mirror that path by
+        // falling back to a server-only prefix.
         const server = String(ctx && ctx.server || "")
-        const airline = String(ctx && ctx.airline || "")
-        if (server && airline) return [server + airline + "competitorMonitoring"]
         return server ? [server] : []
     }
 
     openHandler() {
-        return () => CentralHubLegacy.switchDropdownTo("competitorMonitoring")
+        return () => {
+            // F-DASH-506 follow-up — prefer the modern competitor-intel hub
+            // shell (AesCompetitorIntelHost.open) when available; the legacy
+            // dropdown only exists pre-CH-4 and switchDropdownTo() returns
+            // false silently when the <select> isn't in the DOM, leaving the
+            // user with nothing to click. The modern path renders the same
+            // tracked-airline table inside a full modal.
+            if (window.AesCompetitorIntelHost
+                    && typeof window.AesCompetitorIntelHost.open === "function") {
+                window.AesCompetitorIntelHost.open({
+                    server: this.ctx && this.ctx.server,
+                    tab: "companies"
+                })
+                return
+            }
+            if (window.CentralHubLegacy && typeof window.CentralHubLegacy.switchDropdownTo === "function") {
+                window.CentralHubLegacy.switchDropdownTo("competitorMonitoring")
+            }
+        }
     }
 
     async mount(container, ctx, opts) {
@@ -49,20 +72,30 @@ class CentralHubCompetitorMonitoringTile extends window.CentralHubTile {
             if (this.root) this.root.scrollIntoView({behavior: "smooth", block: "start"})
             this._renderBodySafe()
         })
+        // F-DASH-501 — refresh on competitor snapshot diff so the tile mirrors
+        // newly-detected changes from enterprise-scraper without a manual reload.
+        if (window.AesDataBus && typeof window.AesDataBus.on === "function") {
+            const offDiff = window.AesDataBus.on("data:competitor-intel:enterprise:diff", () => {
+                this.refresh().catch(() => {})
+            })
+            const offUpd = window.AesDataBus.on("data:competitor-intel:enterprise:updated", () => {
+                this.refresh().catch(() => {})
+            })
+            if (typeof offDiff === "function") this._busDisposers.push(offDiff)
+            if (typeof offUpd === "function")  this._busDisposers.push(offUpd)
+        }
     }
 
     async _loadCompetitors() {
         const server = (this.ctx && this.ctx.server) || ""
-        const airline = (this.ctx && this.ctx.airline) || ""
         if (!server) return []
-        // Scope to <server><airline> when ctx supplies an airline so the user
-        // doesn't see sibling-airline tracked competitors. Falls back to the
-        // legacy server-wide scan when only the server is known.
+        // Match the legacy displayCompetitorMonitoringAirlinesTable() in
+        // content_dashboard.js:1120 — it filters by `v.server === server`
+        // and `v.tracking`. The storage key is `<server><competitorId>competitorMonitoring`
+        // where competitorId is the URL path id of the rival, not our airline.
         const all = await chrome.storage.local.get(null)
         const out = []
-        const expectedPrefix = airline ? (server + airline) : server
         for (const k in all) {
-            if (k.indexOf(expectedPrefix) !== 0) continue
             const v = all[k]
             if (!v || typeof v !== "object") continue
             if (v.type !== "competitorMonitoring") continue

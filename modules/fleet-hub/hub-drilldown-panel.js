@@ -267,11 +267,14 @@ class FleetHubDrilldownPanel {
     async _refreshSchedules() {
         if (this._scraper) return
         if (typeof window.FleetScheduleGridScraper === "undefined") {
-            this._setStatus("Bulk scraper not loaded — open Fleet Schedule Grid first")
+            // F-9228-604: progress strip is right above the footer button —
+            // status strip lives in the header where the user isn't looking
+            // when they click here.
+            this._setProgress("Bulk scraper not loaded — open Fleet Schedule Grid first")
             return
         }
         const fleet = this.fleet.map(r => ({aircraftId: r.aircraftId, registration: r.registration}))
-        if (!fleet.length) { this._setStatus("No aircraft to scrape"); return }
+        if (!fleet.length) { this._setProgress("No aircraft to scrape"); return }
 
         this._scraper = new window.FleetScheduleGridScraper(this.server, {maxConcurrency: 3})
         this._setProgress("Scraping " + fleet.length + " aircraft…")
@@ -629,7 +632,7 @@ class FleetHubDrilldownPanel {
         propCell.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";"
         if (plan && plan.utilization && Number.isFinite(Number(plan.utilization.weeklyHours))) {
             const pHours = Number(plan.utilization.weeklyHours)
-            const pCap = Number(plan.utilization.capWeeklyHours) || cap
+            const pCap = this._positiveNumber(plan.utilization.capWeeklyHours) || cap
             const tone = this._toneForRatio(T, pHours / pCap, {hi: 0.95, mid: 0.6})
             propCell.appendChild(this._kv(T, "Proposed", pHours.toFixed(0) + "h / " + pCap.toFixed(0) + "h", tone))
         } else {
@@ -674,36 +677,48 @@ class FleetHubDrilldownPanel {
     _capForAircraft(r) {
         const snap = this._snapFleetById && this._snapFleetById.get(String(r.aircraftId))
         const wear = snap && snap.wear ? snap.wear : null
-        return (wear && Number.isFinite(Number(wear.maxWeeklyBlockHours)))
+        const cap = wear && Number.isFinite(Number(wear.maxWeeklyBlockHours))
             ? Number(wear.maxWeeklyBlockHours)
+            : null
+        return cap && cap > 0
+            ? cap
             : FleetHubDrilldownPanel.FALLBACK_WEEKLY_HOURS
     }
 
     _usedForAircraft(r) {
+        const sched = this._currentSchedules.get(String(r.aircraftId))
+        if (sched && sched.summary && Number.isFinite(Number(sched.summary.weeklyBlockMinutes))) {
+            return Number(sched.summary.weeklyBlockMinutes) / 60
+        }
         const snap = this._snapFleetById && this._snapFleetById.get(String(r.aircraftId))
         const wear = snap && snap.wear ? snap.wear : null
         if (wear && Number.isFinite(Number(wear.weeklyHoursLast7d))) {
             return Number(wear.weeklyHoursLast7d)
-        }
-        const sched = this._currentSchedules.get(String(r.aircraftId))
-        if (sched && sched.summary && Number.isFinite(Number(sched.summary.weeklyBlockMinutes))) {
-            return Number(sched.summary.weeklyBlockMinutes) / 60
         }
         return 0
     }
 
     _currentRoundTripCount(r) {
         const sched = this._currentSchedules.get(String(r.aircraftId))
+        if (sched && sched.summary && Number.isFinite(Number(sched.summary.flightCount))) {
+            return Math.max(0, Math.floor(Number(sched.summary.flightCount) / 2))
+        }
         if (!sched || !Array.isArray(sched.days)) return null
         let outbound = 0
         for (const day of sched.days) {
             if (!day || !Array.isArray(day.blocks)) continue
             for (const b of day.blocks) {
-                if (b && b.kind === "flight" && b.flight && b.flight.destinationIata) outbound++
+                if (b && b.kind === "flight" && b.flight
+                        && (b.flight.destinationIata || b.flight.destination)) outbound++
             }
         }
         // Round-trips = total flight blocks / 2 (rough; out + return per pair)
         return Math.max(0, Math.floor(outbound / 2))
+    }
+
+    _positiveNumber(value) {
+        const n = Number(value)
+        return Number.isFinite(n) && n > 0 ? n : null
     }
 
     _setStatus(text) {

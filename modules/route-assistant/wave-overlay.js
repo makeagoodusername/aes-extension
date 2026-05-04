@@ -91,8 +91,8 @@ class RouteAssistantWaveOverlay {
      * @param {object} ctx - {server, airlineCode, hubIata, selectedSpec, topN,
      *                        carrierClassifier?, overrides?, optimize?}
      * @returns {object} {validation, routes, flights, warnings, placements,
-     *   unplaced, shortfall, skipped, connections, preset, optimised,
-     *   optimiseIters, optimiseScore}
+     *   unplaced, shortfall, skipped, excludedDests, connections, preset,
+     *   optimised, optimiseIters, optimiseScore}
      */
     static buildSchedule(preset, scoredRows, ctx) {
         const c = ctx || {}
@@ -101,6 +101,7 @@ class RouteAssistantWaveOverlay {
             placements: [], unplaced: [], shortfall: {}, skipped: [],
             connections: [],
             forcedDests: [],
+            excludedDests: [],
             preset: preset || null
         }
         if (!preset) {
@@ -121,11 +122,16 @@ class RouteAssistantWaveOverlay {
                 hubIata:      c.hubIata
             }
         )
-        out.routes = routes
+        const excludedDests = RouteAssistantWaveOverlay._excludedDestsFromOverrides(c.overrides)
+        const buildRoutes = excludedDests.size
+            ? routes.filter(r => !excludedDests.has(String(r && r.destination || "").toUpperCase()))
+            : routes
+        out.routes = buildRoutes
+        out.excludedDests = Array.from(excludedDests)
         out.skipped = skipped
 
         if (out.validation.length) return out
-        if (!routes.length) return out
+        if (!buildRoutes.length) return out
 
         // Slice E — pass user overrides into the assignment so dragged
         // routes land on their picked wave even if it's bucket-saturated.
@@ -136,7 +142,7 @@ class RouteAssistantWaveOverlay {
         // per-slot profit greedy-best-marginal in
         // `ScheduleBuilder._assignRoutesProfit`. Older callers pass no
         // mode and keep the bucket-greedy / connection-hill-climb path.
-        const assignment = builder.assignRoutes(routes, {
+        const assignment = builder.assignRoutes(buildRoutes, {
             overrides:    c.overrides,
             optimize:     !!c.optimize,
             mode:         c.mode || null,
@@ -184,6 +190,30 @@ class RouteAssistantWaveOverlay {
             }
         }
         return out
+    }
+
+    static _excludedDestsFromOverrides(overrides) {
+        const excluded = new Set()
+        if (!overrides) return excluded
+        const isExclude = (value) => {
+            if (typeof RouteAssistantWaveOverridesStore !== "undefined"
+                    && typeof RouteAssistantWaveOverridesStore.isExcludeValue === "function") {
+                return RouteAssistantWaveOverridesStore.isExcludeValue(value)
+            }
+            return String(value || "") === "__exclude__"
+        }
+        if (overrides instanceof Map) {
+            for (const [dest, value] of overrides.entries()) {
+                const d = String(dest || "").toUpperCase()
+                if (d && isExclude(value)) excluded.add(d)
+            }
+        } else if (typeof overrides === "object") {
+            for (const dest in overrides) {
+                const d = String(dest || "").toUpperCase()
+                if (d && isExclude(overrides[dest])) excluded.add(d)
+            }
+        }
+        return excluded
     }
 
     /**
@@ -973,4 +1003,8 @@ class RouteAssistantWaveOverlay {
             try { bus.emit(event, payload) } catch (_) {}
         }
     }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantWaveOverlay = RouteAssistantWaveOverlay
 }

@@ -32,16 +32,18 @@
  *   setDepartureTime(hhmm)     → boolean
  *   setPricePercent(pct)       → boolean
  *   setService(value)          → boolean
- *   setFlightNumber(text)      → boolean
- *   findNextAvailableFlightNumber() → Promise<string|null>
- *   fill(leg)                  → {ok, set, missed}
+ *   setFlightNumber(text, opts?) → boolean
+ *   findNextAvailableFlightNumber({after?}) → Promise<string|null>
+     *   fill(leg)                  → {ok, set, missed}
  *   fillAndSubmit(leg)         → Promise<{ok, posting?, error?}>  (background-only)
+ *   assignExistingFlight(leg)  → Promise<{ok, posting?, error?, flightNumberText?}> (background-only)
+ *   verifyScheduledFlight(leg) → {ok, error?, flightNumberText?}
  *   reverse()                  → boolean
  *   clear()                    → boolean
- *   dryRun(leg)                → {url, body, missed}
+ *   dryRun(leg)                → {url, body, missed, deferred?}
  *
  * Bus contract (consumed by Slice F's audit log):
- *   in:  candidate:selected {candidate, source}  → fill(...)
+ *   in:  candidate:selected {candidate, source, originIata?, depTime?}  → fill(...)
  *   out: form:filled {leg, set, missed, source}
  *   out: form:cleared {}
  *
@@ -58,8 +60,13 @@
         defaultService:       "",
         defaultDepartureTime: "09:00"   // not in settings.aircraftFlightPlan; Slice D-internal
     }
+    const DEFAULT_DAY_MASK = [true, true, true, true, true, true, true]
     const POLL_MS         = 100
     const POLL_MAX_TRIES  = 50          // 5s — Slice A is in the same content_scripts block
+    const FLIGHT_NUMBER_ROSTER_PATH = "/app/com/numbers"
+    const ROSTER_FETCH_TIMEOUT_MS   = 5000
+    const EXISTING_TAB_ACTIVATE_MAX_TRIES = 30
+    const PLANNING_FORM_MAX_TRIES         = 150
 
     let _lastCandidate    = null        // last candidate object from candidate:selected
     let _lastLeg          = null        // last normalised leg passed to fill()
@@ -129,6 +136,100 @@
         const d = window.AesAfpDiagnostics
         if (d && typeof d.record === "function") {
             try { d.record(kind, payload) } catch (_) { /* never let diag break form fill */ }
+        }
+    }
+
+    function _cleanFlightNumberSuffix(raw) {
+        const s = String(raw == null ? "" : raw).trim()
+        if (!s) return null
+        const m = s.match(/(?:^|\s)(\d{1,4})$/)
+        if (!m) return null
+        const n = parseInt(m[1], 10)
+        return (n > 0 && n < 10000) ? n : null
+    }
+
+    function _collectRosterNumbers(doc) {
+        const seen = new Set()
+        if (!doc || !doc.querySelectorAll) return []
+        for (const tr of doc.querySelectorAll("tr")) {
+            const cells = tr.cells ? Array.from(tr.cells) : []
+            if (!cells.length) continue
+            for (const cell of cells) {
+                const txt = (cell.innerText || cell.textContent || "").trim()
+                if (!/^\d{1,4}$/.test(txt)) continue
+                const n = _cleanFlightNumberSuffix(txt)
+                if (n) seen.add(n)
+                break
+            }
+        }
+        return Array.from(seen).sort((a, b) => a - b)
+    }
+
+    function _expectedRosterCount(doc) {
+        const text = doc && doc.body ? (doc.body.innerText || doc.body.textContent || "") : ""
+        let max = 0
+        const re = /flight numbers\s*\((\d+)\)/gi
+        let m
+        while ((m = re.exec(text))) max = Math.max(max, parseInt(m[1], 10) || 0)
+        return max || null
+    }
+
+    function _smallestUnusedFlightNumber(nums, extraUsed) {
+        const used = new Set()
+        for (const n of nums || []) {
+            const v = parseInt(n, 10)
+            if (v > 0 && v < 10000) used.add(v)
+        }
+        for (const raw of extraUsed || []) {
+            const v = _cleanFlightNumberSuffix(raw)
+            if (v) used.add(v)
+        }
+        for (let n = 1; n < 10000; n++) if (!used.has(n)) return String(n)
+        return null
+    }
+
+    function _activeHubIata() {
+        try {
+            const hub = window.AesAfp && typeof window.AesAfp.getActiveHub === "function"
+                ? window.AesAfp.getActiveHub()
+                : null
+            if (hub && /^[A-Z]{3}$/.test(String(hub).toUpperCase())) return String(hub).toUpperCase()
+        } catch (_) { /* fall back to ctx */ }
+        const ctxOrigin = (window.AesAfp && window.AesAfp.ctx && window.AesAfp.ctx.currentLocationIata) || null
+        return (ctxOrigin && /^[A-Z]{3}$/.test(String(ctxOrigin).toUpperCase()))
+            ? String(ctxOrigin).toUpperCase()
+            : null
+    }
+
+    async function _fetchRosterNumbers() {
+        if (typeof fetch !== "function" || typeof DOMParser === "undefined") return null
+        let timer = null
+        const ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null
+        if (ctrl) timer = setTimeout(() => ctrl.abort(), ROSTER_FETCH_TIMEOUT_MS)
+        try {
+            const res = await fetch(FLIGHT_NUMBER_ROSTER_PATH, {
+                credentials: "include",
+                cache:       "no-store",
+                signal:      ctrl ? ctrl.signal : undefined
+            })
+            if (!res || !res.ok) return null
+            const html = await res.text()
+            const doc = new DOMParser().parseFromString(html, "text/html")
+            const nums = _collectRosterNumbers(doc)
+            const expected = _expectedRosterCount(doc)
+            if (!nums.length) return null
+            // If AS paginates or hides additional groups, do not trust a
+            // partial page; fall back to AS's own Ajax helper instead.
+            if (expected && nums.length < expected) {
+                _diag("find-next-roster-partial", {count: nums.length, expected})
+                return null
+            }
+            return nums
+        } catch (e) {
+            _diag("find-next-roster-error", {err: String(e)})
+            return null
+        } finally {
+            if (timer) clearTimeout(timer)
         }
     }
 
@@ -232,14 +333,75 @@
         return {hours: String(h), minutes: String(mn)}   // AS option values are unpadded ("9", "0")
     }
 
+    function _parseExistingFlightOption(opt) {
+        const text = (opt && (opt.textContent || opt.innerText) || "").trim().replace(/\s+/g, " ")
+        const prefix = text.match(/^(\d{1,4}):/)
+        const iatas = []
+        const re = /\(([A-Z]{3})\)/g
+        let m
+        while ((m = re.exec(text))) iatas.push(m[1])
+        const time = text.match(/(\d{1,2}:\d{2})\s*$/)
+        return {
+            opt,
+            value: opt ? opt.value : "",
+            text,
+            flightNumberText: prefix ? prefix[1] : "",
+            origin: iatas[0] || "",
+            destination: iatas[1] || "",
+            depTime: time ? time[1] : ""
+        }
+    }
+
+    function _findExistingFlightSelect() {
+        const selects = Array.from(document.querySelectorAll("select"))
+        return selects.find(sel => {
+            const name = sel.name || ""
+            return name.indexOf("existingNumber") >= 0 && name.indexOf("numbers_body") >= 0
+        }) || selects.find(sel => {
+            return Array.from(sel.options || []).some(o => /^\s*\d{1,4}:/.test(o.textContent || ""))
+        }) || null
+    }
+
+    function _findPlanningForm() {
+        return document.querySelector("form[action*='flight.planning.form']")
+    }
+
+    function _planningSubmitButton(form) {
+        if (!form) return null
+        return form.querySelector("input[type='submit'][name='button-submit']")
+            || form.querySelector("input[type='submit'][value='Apply schedule settings']")
+            || form.querySelector("button[type='submit'][name='button-submit']")
+    }
+
+    function _normaliseHHMM(value) {
+        const t = _parseTime(value)
+        if (!t) return ""
+        const h = parseInt(t.hours, 10)
+        const m = parseInt(t.minutes, 10)
+        return (h < 10 ? "0" + h : String(h)) + ":" + (m < 10 ? "0" + m : String(m))
+    }
+
+    function _sameHHMM(a, b) {
+        const aa = _normaliseHHMM(a)
+        const bb = _normaliseHHMM(b)
+        return !!aa && !!bb && aa === bb
+    }
+
+    function _normaliseDayMask(mask) {
+        return Array.isArray(mask) && mask.length >= 7
+            ? mask.slice(0, 7).map(Boolean)
+            : DEFAULT_DAY_MASK.slice()
+    }
+
     function _normaliseLeg(leg) {
         const l = leg || {}
         const d = _readDefaults()
-        const ctxOrigin = (window.AesAfp && window.AesAfp.ctx && window.AesAfp.ctx.currentLocationIata) || null
+        const ctxOrigin = _activeHubIata()
         return {
             origin:           l.origin      || ctxOrigin,
             destination:      l.destination || null,
             depTime:          l.depTime     || d.defaultDepartureTime,
+            dayMask:          _normaliseDayMask(l.dayMask),
             pricePct:         Number.isFinite(l.pricePct)         ? l.pricePct         : d.defaultPricePct,
             service:          (typeof l.service === "string")     ? l.service          : d.defaultService,
             flightNumberText: (typeof l.flightNumberText === "string" && l.flightNumberText.length)
@@ -262,19 +424,23 @@
      *  panel via XHR) and poll until findForm() returns a context, up to
      *  1.5s. Returns the form context on success, null on timeout / no tab. */
     const TAB_ACTIVATE_INTERVAL_MS = 100
-    const TAB_ACTIVATE_MAX_TRIES   = 15
+    const TAB_ACTIVATE_MAX_TRIES   = 50
     async function _ensureNewTabActive() {
         let form = findForm()
         if (form) return form
         const getTabs = window.AesAfp && window.AesAfp.getFormTabs
         if (typeof getTabs !== "function") return null
         const tabs = getTabs()
-        if (!tabs || !tabs.newTab || tabs.activeTab === "new") return null
-        _diag("tab-activate", {from: tabs.activeTab})
-        try { tabs.newTab.click() }
-        catch (e) {
-            _diag("tab-activate-error", {err: String(e)})
-            return null
+        if (!tabs || !tabs.newTab) return null
+        if (tabs.activeTab !== "new") {
+            _diag("tab-activate", {from: tabs.activeTab})
+            try { tabs.newTab.click() }
+            catch (e) {
+                _diag("tab-activate-error", {err: String(e)})
+                return null
+            }
+        } else {
+            _diag("tab-active-wait-form", {})
         }
         for (let i = 0; i < TAB_ACTIVATE_MAX_TRIES; i++) {
             await new Promise(r => setTimeout(r, TAB_ACTIVATE_INTERVAL_MS))
@@ -288,8 +454,127 @@
         return null
     }
 
+    async function _ensureExistingTabActive() {
+        let sel = _findExistingFlightSelect()
+        if (sel) return sel
+        const getTabs = window.AesAfp && window.AesAfp.getFormTabs
+        if (typeof getTabs !== "function") return null
+        const tabs = getTabs()
+        if (!tabs || !tabs.existingTab) return null
+        _diag("existing-tab-activate", {from: tabs.activeTab})
+        try { tabs.existingTab.click() }
+        catch (e) {
+            _diag("existing-tab-activate-error", {err: String(e)})
+            return null
+        }
+        for (let i = 0; i < EXISTING_TAB_ACTIVATE_MAX_TRIES; i++) {
+            await new Promise(r => setTimeout(r, TAB_ACTIVATE_INTERVAL_MS))
+            sel = _findExistingFlightSelect()
+            if (sel) {
+                _diag("existing-tab-activate-ok", {waitedMs: (i + 1) * TAB_ACTIVATE_INTERVAL_MS})
+                return sel
+            }
+        }
+        _diag("existing-tab-activate-timeout", {})
+        return null
+    }
+
+    function _findExistingFlightOption(sel, norm) {
+        if (!sel) return null
+        const opts = Array.from(sel.options || [])
+            .map(_parseExistingFlightOption)
+            .filter(o => o && o.flightNumberText)
+        const wantedNumber = _cleanFlightNumberSuffix(norm.flightNumberText)
+        if (wantedNumber) {
+            return opts.find(o => String(o.flightNumberText) === String(wantedNumber)) || null
+        }
+        const origin = String(norm.origin || "").toUpperCase()
+        const destination = String(norm.destination || "").toUpperCase()
+        const depTime = _normaliseHHMM(norm.depTime)
+        const matches = opts.filter(o => {
+            if (origin && o.origin !== origin) return false
+            if (destination && o.destination !== destination) return false
+            if (depTime && !_sameHHMM(o.depTime, depTime)) return false
+            return true
+        })
+        matches.sort((a, b) => (parseInt(b.flightNumberText, 10) || 0) - (parseInt(a.flightNumberText, 10) || 0))
+        return matches[0] || null
+    }
+
+    async function _selectExistingFlightOption(sel, optInfo) {
+        if (!sel || !optInfo || !optInfo.opt) return false
+        sel.value = optInfo.opt.value
+        try { sel.dispatchEvent(new Event("change", {bubbles: true})) }
+        catch (_) {}
+        for (let i = 0; i < PLANNING_FORM_MAX_TRIES; i++) {
+            await new Promise(r => setTimeout(r, 100))
+            if (_findPlanningForm()) return true
+        }
+        return false
+    }
+
+    function _setPlanningDayMask(form, dayMask) {
+        if (!form) return {ok: false, error: "planning form not found"}
+        const inputs = Array.from(form.querySelectorAll(
+            "input[type='checkbox'][name*='daySelection:'][name*=':ticked']"))
+        if (!inputs.length) return {ok: false, error: "planning day-selection checkboxes not found"}
+        const mask = _normaliseDayMask(dayMask)
+        for (let i = 0; i < 7; i++) {
+            const cb = inputs[i]
+            if (!cb) return {ok: false, error: "planning day-selection checkbox missing for day " + i}
+            cb.checked = !!mask[i]
+        }
+        return {ok: true, dayMask: mask}
+    }
+
+    function _validatePlanningFormForLeg(form, norm, optInfo) {
+        if (!form) return {ok: false, error: "planning form not found"}
+        const origin = String(norm.origin || "").toUpperCase()
+        const dest = String(norm.destination || "").toUpperCase()
+        const captions = Array.from(form.querySelectorAll("td.caption, th, td"))
+            .map(el => (el.textContent || "").trim().replace(/\s+/g, " "))
+        const hasRouteCaption = captions.some(t => {
+            return origin && dest && (
+                t === origin + " - " + dest
+                || t.indexOf(origin + " - " + dest) >= 0
+            )
+        })
+        if (origin && dest && !hasRouteCaption) {
+            return {ok: false, error: "planning matrix route mismatch for " + origin + " - " + dest}
+        }
+        const t = _parseTime(norm.depTime)
+        const hours = form.querySelector("select[name*='segmentSettings:0:newDeparture:hours']")
+            || form.querySelector("select[name*='newDeparture:hours']")
+        const minutes = form.querySelector("select[name*='segmentSettings:0:newDeparture:minutes']")
+            || form.querySelector("select[name*='newDeparture:minutes']")
+        if (t && hours && minutes && (String(hours.value) !== t.hours || String(minutes.value) !== t.minutes)) {
+            return {
+                ok: false,
+                error: "planning matrix departure mismatch for flight "
+                    + ((optInfo && optInfo.flightNumberText) || "?")
+                    + " (expected " + _normaliseHHMM(norm.depTime) + ")"
+            }
+        }
+        return {ok: true}
+    }
+
     function setOrigin(iata)         { const f = findForm(); return _setSelectByIata(f && f.originSelect, iata) }
     function setDestination(iata)    { const f = findForm(); return _setSelectByIata(f && f.destSelect,   iata) }
+
+    async function _setDestinationEventually(iata) {
+        if (setDestination(iata)) return true
+        // On a freshly-opened AS tab, changing origin can trigger a Wicket /
+        // Select2 refresh of the destination select. The background submit
+        // pipeline must wait for that refresh instead of declaring the leg
+        // incomplete on the first stale option list. Cold-start Wicket AJAX
+        // for the destination list can run 4–6s on the first hit; budget 8s
+        // so we cover the slow path without making the user wait forever.
+        for (let i = 0; i < 80; i++) {
+            await new Promise(r => setTimeout(r, 100))
+            if (setDestination(iata)) return true
+        }
+        return false
+    }
 
     /**
      * Toggle the planning-matrix day-selection checkbox for a given day
@@ -301,7 +586,7 @@
      * Never POSTs — toggling a checkbox is a client-side mutation; the user
      * still has to click "Apply schedule settings" to persist.
      */
-    function setDayActive(dayIdx, enabled) {
+    function _commitDayActive(dayIdx, enabled, dispatchChange) {
         if (typeof dayIdx !== "number" || dayIdx < 0 || dayIdx > 6) return false
         const inputs = document.querySelectorAll(
             "form input[type='checkbox'][name*='daySelection:'][name*=':ticked']")
@@ -310,9 +595,12 @@
         const next = !!enabled
         if (cb.checked === next) return true
         cb.checked = next
-        cb.dispatchEvent(new Event("change", {bubbles: true}))
+        if (dispatchChange) cb.dispatchEvent(new Event("change", {bubbles: true}))
         _diag("set-day-active", {dayIdx, enabled: next})
         return true
+    }
+    function setDayActive(dayIdx, enabled) {
+        return _commitDayActive(dayIdx, enabled, true)
     }
 
     function setDepartureTime(hhmm) {
@@ -337,40 +625,76 @@
     }
 
     /** Write the integer flight-number suffix into AS's `<input
-     *  name="number:number_body:input">`. AS bound an `onblur` Wicket-Ajax
-     *  validator on the input; we dispatch input + change + blur so the
-     *  uniqueness check fires before the user clicks Submit (otherwise the
-     *  check only triggers when the user manually tabs out). Empty string
-     *  clears the input — equivalent to letting AS auto-assign. */
-    function setFlightNumber(text) {
+     *  name="number:number_body:input">`. Do not fire the onblur Wicket
+     *  validator by default: AS re-renders the New Flight form from its
+     *  server-side model, and our select commits intentionally avoid Wicket
+     *  Ajax round-trips. Triggering blur after a Studio fill can therefore
+     *  reset origin/destination/departure before Apply submits. The final
+     *  AS form POST still validates the number. Pass `{validate:true}` only
+     *  for flows that explicitly want the pre-submit Wicket check. Empty
+     *  string clears the input — equivalent to letting AS auto-assign. */
+    function setFlightNumber(text, opts) {
         const f = findForm()
         if (!f || !f.flightNumberInput) return false
         const inp = f.flightNumberInput
         const cleaned = String(text == null ? "" : text).replace(/[^0-9]/g, "").slice(0, 4)
+        const validate = !!(opts && opts.validate === true)
         if (inp.value !== cleaned) {
             inp.value = cleaned
+            try { inp.dispatchEvent(new Event("input",  {bubbles: true})) } catch (_) {}
+        }
+        if (validate) {
+            try { inp.dispatchEvent(new Event("change", {bubbles: true})) } catch (_) {}
+            try { inp.dispatchEvent(new Event("blur",   {bubbles: true})) } catch (_) {}
+        }
+        _diag("commit-flight-number", {value: cleaned, validate})
+        return true
+    }
+
+    /** Click AS's flight-number lookup anchor and read the input's value
+     *  back once the Wicket-Ajax response lands. Blank input uses AS's
+     *  "find first available"; populated input uses "find available" so
+     *  repeated Studio Next clicks advance instead of jumping back to the
+     *  first free number. Returns null if the anchor isn't on the page
+     *  (e.g. user is on Existing tab) or if AS doesn't populate the input
+     *  within ~2s. The promise never throws. */
+    const FIND_NEXT_POLL_MS  = 100
+    const FIND_NEXT_MAX_TRIES = 20  // 2s
+    async function findNextAvailableFlightNumber(opts) {
+        const f = await _ensureNewTabActive()
+        if (!f || !f.flightNumberInput) return null
+        const inp  = f.flightNumberInput
+        const requestedAfter = opts && opts.after != null
+            ? String(opts.after).replace(/[^0-9]/g, "").slice(0, 4)
+            : ""
+
+        const rosterNums = await _fetchRosterNumbers()
+        if (rosterNums && rosterNums.length) {
+            const rosterNext = _smallestUnusedFlightNumber(rosterNums, requestedAfter ? [requestedAfter] : [])
+            if (rosterNext) {
+                setFlightNumber(rosterNext)
+                _diag("find-next-roster-ok", {
+                    value: rosterNext,
+                    count: rosterNums.length,
+                    max: Math.max.apply(null, rosterNums)
+                })
+                return rosterNext
+            }
+        }
+
+        if (requestedAfter && inp.value !== requestedAfter) {
+            inp.value = requestedAfter
             try { inp.dispatchEvent(new Event("input",  {bubbles: true})) } catch (_) {}
             try { inp.dispatchEvent(new Event("change", {bubbles: true})) } catch (_) {}
             try { inp.dispatchEvent(new Event("blur",   {bubbles: true})) } catch (_) {}
         }
-        _diag("commit-flight-number", {value: cleaned})
-        return true
-    }
-
-    /** Click AS's "find first available" anchor and read the input's value
-     *  back once the Wicket-Ajax response lands. AS already implements the
-     *  global per-airline next-available lookup server-side; we just drive
-     *  the existing UI control and harvest the result. Returns null if the
-     *  anchor isn't on the page (e.g. user is on Existing tab) or if AS
-     *  doesn't populate the input within ~2s. The promise never throws. */
-    const FIND_NEXT_POLL_MS  = 100
-    const FIND_NEXT_MAX_TRIES = 20  // 2s
-    async function findNextAvailableFlightNumber() {
-        const f = await _ensureNewTabActive()
-        if (!f || !f.flightNumberInput || !f.flightNumberFindFirstBtn) return null
-        const inp  = f.flightNumberInput
         const before = inp.value || ""
-        try { f.flightNumberFindFirstBtn.click() }
+        const beforeNum = parseInt(before, 10)
+        const lookupBtn = before
+            ? f.flightNumberFindBtn
+            : (f.flightNumberFindFirstBtn || f.flightNumberFindBtn)
+        if (!lookupBtn) return null
+        try { lookupBtn.click() }
         catch (e) { _diag("find-next-error", {err: String(e)}); return null }
         for (let i = 0; i < FIND_NEXT_MAX_TRIES; i++) {
             await new Promise(r => setTimeout(r, FIND_NEXT_POLL_MS))
@@ -378,6 +702,11 @@
             const nf = findForm()
             const ni = nf && nf.flightNumberInput
             if (ni && ni.value && ni.value !== before) {
+                const nextNum = parseInt(ni.value, 10)
+                if (before && isFinite(beforeNum) && isFinite(nextNum) && nextNum <= beforeNum) {
+                    _diag("find-next-non-advancing", {before, value: ni.value})
+                    return null
+                }
                 _diag("find-next-ok", {value: ni.value, waitedMs: (i + 1) * FIND_NEXT_POLL_MS})
                 return ni.value
             }
@@ -404,10 +733,29 @@
         const set = {}, missed = []
         if (norm.origin && setOrigin(norm.origin))            set.origin      = norm.origin
         else                                                  missed.push("origin")
-        if (setDestination(norm.destination))                 set.destination = norm.destination
+        if (await _setDestinationEventually(norm.destination)) set.destination = norm.destination
         else                                                  missed.push("destination")
         if (setDepartureTime(norm.depTime))                   set.depTime     = norm.depTime
         else                                                  missed.push("depTime")
+        if (Array.isArray(norm.dayMask)) {
+            const inputs = document.querySelectorAll(
+                "form input[type='checkbox'][name*='daySelection:'][name*=':ticked']")
+            if (!inputs.length) {
+                // The aircraft "New Flight Number" form only creates the
+                // record. Operating days live on /app/com/scheduling/<OD>.
+                set.dayMaskDeferred = norm.dayMask.slice()
+            } else {
+                const daySet = []
+                let dayOk = true
+                for (let i = 0; i < 7; i++) {
+                    const enabled = !!norm.dayMask[i]
+                    if (_commitDayActive(i, enabled, false)) daySet[i] = enabled
+                    else dayOk = false
+                }
+                if (dayOk && daySet.length === 7) set.dayMask = daySet
+                else missed.push("dayMask")
+            }
+        }
         if (setPricePercent(norm.pricePct))                   set.pricePct    = norm.pricePct
         else                                                  missed.push("price")
         if (setService(norm.service))                         set.service     = norm.service
@@ -485,11 +833,121 @@
         }
         // Defer the click so the resolved promise's .then can send the reply
         // before the form POST navigates the page (microtask before macrotask).
+        // Use the native form submit path for New Flight Number creation:
+        // AS's Wicket/Select2 click handlers can re-serialise stale select2
+        // state in hidden tabs, while the plain form POST carries the select
+        // values this driver just wrote.
         setTimeout(() => {
-            try { f.submitBtn.click() }
+            try {
+                if (f.form && window.HTMLFormElement && HTMLFormElement.prototype.submit) {
+                    HTMLFormElement.prototype.submit.call(f.form)
+                } else {
+                    f.submitBtn.click()
+                }
+            }
             catch (e) { console.warn("[AFP-D] submit click threw", e) }
         }, 0)
         return {ok: true, posting: true}
+    }
+
+    async function assignExistingFlight(leg) {
+        const norm = _normaliseLeg(leg)
+        if (!norm.destination) {
+            return {ok: false, error: "assign-existing-flight: destination missing"}
+        }
+        const sel = await _ensureExistingTabActive()
+        if (!sel) {
+            return {ok: false, error: "assign-existing-flight: Existing Flight Number tab/select not found"}
+        }
+        const optInfo = _findExistingFlightOption(sel, norm)
+        if (!optInfo) {
+            const fn = _cleanFlightNumberSuffix(norm.flightNumberText)
+            const target = fn
+                ? ("#" + fn)
+                : ((norm.origin || "?") + " → " + norm.destination + " " + _normaliseHHMM(norm.depTime))
+            return {ok: false, error: "assign-existing-flight: flight number option not found for " + target}
+        }
+        const selected = await _selectExistingFlightOption(sel, optInfo)
+        if (!selected) {
+            return {
+                ok: false,
+                error: "assign-existing-flight: planning matrix did not render for flight #" + optInfo.flightNumberText
+            }
+        }
+        const form = _findPlanningForm()
+        const validation = _validatePlanningFormForLeg(form, norm, optInfo)
+        if (!validation.ok) return validation
+        const days = _setPlanningDayMask(form, norm.dayMask)
+        if (!days.ok) return days
+        const submitBtn = _planningSubmitButton(form)
+        if (!submitBtn) {
+            return {ok: false, error: "assign-existing-flight: Apply schedule settings button not found"}
+        }
+        setTimeout(() => {
+            try { submitBtn.click() }
+            catch (e) { console.warn("[AFP-D] planning submit click threw", e) }
+        }, 75)
+        return {
+            ok: true,
+            posting: true,
+            flightNumberText: optInfo.flightNumberText,
+            optionText: optInfo.text
+        }
+    }
+
+    function verifyScheduledFlight(leg) {
+        const norm = _normaliseLeg(leg)
+        const fn = _cleanFlightNumberSuffix(norm.flightNumberText)
+        if (!fn) return {ok: false, error: "verify-scheduled-flight: flightNumberText missing"}
+        const dep = _normaliseHHMM(norm.depTime)
+        try {
+            const schedule = window.AesAfp && typeof window.AesAfp.getCurrentSchedule === "function"
+                ? window.AesAfp.getCurrentSchedule()
+                : null
+            if (Array.isArray(schedule) && schedule.length) {
+                const origin = String(norm.origin || "").toUpperCase()
+                const dest = String(norm.destination || "").toUpperCase()
+                const match = schedule.find(row => {
+                    const rOrigin = String(row && (row.origin || row.originIata || row.from || row.fromIata) || "").toUpperCase()
+                    const rDest = String(row && (row.destination || row.destIata || row.dest || row.to || row.toIata) || "").toUpperCase()
+                    const rDep = _normaliseHHMM(row && (row.depTimeLocal || row.depTime || row.departureTime) || "")
+                    const rFn = _cleanFlightNumberSuffix(row && (row.flightNumber || row.flightCode) || "")
+                    return (!origin || rOrigin === origin)
+                        && (!dest || rDest === dest)
+                        && (!dep || rDep === dep)
+                        && (!fn || String(rFn) === String(fn))
+                })
+                if (match) return {ok: true, flightNumberText: String(fn)}
+                return {
+                    ok: false,
+                    error: "verify-scheduled-flight: parsed visual plan does not show "
+                        + (origin || "?") + " #" + fn + " " + (dest || "?")
+                        + (dep ? " at " + dep : "")
+                }
+            }
+        } catch (_) { /* fall back to text scan */ }
+        const vfp = document.querySelector(".visual-flight-plan")
+        if (!vfp) return {ok: false, error: "verify-scheduled-flight: visual flight plan not found"}
+        const text = (vfp.innerText || vfp.textContent || "").replace(/\s+/g, " ")
+        const origin = String(norm.origin || "").toUpperCase()
+        const dest = String(norm.destination || "").toUpperCase()
+        const parts = []
+        if (origin) parts.push(origin)
+        parts.push(String(fn))
+        if (dest) parts.push(dest)
+        let pos = 0
+        for (const p of parts) {
+            const idx = text.indexOf(p, pos)
+            if (idx < 0) {
+                return {
+                    ok: false,
+                    error: "verify-scheduled-flight: visual flight plan does not show "
+                        + (origin || "?") + " #" + fn + " " + (dest || "?")
+                }
+            }
+            pos = idx + p.length
+        }
+        return {ok: true, flightNumberText: String(fn)}
     }
 
     function reverse() {
@@ -515,7 +973,7 @@
 
     function dryRun(leg) {
         const form = findForm()
-        const result = {url: null, body: {}, missed: []}
+        const result = {url: null, body: {}, missed: [], deferred: {}}
         if (!form || !form.form) {
             result.missed.push("form-not-found")
             _renderDryRun(result)
@@ -551,6 +1009,22 @@
         // Flight-number text input. Empty value is fine (AS auto-assigns).
         if (form.flightNumberInput && form.flightNumberInput.name) {
             result.body[form.flightNumberInput.name] = norm.flightNumberText || ""
+        }
+        if (Array.isArray(norm.dayMask)) {
+            const inputs = form.form.querySelectorAll(
+                "input[type='checkbox'][name*='daySelection:'][name*=':ticked']")
+            if (inputs.length) {
+                for (let i = 0; i < 7; i++) {
+                    const cb = inputs[i]
+                    if (!cb || !cb.name) {
+                        result.missed.push("dayMask")
+                        continue
+                    }
+                    if (norm.dayMask[i]) result.body[cb.name] = cb.value || "on"
+                }
+            } else {
+                result.deferred.dayMask = norm.dayMask.slice()
+            }
         }
 
         // Hidden Wicket fields are empty at page load but may be injected at
@@ -724,6 +1198,11 @@
         if (result.missed && result.missed.length) {
             lines.push("", "missed: " + result.missed.join(", "))
         }
+        if (result.deferred && Object.keys(result.deferred).length) {
+            const labels = []
+            if (Array.isArray(result.deferred.dayMask)) labels.push("dayMask via scheduling page")
+            lines.push("", "deferred: " + labels.join(", "))
+        }
         pre.textContent = lines.join("\n")
     }
 
@@ -741,12 +1220,16 @@
             _lastCandidate = c
             _lastSource    = p.source || null
             // wave-leg events carry a `__wave` hint bag with the leg's
-            // origin (which may differ from the aircraft's current
-            // location for inbound legs) and depTime. Forward both into
+            // origin/destination (which may differ from the aircraft's
+            // current location for inbound legs) and depTime. Forward it into
             // fill() so the form lines up with the leg the user clicked
             // — the no-submit invariant is preserved (fill() never
             // clicks Submit).
             const leg = {destination: c.destIata}
+            const origin = p.originIata || p.origin || c.originIata || c.origin
+            if (origin && /^[A-Z]{3}$/.test(String(origin).toUpperCase())) {
+                leg.origin = String(origin).toUpperCase()
+            }
             // Track 7 follow-up: route-candidates' per-row HH:MM picker
             // sends payload.depTime on every candidate-list click. Honour
             // it when present; the wave-leg branch below only fills in
@@ -754,6 +1237,7 @@
             if (typeof p.depTime === "string") leg.depTime = p.depTime
             if (p.source === "wave-leg" && c.__wave) {
                 if (c.__wave.origin)  leg.origin  = c.__wave.origin
+                if (c.__wave.destination) leg.destination = c.__wave.destination
                 if (c.__wave.depTime && !leg.depTime) leg.depTime = c.__wave.depTime
             }
             fill(leg)
@@ -767,7 +1251,8 @@
         setPricePercent, setService, setFlightNumber, findNextAvailableFlightNumber,
         setDayActive,
         ensureNewTabActive: _ensureNewTabActive,
-        fill, fillAndSubmit, reverse, clear, dryRun
+        fill, fillAndSubmit, assignExistingFlight, verifyScheduledFlight,
+        reverse, clear, dryRun
     }
 
     // Late-load guard: Slice A may not have published the bus yet (manifest

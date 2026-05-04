@@ -541,8 +541,11 @@ class RouteAssistantMarketsPageScraper {
             const arrTimeUtc   = RouteAssistantMarketsPageScraper._extractTitlePart(arrTimeTitle, "UTC")
             const arrTimeLocal = RouteAssistantMarketsPageScraper._extractTitlePart(arrTimeTitle, "LT") || arrTimeBody
 
-            // [4] service class — Y / C / F / Cargo
-            const serviceClass = (cells[4].textContent || "").trim()
+            // [4] service class — Y / C / F / Cargo. Normalise long AS
+            // labels so downstream per-class pricing does not split
+            // "Business" and "C" into separate buckets.
+            const rawServiceClass = (cells[4].textContent || "").trim()
+            const serviceClass = RouteAssistantMarketsPageScraper._normaliseClassKey(rawServiceClass) || rawServiceClass
 
             // [5] availability — number inside good/warning/bad div
             const availDiv = cells[5].querySelector("div")
@@ -550,8 +553,8 @@ class RouteAssistantMarketsPageScraper {
                 ? RouteAssistantMarketsPageScraper._parseInt(availDiv.textContent)
                 : RouteAssistantMarketsPageScraper._parseInt(cells[5].textContent)
 
-            // [6] price — "148 AS$"
-            const price = RouteAssistantMarketsPageScraper._parseInt(cells[6].textContent)
+            // [6] price — "148 AS$" for pax, often decimal AS$/kg for cargo.
+            const price = RouteAssistantMarketsPageScraper._parsePrice(cells[6].textContent, serviceClass)
 
             // [7] status — span text inside .flightStatusPanel
             const statusSpan = cells[7].querySelector("span")
@@ -638,6 +641,44 @@ class RouteAssistantMarketsPageScraper {
         return isFinite(n) ? n : null
     }
 
+    static _normaliseClassKey(label) {
+        const raw = String(label || "").trim()
+        if (!raw) return null
+        const compact = raw.toUpperCase().replace(/\s+/g, " ")
+        if (compact === "Y" || compact === "ECONOMY" || compact === "ECONOMY CLASS") return "Y"
+        if (compact === "C" || compact === "BUSINESS" || compact === "BUSINESS CLASS") return "C"
+        if (compact === "F" || compact === "FIRST" || compact === "FIRST CLASS") return "F"
+        if (compact === "CARGO" || compact === "FREIGHT" || compact === "MAIL") return "Cargo"
+        return null
+    }
+
+    static _isCargoClass(label) {
+        return RouteAssistantMarketsPageScraper._normaliseClassKey(label) === "Cargo"
+    }
+
+    static _parsePrice(text, classKey) {
+        if (!RouteAssistantMarketsPageScraper._isCargoClass(classKey)) {
+            return RouteAssistantMarketsPageScraper._parseInt(text)
+        }
+        if (text == null) return null
+        const m = /-?\d[\d,.]*/.exec(String(text).replace(/[^\d,.\-]/g, " "))
+        if (!m) return null
+        const raw = m[0]
+        const sign = raw.charAt(0) === "-" ? -1 : 1
+        const body = sign < 0 ? raw.slice(1) : raw
+        const sep = Math.max(body.lastIndexOf("."), body.lastIndexOf(","))
+        if (sep >= 0) {
+            const whole = body.slice(0, sep).replace(/\D/g, "")
+            const frac = body.slice(sep + 1).replace(/\D/g, "")
+            if (frac.length > 0 && frac.length <= 2) {
+                const n = Number((whole || "0") + "." + frac)
+                return isFinite(n) ? Math.round(sign * n * 100) / 100 : null
+            }
+        }
+        const n = Number(body.replace(/\D/g, ""))
+        return isFinite(n) ? sign * n : null
+    }
+
     // ------------------------------------------------------------------
     // Own pricing parser
     // ------------------------------------------------------------------
@@ -664,17 +705,17 @@ class RouteAssistantMarketsPageScraper {
             if (cells.length < 5) continue
             // [0] class label, [1] current price, [2] new-price input,
             // [3] slider div, [4] default price + reset link
-            const cls = (cells[0].textContent || "").trim()
-            const cur = RouteAssistantMarketsPageScraper._parseInt(cells[1].textContent)
+            const rawCls = (cells[0].textContent || "").trim()
+            const cls = RouteAssistantMarketsPageScraper._normaliseClassKey(rawCls)
+            if (!cls) continue
+            const cur = RouteAssistantMarketsPageScraper._parsePrice(cells[1].textContent, cls)
             const newInp = cells[2].querySelector("input[type='text']")
-            const newVal = newInp ? RouteAssistantMarketsPageScraper._parseInt(newInp.getAttribute("value")) : cur
+            const newVal = newInp ? RouteAssistantMarketsPageScraper._parsePrice(newInp.getAttribute("value"), cls) : cur
             const defSpan = cells[4].querySelector("span")
-            const defVal = defSpan ? RouteAssistantMarketsPageScraper._parseInt(defSpan.textContent)
-                                   : RouteAssistantMarketsPageScraper._parseInt(cells[4].textContent)
-            if (cls) {
-                prices[cls]   = newVal != null ? newVal : cur
-                defaults[cls] = defVal
-            }
+            const defVal = defSpan ? RouteAssistantMarketsPageScraper._parsePrice(defSpan.textContent, cls)
+                                   : RouteAssistantMarketsPageScraper._parsePrice(cells[4].textContent, cls)
+            prices[cls]   = newVal != null ? newVal : cur
+            defaults[cls] = defVal
         }
 
         // Slider ranges live in inline <script> body — regex out the slider({…}) calls.
@@ -683,11 +724,15 @@ class RouteAssistantMarketsPageScraper {
         // id back to a row, but for the storage shape we only need per-class ranges,
         // so we walk in document order and pair sliders to the rows we just parsed.
         const scriptText = RouteAssistantMarketsPageScraper._collectScriptText(doc)
-        const sliderRe = /slider\(\s*\{[^}]*?value:\s*(\d+)\s*,\s*min:\s*(\d+)\s*,\s*max:\s*(\d+)/g
+        const sliderRe = /slider\(\s*\{[^}]*?value:\s*(-?\d+(?:[.,]\d+)?)\s*,\s*min:\s*(-?\d+(?:[.,]\d+)?)\s*,\s*max:\s*(-?\d+(?:[.,]\d+)?)/g
         const sliderMatches = []
         let sm
         while ((sm = sliderRe.exec(scriptText)) !== null) {
-            sliderMatches.push({value: +sm[1], min: +sm[2], max: +sm[3]})
+            sliderMatches.push({
+                value: RouteAssistantMarketsPageScraper._parsePrice(sm[1], "Cargo"),
+                min:   RouteAssistantMarketsPageScraper._parsePrice(sm[2], "Cargo"),
+                max:   RouteAssistantMarketsPageScraper._parsePrice(sm[3], "Cargo")
+            })
         }
         const classOrder = Object.keys(prices)
         for (let i = 0; i < classOrder.length && i < sliderMatches.length; i++) {
@@ -892,4 +937,8 @@ class RouteAssistantMarketsPageScraper {
             tryDispatch()
         })
     }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantMarketsPageScraper = RouteAssistantMarketsPageScraper
 }

@@ -37,17 +37,10 @@
         }
         const settings = (typeof window.AesAfpSettings !== "undefined")
             ? await window.AesAfpSettings.load() : {}
-        const dryRunOnly = !!(settings.dragSubmit && settings.dragSubmit.dryRunOnly === true)
         const mode = (settings.dragSubmitMode === "confirmed" || settings.dragSubmitMode === "auto")
             ? settings.dragSubmitMode : "manual"
 
         const leg = _normaliseDropToLeg(drop)
-
-        // Dry-run kill-switch: regardless of mode, never even pre-fill.
-        if (dryRunOnly && mode !== "manual") {
-            return _toast("Drag preview-only — disable dragSubmit.dryRunOnly to apply.")
-                && {ok: true, mode: "preview", leg}
-        }
 
         if (typeof window.AesAfpFormDriver === "undefined"
             || typeof window.AesAfpFormDriver.fill !== "function") {

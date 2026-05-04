@@ -75,6 +75,25 @@
     }
 
     async function _loadCurrentOrs(hub, dest) {
+        if (_has("RouteAssistantOrsIntelligence")) {
+            try {
+                const svc = new window.RouteAssistantOrsIntelligence()
+                const snap = await svc.getRouteSnapshot(hub, dest)
+                const rec = snap && snap.record
+                if (!rec) return null
+                return {
+                    byClass:        rec.byClass || null,
+                    classesScraped: rec.classesScraped || null,
+                    scrapedAt:      rec.scrapedAt || null,
+                    ageSec:         _ageSec(rec.scrapedAt),
+                    readiness:      {
+                        usable:        !!snap.usable,
+                        warnings:      Array.isArray(snap.warnings) ? snap.warnings.slice() : [],
+                        oursDetection: rec.oursDetection || null
+                    }
+                }
+            } catch (_) { /* fall back to raw scraper */ }
+        }
         if (!_has("RouteAssistantOrsScraper")) return null
         try {
             const rec = await window.RouteAssistantOrsScraper.loadRecord(hub, dest)
@@ -243,9 +262,13 @@
         const snapshotAgeSec = (orsSnapshots && orsSnapshots.length)
             ? _ageSec(orsSnapshots[0].ts) : null
 
-        if (orsAgeSec == null) warnings.push("no ORS scrape on file — open /app/info/ors to seed")
+        if (orsAgeSec == null) warnings.push("no ORS scrape on file — run Sync route data + ORS rank")
         else if (orsAgeSec > STALE_ORS_DAYS * 86400) warnings.push("ORS scrape is "
             + Math.round(orsAgeSec / 86400) + "d old (cap " + STALE_ORS_DAYS + "d)")
+        if (current.ors && current.ors.readiness && current.ors.readiness.usable === false) {
+            const rw = current.ors.readiness.warnings || []
+            warnings.push("ORS not ready" + (rw.length ? ": " + rw[0] : ""))
+        }
         if (priceAgeSec == null) warnings.push("no own-price cache — open /app/com/markets/<HUB><DEST> to seed")
         else if (priceAgeSec > STALE_PRICE_DAYS * 86400) warnings.push("own pricing cache is "
             + Math.round(priceAgeSec / 86400) + "d old (cap " + STALE_PRICE_DAYS + "d)")

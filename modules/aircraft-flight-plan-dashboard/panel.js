@@ -375,7 +375,7 @@ class AesAfpDashboardPanel {
             box.style.cssText = "padding:8px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.40);"
                 + "border-radius:4px;color:#fca5a5;font-size:11px;line-height:1.5;"
             const h = document.createElement("strong")
-            h.textContent = "Preset is invalid:"
+            h.textContent = "Build cannot be applied:"
             h.style.cssText = "display:block;margin-bottom:4px;"
             box.appendChild(h)
             for (const err of build.validation) {

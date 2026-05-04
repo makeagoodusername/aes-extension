@@ -49,7 +49,8 @@ class RouteAssistantFleetStore {
         let chosen = null
         let ambiguous = false
         if (airlineCode) {
-            chosen = matching.find(r => String(r.airline) === String(airlineCode)) || null
+            chosen = matching.find(r =>
+                RouteAssistantFleetStore._sameAirline(r.airline, airlineCode)) || null
         }
         if (!chosen) {
             // Pick the airline with the largest fleet — usually the user's
@@ -103,6 +104,16 @@ class RouteAssistantFleetStore {
             ambiguous: ambiguous,
             server:    server || null
         }
+    }
+
+    static _sameAirline(a, b) {
+        const aa = RouteAssistantFleetStore._normaliseAirlineKey(a)
+        const bb = RouteAssistantFleetStore._normaliseAirlineKey(b)
+        return !!aa && aa === bb
+    }
+
+    static _normaliseAirlineKey(value) {
+        return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "")
     }
 
     /**

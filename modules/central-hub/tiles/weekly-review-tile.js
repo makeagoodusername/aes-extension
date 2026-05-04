@@ -92,6 +92,10 @@ class CentralHubWeeklyReviewTile extends window.CentralHubTile {
 
         const data = await this._loadData()
 
+        const title = document.createElement("div")
+        title.textContent = "Weekly review"
+        title.style.cssText = "font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:0.04em;opacity:0.82;"
+        wrap.appendChild(title)
         wrap.appendChild(this._buildPendingSection(data.pending))
         wrap.appendChild(this._buildActiveExperimentSection(data.active))
         wrap.appendChild(this._buildRecentApplySection(data.recent))

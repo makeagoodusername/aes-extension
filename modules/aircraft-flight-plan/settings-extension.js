@@ -1,5 +1,15 @@
 "use strict"
 
+;(function () {
+    const root = (typeof window !== "undefined")
+        ? window
+        : ((typeof globalThis !== "undefined") ? globalThis : null)
+    if (typeof window !== "undefined") {
+        if (window.AesAfpSettings) return
+    } else if (root && root.AesAfpSettings) {
+        return
+    }
+
 /**
  * Settings extension for the Aircraft Flight Plan Assistant (Slice F).
  *
@@ -74,10 +84,13 @@ class AesAfpSettings {
                 requireConfirm:              true,
                 maxLegsPerApply:             28,
                 minMaintenanceRatio:         100,
+                maintenanceWaitDays:         3,
                 targetUtilisationPct:        90,
                 fallbackMaxWeeklyBlockHours: 80,
                 fallbackMaxDailyBlockHours:  14,
                 fallbackFuelCostPerKg:       0.40,
+                fillToBudget:                true,
+                budgetOverrunPct:            0.5,
                 weights: {
                     cargoWeight:                0.5,
                     grossWeight:                1.0,
@@ -94,7 +107,14 @@ class AesAfpSettings {
                     dailyOverrunPenaltyPerHour: 10000,
                     cycleMinutes:               30,
                     slotResolutionMin:          5,
-                    weeklyFlightsDivisor:       4
+                    tightSlotResolutionMin:     1,
+                    weeklyFlightsDivisor:       4,
+                    maxPlacementsPerCandidate:  28,
+                    minPlacementsPerCandidate:  2,
+                    denseRepeatMultiplier:      2,
+                    efficiencyWeight:           0.25,
+                    gapTargetMinutes:           1,
+                    gapPenaltyPerMinute:        25
                 },
                 // Slice 6b-followup — diff calibration knob. ScheduleDiff
                 // matches a current leg with a proposed leg when the dep
@@ -119,9 +139,9 @@ class AesAfpSettings {
             // Default true so the gesture is safe to enable broadly while
             // the user evaluates it.
             dragSubmit: {
-                dryRunOnly: true
+                dryRunOnly: false
             },
-            dragSubmitMode: "manual",   // "manual" | "confirmed" | "auto"
+            dragSubmitMode: "confirmed",   // "manual" | "confirmed" | "auto"
             // Track 9 — Flight Studio (Slice S1+). Compose-and-apply
             // surface for the AS New Flight Number form, reachable from
             // AESMenu. Independent from autoScheduler — one's per-flight
@@ -130,7 +150,7 @@ class AesAfpSettings {
             // submit (S5) tiers gate behind defaultMode + featureFlags.
             studio: {
                 enabled:                  true,
-                defaultMode:              "dry-run",   // "dry-run" | "pre-fill" | "submit"
+                defaultMode:              "submit",   // "dry-run" | "pre-fill" | "submit"
                 confirmBeforeSubmit:      true,
                 autoCaptureFlightNumbers: true,
                 paste:        { tolerantTimes: true },
@@ -197,10 +217,13 @@ class AesAfpSettings {
             requireConfirm:              (typeof bAuto.requireConfirm === "boolean") ? bAuto.requireConfirm : defAuto.requireConfirm,
             maxLegsPerApply:             numField(bAuto.maxLegsPerApply,             defAuto.maxLegsPerApply),
             minMaintenanceRatio:         numField(bAuto.minMaintenanceRatio,         defAuto.minMaintenanceRatio),
+            maintenanceWaitDays:         numField(bAuto.maintenanceWaitDays,         defAuto.maintenanceWaitDays),
             targetUtilisationPct:        numField(bAuto.targetUtilisationPct,        defAuto.targetUtilisationPct),
             fallbackMaxWeeklyBlockHours: numField(bAuto.fallbackMaxWeeklyBlockHours, defAuto.fallbackMaxWeeklyBlockHours),
             fallbackMaxDailyBlockHours:  numField(bAuto.fallbackMaxDailyBlockHours,  defAuto.fallbackMaxDailyBlockHours),
             fallbackFuelCostPerKg:       numFieldNonNeg(bAuto.fallbackFuelCostPerKg, defAuto.fallbackFuelCostPerKg),
+            fillToBudget:                (typeof bAuto.fillToBudget === "boolean") ? bAuto.fillToBudget : defAuto.fillToBudget,
+            budgetOverrunPct:            numFieldNonNeg(bAuto.budgetOverrunPct,      defAuto.budgetOverrunPct),
             weights: {
                 cargoWeight:                numFieldNonNeg(bW.cargoWeight,                defW.cargoWeight),
                 grossWeight:                numFieldNonNeg(bW.grossWeight,                defW.grossWeight),
@@ -211,14 +234,21 @@ class AesAfpSettings {
                 dailyOverrunPenaltyPerHour: numFieldNonNeg(bW.dailyOverrunPenaltyPerHour, defW.dailyOverrunPenaltyPerHour),
                 cycleMinutes:               numFieldNonNeg(bW.cycleMinutes,               defW.cycleMinutes),
                 slotResolutionMin:          numField(bW.slotResolutionMin,                defW.slotResolutionMin),
-                weeklyFlightsDivisor:       numField(bW.weeklyFlightsDivisor,             defW.weeklyFlightsDivisor)
+                tightSlotResolutionMin:     numField(bW.tightSlotResolutionMin,           defW.tightSlotResolutionMin),
+                weeklyFlightsDivisor:       numField(bW.weeklyFlightsDivisor,             defW.weeklyFlightsDivisor),
+                maxPlacementsPerCandidate:  numField(bW.maxPlacementsPerCandidate,        defW.maxPlacementsPerCandidate),
+                minPlacementsPerCandidate:  numField(bW.minPlacementsPerCandidate,        defW.minPlacementsPerCandidate),
+                denseRepeatMultiplier:      numField(bW.denseRepeatMultiplier,            defW.denseRepeatMultiplier),
+                efficiencyWeight:           numFieldNonNeg(bW.efficiencyWeight,           defW.efficiencyWeight),
+                gapTargetMinutes:           numFieldNonNeg(bW.gapTargetMinutes,           defW.gapTargetMinutes),
+                gapPenaltyPerMinute:        numFieldNonNeg(bW.gapPenaltyPerMinute,        defW.gapPenaltyPerMinute)
             },
             diff: {
                 toleranceMin: numFieldNonNeg(bDiff.toleranceMin, defDiff.toleranceMin)
             }
         }
         const validDragMode = (m) => (m === "manual" || m === "confirmed" || m === "auto")
-        const defDrag = def.dragSubmit || {dryRunOnly: true}
+        const defDrag = def.dragSubmit || {dryRunOnly: false}
         const bDrag   = b.dragSubmit   || {}
         const dragSubmit = {
             dryRunOnly: (typeof bDrag.dryRunOnly === "boolean") ? bDrag.dryRunOnly : defDrag.dryRunOnly
@@ -257,15 +287,8 @@ class AesAfpSettings {
      *   settings.acct.<id>.aircraftFlightPlan        (namespaced — L2+)
      */
     static async load() {
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
         const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
-        let block = null
-        if (id && settings.acct && settings.acct[id] && typeof settings.acct[id] === "object") {
-            const ns = settings.acct[id].aircraftFlightPlan
-            if (ns && typeof ns === "object") block = ns
-        }
-        if (!block) block = settings.aircraftFlightPlan || {}
+        const block = await window.AesSettings.getAreaScoped("aircraftFlightPlan", id)
         return AesAfpSettings._mergeAircraftFlightPlan(AesAfpSettings._defaults(), block)
     }
 
@@ -276,8 +299,6 @@ class AesAfpSettings {
      * are preserved verbatim.
      */
     static async save(patch) {
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
         const current = await AesAfpSettings.load()
         const p = patch || {}
         // autoScheduler has nested `weights` and `diff` objects that must
@@ -338,18 +359,12 @@ class AesAfpSettings {
             )
         )
         const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
-        if (id) {
-            settings.acct = (settings.acct && typeof settings.acct === "object") ? settings.acct : {}
-            settings.acct[id] = (settings.acct[id] && typeof settings.acct[id] === "object") ? settings.acct[id] : {}
-            settings.acct[id].aircraftFlightPlan = next
-        } else {
-            settings.aircraftFlightPlan = next
-        }
-        await chrome.storage.local.set({settings: settings})
+        await window.AesSettings.saveAreaScoped("aircraftFlightPlan", next, id)
         return next
     }
 }
 
-if (typeof window !== "undefined") {
-    window.AesAfpSettings = AesAfpSettings
+if (root) {
+    root.AesAfpSettings = AesAfpSettings
 }
+})()

@@ -1,12 +1,26 @@
 "use strict";
 //MAIN
 var settings;
-$(function(){
-  chrome.storage.local.get(['settings'], function(result) {
-    settings = result.settings;
-    displaySettings();
-    settingDisplayHandle('Inventory Pricing')
-  });
+
+function saveSettingsArea(area, done){
+  Promise.resolve(window.AesSettings.saveArea(area, settings[area]))
+    .then(function(){ if(typeof done === 'function') done(); });
+}
+
+function initLegacySettings(ctx){
+  settings = ctx && ctx.settings ? ctx.settings : AES.normalizeSettings();
+  displaySettings();
+  settingDisplayHandle('Inventory Pricing');
+}
+
+AesBoot.register({
+  id: "content-settings",
+  matches: "settings",
+  deps: ["AesSettings"],
+  anchor: function settingsMainContainer(){
+    return document.querySelectorAll(".container-fluid")[2] || null;
+  },
+  init: initLegacySettings
 });
 
 
@@ -69,7 +83,7 @@ function displayFlightInfoSettings(){
     } else {
       settings.flightInfo.autoClose = 0;
     }
-    chrome.storage.local.set({settings: settings}, function() {});
+    saveSettingsArea('flightInfo');
   });
   let span = $('<span></span>').text('Automatically close flight information page after extracting financial information.');
   let label =$('<label></label>').append(input,span);
@@ -153,7 +167,7 @@ function invPricingAutoPricingHandle(){
     } else {
       settings.invPricing.autoAnalysisSave = 0;
     }
-    chrome.storage.local.set({settings: settings}, function() {});
+    saveSettingsArea('invPricing');
   });
   $("#aes-input-automateInvPricing").click(function(){
     if(this.checked) {
@@ -161,7 +175,7 @@ function invPricingAutoPricingHandle(){
     } else {
       settings.invPricing.autoPriceUpdate = 0;
     }
-    chrome.storage.local.set({settings: settings}, function() {});
+    saveSettingsArea('invPricing');
   });
   $("#aes-input-inventory-automateCloseTab").click(function(){
     if(this.checked) {
@@ -169,13 +183,13 @@ function invPricingAutoPricingHandle(){
     } else {
       settings.invPricing.autoClose = 0;
     }
-    chrome.storage.local.set({settings: settings}, function() {});
+    saveSettingsArea('invPricing');
   });
 
 
 }
 function invPricingRecStepHandle(){
-  let cmp = $("#aes-select-invPricing-cmp").val();
+  let cmp = $("#aes-select-invPricing-cmp").val() || "Y";
   $('#aes-div-recSettings').empty().append('<h3>'+cmp+' Compartment Pricing Settings</h3>');
   let divRow = $('<div class="row as-panel"></div>')
   let divLeft = $('<div class="col-md-8"></div>')
@@ -189,7 +203,11 @@ function invPricingRecStepHandle(){
   thead.append(headRow);
   //table body
   let tbody = $('<tbody></tbody>');
-  settings.invPricing.recommendation[cmp].steps.forEach(function(value){
+  const defaults = AES.defaultInvPricingSettings().recommendation
+  const rec = (settings.invPricing.recommendation && settings.invPricing.recommendation[cmp])
+    || defaults[cmp]
+    || defaults.Y
+  rec.steps.forEach(function(value){
     let row = $('<tr></tr>');
     row.append('<td><input type="text" class="form-control" value="'+value.name+'"></td>');
     row.append('<td><div class="input-group"><input type="text" class="form-control number" value="'+value.min+'" style="min-width: 50px;"><span class="input-group-addon">%</span></div></td>');
@@ -283,7 +301,7 @@ function invPricingRecStepHandle(){
     //Validate Steps
     if(validInvPriSteps(newCmpSettings)){
       settings.invPricing.recommendation[cmp] = newCmpSettings;
-      chrome.storage.local.set({settings: settings}, function() {
+      saveSettingsArea('invPricing', function() {
             $("#aes-span-invPricing").removeClass().addClass("good").text('Inventory pricing settings for '+cmp+' saved!')
         });
     }

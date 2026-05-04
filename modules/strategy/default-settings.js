@@ -23,7 +23,8 @@
  *   AesStrategySettings.resolveTier(s)        → "preview-only"|"apply-on-confirm"|"apply-auto"
  *   AesStrategySettings.canApply(s, domain)   → bool
  *
- * `domain` ∈ {"schedule", "service", "price", "crew", "routeCreation"}.
+ * `domain` ∈ {"schedule", "service", "price", "crew", "routeCreation",
+ *              "alliance", "slotBid"}.
  * `canApply` is the single point that combines the master tier gate
  * with the per-domain enable flag — every actuator call site reads it
  * so the safety contract can never drift between caller and store.
@@ -40,7 +41,8 @@
         price:         "priceMovesEnabled",
         crew:          "crewMovesEnabled",
         routeCreation: "routeCreationEnabled",
-        alliance:      "allianceMovesEnabled"
+        alliance:      "allianceMovesEnabled",
+        slotBid:       "slotBidApplyEnabled"
     }
 
     function _defaults() {
@@ -55,6 +57,7 @@
             serviceMovesEnabled:    false,
             crewMovesEnabled:       false,
             allianceMovesEnabled:   false,
+            slotBidApplyEnabled:    false,
             minOrsTarget:           0.7,
             routeCreationThreshold: 0.6,
             priceDeadband:          5,
@@ -62,6 +65,7 @@
             horizonDays:            7,
             learningStepSize:       0.05,
             learningEnabled:        false,
+            autoSeedDisabled:       false,
             // Slice S1 — goal-driven pricing/service objective
             objective: {
                 kind:   "balanced",
@@ -175,6 +179,24 @@
                 },
                 classMultipliers:    {Y: 1, C: 3.6, F: 9},
                 defaultCategoryCost: 2.0
+            },
+            // Brand / reputation-aware planning. The company overall
+            // rating is scraped opportunistically from dashboard /
+            // enterprise overview and carried into the strategy snapshot.
+            reputationPlanning: {
+                enabled:                      true,
+                targetRatingScore:            8,
+                maxWeeklyReputationBudgetAS:  null,
+                protectHighRating:            true,
+                categoryWeights:              {},
+                roleWeights:                  {}
+            },
+            crewPay: {
+                weeklyBudgetAS$: null,
+                apply: {
+                    enabled:    true,
+                    dryRunOnly: true
+                }
             },
             // Slice 12 — alliance & IL codeshare optimisation. `apply` is
             // the two-gate model for `AllianceIlRequestApplier`:
@@ -410,6 +432,44 @@
         }
     }
 
+    function _normOpenWeights(block) {
+        const out = {}
+        if (!block || typeof block !== "object") return out
+        for (const k in block) {
+            const v = Number(block[k])
+            if (Number.isFinite(v) && v >= 0) out[k] = Math.min(v, 10)
+        }
+        return out
+    }
+
+    function _normReputationPlanning(block, fallback) {
+        const f = fallback || _defaults().reputationPlanning
+        if (!block || typeof block !== "object") return JSON.parse(JSON.stringify(f))
+        const budget = Number(block.maxWeeklyReputationBudgetAS)
+        return {
+            enabled:                     block.enabled !== false,
+            targetRatingScore:           _normNum(block.targetRatingScore, 1, 10, f.targetRatingScore),
+            maxWeeklyReputationBudgetAS: Number.isFinite(budget) && budget >= 0 ? budget : null,
+            protectHighRating:           block.protectHighRating !== false,
+            categoryWeights:             _normOpenWeights(block.categoryWeights),
+            roleWeights:                 _normOpenWeights(block.roleWeights)
+        }
+    }
+
+    function _normCrewPay(block, fallback) {
+        const f = fallback || _defaults().crewPay
+        if (!block || typeof block !== "object") return JSON.parse(JSON.stringify(f))
+        const budget = Number(block.weeklyBudgetAS$)
+        const apply = (block.apply && typeof block.apply === "object") ? block.apply : {}
+        return {
+            weeklyBudgetAS$: Number.isFinite(budget) && budget >= 0 ? budget : null,
+            apply: {
+                enabled:    apply.enabled !== false,
+                dryRunOnly: apply.dryRunOnly !== false
+            }
+        }
+    }
+
     function _merge(block) {
         const d = _defaults()
         if (!block || typeof block !== "object") return d
@@ -424,6 +484,7 @@
             serviceMovesEnabled:    !!block.serviceMovesEnabled,
             crewMovesEnabled:       !!block.crewMovesEnabled,
             allianceMovesEnabled:   !!block.allianceMovesEnabled,
+            slotBidApplyEnabled:    !!block.slotBidApplyEnabled,
             minOrsTarget:           _normNum(block.minOrsTarget, 0, 1, d.minOrsTarget),
             routeCreationThreshold: _normNum(block.routeCreationThreshold, 0, 1, d.routeCreationThreshold),
             priceDeadband:          _normNum(block.priceDeadband, 0, 50, d.priceDeadband),
@@ -431,6 +492,7 @@
             horizonDays:            _normNum(block.horizonDays, 1, 30, d.horizonDays),
             learningStepSize:       _normNum(block.learningStepSize, 0, 0.5, d.learningStepSize),
             learningEnabled:        !!block.learningEnabled,
+            autoSeedDisabled:       !!block.autoSeedDisabled,
             objective:              _normObjective(block.objective,    d.objective),
             aircraftOrsModifier:    _normAircraftMod(block.aircraftOrsModifier),
             serviceApply:           _normServiceApply(block.serviceApply, d.serviceApply),
@@ -442,6 +504,8 @@
             sisterCoordination:     _normSisterCoordination(block.sisterCoordination, d.sisterCoordination),
             serviceTuner:           _normServiceTuner(block.serviceTuner,   d.serviceTuner),
             serviceCosts:           _normServiceCosts(block.serviceCosts,   d.serviceCosts),
+            reputationPlanning:     _normReputationPlanning(block.reputationPlanning, d.reputationPlanning),
+            crewPay:                _normCrewPay(block.crewPay,             d.crewPay),
             alliance:               _normAlliance(block.alliance,           d.alliance)
         }
     }
@@ -510,19 +574,10 @@
     }
 
     async function save(partial) {
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
         const current = await load()
         const next = _merge(Object.assign({}, current, partial || {}))
         const id = _accountId()
-        if (id) {
-            settings.acct = (settings.acct && typeof settings.acct === "object") ? settings.acct : {}
-            settings.acct[id] = (settings.acct[id] && typeof settings.acct[id] === "object") ? settings.acct[id] : {}
-            settings.acct[id].strategy = next
-        } else {
-            settings.strategy = next
-        }
-        await chrome.storage.local.set({settings: settings})
+        await window.AesSettings.saveAreaScoped("strategy", next, id)
         return next
     }
 

@@ -1,3 +1,11 @@
+"use strict"
+
+;(function () {
+    if (typeof window !== "undefined") {
+        if (window.ScheduleBuilder) return
+    }
+    const ScheduleFactors = (typeof window !== "undefined" && window.ScheduleFactors) || globalThis.ScheduleFactors
+
 /**
  * Turns a preset + a list of candidate routes into a concrete schedule.
  *
@@ -793,3 +801,8 @@ class ScheduleBuilder {
         }
     }
 }
+
+if (typeof window !== "undefined") {
+    window.ScheduleBuilder = ScheduleBuilder
+}
+})()

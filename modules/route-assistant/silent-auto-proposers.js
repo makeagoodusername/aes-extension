@@ -4,9 +4,9 @@
  * Route Assistant — silent-auto proposer registry.
  *
  * Extracts the per-route price proposal logic out of panel.js so new
- * strategies can plug in without touching the loop. v1 ships
- * `competitor-median` (behaviour preserved from panel.js); Phase 3 adds
- * `strategy-objective` and `ors-elasticity`.
+ * strategies can plug in without touching the loop. The default proposer is
+ * `per-class-elasticity`, which prices Y / C / F / Cargo independently; the
+ * legacy `competitor-median` Y-only strategy remains available explicitly.
  *
  * Public API:
  *   RouteAssistantSilentAutoProposers.list()
@@ -37,6 +37,116 @@
     if (typeof window === "undefined") return
     if (window.RouteAssistantSilentAutoProposers) return
 
+    const PRICE_CLASSES = ["Y", "C", "F", "Cargo"]
+    const DEFAULT_STRATEGY = "per-class-elasticity"
+
+    function _num(v, fallback) {
+        if (v === null || v === undefined || v === "") return fallback
+        const n = Number(v)
+        return isFinite(n) ? n : fallback
+    }
+
+    function _formatPrice(cls, v) {
+        const n = Number(v)
+        if (!isFinite(n)) return "?"
+        return cls === "Cargo" && Math.abs(n) < 10
+            ? n.toFixed(2).replace(/\.?0+$/, "")
+            : String(Math.round(n))
+    }
+
+    function _summarisePriceChanges(prev, next) {
+        const out = []
+        const p = prev || {}
+        const n = next || {}
+        for (const cls of PRICE_CLASSES) {
+            if (n[cls] == null) continue
+            const oldVal = p[cls]
+            const newVal = n[cls]
+            if (oldVal == null) {
+                out.push(cls + " → " + _formatPrice(cls, newVal))
+                continue
+            }
+            const oldNum = Number(oldVal)
+            const newNum = Number(newVal)
+            const same = cls === "Cargo"
+                ? Math.abs(newNum - oldNum) < 0.005
+                : Math.round(newNum) === Math.round(oldNum)
+            if (same) continue
+            out.push(cls + " " + _formatPrice(cls, oldNum) + " → " + _formatPrice(cls, newNum))
+        }
+        return out
+    }
+
+    function _classCap(cfg, cls) {
+        const perClass = cfg && cfg.silentAutoPerClassMaxStepPct || {}
+        const applyGate = cfg && cfg.applyClassGates && cfg.applyClassGates[cls]
+        const candidates = []
+        if (perClass[cls] !== null && perClass[cls] !== undefined && perClass[cls] !== "") {
+            const v = Number(perClass[cls])
+            if (isFinite(v) && v >= 0) candidates.push(v)
+        }
+        if (applyGate && applyGate.maxMove !== null
+                && applyGate.maxMove !== undefined && applyGate.maxMove !== "") {
+            const v = Number(applyGate.maxMove)
+            if (isFinite(v) && v > 0) candidates.push(v)
+        }
+        if (candidates.length) return Math.min.apply(null, candidates)
+        const global = Number(cfg && cfg.silentAutoMaxStepPct)
+        return isFinite(global) && global >= 0 ? global : 10
+    }
+
+    function _classEnabled(cfg, cls) {
+        const applyGate = cfg && cfg.applyClassGates && cfg.applyClassGates[cls]
+        if (applyGate && applyGate.enabled === false) return false
+        const perClass = cfg && cfg.silentAutoPerClassEnabled
+        if (perClass && Object.prototype.hasOwnProperty.call(perClass, cls)) {
+            return perClass[cls] !== false
+        }
+        return true
+    }
+
+    function _roundPriceForClass(cls, current, deltaPct) {
+        const raw = current * (1 + deltaPct / 100)
+        const scale = cls === "Cargo" && current < 10 ? 100 : 1
+        const rounded = deltaPct > 0
+            ? Math.floor(raw * scale) / scale
+            : deltaPct < 0
+                ? Math.ceil(raw * scale) / scale
+                : Math.round(raw * scale) / scale
+        return Math.max(scale === 1 ? 1 : 1 / scale, rounded)
+    }
+
+    function _samePrice(cls, a, b) {
+        const tolerance = cls === "Cargo" && Math.min(Math.abs(a), Math.abs(b)) < 10 ? 0.005 : 0.5
+        return Math.abs(Number(a) - Number(b)) < tolerance
+    }
+
+    function _proposalFromPctMove(cls, mv, prices, cfg) {
+        if (!mv) return null
+        if (!_classEnabled(cfg, cls)) return null
+        const cur = Number(prices && prices[cls])
+        if (!isFinite(cur) || cur <= 0) return null
+        const fromPct = Number(mv.fromPct)
+        const toPct = Number(mv.toPct)
+        if (!isFinite(fromPct) || fromPct <= 0 || !isFinite(toPct) || toPct <= 0) return null
+        const rawDeltaPct = (toPct / fromPct - 1) * 100
+        const minDelta = cfg.silentAutoMinDeltaPct || 3
+        if (Math.abs(rawDeltaPct) < minDelta) return null
+        const cap = _classCap(cfg, cls)
+        const clamped = Math.max(-cap, Math.min(cap, rawDeltaPct))
+        const next = _roundPriceForClass(cls, cur, clamped)
+        if (_samePrice(cls, next, cur)) return null
+        return {
+            cls,
+            mv,
+            current: cur,
+            next,
+            rawDeltaPct,
+            deltaPct: clamped,
+            cap
+        }
+    }
+
     // ------------------------------------------------------------------
     // competitor-median — verbatim port of
     // panel.js:_silentAutoProposeCompetitorMedian. Kept here as the
@@ -47,7 +157,11 @@
     // to 2 so existing setups keep current behaviour.
     // ------------------------------------------------------------------
     function _competitorMedian(route, prices, cfg) {
+        cfg = cfg || {}
         const dest = String(route.destIata || "").toUpperCase()
+        if (!_classEnabled(cfg, "Y")) {
+            return {ok: false, dest, skipReason: "Y disabled by per-class apply gate"}
+        }
         const ourY = prices && prices.Y
         if (!isFinite(ourY) || ourY <= 0) {
             return {ok: false, dest, skipReason: "no own Y price cached"}
@@ -76,7 +190,7 @@
                     skipReason: "|Δ%| " + rawDeltaPct.toFixed(1) + " < min " + minDelta + "% (proposer noise floor)"}
         }
 
-        const cap = Math.max(0, cfg.silentAutoMaxStepPct || 10)
+        const cap = _classCap(cfg, "Y")
         const clamped = Math.max(-cap, Math.min(cap, rawDeltaPct))
         const newY = Math.max(1, Math.round(ourY * (1 + clamped / 100)))
         if (newY === Math.round(ourY)) {
@@ -118,57 +232,80 @@
         if (!ctx || !ctx.strategyMovesByPair) {
             return {ok: false, dest, skipReason: "AesStrategy snapshot unavailable (module not loaded?)"}
         }
-        const ourY = prices && prices.Y
-        if (!isFinite(ourY) || ourY <= 0) {
-            return {ok: false, dest, skipReason: "no own Y price cached"}
-        }
 
         const key = (hub ? String(hub).toUpperCase() : "") + "-" + dest
-        const move = ctx.strategyMovesByPair.get(key)
-        if (!move) {
-            return {ok: false, dest, skipReason: "no strategy move for " + key + " (deadband / objective unmet)"}
+        const moves = ctx.strategyMovesByPair.get(key)
+        // Slice E1 — `strategyMovesByPair` is now a Map<pair, {Y,C,F,Cargo}>
+        // where each value is the per-class PriceMove (or null). Back-compat
+        // shim: if a single PriceMove slipped through (older context build),
+        // promote it to a per-class bucket keyed by its own classKey.
+        let bucket = moves
+        if (moves && moves.classKey) {
+            bucket = {Y: null, C: null, F: null, Cargo: null}
+            bucket[moves.classKey] = moves
         }
-        const fromPct = Number(move.fromPct)
-        const toPct   = Number(move.toPct)
-        if (!isFinite(fromPct) || fromPct <= 0 || !isFinite(toPct) || toPct <= 0) {
-            return {ok: false, dest, skipReason: "strategy move has non-positive pct (skipped)"}
+
+        const classMoves = []
+        for (const cls of PRICE_CLASSES) {
+            const rec = _proposalFromPctMove(cls, bucket && bucket[cls], prices, cfg || {})
+            if (rec) classMoves.push(rec)
         }
-        // Convert percent-of-default → absolute price. The strategy module
-        // works in pct space; current Y price corresponds to fromPct so a
-        // move from fromPct to toPct scales currentY by the same ratio.
-        const ratio = toPct / fromPct
-        const rawDeltaPct = (ratio - 1) * 100
-        const minDelta = cfg.silentAutoMinDeltaPct || 3
-        if (Math.abs(rawDeltaPct) < minDelta) {
+        if (!classMoves.length) {
             return {ok: false, dest,
-                    skipReason: "strategy Δ% " + rawDeltaPct.toFixed(1) + " < silent-auto min " + minDelta + "%"}
+                    skipReason: "no strategy class-move for " + key + " (deadband / objective unmet / no current price)"}
         }
-        const cap = Math.max(0, cfg.silentAutoMaxStepPct || 10)
-        const clamped = Math.max(-cap, Math.min(cap, rawDeltaPct))
-        const newY = Math.max(1, Math.round(ourY * (1 + clamped / 100)))
-        if (newY === Math.round(ourY)) {
-            return {ok: false, dest, skipReason: "after clamp + round, newY equals current ourY"}
+        // Keep Y as the headline when it moved, but do not require it.
+        // Cargo-only or premium-cabin-only moves should still flow through.
+        const headline = classMoves.find(m => m.cls === "Y") || classMoves[0]
+        const nextPrices = {}
+        const perClassDeltas = {}
+        for (const rec of classMoves) {
+            nextPrices[rec.cls] = rec.next
+            perClassDeltas[rec.cls] = rec.deltaPct
         }
 
         // Build the result envelope. Carry strategy rationale + objective
         // forward so the audit modal can render *why* this move was chosen
         // — that's the whole point of using strategy-objective over
         // competitor-median.
+        const classBreakdown = Object.keys(perClassDeltas)
+            .map(c => c + " " + (perClassDeltas[c] >= 0 ? "+" : "") + perClassDeltas[c].toFixed(1) + "%")
+            .join(", ")
         const reasonPieces = ["silent-auto · strategy-objective"]
-        if (move.objective && move.objective.kind) {
-            reasonPieces.push("goal " + move.objective.kind)
+        if (headline.mv.objective && headline.mv.objective.kind) {
+            reasonPieces.push("goal " + headline.mv.objective.kind)
         }
-        reasonPieces.push(ourY + " → " + newY + " (Δ " + clamped.toFixed(1) + "%)")
+        reasonPieces.push(headline.cls + " "
+            + _formatPrice(headline.cls, headline.current) + " → "
+            + _formatPrice(headline.cls, headline.next) + " (Δ "
+            + headline.deltaPct.toFixed(1) + "%)")
+        if (Object.keys(nextPrices).length > 1) {
+            reasonPieces.push("classes " + classBreakdown)
+        }
+
+        // Combine rationale arrays from every class so the audit log shows
+        // why each price moved, not just Y.
+        const rationale = []
+        for (const cls of PRICE_CLASSES) {
+            const mv = bucket[cls]
+            if (!mv || !Array.isArray(mv.rationale)) continue
+            for (const r of mv.rationale.slice(0, 4)) rationale.push("[" + cls + "] " + r)
+        }
+
+        const ourY = Number(prices && prices.Y)
+        const prevY = isFinite(ourY) && ourY > 0 ? Math.round(ourY) : null
+        const newY = nextPrices.Y != null ? nextPrices.Y : prevY
         return {
             ok:        true,
             dest,
-            prices:    {Y: newY},
-            deltaPct:  clamped,
-            prevY:     Math.round(ourY),
+            prices:    nextPrices,
+            deltaPct:  headline.deltaPct,
+            prevY,
             newY,
             reason:    reasonPieces.join(" · "),
-            rationale: Array.isArray(move.rationale) ? move.rationale.slice(0, 12) : null,
-            objective: move.objective || null
+            rationale: rationale.length ? rationale.slice(0, 16) : null,
+            objective: (headline.mv.objective) || null,
+            perClassDeltas
         }
     }
 
@@ -176,9 +313,10 @@
     // ors-elasticity — adapter over RouteAssistantOrsModel.scanPriceCurve.
     //
     // For each route we call scanPriceCurve(lo:0.7, hi:1.3, step:0.05)
-    // which sweeps Y/C/F price multipliers uniformly and returns the
-    // profit-optimal multiplier. We pick that multiplier, scale the
-    // route's current Y, and re-apply silent-auto's caps. Skips when:
+    // which sweeps a passenger price multiplier and returns the
+    // profit-optimal multiplier. We pick that multiplier, scale all enabled
+    // current price classes, let Cargo use its own demand branch when the
+    // per-class proposer is loaded, and re-apply silent-auto's caps. Skips when:
     //   - ORS cache for this dest is older than `silentAutoOrsMaxAgeMin`
     //     (default 60 min); confidence in the projection drops fast
     //   - the optimal multiplier is exactly 1 (model says "don't move")
@@ -200,6 +338,12 @@
         // ctx may carry a richer route record (with orsByClass etc.) than
         // the silent-auto eligible-row's `r` shape; prefer it when present.
         const fullRoute = (ctx && ctx.routesByDest && ctx.routesByDest.get(dest)) || route
+        const readiness = fullRoute && fullRoute.orsReadiness
+        if (readiness && readiness.usable === false) {
+            const warnings = Array.isArray(readiness.warnings) ? readiness.warnings : []
+            return {ok: false, dest, skipReason: "ORS not ready"
+                + (warnings.length ? ": " + warnings[0] : "")}
+        }
         const orsByClass = fullRoute && fullRoute.orsByClass
         const ownPricing = fullRoute && fullRoute.ownPricing
         if (!orsByClass || typeof orsByClass !== "object") {
@@ -248,36 +392,78 @@
             return {ok: false, dest,
                     skipReason: "ors-elasticity Δ% " + rawDeltaPct.toFixed(1) + " < min " + minDelta + "%"}
         }
-        const cap = Math.max(0, cfg.silentAutoMaxStepPct || 10)
+        const cap = _classCap(cfg || {}, "Y")
         const clamped = Math.max(-cap, Math.min(cap, rawDeltaPct))
-        const newY = Math.max(1, Math.round(ourY * (1 + clamped / 100)))
-        if (newY === Math.round(ourY)) {
-            return {ok: false, dest, skipReason: "after clamp + round, newY equals current ourY"}
+        const appliedMultiplier = 1 + clamped / 100
+        const nextPrices = {}
+        const perClassDeltas = {}
+        for (const cls of PRICE_CLASSES) {
+            if (!_classEnabled(cfg || {}, cls)) continue
+            const current = Number(prices && prices[cls])
+            if (isFinite(current) && current > 0) {
+                if (cls === "Cargo" && window.RouteAssistantPerClassProposer
+                        && typeof window.RouteAssistantPerClassProposer._computeClass === "function") {
+                    const cargoMove = window.RouteAssistantPerClassProposer._computeClass(cls, current, fullRoute, cfg || {})
+                    if (cargoMove && cargoMove.newPrice != null) {
+                        nextPrices[cls] = cargoMove.newPrice
+                        perClassDeltas[cls] = cargoMove.deltaPct
+                        continue
+                    }
+                    // No class-specific cargo signal available; fall back to
+                    // the ORS multiplier so Cargo still participates instead
+                    // of disappearing from mixed-class apply proposals.
+                }
+                const clsCap = _classCap(cfg || {}, cls)
+                const clsClamped = Math.max(-clsCap, Math.min(clsCap, rawDeltaPct))
+                const next = _roundPriceForClass(cls, current, clsClamped)
+                if (!_samePrice(cls, next, current)) {
+                    nextPrices[cls] = next
+                    perClassDeltas[cls] = clsClamped
+                }
+            }
         }
+        const headlineCls = nextPrices.Y != null
+            ? "Y"
+            : Object.keys(nextPrices)[0]
+        if (!headlineCls) {
+            return {ok: false, dest, skipReason: "after clamp + round, no class changed price"}
+        }
+        const headlineCurrent = Number(prices && prices[headlineCls])
+        const headlineNew = nextPrices[headlineCls]
+        const newY = nextPrices.Y != null ? nextPrices.Y : Math.round(ourY)
 
         const projected = (scan.optimal.deltaProfit != null && isFinite(scan.optimal.deltaProfit))
             ? Math.round(scan.optimal.deltaProfit) : null
-        const reason = "silent-auto · ors-elasticity · " + ourY + " → " + newY
-                     + " (Δ " + clamped.toFixed(1) + "%, optimal mult "
+        const appliedMultLabel = Math.abs(clamped - rawDeltaPct) > 0.01
+            ? ", applied mult " + appliedMultiplier.toFixed(2) : ""
+        const reason = "silent-auto · ors-elasticity · " + headlineCls + " "
+                     + _formatPrice(headlineCls, headlineCurrent) + " → "
+                     + _formatPrice(headlineCls, headlineNew)
+                     + " (Δ " + (perClassDeltas[headlineCls] || clamped).toFixed(1) + "%, optimal mult "
                      + scan.optimal.multiplier.toFixed(2)
+                     + appliedMultLabel
                      + (projected != null ? ", proj +$" + projected + "/wk" : "")
                      + ")"
         return {
             ok:        true,
             dest,
-            prices:    {Y: newY},
-            deltaPct:  clamped,
+            prices:    nextPrices,
+            deltaPct:  perClassDeltas[headlineCls] || clamped,
             prevY:     Math.round(ourY),
             newY,
             reason,
             rationale: [
                 "[ors] curve sweep " + (scan.points ? scan.points.length : "?") + " points · optimal mult "
                     + scan.optimal.multiplier.toFixed(2),
+                Object.keys(nextPrices).length > 1
+                    ? "[price] applying ORS pax move plus per-class caps to " + Object.keys(nextPrices).join("/")
+                    : null,
                 projected != null ? "[profit] optimal projects +$" + projected + "/wk" : null,
                 "[clamp] silent-auto cap ±" + cap + "% applied · raw Δ " + rawDeltaPct.toFixed(1) + "% → "
                     + clamped.toFixed(1) + "%"
             ].filter(Boolean),
-            projectedDelta: (projected != null) ? {profitPerWeek: projected} : null
+            projectedDelta: (projected != null) ? {profitPerWeek: projected} : null,
+            perClassDeltas
         }
     }
 
@@ -285,10 +471,38 @@
     // Registry + dispatch.
     //
     // Registered proposers must conform to the contract above. The order
-    // of `list()` is the order shown in the strategy picker — keep
-    // `competitor-median` first so it remains the safe default.
+    // of `list()` is the order shown in the strategy picker; keep the
+    // demand-aware Y/C/F/Cargo strategy first because it is the default.
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // per-class-elasticity — delegates to RouteAssistantPerClassProposer.
+    //
+    // Prices Y / C / F / Cargo *independently* using per-class elasticity,
+    // demand pool, load factor, and (when available) per-class competitor
+    // median. Falls under the same gates + caps as the other proposers; the
+    // only structural difference is that the output `prices` map can carry
+    // up to four entries instead of just Y. The applier already handles
+    // multi-class price maps (see pricing-applier.js FIELD_NAMES.prices).
+    //
+    // Skips this strategy entirely when the per-class proposer module
+    // hasn't loaded — manifest order should keep that from happening, but
+    // we degrade gracefully rather than crashing the silent-auto loop.
+    // ------------------------------------------------------------------
+    function _perClassElasticity(route, prices, cfg, ctx) {
+        const dest = String((route && route.destIata) || "").toUpperCase()
+        if (typeof window === "undefined" || !window.RouteAssistantPerClassProposer
+            || typeof window.RouteAssistantPerClassProposer.propose !== "function") {
+            return {ok: false, dest, skipReason: "RouteAssistantPerClassProposer not loaded"}
+        }
+        return window.RouteAssistantPerClassProposer.propose(route, prices, cfg || {}, ctx || {})
+    }
+
     const PROPOSERS = {
+        "per-class-elasticity": {
+            fn: _perClassElasticity,
+            label: "Per-class elasticity (Y / C / F / Cargo)",
+            description: "Price each cabin (and cargo) independently using class-specific elasticity, demand pool, load factor, and per-class competitor median when available. Cargo joins the loop on its own demand curve."
+        },
         "competitor-median": {
             fn: _competitorMedian,
             label: "Competitor median (Y only)",
@@ -302,7 +516,7 @@
         "ors-elasticity": {
             fn: _orsElasticity,
             label: "ORS elasticity (profit-optimal sweep)",
-            description: "Sweep Y multipliers via the ORS demand model and pick the profit-optimal price. Requires a recent ORS scrape per route."
+            description: "Sweep ORS passenger multipliers and apply the capped profit move to enabled Y / C / F / Cargo prices. Requires a recent ORS scrape per route."
         }
     }
 
@@ -328,7 +542,7 @@
         arg = arg || {}
         return {
             now: Date.now(),
-            strategy: arg.strategy || "competitor-median"
+            strategy: arg.strategy || DEFAULT_STRATEGY
         }
     }
 
@@ -382,7 +596,7 @@
     function dispatch(strategy, route, prices, cfg, ctx) {
         const dest = String((route && route.destIata) || "").toUpperCase()
         const hub  = String((route && route.hub) || (ctx && ctx.hub) || "").toUpperCase()
-        const key  = strategy || "competitor-median"
+        const key  = strategy || DEFAULT_STRATEGY
         const entry = PROPOSERS[key]
         if (!entry || typeof entry.fn !== "function") {
             const skipReason = "unknown strategy '" + key + "'"
@@ -445,12 +659,12 @@
         const hub  = String((route && route.hub) || (ctx && ctx.hub) || "").toUpperCase()
         const dest = String(result.dest || (route && route.destIata) || "").toUpperCase()
         if (!hub || !dest) return result
-        const newY = result.newY != null ? result.newY : (result.prices && result.prices.Y)
-        const prevY = result.prevY != null ? result.prevY : (prices && prices.Y)
+        const changes = _summarisePriceChanges(prices, result.prices)
+        const changeText = changes.length ? changes.join(", ") : "no price change"
         const deltaPct = isFinite(result.deltaPct) ? Number(result.deltaPct).toFixed(1) : null
         const reason = result.reason || strategy
-        const message = "Auto-proposer (" + (strategy || "?") + ") suggests Y "
-            + (prevY != null ? prevY : "?") + " → " + (newY != null ? newY : "?")
+        const message = "Auto-proposer (" + (strategy || "?") + ") suggests "
+            + changeText
             + " for " + hub + " · " + dest
             + (deltaPct != null ? " (Δ " + deltaPct + "%)" : "")
             + (reason && reason !== strategy ? ". " + reason : ".")
@@ -468,7 +682,7 @@
             signature: hub + "-" + dest + ":" + (strategy || "?"),
             message,
             action: {
-                label: "Apply auto-proposer",
+                label: "Apply price changes",
                 run:   () => {
                     if (typeof window === "undefined" || !window.CentralHubBus) return
                     window.CentralHubBus.emit(window.AesCanvasEvents.EDIT_STAGED, {

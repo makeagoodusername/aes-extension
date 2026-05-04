@@ -29,6 +29,7 @@ class ScrapeOrchestrator {
 
     async start(opts) {
         opts = opts || {}
+        const source = String(opts.source || "manual")
         const include = {
             "per-competitor": !!opts.includePerCompetitor,
             "flightsfrom":    !!opts.includeFlightsFrom
@@ -48,49 +49,229 @@ class ScrapeOrchestrator {
             return !p.optional || include[p.id]
         })
         this._phasePlanCache = phases
+        const archiveRecord = this._createArchiveRecord(host, phases, opts, source)
+        await this._saveArchive(archiveRecord, false)
 
         this._attachProgressListener()
 
-        for (const phase of phases) {
-            if (this._aborted) break
+        try {
+            for (const phase of phases) {
+                if (this._aborted) break
 
-            const phaseStartedAt = Date.now()
-            this.onPhaseStart({phaseId: phase.id, label: phase.label})
-            let jobs
-            try {
-                jobs = await phase.buildJobs(host)
-            } catch (e) {
-                this.onError({message: "buildJobs threw: " + ((e && e.message) || String(e)), phase: phase.id})
-                continue
-            }
-
-            if (!jobs.length) {
-                this.onPhaseDone({phaseId: phase.id, total: 0, succeeded: 0, failed: 0, skipped: true})
-                this._recordCadence(host, phase.id, {startedAt: phaseStartedAt, total: 0, succeeded: 0, failed: 0})
-                continue
-            }
-
-            const result = await this._runPhaseJobs(phase, jobs)
-            this.onPhaseDone({phaseId: phase.id, ...result})
-            this._recordCadence(host, phase.id, {...result, startedAt: phaseStartedAt})
-
-            if (result.haltReason) {
-                this.onError({message: "halted: " + result.haltReason, phase: phase.id})
-                break
-            }
-
-            if (typeof phase.postRun === "function" && !this._aborted) {
+                const phaseStartedAt = Date.now()
+                this._archivePhaseStart(archiveRecord, phase, phaseStartedAt)
+                await this._saveArchive(archiveRecord, false)
+                this.onPhaseStart({phaseId: phase.id, label: phase.label})
+                let jobs
                 try {
-                    const postOut = await phase.postRun(host)
-                    this.onProgress({type: "phase-post-run", phaseId: phase.id, result: postOut})
+                    jobs = await phase.buildJobs(host)
                 } catch (e) {
-                    this.onProgress({type: "phase-post-run-failed", phaseId: phase.id, error: (e && e.message) || String(e)})
+                    const message = "buildJobs threw: " + ((e && e.message) || String(e))
+                    this._archivePhaseDone(archiveRecord, phase, {
+                        total: 0, succeeded: 0, failed: 0, skipped: true, haltReason: "buildJobs-threw"
+                    })
+                    archiveRecord.failedJobs.push({phaseId: phase.id, jobId: "buildJobs", url: "", error: message})
+                    await this._saveArchive(archiveRecord, false)
+                    this.onError({message: message, phase: phase.id})
+                    continue
+                }
+
+                if (!jobs.length) {
+                    const skipped = {total: 0, succeeded: 0, failed: 0, skipped: true}
+                    this.onPhaseDone({phaseId: phase.id, ...skipped})
+                    this._archivePhaseDone(archiveRecord, phase, skipped)
+                    await this._saveArchive(archiveRecord, false)
+                    this._recordCadence(host, phase.id, {startedAt: phaseStartedAt, total: 0, succeeded: 0, failed: 0})
+                    // Pure-postRun phases (e.g. ors-rank) intentionally
+                    // return [] from buildJobs — the entire payload is the
+                    // postRun callback. Run it before continuing so those
+                    // phases aren't gated on tab-fan-out activity.
+                    if (typeof phase.postRun === "function" && !this._aborted) {
+                        try {
+                            const postOut = await this._capturePostRunStorage(() => phase.postRun(host))
+                            this._archivePostRun(archiveRecord, phase.id, postOut)
+                            await this._saveArchive(archiveRecord, false)
+                            this.onProgress({type: "phase-post-run", phaseId: phase.id, result: postOut})
+                        } catch (e) {
+                            const errText = (e && e.message) || String(e)
+                            this._archivePostRun(archiveRecord, phase.id, {ok: false, error: errText})
+                            await this._saveArchive(archiveRecord, false)
+                            this.onProgress({type: "phase-post-run-failed", phaseId: phase.id, error: errText})
+                        }
+                    }
+                    continue
+                }
+
+                const result = await this._runPhaseJobs(phase, jobs)
+                this.onPhaseDone({phaseId: phase.id, ...result})
+                this._archivePhaseDone(archiveRecord, phase, result)
+                await this._saveArchive(archiveRecord, false)
+                this._recordCadence(host, phase.id, {...result, startedAt: phaseStartedAt})
+
+                if (result.haltReason) {
+                    archiveRecord.haltReason = result.haltReason
+                    this.onError({message: "halted: " + result.haltReason, phase: phase.id})
+                    break
+                }
+
+                if (typeof phase.postRun === "function" && !this._aborted) {
+                    try {
+                        const postOut = await this._capturePostRunStorage(() => phase.postRun(host))
+                        this._archivePostRun(archiveRecord, phase.id, postOut)
+                        await this._saveArchive(archiveRecord, false)
+                        this.onProgress({type: "phase-post-run", phaseId: phase.id, result: postOut})
+                    } catch (e) {
+                        const errText = (e && e.message) || String(e)
+                        this._archivePostRun(archiveRecord, phase.id, {ok: false, error: errText})
+                        await this._saveArchive(archiveRecord, false)
+                        this.onProgress({type: "phase-post-run-failed", phaseId: phase.id, error: errText})
+                    }
                 }
             }
+        } catch (e) {
+            archiveRecord.haltReason = (e && e.message) || String(e)
+            await this._saveArchive(archiveRecord, false)
+            throw e
+        } finally {
+            this._detachProgressListener()
+            archiveRecord.completedAt = Date.now()
+            archiveRecord.durationMs = archiveRecord.completedAt - archiveRecord.startedAt
+            archiveRecord.aborted = this._aborted
+            archiveRecord.status = this._aborted ? "aborted" : (archiveRecord.haltReason ? "halted" : "done")
+            await this._saveArchive(archiveRecord, true)
+            this.onDone({aborted: this._aborted, runId: archiveRecord.runId})
         }
+    }
 
-        this._detachProgressListener()
-        this.onDone({aborted: this._aborted})
+    _createArchiveRecord(host, phases, opts, source) {
+        const runId = "run-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36)
+        return {
+            runId:       runId,
+            server:      host.server,
+            airline:     host.airline,
+            source:      source,
+            status:      "running",
+            startedAt:   Date.now(),
+            completedAt: null,
+            durationMs:  0,
+            aborted:     false,
+            haltReason:  null,
+            phaseFilter: Array.isArray(opts.phaseFilter) ? opts.phaseFilter.map(String) : [],
+            options: {
+                includePerCompetitor: !!opts.includePerCompetitor,
+                includeFlightsFrom:   !!opts.includeFlightsFrom
+            },
+            perPhase: phases.reduce((out, p) => {
+                out[p.id] = {
+                    label: p.label,
+                    startedAt: null,
+                    completedAt: null,
+                    total: 0,
+                    succeeded: 0,
+                    failed: 0,
+                    skipped: false,
+                    haltReason: null,
+                    storageKeys: [],
+                    jobs: []
+                }
+                return out
+            }, {}),
+            failedJobs:  [],
+            storageKeys: []
+        }
+    }
+
+    async _saveArchive(record, writeLastRun) {
+        if (!record || typeof window.AesScrapeRunArchiveStore === "undefined") return null
+        try { return await window.AesScrapeRunArchiveStore.save(record, {writeLastRun: !!writeLastRun}) }
+        catch (_) { return null }
+    }
+
+    _archivePhaseStart(record, phase, startedAt) {
+        if (!record || !phase) return
+        record.perPhase = record.perPhase || {}
+        record.perPhase[phase.id] = record.perPhase[phase.id] || {label: phase.label, jobs: [], storageKeys: []}
+        record.perPhase[phase.id].label = phase.label
+        record.perPhase[phase.id].startedAt = startedAt || Date.now()
+        record.perPhase[phase.id].completedAt = null
+        record.perPhase[phase.id].skipped = false
+    }
+
+    _archivePhaseDone(record, phase, result) {
+        if (!record || !phase) return
+        const p = record.perPhase[phase.id] || {label: phase.label, jobs: [], storageKeys: []}
+        p.completedAt = Date.now()
+        p.total       = (result && result.total) || 0
+        p.succeeded   = (result && result.succeeded) || 0
+        p.failed      = (result && result.failed) || 0
+        p.skipped     = !!(result && result.skipped)
+        p.haltReason  = (result && result.haltReason) || null
+        p.jobs        = Array.isArray(result && result.jobs) ? result.jobs : (p.jobs || [])
+        p.storageKeys = this._mergeStorageKeys(p.storageKeys, result && result.storageKeys)
+        record.perPhase[phase.id] = p
+        record.storageKeys = this._mergeStorageKeys(record.storageKeys, p.storageKeys)
+        if (Array.isArray(result && result.jobs)) {
+            for (const j of result.jobs) {
+                if (!j || j.status !== "failed") continue
+                record.failedJobs.push({
+                    phaseId: phase.id,
+                    jobId:   j.jobId || "",
+                    url:     j.url || "",
+                    error:   j.error || ""
+                })
+            }
+        }
+    }
+
+    _archivePostRun(record, phaseId, postOut) {
+        if (!record || !phaseId) return
+        const p = record.perPhase && record.perPhase[phaseId]
+        if (!p) return
+        p.postRun = postOut || null
+        p.storageKeys = this._mergeStorageKeys(p.storageKeys, postOut && postOut.storageKeys)
+        record.storageKeys = this._mergeStorageKeys(record.storageKeys, p.storageKeys)
+    }
+
+    async _capturePostRunStorage(fn) {
+        const keys = new Set()
+        const handler = (changes, area) => {
+            if (area !== "local" || !changes) return
+            for (const k in changes) {
+                if (window.AesScrapeRunArchiveStore
+                        && !window.AesScrapeRunArchiveStore.isScrapeCacheKey(k)) continue
+                keys.add(k)
+            }
+        }
+        try { chrome.storage.onChanged.addListener(handler) } catch (_) {}
+        try {
+            const out = await fn()
+            if (!keys.size) return out
+            const filtered = window.AesScrapeRunArchiveStore
+                ? window.AesScrapeRunArchiveStore.filterCacheKeys(Array.from(keys))
+                : Array.from(keys)
+            return Object.assign({}, out || {}, {storageKeys: filtered})
+        } finally {
+            try { chrome.storage.onChanged.removeListener(handler) } catch (_) {}
+        }
+    }
+
+    _mergeStorageKeys(a, b) {
+        const out = []
+        const seen = new Set()
+        const add = (arr) => {
+            if (!Array.isArray(arr)) return
+            for (const k of arr) {
+                const s = String(k || "")
+                if (!s || seen.has(s)) continue
+                if (window.AesScrapeRunArchiveStore
+                        && !window.AesScrapeRunArchiveStore.isScrapeCacheKey(s)) continue
+                seen.add(s)
+                out.push(s)
+            }
+        }
+        add(a)
+        add(b)
+        return out
     }
 
     _recordCadence(host, phaseId, result) {
@@ -192,6 +373,8 @@ class ScrapeOrchestrator {
             let succeeded = 0
             let failed    = 0
             let haltReason = null
+            const jobEvents = []
+            const storageKeys = new Set()
             let watchdog = null
             let settled  = false
 
@@ -210,7 +393,9 @@ class ScrapeOrchestrator {
                         total:      jobs.length,
                         succeeded:  succeeded,
                         failed:     failed,
-                        haltReason: "background-disconnect"
+                        haltReason: "background-disconnect",
+                        jobs:       jobEvents,
+                        storageKeys: Array.from(storageKeys)
                     })
                 }, SILENCE_TIMEOUT_MS)
             }
@@ -221,8 +406,30 @@ class ScrapeOrchestrator {
                 const event = msg.event
                 this.onProgress(event)
 
-                if (event.type === "job-done")  succeeded++
-                if (event.type === "job-fail")  failed++
+                if (Array.isArray(event.storageKeys)) {
+                    for (const k of event.storageKeys) storageKeys.add(k)
+                }
+                if (event.type === "job-done") {
+                    succeeded++
+                    jobEvents.push({
+                        jobId:      event.jobId || "",
+                        status:     "ok",
+                        url:        event.url || "",
+                        durationMs: event.durationMs || 0,
+                        storageKeys: Array.isArray(event.storageKeys) ? event.storageKeys : []
+                    })
+                }
+                if (event.type === "job-fail") {
+                    failed++
+                    jobEvents.push({
+                        jobId:      event.jobId || "",
+                        status:     "failed",
+                        url:        event.url || "",
+                        durationMs: event.durationMs || 0,
+                        error:      event.error || "",
+                        storageKeys: Array.isArray(event.storageKeys) ? event.storageKeys : []
+                    })
+                }
                 if (event.type === "breaker-trip") haltReason = "circuit-breaker"
                 if (event.type === "run-done") {
                     if (event.reason && event.reason !== "done") {
@@ -232,7 +439,9 @@ class ScrapeOrchestrator {
                         total:      jobs.length,
                         succeeded:  succeeded,
                         failed:     failed,
-                        haltReason: haltReason
+                        haltReason: haltReason,
+                        jobs:       jobEvents,
+                        storageKeys: Array.from(storageKeys)
                     })
                 }
             }
@@ -251,7 +460,9 @@ class ScrapeOrchestrator {
                         total:      jobs.length,
                         succeeded:  0,
                         failed:     jobs.length,
-                        haltReason: (resp && resp.reason) || "start-failed"
+                        haltReason: (resp && resp.reason) || "start-failed",
+                        jobs:       jobEvents,
+                        storageKeys: Array.from(storageKeys)
                     })
                 }
             })

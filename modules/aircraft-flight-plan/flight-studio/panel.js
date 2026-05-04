@@ -4,14 +4,14 @@
  * Flight Studio — compose panel (Slice S1).
  *
  * Mounts at `AesAfp.slot("studio")` and renders a compose UI for one
- * FlightSpec. S1 ships **dry-run only**: the user types a leg, clicks
- * Preview, sees the would-be POST body. NO live form interaction, NO
- * programmatic Submit.
+ * FlightSpec. Preview fills the AS "New Flight Number" form for review.
+ * Apply opens the shared confirmation modal and uses the background-tab
+ * submit pipeline; it never posts directly from this visible page.
  *
  * SAFETY INVARIANT (mirrors form-driver.js:10-24):
- *   The panel never calls submitBtn.click(), form.submit(), or any
- *   chrome.runtime message that triggers a submit. Preview reads option
- *   values via AesAfpFormDriver.dryRun(); that path does not POST.
+ *   The panel never calls submitBtn.click() or form.submit() from the
+ *   visible page. Preview reads option values via AesAfpFormDriver.dryRun();
+ *   Apply goes through the confirmed background-tab submit queue.
  *
  * Public API (window.AesAfpFlightStudio):
  *   attach()         — idempotent; wires bus listeners + initial render
@@ -43,7 +43,7 @@
     let _lastDryRun = null        // most recent dryRun result, for diagnostics
     let _lastDryRunOutcome = null // {validationErrors?, dryRun?, info?, error?}
                                   // — full Preview outcome remembered so the
-                                  // dry-run pane always reflects the last attempt
+                                  // form-output pane always reflects the last attempt
     let _autoSuggested = false    // one-shot guard so we only auto-pick a
                                   // flight number once per panel mount
     let _automateInFlight = false // true while auto-build is computing
@@ -63,11 +63,23 @@
                                   // turn; user-editable inline. Module-scoped
                                   // so it persists across button presses but
                                   // not across page mounts.
-
+    let _planner = {
+        hub:          "",
+        airports:     "",
+        flightCount:  4,
+        startTime:    "09:00",
+        turnMin:      30,
+        pattern:      "roundtrip",
+        priceMode:    "demand",
+        longDrift:    true,
+        lastMock:     [],
+        lastMessage:  ""
+    }
     // F2 — Flight Studio templates. Cached per-server Template[] so the
     // dropdown can render synchronously; _paintTemplatesRow refreshes it
     // after every save/delete and on initial mount.
     let _templates = []
+    let _templatesLoadedFor = null
 
     // AS form mirror (transitional bridge). Wires AS's "New Flight Number"
     // form values into the spec live so the two never disagree on what's
@@ -90,6 +102,23 @@
     // ── ctx helpers ──────────────────────────────────────────────────────
     function _ctx()    { return (window.AesAfp && window.AesAfp.ctx) || null }
     function _bus()    { return (window.AesAfp && window.AesAfp.bus) || null }
+    function _defaultDayMask() { return [true, true, true, true, true, true, true] }
+    function _legDayMask(leg) {
+        return leg && Array.isArray(leg.dayMask) && leg.dayMask.length >= 7
+            ? leg.dayMask.slice(0, 7).map(Boolean)
+            : _defaultDayMask()
+    }
+    function _activeHubIata() {
+        try {
+            const hub = window.AesAfp && typeof window.AesAfp.getActiveHub === "function"
+                ? window.AesAfp.getActiveHub()
+                : null
+            const norm = _normIata(hub)
+            if (norm) return norm
+        } catch (_) { /* fall back to page ctx */ }
+        const ctx = _ctx()
+        return _normIata(ctx && ctx.currentLocationIata)
+    }
     function _emit(name, payload) {
         const bus = _bus()
         if (bus && typeof bus.emit === "function") {
@@ -131,17 +160,32 @@
             const snap = _readAsFormSnapshot()
             if (snap) base = _overlayAsSnapshotOnSpec(base, snap)
         }
-        return base
+        return _syncBlankDraftOriginToActiveHub(base)
     }
 
     function _seedSpec(ctx) {
         return window.AesAfpLegSpec.createSpec({
             server:      ctx ? ctx.server     : "",
             aircraftId:  ctx ? ctx.aircraftId : "",
-            origin:      ctx ? ctx.currentLocationIata : null,
+            origin:      _activeHubIata(),
             source:      "manual",
-            dryRun:      true
+            dryRun:      false
         })
+    }
+
+    function _isBlankSingleLegDraft(spec) {
+        if (!spec || !Array.isArray(spec.legs) || spec.legs.length !== 1) return false
+        if (spec.source === "auto-build") return false
+        const leg = spec.legs[0] || {}
+        return !_normIata(leg.destination)
+    }
+
+    function _syncBlankDraftOriginToActiveHub(spec) {
+        const hub = _activeHubIata()
+        if (!hub || !_isBlankSingleLegDraft(spec)) return spec
+        const leg = spec.legs[0] || {}
+        if (_normIata(leg.origin) === hub) return spec
+        return window.AesAfpLegSpec.setLegField(spec, 0, "origin", hub)
     }
 
     /** Save current spec to draft store, debounced. Emits draft-changed. */
@@ -167,7 +211,37 @@
 
     function _updateSpec(nextSpec) {
         _spec = nextSpec
+        _clearDryRunOutcome()
         _scheduleSave()
+    }
+
+    async function _updateSpecWithHistory(nextSpec) {
+        if (_saveTimer) {
+            clearTimeout(_saveTimer)
+            await _flushSave()
+        }
+        _spec = nextSpec
+        _clearDryRunOutcome()
+        const ctx = _ctx()
+        let saved = false
+        if (ctx && ctx.server && ctx.aircraftId && window.AesAfpStudioDraftStore) {
+            try {
+                await window.AesAfpStudioDraftStore.save(ctx.server, ctx.aircraftId, _spec, {pushPrev: true})
+                saved = true
+            } catch (e) {
+                console.warn("[AES studio] history save threw", e)
+            }
+        }
+        if (saved) {
+            _emit("studio:draft-changed", {spec: _spec})
+        } else {
+            _scheduleSave()
+        }
+    }
+
+    function _clearDryRunOutcome() {
+        _lastDryRun = null
+        _lastDryRunOutcome = null
     }
 
     // ── Render ───────────────────────────────────────────────────────────
@@ -217,13 +291,13 @@
         title.textContent = "Flight Studio"
         title.style.cssText = "font-size:12px;color:#e2e8f0;letter-spacing:0.4px;"
         const sub = document.createElement("span")
-        sub.textContent = "compose · dry-run"
+        sub.textContent = "compose · preview · apply"
         sub.style.cssText = "color:#9ca3af;font-size:10px;"
         const flex = document.createElement("span")
         flex.style.cssText = "flex:1 1 auto;"
         const modeBadge = document.createElement("span")
         modeBadge.dataset.aesStudioMode = "1"
-        modeBadge.textContent = "DRY-RUN"
+        modeBadge.textContent = "DRAFT"
         modeBadge.style.cssText = "font-family:var(--aes-font-mono,monospace);font-size:10px;letter-spacing:0.5px;"
             + "color:#fde68a;background:#1f2937;padding:2px 6px;border-radius:3px;"
         head.append(title, sub, flex, modeBadge)
@@ -256,6 +330,7 @@
 
         body.appendChild(_buildHint())
         body.appendChild(_buildTemplatesRow())
+        body.appendChild(_buildSchedulePlanner())
         body.appendChild(_buildLegTray())
         body.appendChild(_buildSpecMeta())
         body.appendChild(_buildActions())
@@ -407,6 +482,16 @@
         const routeRec = (ffData && Array.isArray(ffData.routes))
             ? ffData.routes.find(r => String(r && r.destIata || "").toUpperCase() === to)
             : null
+        let effectiveDemand = demand
+        if (!_hasPaxDemand(effectiveDemand) && routeRec && typeof FlightsFromStore !== "undefined"
+                && typeof FlightsFromStore.demandForRoute === "function") {
+            const ctx = (ffData && Array.isArray(ffData.routes)
+                    && typeof FlightsFromStore.buildDemandContext === "function")
+                ? FlightsFromStore.buildDemandContext(ffData.routes)
+                : null
+            effectiveDemand = FlightsFromStore.demandForRoute(routeRec, ctx)
+            if (effectiveDemand) effectiveDemand.scrapedAt = ffData ? ffData.scrapedAt : null
+        }
         const acSpec    = (window.AesAfpSpecResolver && window.AesAfpSpecResolver.last) || null
         const economics = (settings && settings.economics) || null
 
@@ -418,8 +503,8 @@
                 estimate = RouteAssistantProfitEstimator.estimate({
                     distanceKm: Number(routeRec.distanceKm),
                     spec:       acSpec,
-                    paxScore:   demand ? demand.paxScore   : null,
-                    cargoScore: demand ? demand.cargoScore : null,
+                    paxScore:   effectiveDemand ? effectiveDemand.paxScore   : null,
+                    cargoScore: effectiveDemand ? effectiveDemand.cargoScore : null,
                     economics:  economics,
                     falloffPct: settings.falloffPct
                 })
@@ -439,8 +524,8 @@
                 try {
                     sisterFleet = await window.AesCrossAirlineOpps.findForRoute(
                         sfCtx.server, from, to, {
-                            paxScore:   demand && Number.isFinite(Number(demand.paxScore))
-                                            ? Number(demand.paxScore) : null,
+                            paxScore:   effectiveDemand && Number.isFinite(Number(effectiveDemand.paxScore))
+                                            ? Number(effectiveDemand.paxScore) : null,
                             distanceKm: routeRec && Number(routeRec.distanceKm) > 0
                                             ? Number(routeRec.distanceKm) : null,
                             topN:       3
@@ -450,7 +535,7 @@
         }
         if (myCtrl.aborted) return
 
-        _paintSidebar(host, {from, to, demand, routeRec, estimate, hasSpec: !!acSpec,
+        _paintSidebar(host, {from, to, demand: effectiveDemand, routeRec, estimate, hasSpec: !!acSpec,
                              hubMeta, destMeta, sisterFleet})
 
         // Lazy-fetch any missing airport meta, then repaint once. Capped at
@@ -471,7 +556,7 @@
                             const fHub  = hubAirportId  ? fresh.get(hubAirportId)  || null : null
                             const fDest = destAirportId ? fresh.get(destAirportId) || null : null
                             if (myCtrl.aborted) return
-                            _paintSidebar(host, {from, to, demand, routeRec, estimate,
+                            _paintSidebar(host, {from, to, demand: effectiveDemand, routeRec, estimate,
                                                  hasSpec: !!acSpec, hubMeta: fHub, destMeta: fDest,
                                                  sisterFleet})
                         } catch (e) { /* non-fatal */ }
@@ -685,6 +770,28 @@
     function _buildDemandRowsCubist(demand, T) {
         if (!demand) return _buildSidebarNoteCubist(
             "No demand data — run the route-assistant demand scan.", T)
+        if (demand.source === "flightsfrom" || demand.demandSource === "flightsfrom") {
+            const wrap = document.createElement("div")
+            wrap.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[1]
+            const src = document.createElement("div")
+            src.style.cssText = "font-family:" + T.font.display + ";font-size:" + T.fs.micro
+                + ";color:" + T.color.slate + ";text-transform:uppercase;letter-spacing:" + T.track.caps
+            src.textContent = "FlightsFrom frequency"
+            wrap.appendChild(src)
+            wrap.appendChild(_makeScoreBarCubist("Pax", demand.paxScore, T.color.cobalt, T))
+            const meta = document.createElement("div")
+            meta.style.cssText = "font-family:" + T.font.mono + ";font-size:" + T.fs.micro
+                + ";color:" + T.color.oxide2 + ";letter-spacing:" + T.track.mono
+            meta.textContent = demand.demandBasis || (
+                demand.weeklyFlights != null ? demand.weeklyFlights + "×/wk" : "frequency present")
+            wrap.appendChild(meta)
+            const cargo = document.createElement("div")
+            cargo.style.cssText = "font-family:" + T.font.display + ";font-size:" + T.fs.micro
+                + ";color:" + T.color.slate
+            cargo.textContent = "Cargo unavailable from FlightsFrom."
+            wrap.appendChild(cargo)
+            return wrap
+        }
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[1]
         wrap.appendChild(_makeScoreBarCubist("Pax",   demand.paxScore,   T.color.cobalt, T))
@@ -943,6 +1050,26 @@
 
     function _buildDemandRows(demand) {
         if (!demand) return _sidebarNote("No demand data — run the route-assistant demand scan.")
+        if (demand.source === "flightsfrom" || demand.demandSource === "flightsfrom") {
+            const wrap = document.createElement("div")
+            const src = document.createElement("div")
+            src.textContent = "FlightsFrom frequency"
+            src.style.cssText = "color:#9ca3af;font-size:9px;text-transform:uppercase;"
+                + "letter-spacing:0.5px;margin-bottom:2px;"
+            wrap.appendChild(src)
+            wrap.appendChild(_makeScoreBar("Pax", demand.paxScore, "#60a5fa"))
+            const meta = document.createElement("div")
+            meta.textContent = demand.demandBasis || (
+                demand.weeklyFlights != null ? demand.weeklyFlights + "×/wk" : "frequency present")
+            meta.style.cssText = "color:#cbd5e1;font-size:10px;font-family:var(--aes-font-mono,monospace);"
+                + "margin-top:2px;"
+            wrap.appendChild(meta)
+            const cargo = document.createElement("div")
+            cargo.textContent = "Cargo unavailable from FlightsFrom."
+            cargo.style.cssText = "color:#6b7280;font-size:9px;margin-top:2px;"
+            wrap.appendChild(cargo)
+            return wrap
+        }
         const wrap = document.createElement("div")
         wrap.appendChild(_makeScoreBar("Pax",   demand.paxScore,   "#60a5fa"))
         wrap.appendChild(_makeScoreBar("Cargo", demand.cargoScore, "#fbbf24"))
@@ -953,6 +1080,11 @@
             wrap.appendChild(stale)
         }
         return wrap
+    }
+
+    function _hasPaxDemand(demand) {
+        return !!(demand && demand.paxScore !== null && demand.paxScore !== undefined
+            && isFinite(Number(demand.paxScore)))
     }
 
     function _buildOperatorRows(routeRec) {
@@ -1208,8 +1340,13 @@
             hint.textContent = "Aircraft context not yet resolved — open this from an aircraft Flight Plan page."
             hint.style.color = "#fca5a5"
         } else {
-            const hub = ctx.currentLocationIata || "??"
-            hint.textContent = "Hub: " + hub + " · " + ctx.registration + " · " + ctx.equipment
+            const activeHub = _activeHubIata()
+            const loc = _normIata(ctx.currentLocationIata)
+            const parts = ["Plan hub: " + (activeHub || "??")]
+            if (loc && activeHub && loc !== activeHub) parts.push("aircraft at " + loc)
+            parts.push(ctx.registration)
+            parts.push(ctx.equipment)
+            hint.textContent = parts.filter(Boolean).join(" · ")
         }
         return hint
     }
@@ -1619,6 +1756,756 @@
         m.footer.appendChild(closeBtn)
     }
 
+    // ── Schedule Planner — mock timetable generator ─────────────────────
+    //
+    // Creates a FlightSpec from a user-selected airport list and leg count.
+    // The generated mock keeps absolute day offsets in `_planner.lastMock`
+    // while the spec carries AS-compatible HH:MM + dayMask fields.
+
+    const PLANNER_CLASSES = ["Y", "C", "F", "Cargo"]
+
+    function _buildSchedulePlanner() {
+        const wrap = document.createElement("details")
+        wrap.dataset.aesSchedulePlanner = "1"
+        wrap.open = true
+        wrap.style.cssText = "margin:6px 0 8px;border:1px solid #1f2937;border-radius:3px;background:#0b1220;"
+
+        const sum = document.createElement("summary")
+        sum.style.cssText = "cursor:pointer;padding:6px 8px;font-size:11px;color:#cbd5e1;font-weight:700;"
+        const legs = (_spec && Array.isArray(_spec.legs)) ? _spec.legs.length : 0
+        const hub = _plannerHub()
+        sum.textContent = "Schedule Planner"
+            + (hub ? " · " + hub : "")
+            + (legs ? " · " + legs + " legs" : "")
+        wrap.appendChild(sum)
+
+        const body = document.createElement("div")
+        body.style.cssText = "padding:0 8px 8px;display:flex;flex-direction:column;gap:6px;"
+        body.appendChild(_buildPlannerControls())
+        body.appendChild(_buildPlannerMockTable())
+        if (_planner.lastMessage) {
+            const msg = document.createElement("div")
+            msg.dataset.aesPlannerMessage = "1"
+            msg.style.cssText = "font-size:10px;color:#9ca3af;"
+            msg.textContent = _planner.lastMessage
+            body.appendChild(msg)
+        }
+        wrap.appendChild(body)
+        return wrap
+    }
+
+    function _buildPlannerControls() {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:6px;"
+
+        const row1 = document.createElement("div")
+        row1.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px;"
+
+        row1.appendChild(_mkLabel("Hub"))
+        const hubInput = _mkBaseInput(_planner.hub || _plannerHub() || "", 3, "56px")
+        hubInput.dataset.aesPlannerHub = "1"
+        hubInput.placeholder = "HUB"
+        hubInput.style.textTransform = "uppercase"
+        hubInput.addEventListener("input", () => {
+            const v = hubInput.value.toUpperCase()
+            if (hubInput.value !== v) hubInput.value = v
+            _planner.hub = v
+        })
+        row1.appendChild(hubInput)
+
+        row1.appendChild(_mkLabel("Airports"))
+        const airportsInput = _mkBaseInput(_planner.airports || _plannerAirportList().join(" "), 240, "230px")
+        airportsInput.dataset.aesPlannerAirports = "1"
+        airportsInput.placeholder = "CDG LHR NRT"
+        airportsInput.style.textTransform = "uppercase"
+        airportsInput.addEventListener("input", () => {
+            const v = airportsInput.value.toUpperCase()
+            if (airportsInput.value !== v) airportsInput.value = v
+            _planner.airports = v
+        })
+        row1.appendChild(airportsInput)
+
+        row1.appendChild(_mkLabel("Flights"))
+        const countInput = _mkBaseInput(String(_planner.flightCount || 4), 2, "44px")
+        countInput.dataset.aesPlannerCount = "1"
+        countInput.placeholder = "4"
+        countInput.addEventListener("input", () => {
+            const n = _plannerParseCount(countInput.value)
+            if (n) _planner.flightCount = n
+        })
+        row1.appendChild(countInput)
+
+        const useVisibleBtn = _mkBtn("Use visible", "default", () => _plannerSetFromVisibleCandidates())
+        useVisibleBtn.dataset.aesPlannerUseVisible = "1"
+        useVisibleBtn.title = "Fill airports from the currently visible candidate rows"
+        row1.appendChild(useVisibleBtn)
+
+        const recommendBtn = _mkBtn("Recommend count", "default", () => {
+            _planner.flightCount = _plannerRecommendedCount()
+            _planner.lastMessage = "Recommended " + _planner.flightCount + " legs from the selected airports and pattern."
+            _renderBody()
+        })
+        recommendBtn.dataset.aesPlannerRecommend = "1"
+        recommendBtn.title = "Set the leg count from the selected airport structure"
+        row1.appendChild(recommendBtn)
+
+        const row2 = document.createElement("div")
+        row2.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px;"
+
+        row2.appendChild(_mkLabel("Pattern"))
+        const patternSelect = _plannerSelect([
+            ["roundtrip", "Hub shuttle"],
+            ["chain", "Chain loop"]
+        ], _planner.pattern || "roundtrip")
+        patternSelect.dataset.aesPlannerPattern = "1"
+        patternSelect.title = "Hub shuttle alternates HUB->station->HUB. Chain loop walks through every selected airport."
+        patternSelect.addEventListener("change", () => { _planner.pattern = patternSelect.value })
+        row2.appendChild(patternSelect)
+
+        row2.appendChild(_mkLabel("Start"))
+        const startInput = _mkTimeInput(_planner.startTime || "09:00", (v) => { _planner.startTime = v })
+        startInput.dataset.aesPlannerStart = "1"
+        row2.appendChild(startInput)
+
+        row2.appendChild(_mkLabel("Turn"))
+        const turnInput = _mkBaseInput(String(_planner.turnMin || _turnMin || 30), 4, "44px")
+        turnInput.dataset.aesPlannerTurn = "1"
+        turnInput.placeholder = "min"
+        turnInput.addEventListener("input", () => {
+            const n = parseInt(turnInput.value, 10)
+            if (isFinite(n) && n >= 0 && n < 1440) {
+                _planner.turnMin = n
+                _turnMin = n
+            }
+        })
+        row2.appendChild(turnInput)
+
+        row2.appendChild(_mkLabel("Price"))
+        const priceSelect = _plannerSelect([
+            ["demand", "Demand"],
+            ["flat", "Flat"]
+        ], _planner.priceMode || "demand")
+        priceSelect.dataset.aesPlannerPriceMode = "1"
+        priceSelect.title = "Demand mode adjusts the AS creation price percent from candidate demand and competition signals"
+        priceSelect.addEventListener("change", () => { _planner.priceMode = priceSelect.value })
+        row2.appendChild(priceSelect)
+
+        const sequentialLabel = document.createElement("label")
+        sequentialLabel.style.cssText = "display:inline-flex;align-items:center;gap:4px;color:#9ca3af;font-size:10px;"
+        const sequentialInput = document.createElement("input")
+        sequentialInput.type = "checkbox"
+        sequentialInput.checked = _planner.longDrift !== false
+        sequentialInput.dataset.aesPlannerSequential = "1"
+        sequentialInput.addEventListener("change", () => { _planner.longDrift = !!sequentialInput.checked })
+        sequentialLabel.appendChild(sequentialInput)
+        sequentialLabel.appendChild(document.createTextNode("Sequential"))
+        row2.appendChild(sequentialLabel)
+
+        const generateBtn = _mkBtn("Generate draft", "primary", async () => {
+            await _generatePlannerSchedule()
+        })
+        generateBtn.dataset.aesPlannerGenerate = "1"
+        generateBtn.title = "Build the mock timetable and replace the Flight Studio legs below"
+        row2.appendChild(generateBtn)
+
+        const previewBtn = _mkBtn("Preview first", "default", () => _runPreview())
+        previewBtn.dataset.aesPlannerPreview = "1"
+        previewBtn.title = "Preview the first generated leg against AS's New Flight Number form"
+        row2.appendChild(previewBtn)
+
+        const createBtn = _mkBtn("Create generated", "default", async () => {
+            const hasGenerated = _planner.lastMock && _planner.lastMock.length
+            if (!hasGenerated) {
+                const ok = await _generatePlannerSchedule()
+                if (!ok) return
+            }
+            await _runApply()
+        })
+        createBtn.dataset.aesPlannerCreate = "1"
+        createBtn.title = "Open the apply confirmation for the generated timetable"
+        row2.appendChild(createBtn)
+
+        wrap.appendChild(row1)
+        wrap.appendChild(row2)
+        return wrap
+    }
+
+    function _buildPlannerMockTable() {
+        const wrap = document.createElement("div")
+        wrap.dataset.aesPlannerMock = "1"
+        wrap.style.cssText = "overflow:auto;border-top:1px dashed #1f2937;padding-top:6px;"
+
+        const legs = (_spec && Array.isArray(_spec.legs)) ? _spec.legs : []
+        const mock = Array.isArray(_planner.lastMock) ? _planner.lastMock : []
+        if (!legs.length || !mock.length) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "color:#6b7280;font-size:10px;"
+            empty.textContent = "Generate a draft to populate the mock schedule."
+            wrap.appendChild(empty)
+            return wrap
+        }
+
+        const table = document.createElement("table")
+        table.style.cssText = "width:100%;border-collapse:collapse;font-size:10px;font-family:var(--aes-font-mono,monospace);"
+        const thead = document.createElement("thead")
+        const hr = document.createElement("tr")
+        ;["#", "Flight#", "Day", "Route", "Dep", "Block", "Arr", "Days", "Price", "Y/C/F/Cargo"].forEach(h => {
+            const th = document.createElement("th")
+            th.textContent = h
+            th.style.cssText = "text-align:left;color:#9ca3af;font-weight:600;padding:2px 4px;border-bottom:1px solid #1f2937;"
+            hr.appendChild(th)
+        })
+        thead.appendChild(hr)
+        table.appendChild(thead)
+
+        const tbody = document.createElement("tbody")
+        legs.forEach((leg, idx) => {
+            const m = mock[idx] || {}
+            const tr = document.createElement("tr")
+            tr.dataset.aesPlannerMockRow = String(idx)
+            tr.style.cssText = "border-bottom:1px solid rgba(31,41,55,0.65);"
+            _plannerTd(tr, String(idx + 1), "#6b7280")
+            _plannerTd(tr, _plannerFlightNumberForIndex(idx), "#cbd5e1")
+            _plannerTd(tr, _plannerDayLabel(m.dayOffset), "#fde68a")
+            _plannerTd(tr, (leg.origin || "???") + "->" + (leg.destination || "???"), "#e2e8f0")
+
+            const depTd = document.createElement("td")
+            depTd.style.cssText = "padding:2px 4px;"
+            const depInput = _mkBaseInput(leg.depTimeLocal || "", 5, "58px")
+            depInput.dataset.aesPlannerDep = String(idx)
+            depInput.placeholder = "HH:MM"
+            depInput.addEventListener("blur", () => {
+                _plannerCommitDepTime(idx, depInput.value).catch(e => {
+                    console.warn("[AES planner] dep edit failed", e)
+                    _renderHint("error", "Planner DEP edit failed: " + ((e && e.message) || String(e)))
+                })
+            })
+            depTd.appendChild(depInput)
+            tr.appendChild(depTd)
+
+            _plannerTd(tr, _plannerBlockLabel(m.flightMin), "#cbd5e1")
+            _plannerTd(tr, _plannerDayTimeLabel(m.arrDayOffset, m.arrTimeLocal), "#cbd5e1")
+            _plannerTd(tr, _plannerDayMaskText(leg.dayMask), "#9ca3af")
+            _plannerTd(tr, (leg.pricePct != null ? String(leg.pricePct) : "100") + "%", "#a7f3d0")
+            _plannerTd(tr, _plannerClassPriceLabel(m.priceByClass), "#bfdbfe")
+            tbody.appendChild(tr)
+        })
+        table.appendChild(tbody)
+        wrap.appendChild(table)
+        return wrap
+    }
+
+    function _plannerSelect(options, value) {
+        const sel = document.createElement("select")
+        sel.style.cssText = "background:#0f1419;color:#e2e8f0;"
+            + "border:1px solid #374151;border-radius:3px;padding:3px 6px;font-size:11px;"
+            + "font-family:var(--aes-font-mono,monospace);"
+        for (const pair of options) {
+            const opt = document.createElement("option")
+            opt.value = pair[0]
+            opt.textContent = pair[1]
+            sel.appendChild(opt)
+        }
+        sel.value = value
+        return sel
+    }
+
+    function _plannerTd(tr, text, color) {
+        const td = document.createElement("td")
+        td.textContent = text == null || text === "" ? "-" : String(text)
+        td.style.cssText = "padding:2px 4px;color:" + (color || "#cbd5e1") + ";white-space:nowrap;"
+        tr.appendChild(td)
+        return td
+    }
+
+    function _plannerHub() {
+        return _normIata(_planner.hub) || _activeHubIata() || _routeBaseIata()
+    }
+
+    function _plannerVisibleIatas() {
+        const out = []
+        const push = (v) => {
+            const i = _normIata(v)
+            if (i && out.indexOf(i) < 0) out.push(i)
+        }
+        try {
+            const rc = window.AesAfpRouteCandidates
+            if (rc && typeof rc.visibleIatas === "function") {
+                for (const i of rc.visibleIatas()) push(i)
+            }
+            if (!out.length && rc && Array.isArray(rc.last)) {
+                for (const c of rc.last) push(c && c.destIata)
+            }
+        } catch (_) { /* fall back below */ }
+        return out
+    }
+
+    function _plannerAirportList() {
+        const hub = _plannerHub()
+        const parsed = _plannerParseAirports(_planner.airports)
+        if (parsed.length) return parsed.filter(i => i !== hub)
+
+        const out = []
+        const push = (v) => {
+            const i = _normIata(v)
+            if (i && i !== hub && out.indexOf(i) < 0) out.push(i)
+        }
+        const legs = (_spec && Array.isArray(_spec.legs)) ? _spec.legs : []
+        for (const leg of legs) push(leg && leg.destination)
+        for (const i of _plannerVisibleIatas()) push(i)
+        return out
+    }
+
+    function _plannerParseAirports(raw) {
+        const out = []
+        const matches = String(raw || "").toUpperCase().match(/[A-Z]{3}/g) || []
+        for (const m of matches) {
+            const i = _normIata(m)
+            if (i && out.indexOf(i) < 0) out.push(i)
+        }
+        return out
+    }
+
+    function _plannerParseCount(raw) {
+        const n = Math.round(Number(raw))
+        if (!isFinite(n)) return null
+        return Math.max(1, Math.min(32, n))
+    }
+
+    function _plannerSetFromVisibleCandidates() {
+        const hub = _plannerHub()
+        const limit = Math.max(1, Math.min(20, Math.ceil((_planner.flightCount || 4) / 2) || 6))
+        const visible = _plannerVisibleIatas().filter(i => i !== hub).slice(0, limit)
+        if (!visible.length) {
+            _renderHint("warn", "No visible candidate airports to import.")
+            return
+        }
+        _planner.airports = visible.join(" ")
+        _planner.lastMessage = "Loaded " + visible.length + " visible candidate airports."
+        _renderBody()
+    }
+
+    function _plannerRecommendedCount() {
+        const stations = _plannerAirportList()
+        if (!stations.length) return 2
+        if ((_planner.pattern || "roundtrip") === "chain") {
+            return Math.max(2, Math.min(32, stations.length + 1))
+        }
+        return Math.max(2, Math.min(32, stations.length * 2))
+    }
+
+    async function _generatePlannerSchedule() {
+        const ctx = _ctx()
+        const server = ctx && ctx.server
+        const hub = _plannerHub()
+        const stations = _plannerAirportList()
+        const count = _plannerParseCount(_planner.flightCount) || 4
+        const start = _plannerHHMMToMinutes(_planner.startTime || "09:00")
+        const turn = Math.max(0, Math.min(1439, Math.round(Number(_planner.turnMin != null ? _planner.turnMin : _turnMin) || 30)))
+        if (!hub) {
+            _planner.lastMessage = "Pick a hub before generating."
+            _renderBody()
+            return false
+        }
+        if (!stations.length) {
+            _planner.lastMessage = "Pick at least one destination airport."
+            _renderBody()
+            return false
+        }
+        if (start == null) {
+            _planner.lastMessage = "Start time must be HH:MM."
+            _renderBody()
+            return false
+        }
+
+        _planner.flightCount = count
+        _planner.turnMin = turn
+        _turnMin = turn
+
+        const baseLeg = (_spec && _spec.legs && _spec.legs[0]) || {}
+        const baseDayMask = _legDayMask(baseLeg)
+        const legs = []
+        const mock = []
+        const state = {stationIdx: 0}
+        let current = hub
+        let abs = start
+
+        for (let i = 0; i < count; i++) {
+            const dest = _plannerNextDestination(_planner.pattern, current, hub, stations, state)
+            if (!dest || dest === current) break
+            const cand = _plannerCandidateFor(current, dest)
+            const flightMin = await _plannerFlightMinutes(server, current, dest, cand)
+            const dayOffset = Math.floor(abs / 1440)
+            const depTimeLocal = _plannerMinutesToHHMM(abs)
+            const arrAbs = abs + flightMin
+            const arrDayOffset = Math.floor(arrAbs / 1440)
+            const price = _plannerPriceForCandidate(cand, baseLeg.pricePct)
+            const priceByClass = _plannerClassPricePlan(cand, price)
+
+            legs.push({
+                seq: i + 1,
+                origin: current,
+                destination: dest,
+                depTimeLocal: depTimeLocal,
+                service: typeof baseLeg.service === "string" ? baseLeg.service : "",
+                pricePct: price,
+                dayMask: _plannerShiftDayMask(baseDayMask, dayOffset)
+            })
+            mock.push({
+                seq: i + 1,
+                origin: current,
+                destination: dest,
+                dayOffset,
+                depAbs: abs,
+                depTimeLocal,
+                flightMin,
+                turnMin: turn,
+                arrAbs,
+                arrDayOffset,
+                arrTimeLocal: _plannerMinutesToHHMM(arrAbs),
+                candidateScore: cand && (cand.scoreBlend != null ? cand.scoreBlend : cand.score),
+                pricePct: price,
+                priceByClass
+            })
+            current = dest
+            abs = (_planner.longDrift !== false)
+                ? arrAbs + turn
+                : start + ((i + 1) * Math.max(60, turn || 60))
+        }
+
+        if (!legs.length) {
+            _planner.lastMessage = "No valid planner legs could be generated."
+            _renderBody()
+            return false
+        }
+        await _applyPlannerLegs(legs, mock)
+        _planner.lastMessage = "Generated " + legs.length + " sequential legs from " + hub
+            + " using " + stations.join(", ") + "."
+        _renderBody()
+        await _plannerPopulateAvailableRange(legs.length)
+        _renderHint("info", _planner.lastMessage)
+        return true
+    }
+
+    function _plannerNextDestination(pattern, current, hub, stations, state) {
+        const p = pattern || "roundtrip"
+        if (p === "chain") {
+            const path = [hub].concat(stations)
+            const idx = path.indexOf(current)
+            if (idx < 0) return hub
+            return path[(idx + 1) % path.length]
+        }
+        if (current !== hub) return hub
+        const dest = stations[state.stationIdx % stations.length]
+        state.stationIdx += 1
+        return dest
+    }
+
+    async function _plannerFlightMinutes(server, origin, dest, candidate) {
+        const fromCand = candidate && Number(candidate.blockMin)
+        if (isFinite(fromCand) && fromCand > 0) return Math.max(20, Math.round(fromCand))
+
+        let distanceKm = candidate && Number(candidate.distanceKm)
+        if (!(isFinite(distanceKm) && distanceKm > 0)) {
+            distanceKm = await _resolveDistanceKm(server, origin, dest)
+        }
+        const resolved = window.AesAfpSpecResolver && window.AesAfpSpecResolver.last
+        const kmh = resolved && Number(resolved.cruiseSpeedKmh)
+        if (isFinite(distanceKm) && distanceKm > 0 && isFinite(kmh) && kmh > 0) {
+            return Math.max(20, Math.round((distanceKm / kmh) * 60))
+        }
+        return 90
+    }
+
+    function _applyPlannerLegs(legs, mock) {
+        const ctx = _ctx() || {}
+        const base = _spec
+            ? window.AesAfpLegSpec.cloneSpec(_spec)
+            : window.AesAfpLegSpec.createSpec({
+                server: ctx.server || "",
+                aircraftId: ctx.aircraftId || "",
+                origin: legs[0] && legs[0].origin,
+                source: "manual",
+                dryRun: false
+            })
+        const next = window.AesAfpLegSpec.normalizeSpec(Object.assign({}, base, {
+            server: ctx.server || base.server || "",
+            aircraftId: ctx.aircraftId || base.aircraftId || "",
+            legs,
+            source: "manual",
+            dryRun: false
+        }))
+        _planner.lastMock = Array.isArray(mock) ? mock : []
+        return _updateSpecWithHistory(next).then(() => {
+            _pushAllToAsForm()
+            _emit("studio:planner-generated", {spec: _spec, mock: _planner.lastMock})
+            return true
+        })
+    }
+
+    async function _plannerCommitDepTime(idx, raw) {
+        const t = _plannerNormalizeHHMM(raw)
+        if (!t || !_spec || !Array.isArray(_spec.legs) || !_spec.legs[idx]) return
+        const next = window.AesAfpLegSpec.setLegField(_spec, idx, "depTimeLocal", t)
+        const mock = Array.isArray(_planner.lastMock) ? _planner.lastMock.slice() : []
+        if (mock[idx]) {
+            const prevAbs = Number(mock[idx].depAbs)
+            const dayOffset = isFinite(prevAbs) ? Math.floor(prevAbs / 1440) : (mock[idx].dayOffset || 0)
+            const localMin = _plannerHHMMToMinutes(t)
+            const depAbs = (dayOffset * 1440) + (localMin == null ? 0 : localMin)
+            const flightMin = Number(mock[idx].flightMin) || 0
+            mock[idx] = Object.assign({}, mock[idx], {
+                depAbs,
+                depTimeLocal: t,
+                arrAbs: depAbs + flightMin,
+                arrDayOffset: Math.floor((depAbs + flightMin) / 1440),
+                arrTimeLocal: _plannerMinutesToHHMM(depAbs + flightMin)
+            })
+            _planner.lastMock = mock
+        }
+        await _updateSpecWithHistory(next)
+        _pushAllToAsForm()
+        _renderBody()
+        _renderHint("info", "Updated mock departure for leg #" + (idx + 1) + " to " + t + ".")
+    }
+
+    function _plannerCandidateFor(origin, dest) {
+        const o = _normIata(origin)
+        const d = _normIata(dest)
+        if (!o || !d) return null
+        const rc = window.AesAfpRouteCandidates
+        const rows = rc && Array.isArray(rc.last) ? rc.last : []
+        let fallback = null
+        for (const c of rows) {
+            const co = _normIata(c && c.originIata)
+            const cd = _normIata(c && c.destIata)
+            if (!cd) continue
+            if (cd === d && (!co || co === o)) return c
+            if (cd === o && (!co || co === d)) return c
+            if (!fallback && cd === d) fallback = c
+        }
+        return fallback
+    }
+
+    function _plannerPriceForCandidate(candidate, fallbackPct) {
+        const base = Number.isFinite(Number(fallbackPct)) ? Number(fallbackPct) : 100
+        if ((_planner.priceMode || "demand") === "flat") return Math.round(Math.max(50, Math.min(200, base)))
+        const c = candidate || {}
+        let delta = 0
+        const score = Number(c.scoreBlend != null ? c.scoreBlend : c.score)
+        const pax = Number(c.paxScore)
+        const cargo = Number(c.cargoScore)
+        const airlines = Number(c.airlineCount)
+        const weekly = Number(c.weeklyFlights)
+        if (isFinite(score)) delta += (score - 50) / 10
+        if (isFinite(pax)) delta += (pax - 5) * 2.5
+        if (isFinite(cargo)) delta += (cargo - 5) * 1.2
+        if (isFinite(airlines)) delta -= Math.min(7, airlines * 1.2)
+        if (isFinite(weekly)) delta += Math.min(5, weekly / 30)
+        return Math.round(Math.max(70, Math.min(150, base + delta)))
+    }
+
+    function _plannerClassPricePlan(candidate, routePct) {
+        const c = candidate || {}
+        const pax = Number(c.paxScore)
+        const cargo = Number(c.cargoScore)
+        const alphaY = Number(c.alphaY)
+        const alphaC = Number(c.alphaC)
+        const alphaF = Number(c.alphaF)
+        const demandLift = isFinite(pax) ? (pax - 5) : 0
+        const cargoLift = isFinite(cargo) ? (cargo - 5) : 0
+        const alpha = (v) => isFinite(v) ? Math.max(-8, Math.min(12, (v - 1) * 8)) : 0
+        const clamp = (v) => Math.round(Math.max(50, Math.min(200, v)))
+        return {
+            Y: clamp(routePct + demandLift * 1.4 + alpha(alphaY)),
+            C: clamp(routePct + 4 + demandLift * 1.8 + alpha(alphaC)),
+            F: clamp(routePct + 8 + demandLift * 2.2 + alpha(alphaF)),
+            Cargo: clamp(routePct + cargoLift * 2.0)
+        }
+    }
+
+    function _plannerShiftDayMask(mask, offset) {
+        const src = Array.isArray(mask) && mask.length >= 7
+            ? mask.slice(0, 7).map(Boolean)
+            : _defaultDayMask()
+        const off = ((Math.round(Number(offset) || 0) % 7) + 7) % 7
+        if (!off) return src
+        const out = [false, false, false, false, false, false, false]
+        for (let i = 0; i < 7; i++) if (src[i]) out[(i + off) % 7] = true
+        return out
+    }
+
+    function _plannerDayMaskText(mask) {
+        const src = Array.isArray(mask) && mask.length >= 7 ? mask.slice(0, 7).map(Boolean) : _defaultDayMask()
+        if (src.every(Boolean)) return "Daily"
+        const names = ["M", "T", "W", "Th", "F", "Sa", "Su"]
+        const out = []
+        for (let i = 0; i < 7; i++) if (src[i]) out.push(names[i])
+        return out.length ? out.join("") : "None"
+    }
+
+    function _plannerFlightNumberForIndex(idx) {
+        const raw = String((_spec && _spec.flightNumberText) || "").trim()
+        if (!raw) return "auto"
+        if (!/^\d+$/.test(raw)) return idx === 0 ? raw : "auto"
+        return String(parseInt(raw, 10) + idx)
+    }
+
+    function _plannerHHMMToMinutes(hhmm) {
+        const m = String(hhmm || "").match(/^(\d{1,2}):(\d{2})$/)
+        if (!m) return null
+        const h = parseInt(m[1], 10)
+        const min = parseInt(m[2], 10)
+        if (!(h >= 0 && h <= 23) || !(min >= 0 && min <= 59)) return null
+        return h * 60 + min
+    }
+
+    function _plannerNormalizeHHMM(hhmm) {
+        const min = _plannerHHMMToMinutes(hhmm)
+        return min == null ? null : _plannerMinutesToHHMM(min)
+    }
+
+    function _plannerMinutesToHHMM(total) {
+        let t = Math.round(Number(total) || 0) % 1440
+        if (t < 0) t += 1440
+        const h = Math.floor(t / 60)
+        const m = t % 60
+        return (h < 10 ? "0" + h : "" + h) + ":" + (m < 10 ? "0" + m : "" + m)
+    }
+
+    function _plannerDayLabel(offset) {
+        const n = Math.floor(Number(offset) || 0)
+        return n > 0 ? "D+" + n : "D0"
+    }
+
+    function _plannerDayTimeLabel(offset, hhmm) {
+        return _plannerDayLabel(offset) + " " + (hhmm || "--:--")
+    }
+
+    function _plannerBlockLabel(min) {
+        const n = Math.round(Number(min))
+        if (!isFinite(n) || n <= 0) return "-"
+        const h = Math.floor(n / 60)
+        const m = n % 60
+        return h + ":" + (m < 10 ? "0" + m : "" + m)
+    }
+
+    function _plannerClassPriceLabel(priceByClass) {
+        if (!priceByClass) return "-"
+        return PLANNER_CLASSES.map(cls => {
+            const v = priceByClass[cls]
+            return cls + (v == null ? "-" : String(v))
+        }).join("/")
+    }
+
+    async function _plannerPopulateAvailableRange(count) {
+        const legCount = Math.max(1, Math.min(32, Math.round(Number(count) || 1)))
+        const base = await _plannerFindAvailableNumberRange(legCount)
+        if (base) {
+            _updateSpec(window.AesAfpLegSpec.setSpecField(_spec, "flightNumberText", base))
+            _pushToAsForm("flightNumberText", base)
+            _renderBody()
+            return base
+        }
+        await _populateNextAvailable({silent: true})
+        return (_spec && _spec.flightNumberText) || null
+    }
+
+    async function _plannerFindAvailableNumberRange(count) {
+        const nums = await _plannerFetchRosterNumbers()
+        if (!nums || !nums.length) return null
+        const used = new Set()
+        for (const raw of nums) {
+            const n = parseInt(raw, 10)
+            if (n > 0 && n < 10000) used.add(n)
+        }
+        const need = Math.max(1, Math.min(32, Math.round(Number(count) || 1)))
+        for (let base = 1; base < 10000; base++) {
+            let ok = true
+            for (let i = 0; i < need; i++) {
+                if (base + i >= 10000 || used.has(base + i)) { ok = false; break }
+            }
+            if (ok) return String(base)
+        }
+        return null
+    }
+
+    async function _plannerFetchRosterNumbers() {
+        if (typeof fetch !== "function" || typeof DOMParser === "undefined") return null
+        let ctrl = null
+        let timer = null
+        try {
+            if (typeof AbortController !== "undefined") {
+                ctrl = new AbortController()
+                timer = setTimeout(() => ctrl.abort(), 9000)
+            }
+            const res = await fetch("/app/com/numbers", {
+                credentials: "include",
+                cache: "no-store",
+                signal: ctrl ? ctrl.signal : undefined
+            })
+            if (!res || !res.ok) return null
+            const html = await res.text()
+            const doc = new DOMParser().parseFromString(html, "text/html")
+            const nums = _plannerCollectRosterNumbers(doc)
+            const expected = _plannerExpectedRosterCount(doc)
+            if (!nums.length) return null
+            if (expected && nums.length < expected) return null
+            return nums
+        } catch (_) {
+            return null
+        } finally {
+            if (timer) clearTimeout(timer)
+        }
+    }
+
+    function _plannerCollectRosterNumbers(doc) {
+        const seen = new Set()
+        if (!doc || !doc.querySelectorAll) return []
+        for (const tr of doc.querySelectorAll("tr")) {
+            const cells = tr.cells ? Array.from(tr.cells) : []
+            if (!cells.length) continue
+            for (const cell of cells) {
+                const txt = (cell.innerText || cell.textContent || "").trim()
+                if (!/^\d{1,4}$/.test(txt)) continue
+                const n = parseInt(txt, 10)
+                if (n > 0 && n < 10000) seen.add(n)
+                break
+            }
+        }
+        return Array.from(seen).sort((a, b) => a - b)
+    }
+
+    function _plannerExpectedRosterCount(doc) {
+        const text = doc && doc.body ? (doc.body.innerText || doc.body.textContent || "") : ""
+        let max = 0
+        const re = /flight numbers\s*\((\d+)\)/gi
+        let m
+        while ((m = re.exec(text))) max = Math.max(max, parseInt(m[1], 10) || 0)
+        return max || null
+    }
+
+    async function _validateFlightNumberRangeForApply(legs) {
+        const fn = String((_spec && _spec.flightNumberText) || "").trim()
+        if (!/^\d+$/.test(fn)) return {ok: true}
+        const base = parseInt(fn, 10)
+        if (!(base > 0 && base < 10000)) return {ok: true}
+        const nums = await _plannerFetchRosterNumbers()
+        if (!nums || !nums.length) return {ok: true}
+        const used = new Set(nums.map(n => parseInt(n, 10)).filter(n => n > 0 && n < 10000))
+        const collisions = []
+        for (let i = 0; i < (legs || []).length; i++) {
+            const n = base + i
+            if (used.has(n)) collisions.push(n)
+        }
+        if (!collisions.length) return {ok: true}
+        return {
+            ok: false,
+            message: "flight number(s) already exist: #" + collisions.join(", #")
+                + ". Generate draft again to reserve a contiguous free range."
+        }
+    }
+
     // F3a — multi-leg tray. Wraps one row per leg, each with a drag handle
     // for reorder + a ✕ remove button. The tray itself is a drop target for
     // both leg-reorder (drag handle on another leg) and candidate (drag from
@@ -1641,9 +2528,9 @@
 
         const addRow = document.createElement("div")
         addRow.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:4px;"
-        const addBtn = _mkBtn("+ Add leg", "default", () => {
+        const addBtn = _mkBtn("+ Add leg", "default", async () => {
             const next = window.AesAfpLegSpec.addLeg(_spec)
-            _updateSpec(next)
+            await _updateSpecWithHistory(next)
             _renderBody()
         })
         addBtn.title = "Append a fresh leg seeded from the previous leg's destination"
@@ -1696,9 +2583,9 @@
         wrap.appendChild(fieldRow)
 
         // Remove button. Hidden when only one leg remains (spec invariant).
-        const rm = _mkBtn("✕", "default", () => {
+        const rm = _mkBtn("✕", "default", async () => {
             const next = window.AesAfpLegSpec.removeLeg(_spec, idx)
-            _updateSpec(next)
+            await _updateSpecWithHistory(next)
             _renderBody()
         })
         rm.title = "Remove this leg"
@@ -1773,9 +2660,8 @@
         }
     }
 
-    /** Append a fresh leg seeded from a route-candidates drag payload.
-     *  Insert position is currently always tail — `insertAtIdx` is captured
-     *  for a future "drop between rows" affordance but addLeg only appends.
+    /** Fill the newest open station slot from a route-candidates drag
+     *  payload, or append a fresh leg when there is no open slot.
      *
      *  FROM = previous leg's destination (or the hub when the tray is empty
      *  / the previous leg has no destination yet). TO = payload.destIata.
@@ -1789,8 +2675,16 @@
         const destIata = String(payload.destIata || "").toUpperCase()
         if (!/^[A-Z]{3}$/.test(destIata)) return
 
-        const ctx  = _ctx()
-        const hub  = (ctx && ctx.currentLocationIata || "").toUpperCase()
+        const targetIdx = _candidateFillTargetIndex("candidate-drag")
+        if (targetIdx > 0) {
+            const leg = _spec && _spec.legs && _spec.legs[targetIdx]
+            if (leg && _normIata(leg.origin) && !_normIata(leg.destination)) {
+                _fillCandidateDestination(targetIdx, {candidate: payload, source: "candidate-drag"})
+                return
+            }
+        }
+
+        const hub  = _activeHubIata()
         const tail = (_spec && _spec.legs && _spec.legs.length)
                      ? _spec.legs[_spec.legs.length - 1] : null
         const fromIata = (tail && /^[A-Z]{3}$/.test(String(tail.destination || "").toUpperCase()))
@@ -2001,19 +2895,30 @@
      *  doesn't clobber Studio's value. */
     function _overlayAsSnapshotOnSpec(spec, snap) {
         let next = spec
-        if (snap.origin) {
+        const hub = _activeHubIata()
+        const keepPlanHubForBlankDraft = !!(hub
+            && _isBlankSingleLegDraft(spec)
+            && !snap.destination
+            && snap.origin
+            && snap.origin !== hub)
+        if (snap.origin && !keepPlanHubForBlankDraft) {
             next = window.AesAfpLegSpec.setLegField(next, 0, "origin", snap.origin)
         }
         if (snap.destination) {
             next = window.AesAfpLegSpec.setLegField(next, 0, "destination", snap.destination)
         }
-        if (snap.depTimeLocal) {
+        // A transient Wicket re-render can expose AS's blank New Flight form
+        // with time defaulted to 00:00 while origin/destination are empty.
+        // Do not let that blank form clobber a Studio route that the user
+        // just composed.
+        const hasRouteSelection = !!(snap.origin || snap.destination)
+        if (hasRouteSelection && snap.depTimeLocal) {
             next = window.AesAfpLegSpec.setLegField(next, 0, "depTimeLocal", snap.depTimeLocal)
         }
-        if (snap.pricePct != null) {
+        if (hasRouteSelection && snap.pricePct != null) {
             next = window.AesAfpLegSpec.setLegField(next, 0, "pricePct", snap.pricePct)
         }
-        if (typeof snap.service === "string" && snap.service.length) {
+        if (hasRouteSelection && typeof snap.service === "string" && snap.service.length) {
             next = window.AesAfpLegSpec.setLegField(next, 0, "service", snap.service)
         }
         if (snap.flightNumberText && snap.flightNumberText.length) {
@@ -2154,9 +3059,12 @@
         if (_spec && Array.isArray(_spec.legs) && _spec.legs.length === 1) {
             const snap = _readAsFormSnapshot()
             if (snap) {
-                const overlaid = _overlayAsSnapshotOnSpec(_spec, snap)
+                const overlaid = _syncBlankDraftOriginToActiveHub(
+                    _overlayAsSnapshotOnSpec(_spec, snap))
                 if (overlaid !== _spec) {
                     _updateSpec(overlaid)
+                    const hub = _activeHubIata()
+                    if (hub) _pushToAsForm("origin", hub)
                     _renderBody()
                 }
             }
@@ -2176,10 +3084,9 @@
         fnInput.dataset.aesStudioFn = "1"
         fnInput.placeholder = "auto"
         row.appendChild(fnInput)
-        // "Next" button — clicks AS's "find first available" anchor and
-        // mirrors the result back into the spec. AS already implements the
-        // global per-airline next-available lookup, so we delegate rather
-        // than duplicate it client-side.
+        // "Next" button — asks the form driver to resolve against AS's full
+        // Flight Number Management roster, then mirrors the result back into
+        // the spec and AS form.
         const nextBtn = _mkBtn("Next", "default", _populateNextAvailable)
         nextBtn.title = "Ask AS for the next available flight number"
         nextBtn.style.padding = "2px 8px"
@@ -2202,14 +3109,11 @@
      *  The button click leaves opts undefined → full path. */
     async function _populateNextAvailable(opts) {
         const silent = !!(opts && opts.silent)
-        // Repeated clicks must advance past whatever's already shown — AS's
-        // "find first available" does not change the value when it would
-        // re-suggest the number that's already in the input, so without this
-        // we'd get the same value forever (and _pushToAsForm would just keep
-        // re-stamping it onto the AS form). Treat the current spec value as
-        // "in flight" and pass it to the local scan as already-used.
+        // Repeated clicks must advance past whatever's already shown. The
+        // form driver resolves against AS's full Flight Number Management
+        // roster and treats this current field value as in-flight, so gaps
+        // such as 1,2,_,4 are handled without reusing the current draft.
         const currentNum = String(_spec.flightNumberText || "").replace(/[^0-9]/g, "")
-        const extraUsed = currentNum ? [currentNum] : []
         let next = null
         // Only ask AS when the form is already on the page (silent path)
         // OR when the user explicitly clicked Next (full path, may flip tab).
@@ -2219,52 +3123,25 @@
         if ((!silent || formAlreadyVisible)
             && window.AesAfpFormDriver
             && typeof window.AesAfpFormDriver.findNextAvailableFlightNumber === "function") {
-            try { next = await window.AesAfpFormDriver.findNextAvailableFlightNumber() }
+            const prevSuppress = _suppressAsMirror
+            _suppressAsMirror = true
+            try {
+                next = await Promise.race([
+                    window.AesAfpFormDriver.findNextAvailableFlightNumber({after: currentNum}),
+                    new Promise(resolve => setTimeout(() => resolve(null), 9000))
+                ])
+            }
             catch (e) { console.warn("[AES studio] findNextAvailable threw", e) }
-        }
-        // AS may return null (timeout because the value didn't change) or the
-        // same value the user already has — both mean "no advance". Fall
-        // through to the per-aircraft scan with the current value excluded.
-        if (!next || extraUsed.indexOf(String(next)) !== -1) {
-            next = _scanScheduleNextAvailable(extraUsed)
+            finally { _suppressAsMirror = prevSuppress }
         }
         if (!next) {
-            if (!silent) _renderHint("warn", "Couldn't find next available flight number — switch to AS's 'New Flight Number' tab and try again.")
+            if (!silent) _renderHint("warn", "Couldn't verify the next available flight number from AS Flight Number Management.")
             return
         }
         _updateSpec(window.AesAfpLegSpec.setSpecField(_spec, "flightNumberText", next))
         _pushToAsForm("flightNumberText", next)
         _renderBody()
         if (!silent) _renderHint("info", "Suggested next flight number: " + next)
-    }
-
-    /** Read existing flight codes off the AFP page's Visual Flight Plan and
-     *  return the smallest unused positive integer (as a string). This is a
-     *  per-aircraft view — the AS server-side lookup is authoritative for
-     *  the whole airline — but it's a sane fallback when the AS anchor
-     *  isn't on the page. Returns null if we can't enumerate. */
-    function _scanScheduleNextAvailable(extraUsed) {
-        const vfp = (window.AesAfp && typeof window.AesAfp.readSchedule === "function")
-            ? window.AesAfp.readSchedule()
-            : null
-        const legs = (vfp && vfp.legs) || (vfp && Array.isArray(vfp) ? vfp : [])
-        const used = new Set()
-        for (const leg of legs || []) {
-            const code = leg && (leg.flightCode || leg.flightNumber)
-            if (!code) continue
-            // flightCode shape: "PAA 1", "PAA 47", or "47" (some airlines).
-            const m = String(code).match(/(\d+)\s*$/)
-            if (m) used.add(parseInt(m[1], 10))
-        }
-        if (extraUsed && extraUsed.length) {
-            for (const raw of extraUsed) {
-                const v = parseInt(String(raw).replace(/[^0-9]/g, ""), 10)
-                if (v > 0) used.add(v)
-            }
-        }
-        if (!used.size) return "1"
-        for (let n = 1; n < 10000; n++) if (!used.has(n)) return String(n)
-        return null
     }
 
     // ── Automation pipeline ──────────────────────────────────────────────
@@ -2293,7 +3170,7 @@
         else if (_automateInFlight) { label = "BUILDING";   color = "#fde68a"; bg = "#92400e" }
         else if (_spec && _spec.source === "auto-build")
                                     { label = "AUTO-BUILD"; color = "#bbf7d0"; bg = "#065f46" }
-        else                        { label = "DRY-RUN";    color = "#fde68a"; bg = "#1f2937" }
+        else                        { label = "DRAFT";      color = "#fde68a"; bg = "#1f2937" }
         badge.textContent = label
         badge.style.color = color
         badge.style.background = bg
@@ -2313,15 +3190,17 @@
     /** Convert _spec into the shape preview-panel's modal renders
      *  (origin/dest/depTime/pricePct/service/direction). Direction is
      *  inferred from hub vs origin so Flight Studio's modal has the same
-     *  inbound/outbound colour cues as auto-build's. flightNumberText is
-     *  attached to leg #0 only — AS won't honour duplicates on subsequent
-     *  POSTs in a multi-leg batch. */
+     *  inbound/outbound colour cues as auto-build's. When the draft carries
+     *  a numeric base flight number, issue sequential numbers per leg so the
+     *  background scheduler can resolve each newly-created AS flight record
+     *  before applying the operating-day schedule. */
     function _legsForApply() {
         if (!_spec || !_spec.legs || !_spec.legs.length) return []
-        const ctx = _ctx()
-        const hub = (ctx && ctx.currentLocationIata || "").toUpperCase()
+        const hub = _activeHubIata()
         const fn  = (_spec.flightNumberText || "").trim()
+        const fnBase = /^\d+$/.test(fn) ? parseInt(fn, 10) : null
         return _spec.legs.map((leg, i) => {
+            const origin = _normIata(leg.origin)
             const out = {
                 seq:         leg.seq != null ? leg.seq : (i + 1),
                 origin:      leg.origin,
@@ -2329,9 +3208,11 @@
                 depTime:     leg.depTimeLocal,
                 pricePct:    leg.pricePct,
                 service:     typeof leg.service === "string" ? leg.service : "",
-                direction:   (leg.origin && hub && leg.origin === hub) ? "outbound" : "inbound"
+                dayMask:     _legDayMask(leg),
+                direction:   (origin && hub && origin === hub) ? "outbound" : "inbound"
             }
-            if (i === 0 && fn) out.flightNumberText = fn
+            if (fnBase != null) out.flightNumberText = String(fnBase + i)
+            else if (i === 0 && fn) out.flightNumberText = fn
             return out
         })
     }
@@ -2360,6 +3241,7 @@
         try {
             const build = await sched.run({
                 aircraftId: ctx.aircraftId,
+                hubIata:    _activeHubIata(),
                 persist:    false   // panel writes the spec; allocator's draft store stays untouched
             })
             if (!build) {
@@ -2381,8 +3263,10 @@
             _lastBuild = build
             const settings = await _settingsSnapshot()
             const next = window.AesAfpLegSpec.setLegsFromBuild(_spec, flights, settings)
-            _updateSpec(next)
-            await _flushSave()
+            await _updateSpecWithHistory(next)
+            // Re-render after clearing the busy flag so the action row does
+            // not keep the "In flight..." disabled state from the build run.
+            _automateInFlight = false
             _renderBody()
             const wn = (build.placements   && build.placements.length)   || 0
             const cn = (build.connections  && build.connections.length)  || 0
@@ -2408,9 +3292,9 @@
      *  the panel mirrors via _attachAutoApplyListener. */
     async function _runApply() {
         if (_automateInFlight || _applyInFlight) return
-        const validation = window.AesAfpLegSpec.validateSpec(_spec)
+        const validation = await _validateSpecForAsForm()
         if (!validation.ok) {
-            _renderHint("error", "Cannot apply: " + validation.errors.map(e => e.path + " — " + e.reason).join("; "))
+            _renderHint("error", "Cannot apply: " + _formatValidationErrors(validation.errors).join("; "))
             return
         }
         const preview = window.AesAfpAutoSchedulerPreview
@@ -2425,6 +3309,11 @@
         const legs = _legsForApply()
         if (!legs.length) {
             _renderHint("error", "Spec has no legs to apply.")
+            return
+        }
+        const numberRange = await _validateFlightNumberRangeForApply(legs)
+        if (!numberRange.ok) {
+            _renderHint("error", "Cannot apply: " + numberRange.message)
             return
         }
         _emit("studio:apply-requested", {spec: _spec})
@@ -2531,12 +3420,11 @@
 
         const list = document.createElement("div")
         list.style.cssText = "padding:0 8px 6px;font-family:var(--aes-font-mono,monospace);font-size:10px;color:#9ca3af;"
-        const ctx = _ctx()
-        const hub = (ctx && ctx.currentLocationIata || "").toUpperCase()
+        const hub = _activeHubIata()
         _spec.legs.forEach((leg, i) => {
             const row = document.createElement("div")
             row.style.cssText = "display:flex;gap:8px;padding:2px 0;"
-            const arrowOut = (leg.origin && hub && leg.origin === hub)
+            const arrowOut = (_normIata(leg.origin) && hub && _normIata(leg.origin) === hub)
             const dir = arrowOut ? "→" : "←"
             const dirCol = arrowOut ? "#3b82f6" : "#10b981"
             const idx = document.createElement("span")
@@ -2599,19 +3487,19 @@
             if (tooltip) btn.title = tooltip
         }
 
-        const automateBtn = _mkBtn("🎯 Automate", "primary", _runAutomate)
+        const automateBtn = _mkBtn("Build + create", "primary", _runAutomate)
         automateBtn.title = "Build the optimal plan and create all flights in one click"
         _setDisabled(automateBtn, busy || !canBuild || !canApply,
             !canBuild ? "Auto-scheduler not loaded"
             : !canApply ? "Apply-batch pipeline not loaded"
             : "In flight…")
 
-        const buildBtn = _mkBtn("Auto-Build", "default", _runAutoBuild)
+        const buildBtn = _mkBtn("Build draft", "default", _runAutoBuild)
         buildBtn.title = "Run the optimiser and populate the spec without applying"
         _setDisabled(buildBtn, busy || !canBuild,
             !canBuild ? "Auto-scheduler not loaded" : "In flight…")
 
-        const applyBtn = _mkBtn("Apply", "default", _runApply)
+        const applyBtn = _mkBtn("Create flights", "default", _runApply)
         applyBtn.title = "Apply the current spec via background-tab pipeline"
         _setDisabled(applyBtn, busy || !canApply,
             !canApply ? "Apply-batch pipeline not loaded" : "In flight…")
@@ -2628,9 +3516,9 @@
         })
         const resetBtn = _mkBtn("Reset", "default", async () => {
             const ctx = _ctx()
-            _spec = _seedSpec(ctx)
+            const next = _seedSpec(ctx)
             _autoSuggested = false   // user reset → re-arm auto-suggest
-            await _flushSave()
+            await _updateSpecWithHistory(next)
             _renderBody()
             // Clear the AS form's flight-number input so it matches the
             // reset spec. Other fields are left alone — a candidate-row
@@ -2654,10 +3542,11 @@
             }
         })
 
-        // Continue → / ← Continue back: advance (or retreat) the form for
-        // the next leg of a wave by `flightTime + turnaround`. Forward
-        // anchors FROM = prev.TO; backward anchors TO = prev.FROM. Pure
-        // form-state — no AS submit needed between presses.
+        // Continue → / ← Continue back: advance (or retreat) the route cycle.
+        // Forward turns an outbound BASE→STATION leg into its return
+        // STATION→BASE; after the return, the next Continue opens a fresh
+        // BASE→blank row for the user to fill from the station table.
+        // Pure form-state — no AS submit needed between presses.
         const turnLbl = _mkLabel("Turn")
         const turnInp = _mkBaseInput(String(_turnMin), 4, "44px")
         turnInp.placeholder = "min"
@@ -2668,12 +3557,10 @@
         })
         const bwdBtn = _mkBtn("← Continue back", "default",
             () => { _continueLeg("backward") })
-        bwdBtn.title = "Seed previous leg: TO = current FROM, FROM blank, "
-            + "DEP retreats by flight time + turnaround"
+        bwdBtn.title = "Seed the previous route-cycle leg and retreat DEP by flight time + turnaround"
         const fwdBtn = _mkBtn("Continue →", "default",
             () => { _continueLeg("forward") })
-        fwdBtn.title = "Seed next leg: FROM = current TO, TO blank, "
-            + "DEP advances by flight time + turnaround"
+        fwdBtn.title = "Return to the route base, or open the next blank station row"
 
         row.append(previewBtn, resetBtn, undoBtn,
                    turnLbl, turnInp, bwdBtn, fwdBtn)
@@ -2682,10 +3569,12 @@
 
     /**
      * Append (Forward) or prepend (Backward) a fresh leg in the multi-leg
-     * tray. Forward anchors on the tray's TAIL leg: new leg gets
-     * FROM = tail.destination, TO = blank, DEP = tail.dep + flightTime + turn.
-     * Backward anchors on the tray's HEAD leg: new leg gets TO = head.origin,
-     * FROM = blank, DEP = head.dep − head's flightTime − turn.
+     * tray. Forward anchors on the tray's TAIL leg and keeps the user on a
+     * base-station-base cycle:
+     *   - BASE→STATION     adds STATION→BASE
+     *   - STATION→BASE     adds BASE→blank, so the next candidate click
+     *                       fills that row's destination
+     * Backward mirrors the same cycle for prepending.
      *
      * Reuses `RouteAssistantDistanceResolver` for distance (cached symmetric
      * pair-key, so JFK→LAX shares storage with LAX→JFK; misses fetch from AS
@@ -2730,16 +3619,26 @@
             return
         }
 
-        let distanceKm = null
-        try {
-            if (typeof RouteAssistantDistanceResolver === "function") {
-                const resolver = new RouteAssistantDistanceResolver(server)
-                const rec = await resolver.resolve(origin, dest)
-                if (rec && Number(rec.distanceKm) > 0) distanceKm = Number(rec.distanceKm)
-            }
-        } catch (e) {
-            console.warn("[AES studio] distance resolve threw", e)
+        const base = _routeBaseIata()
+        if (!base) {
+            _renderHint("warn", "Set the first FROM airport before Continue.")
+            return
         }
+
+        const addingReturn = fwd
+            ? (origin === base && dest !== base)
+            : (dest === base && origin !== base)
+        const openingStationSlot = fwd
+            ? (dest === base && origin !== base)
+            : (origin === base && dest !== base)
+        if (!addingReturn && !openingStationSlot) {
+            _renderHint("warn", "Continue follows " + base
+                + " station cycles. Change this leg to return to " + base
+                + " before opening another station.")
+            return
+        }
+
+        const distanceKm = await _resolveDistanceKm(server, origin, dest)
         if (!distanceKm) {
             _renderHint("warn", "Couldn't resolve distance for " + origin + "→" + dest
                 + " — type the next DEP manually.")
@@ -2753,19 +3652,23 @@
 
         let next
         if (fwd) {
-            // addLeg defaults origin to tail.destination + service/pricePct
-            // from tail; we only need to override depTime + null TO.
+            // addLeg defaults origin to tail.destination; override both
+            // fields so a return leg always targets the route base, while the
+            // post-return row opens BASE→blank for the next station pick.
             next = window.AesAfpLegSpec.addLeg(_spec, {
-                destination:  null,
+                origin:       addingReturn ? dest : base,
+                destination:  addingReturn ? base : null,
                 depTimeLocal: newDep
             })
         } else {
             // Prepend — addLeg only appends, so build the legs array directly
-            // and re-normalise to densify seq.
+            // and re-normalise to densify seq. A prepended return-slot is
+            // intentionally blank on origin so the user can choose the
+            // previous station later.
             const cloned = window.AesAfpLegSpec.cloneSpec(_spec)
             cloned.legs.unshift({
-                origin:       null,
-                destination:  origin,
+                origin:       addingReturn ? base : null,
+                destination:  addingReturn ? origin : base,
                 depTimeLocal: newDep,
                 service:      typeof anchor.service === "string" ? anchor.service : "",
                 pricePct:     anchor.pricePct
@@ -2773,23 +3676,93 @@
             next = window.AesAfpLegSpec.normalizeSpec(cloned)
         }
 
-        if (window.AesAfpStudioDraftStore) {
-            try {
-                await window.AesAfpStudioDraftStore.save(server, ctx.aircraftId, next, {pushPrev: true})
-            } catch (e) {
-                console.warn("[AES studio] save threw on Continue", e)
-            }
-        }
-        _updateSpec(next)
+        await _updateSpecWithHistory(next)
         _renderBody()
         // Leg 0 may have shifted (backward prepend) — sync the AS form mirror
         // to match. Forward-append leaves leg 0 unchanged, but pushing again
         // is idempotent and keeps the two surfaces in lockstep.
         _pushAllToAsForm()
         _renderHint("info", (fwd ? "Forward" : "Backward")
+            + " · " + (addingReturn
+                ? (fwd ? dest + "→" + base : base + "→" + origin)
+                : (fwd ? base + "→(pick station)" : "(pick station)→" + base))
             + " · " + flightMin + " min flight + " + turn + " min turn = "
             + deltaMin + " min " + (fwd ? "added" : "subtracted") + ".")
         _emit("studio:draft-changed", {spec: _spec})
+    }
+
+    function _normIata(v) {
+        const s = String(v == null ? "" : v).trim().toUpperCase()
+        return /^[A-Z]{3}$/.test(s) ? s : null
+    }
+
+    function _routeBaseIata() {
+        const legs = (_spec && Array.isArray(_spec.legs)) ? _spec.legs : []
+        for (const leg of legs) {
+            const o = _normIata(leg && leg.origin)
+            if (o) return o
+        }
+        return _activeHubIata()
+    }
+
+    function _candidateFillTargetIndex(source) {
+        if (source === "wave-leg") return 0
+        const legs = (_spec && Array.isArray(_spec.legs)) ? _spec.legs : []
+        for (let i = legs.length - 1; i >= 0; i--) {
+            const leg = legs[i] || {}
+            if (_normIata(leg.origin) && !_normIata(leg.destination)) return i
+        }
+        return 0
+    }
+
+    function _fillCandidateDestination(idx, payload) {
+        if (!_spec || !_spec.legs || !_spec.legs.length) return false
+        const p = payload || {}
+        const c = p.candidate || p
+        const destIata = _normIata(c && c.destIata)
+        if (!destIata) return false
+
+        const targetIdx = Number.isFinite(idx)
+            ? Math.max(0, Math.min(_spec.legs.length - 1, Math.round(idx)))
+            : 0
+        const previousLeg = _spec.legs[targetIdx] || {}
+        const wasBlankSlot = targetIdx > 0
+            && _normIata(previousLeg.origin)
+            && !_normIata(previousLeg.destination)
+
+        let next = window.AesAfpLegSpec.setLegField(_spec, targetIdx, "destination", destIata)
+        if (!wasBlankSlot && typeof p.depTime === "string" && /^\d{1,2}:\d{2}$/.test(p.depTime)) {
+            next = window.AesAfpLegSpec.setLegField(next, targetIdx, "depTimeLocal", p.depTime)
+        }
+        if (p.source === "wave-leg" && c.__wave && c.__wave.origin) {
+            next = window.AesAfpLegSpec.setLegField(next, targetIdx, "origin", c.__wave.origin)
+        }
+        _updateSpec(next)
+        _renderBody()
+        if (targetIdx === 0) _pushToAsForm("flightNumberText", _spec.flightNumberText || "")
+        else setTimeout(() => _pushAllToAsForm(), 0)
+        if (wasBlankSlot) {
+            _renderHint("info", "Filled leg #" + (targetIdx + 1) + " destination: "
+                + previousLeg.origin + "→" + destIata + ".")
+        }
+        return true
+    }
+
+    async function _resolveDistanceKm(server, origin, dest) {
+        const o = _normIata(origin)
+        const d = _normIata(dest)
+        if (!o || !d) return null
+        let distanceKm = null
+        try {
+            if (typeof RouteAssistantDistanceResolver === "function") {
+                const resolver = new RouteAssistantDistanceResolver(server)
+                const rec = await resolver.resolve(o, d)
+                if (rec && Number(rec.distanceKm) > 0) distanceKm = Number(rec.distanceKm)
+            }
+        } catch (e) {
+            console.warn("[AES studio] distance resolve threw", e)
+        }
+        return distanceKm
     }
 
     function _buildDryRunPane() {
@@ -2806,8 +3779,8 @@
         pre.style.cssText = "margin:4px 0 0;padding:6px;background:#0f1419;color:#e2e8f0;font-size:10px;line-height:1.4;overflow:auto;max-height:240px;border-radius:3px;"
 
         if (!outcome) {
-            sum.textContent = "Dry-run output (click Preview to populate)"
-            pre.textContent = "(no dry-run yet — Preview to compute)"
+            sum.textContent = "Live form output (click Preview to populate)"
+            pre.textContent = "(no form output yet — Preview to compute)"
             wrap.appendChild(sum)
             wrap.appendChild(pre)
             return wrap
@@ -2819,8 +3792,8 @@
         if (outcome.validationErrors && outcome.validationErrors.length) {
             sum.textContent = "Spec invalid — fix and re-Preview"
             sum.style.color = "#fca5a5"
-            const lines = outcome.validationErrors
-                .map(e => "• " + e.path + " — " + e.reason)
+            const lines = _formatValidationErrors(outcome.validationErrors)
+                .map(line => "• " + line)
             pre.textContent = lines.join("\n")
         } else if (outcome.error) {
             sum.textContent = "Preview error"
@@ -2829,7 +3802,7 @@
         } else if (outcome.dryRun) {
             const r = outcome.dryRun
             const formMissing = Array.isArray(r.missed) && r.missed.indexOf("form-not-found") >= 0
-            sum.textContent = formMissing ? "AS form not on the page" : "Dry-run POST body"
+            sum.textContent = formMissing ? "AS form not on the page" : "Live POST body"
             if (formMissing) sum.style.color = "#fde68a"
             const parts = []
             if (formMissing) {
@@ -2843,7 +3816,7 @@
             parts.push(_formatDryRun(r))
             pre.textContent = parts.join("\n")
         } else {
-            sum.textContent = "Dry-run output"
+            sum.textContent = "Live form output"
             pre.textContent = "(empty outcome)"
         }
 
@@ -2856,7 +3829,7 @@
 
     /**
      * Mutates _lastDryRun/_lastDryRunOutcome and re-renders the body so the
-     * dry-run pane reflects the latest Preview attempt. Always populates the
+     * form-output pane reflects the latest Preview attempt. Always populates the
      * pane visibly — validation errors, form-not-found, and successful POST
      * bodies all show inline rather than as easy-to-miss side hints.
      */
@@ -2866,15 +3839,56 @@
         _renderBody()
     }
 
+    async function _validateSpecForAsForm() {
+        const pure = window.AesAfpLegSpec.validateSpec(_spec)
+        if (!pure.ok) return pure
+        const fd = window.AesAfpFormDriver
+        if (!fd || typeof fd.findForm !== "function"
+                || typeof window.AesAfpLegSpec.validateAgainstForm !== "function") {
+            return pure
+        }
+        try {
+            if (!fd.findForm() && typeof fd.ensureNewTabActive === "function") {
+                await fd.ensureNewTabActive()
+            }
+            const form = fd.findForm()
+            return form ? window.AesAfpLegSpec.validateAgainstForm(_spec, form) : pure
+        } catch (e) {
+            console.warn("[AES studio] AS-form validation failed", e)
+            return pure
+        }
+    }
+
+    function _formatValidationErrors(errors) {
+        return (errors || []).map(_formatValidationError)
+    }
+
+    function _formatValidationError(error) {
+        const e = error || {}
+        if (e.reason === "iata-not-in-airline-options") {
+            const m = /^legs\.(\d+)\.(origin|destination)$/.exec(String(e.path || ""))
+            if (m) {
+                const idx = parseInt(m[1], 10)
+                const field = m[2]
+                const leg = _spec && _spec.legs && _spec.legs[idx]
+                const code = leg && (field === "origin" ? leg.origin : leg.destination)
+                const label = field === "origin" ? "FROM" : "TO"
+                return "leg #" + (idx + 1) + " " + label + " " + (code || "???")
+                    + " is not available in AS's route list for this airline. Open the station or pick an airport from the native New Flight Number form."
+            }
+        }
+        return String(e.path || "spec") + " — " + String(e.reason || "invalid")
+    }
+
     async function _runPreview() {
-        const validation = window.AesAfpLegSpec.validateSpec(_spec)
+        const validation = await _validateSpecForAsForm()
         if (!validation.ok) {
             _renderDryRunPaneWith({validationErrors: validation.errors})
             return
         }
         const fd = window.AesAfpFormDriver
         if (!fd || typeof fd.dryRun !== "function") {
-            _renderDryRunPaneWith({error: "Form driver not loaded — cannot dry-run."})
+            _renderDryRunPaneWith({error: "Form driver not loaded — cannot inspect the live form."})
             return
         }
         // Auto-flip to the "New Flight Number" tab if AS is currently on
@@ -3043,7 +4057,22 @@
             "border-radius:3px;padding:4px 10px;font-size:11px;",
             "font-weight:600;cursor:pointer;"
         ].join(";")
-        b.addEventListener("click", onClick)
+        b.addEventListener("click", (event) => {
+            let result
+            try {
+                result = onClick(event)
+            } catch (e) {
+                console.warn("[AES studio] button threw", e)
+                _renderHint("error", label + " failed: " + ((e && e.message) || String(e)))
+                return
+            }
+            if (result && typeof result.catch === "function") {
+                result.catch((e) => {
+                    console.warn("[AES studio] button rejected", e)
+                    _renderHint("error", label + " failed: " + ((e && e.message) || String(e)))
+                })
+            }
+        })
         return b
     }
 
@@ -3092,27 +4121,29 @@
             if (_renderInFlight) return
             _renderBody()
         })
-        // Candidate-row click: mirror the picked destination (and depTime /
-        // wave-leg origin) into the Studio sidebar's leg-0 inputs and push
-        // the current `flightNumberText` into AS's `<input id="ida4">`.
+        bus.on("hub:changed", () => {
+            if (!_spec) return
+            const next = _syncBlankDraftOriginToActiveHub(_spec)
+            if (next === _spec) return
+            _updateSpec(next)
+            const hub = _activeHubIata()
+            if (hub) _pushToAsForm("origin", hub)
+            _renderBody()
+            _emit("studio:draft-changed", {spec: _spec})
+        })
+        // Candidate-row click: fill the newest BASE→blank station row when
+        // Continue opened one; otherwise mirror the picked destination (and
+        // depTime / wave-leg origin) into leg #1.
         // form-driver.js already fills AS's destination/dep selects; this
         // handler covers the sidebar inputs that bind to `_spec` and the
-        // flight-number text input that fill() leaves alone when the leg
-        // didn't carry one.
+        // flight-number text input that fill() leaves alone when leg #1
+        // is the active target.
         bus.on("candidate:selected", (payload) => {
             if (!_spec || !_spec.legs || !_spec.legs.length) return
             const c = payload && payload.candidate
             if (!c || !c.destIata) return
-            let next = window.AesAfpLegSpec.setLegField(_spec, 0, "destination", c.destIata)
-            if (typeof payload.depTime === "string" && /^\d{1,2}:\d{2}$/.test(payload.depTime)) {
-                next = window.AesAfpLegSpec.setLegField(next, 0, "depTimeLocal", payload.depTime)
-            }
-            if (payload.source === "wave-leg" && c.__wave && c.__wave.origin) {
-                next = window.AesAfpLegSpec.setLegField(next, 0, "origin", c.__wave.origin)
-            }
-            _updateSpec(next)
-            _renderBody()
-            _pushToAsForm("flightNumberText", _spec.flightNumberText || "")
+            const idx = _candidateFillTargetIndex(payload.source)
+            _fillCandidateDestination(idx, payload)
             _emit("studio:draft-changed", {spec: _spec})
         })
         // Subscribe to apply-batch progress so the panel can show live

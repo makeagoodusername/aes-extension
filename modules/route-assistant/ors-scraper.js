@@ -16,6 +16,7 @@
  *   routeAssistant:ors:<HUB>-<DEST>
  *     → {hub, dest, scrapedAt,
  *        params: {payload, departureH, arrivalH, useGround},
+ *        pricingIndex: {byClass: {Y|C|F|Cargo: {...}}},  // derived from ORS result list
  *        totalConnections, ourFlightIds, ourCarrierPrefixes,
  *        rankAny, rankFirstLegOurs, rankAllOurs, rankNonstop, rankBookable,
  *        ourTopRating, ourBestNonstopRating, topCompetitorRating, ratingGapToTop,
@@ -79,6 +80,61 @@ class RouteAssistantOrsScraper {
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
+    }
+
+    static _normaliseClassesToScrape(params) {
+        params = params || {}
+        const raw = (Array.isArray(params.classesToScrape) && params.classesToScrape.length)
+            ? params.classesToScrape
+            : (params.payload ? [params.payload] : ["ECONOMY", "BUSINESS", "FIRST", "CARGO"])
+        const valid = {ECONOMY: 1, BUSINESS: 1, FIRST: 1, CARGO: 1}
+        const seen = new Set()
+        const out = []
+        for (const c of raw) {
+            const key = String(c || "").toUpperCase()
+            if (!valid[key] || seen.has(key)) continue
+            seen.add(key)
+            out.push(key)
+        }
+        return out.length ? out : ["ECONOMY", "BUSINESS", "FIRST", "CARGO"]
+    }
+
+    static _scrapeMemoKey(hub, dest, params) {
+        params = params || {}
+        const fnOverride = params.ourFlightNumbersOverride
+        const fns = []
+        if (fnOverride instanceof Set) {
+            for (const fn of fnOverride) if (fn) fns.push(String(fn).trim().toUpperCase())
+        } else if (Array.isArray(fnOverride)) {
+            for (const fn of fnOverride) if (fn) fns.push(String(fn).trim().toUpperCase())
+        }
+        fns.sort()
+        return JSON.stringify({
+            pair:       RouteAssistantOrsScraper._pairKey(hub, dest),
+            classes:    RouteAssistantOrsScraper._normaliseClassesToScrape(params),
+            departureH: params.departureH != null ? params.departureH : 0,
+            arrivalH:   params.arrivalH   != null ? params.arrivalH   : 72,
+            useGround:  params.useGround !== false,
+            carrier:    params.carrierOverride || null,
+            pageStaggerMs: params.pageStaggerMs != null ? params.pageStaggerMs : 750,
+            fnOverride: fns
+        })
+    }
+
+    static _sleep(ms) {
+        const n = Number(ms)
+        if (!isFinite(n) || n <= 0) return Promise.resolve()
+        return new Promise(resolve => setTimeout(resolve, n))
+    }
+
+    static async _fetchWithRateLimitRetry(url, options, retryMs) {
+        let resp = await fetch(url, options || {})
+        if (!resp.ok && (resp.status === 429 || resp.status === 503)
+                && Number(retryMs) > 0) {
+            await RouteAssistantOrsScraper._sleep(retryMs)
+            resp = await fetch(url, options || {})
+        }
+        return resp
     }
 
     static _key(hub, dest) {
@@ -188,6 +244,10 @@ class RouteAssistantOrsScraper {
             dest:      String(dest || "").toUpperCase(),
             scrapedAt: Date.now()
         }, fields || {})
+        if (!rec.pricingIndex) {
+            const pricingIndex = RouteAssistantOrsScraper.buildPricingIndex(rec)
+            if (pricingIndex) rec.pricingIndex = pricingIndex
+        }
         await chrome.storage.local.set({[key]: rec})
         if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
             window.AesDataBus.emit("data:route-assistant:ors:updated", {
@@ -263,24 +323,35 @@ class RouteAssistantOrsScraper {
         return out
     }
 
+    static _carrierPrefixesFromFlightNumbers(flightNumbers) {
+        const out = new Set()
+        const iter = flightNumbers instanceof Set
+            ? flightNumbers
+            : (Array.isArray(flightNumbers) ? flightNumbers : [])
+        for (const fn of iter) {
+            const prefix = RouteAssistantOrsScraper._carrierPrefixFromCode(fn)
+            if (prefix && /[A-Z]/.test(prefix)) out.add(prefix)
+        }
+        return Array.from(out)
+    }
+
     /**
      * Return Array<string> of carrier prefixes — first the user override,
      * then unique prefixes harvested from the flight-number set, then a
      * last-resort initials guess from the airline display name.
      */
-    static async getOurCarrierPrefixes(server, airline, override) {
+    static async getOurCarrierPrefixes(server, airline, override, opts) {
+        opts = opts || {}
         if (override && typeof override === "string" && override.trim()) {
             return override.split(",").map(s => s.trim().toUpperCase()).filter(Boolean)
         }
         const fns = await RouteAssistantOrsScraper.getOurFlightNumbers(server, airline)
         const prefixes = new Set()
-        for (const fn of fns) {
-            // "FGM 1" → "FGM"; "UAF 1001" → "UAF". Take everything before
-            // the first space, fall back to leading-letter run.
-            const m = /^([A-Z0-9]+)/.exec(fn.trim().toUpperCase())
-            if (m && m[1]) prefixes.add(m[1])
+        for (const prefix of RouteAssistantOrsScraper._carrierPrefixesFromFlightNumbers(fns)) {
+            prefixes.add(prefix)
         }
         if (prefixes.size) return Array.from(prefixes)
+        if (opts.includeInitials === false) return []
         // Last resort: initials from airline display name.
         try {
             if (typeof AES !== "undefined" && AES.getAirlineIdentity) {
@@ -498,6 +569,179 @@ class RouteAssistantOrsScraper {
         return isFinite(n) ? n : null
     }
 
+    static _pricingIndexNum(v) {
+        if (v === null || v === undefined || v === "") return null
+        const n = Number(v)
+        return isFinite(n) ? n : null
+    }
+
+    static _payloadForPriceClass(cls) {
+        switch (String(cls || "")) {
+            case "Y": return "ECONOMY"
+            case "C": return "BUSINESS"
+            case "F": return "FIRST"
+            case "Cargo": return "CARGO"
+            default: return null
+        }
+    }
+
+    static _roundPriceForClass(cls, value) {
+        const n = RouteAssistantOrsScraper._pricingIndexNum(value)
+        if (n == null) return null
+        return cls === "Cargo" && Math.abs(n) < 10
+            ? Math.round(n * 100) / 100
+            : Math.round(n)
+    }
+
+    static _medianPriceForClass(cls, values) {
+        const vals = (values || [])
+            .map(v => RouteAssistantOrsScraper._pricingIndexNum(v))
+            .filter(v => v != null && v > 0)
+            .sort((a, b) => a - b)
+        if (!vals.length) return null
+        const mid = Math.floor(vals.length / 2)
+        const raw = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2
+        return RouteAssistantOrsScraper._roundPriceForClass(cls, raw)
+    }
+
+    static _connectionPrice(conn) {
+        const direct = RouteAssistantOrsScraper._pricingIndexNum(conn && conn.totalPrice)
+        if (direct != null && direct > 0) return direct
+        let sum = 0
+        let seen = false
+        for (const leg of (conn && conn.legs) || []) {
+            if (!leg || leg.isGround) continue
+            const p = RouteAssistantOrsScraper._pricingIndexNum(leg.price)
+            if (p == null || p <= 0) continue
+            sum += p
+            seen = true
+        }
+        return seen ? sum : null
+    }
+
+    static _connectionCarrierPrefix(conn) {
+        const legs = (conn && conn.legs || []).filter(l => l && !l.isGround)
+        const first = legs[0] || null
+        return first && (first.carrierPrefix
+            || RouteAssistantOrsScraper._carrierPrefixFromCode(first.flightCode)) || null
+    }
+
+    /**
+     * Build the compact ORS pricing index consumed by auto-pricing.
+     * The raw ORS cache keeps every connection for auditability; this index
+     * extracts the per-class competitor density and fare band needed by the
+     * pricing calculations without walking the full result list each time.
+     */
+    static buildPricingIndex(record) {
+        if (!record || typeof record !== "object") return null
+        if (record.pricingIndex && record.pricingIndex.byClass) return record.pricingIndex
+        const rawByClass = record.byClass && typeof record.byClass === "object"
+            ? record.byClass
+            : null
+        const byClass = rawByClass || (Array.isArray(record.connections)
+            ? {ECONOMY: record}
+            : null)
+        if (!byClass) return null
+
+        const indexed = {
+            source: "ors-search",
+            scrapedAt: RouteAssistantOrsScraper._pricingIndexNum(record.scrapedAt),
+            indexedAt: Date.now(),
+            byClass: {},
+            classes: {},
+            competitorPricesByClass: {},
+            competitorCountsByClass: {},
+            ownPricesByClass: {}
+        }
+
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
+            const payload = RouteAssistantOrsScraper._payloadForPriceClass(cls)
+            const classRec = byClass[payload] || byClass[cls] || null
+            if (!classRec) continue
+
+            const ownPrices = []
+            const competitorPrices = []
+            const carrierCounts = {}
+            let ownConnectionCount = 0
+            let competitorConnectionCount = 0
+            let bookableCount = 0
+            let bookableOwnCount = 0
+            let bookableCompetitorCount = 0
+            let topCompetitorCarrier = null
+            let topCompetitorPrice = null
+
+            for (const conn of (Array.isArray(classRec.connections) ? classRec.connections : [])) {
+                if (!conn) continue
+                if (conn.bookable) bookableCount++
+                const flightLegs = (conn.legs || []).filter(l => l && !l.isGround)
+                if (!flightLegs.length) continue
+                const anyOurs = flightLegs.some(l => !!l.isOurs)
+                const price = RouteAssistantOrsScraper._connectionPrice(conn)
+                if (anyOurs) {
+                    ownConnectionCount++
+                    if (conn.bookable) bookableOwnCount++
+                    if (price != null && price > 0) ownPrices.push(price)
+                    continue
+                }
+
+                competitorConnectionCount++
+                if (conn.bookable) bookableCompetitorCount++
+                if (price != null && price > 0) competitorPrices.push(price)
+                const carrier = RouteAssistantOrsScraper._connectionCarrierPrefix(conn)
+                if (carrier) {
+                    carrierCounts[carrier] = (carrierCounts[carrier] || 0) + 1
+                    if (!topCompetitorCarrier) topCompetitorCarrier = carrier
+                }
+                if (topCompetitorPrice == null && price != null && price > 0) topCompetitorPrice = price
+            }
+
+            const bestOwnPrice = ownPrices.length ? Math.min.apply(null, ownPrices) : null
+            const bestCompetitorPrice = competitorPrices.length ? Math.min.apply(null, competitorPrices) : null
+            const priceGapToBest = bestOwnPrice != null && bestCompetitorPrice != null
+                ? RouteAssistantOrsScraper._roundPriceForClass(cls, bestOwnPrice - bestCompetitorPrice)
+                : null
+            const entry = {
+                payload,
+                rankAny:              RouteAssistantOrsScraper._pricingIndexNum(classRec.rankAny),
+                rankNonstop:          RouteAssistantOrsScraper._pricingIndexNum(classRec.rankNonstop),
+                rankBookable:         RouteAssistantOrsScraper._pricingIndexNum(classRec.rankBookable),
+                ourTopRating:         RouteAssistantOrsScraper._pricingIndexNum(classRec.ourTopRating),
+                topCompetitorRating:  RouteAssistantOrsScraper._pricingIndexNum(classRec.topCompetitorRating),
+                ratingGapToTop:       RouteAssistantOrsScraper._pricingIndexNum(classRec.ratingGapToTop),
+                totalConnections:     RouteAssistantOrsScraper._pricingIndexNum(classRec.totalConnections),
+                connectionCount:      Array.isArray(classRec.connections) ? classRec.connections.length : 0,
+                bookableCount,
+                ownConnectionCount,
+                competitorConnectionCount,
+                bookableOwnCount,
+                bookableCompetitorCount,
+                competitorCarrierCount: Object.keys(carrierCounts).length,
+                topCompetitorCarrier,
+                topCompetitorPrice:   RouteAssistantOrsScraper._roundPriceForClass(cls, topCompetitorPrice),
+                bestOwnPrice:         RouteAssistantOrsScraper._roundPriceForClass(cls, bestOwnPrice),
+                bestCompetitorPrice:  RouteAssistantOrsScraper._roundPriceForClass(cls, bestCompetitorPrice),
+                ownMedianPrice:       RouteAssistantOrsScraper._medianPriceForClass(cls, ownPrices),
+                competitorMedianPrice: RouteAssistantOrsScraper._medianPriceForClass(cls, competitorPrices),
+                priceGapToBest,
+                priceGapPctToBest: bestOwnPrice != null && bestOwnPrice > 0 && bestCompetitorPrice != null
+                    ? Math.round(((bestOwnPrice - bestCompetitorPrice) / bestOwnPrice) * 1000) / 10
+                    : null
+            }
+            entry.classKey = cls
+            entry.competitorCount = entry.competitorConnectionCount
+            entry.competitorMedian = entry.competitorMedianPrice
+            indexed.byClass[cls] = entry
+            indexed.classes[cls] = entry
+            indexed.competitorCountsByClass[cls] = entry.competitorCount
+            if (entry.competitorMedianPrice != null) indexed.competitorPricesByClass[cls] = entry.competitorMedianPrice
+            if (entry.ownMedianPrice != null) indexed.ownPricesByClass[cls] = entry.ownMedianPrice
+        }
+
+        indexed.classCount = Object.keys(indexed.byClass).length
+        indexed.labels = indexed.classCount ? ["ORS", "ORS-prices"] : []
+        return indexed.classCount ? indexed : null
+    }
+
     // ------------------------------------------------------------------
     // Rank computation
     // ------------------------------------------------------------------
@@ -507,7 +751,8 @@ class RouteAssistantOrsScraper {
      * flavor + rating summary. Returns the summary plus the mutated
      * connections array.
      */
-    static computeRanks(connections, ourFlightNumberSet, ourCarrierPrefixes) {
+    static computeRanks(connections, ourFlightNumberSet, ourCarrierPrefixes, opts) {
+        opts = opts || {}
         const summary = {
             totalConnections:     connections.length,
             rankAny:              null,
@@ -525,28 +770,53 @@ class RouteAssistantOrsScraper {
             // outline-aggregator can answer "what ORS does competitor X
             // get on this lane?" The map is empty when no competitor
             // operates a nonstop on the lane.
-            competitorRatings:    {}
+            competitorRatings:    {},
+            oursDetection: {
+                flightNumbersSource: opts.flightNumbersSource || "schedule-cache",
+                flightNumberCount:   0,
+                matchedOwnLegs:      0,
+                exactFlightNumberMatches: 0,
+                prefixMatches:       0,
+                carrierPrefixes:     [],
+                prefixFallbackOnly:  false
+            }
         }
         const fnSet = ourFlightNumberSet instanceof Set ? ourFlightNumberSet : new Set(ourFlightNumberSet || [])
-        const prefixes = (ourCarrierPrefixes || []).map(p => String(p).toUpperCase())
+        const fnSetUpper = new Set()
+        for (const fn of fnSet) {
+            if (fn) fnSetUpper.add(String(fn).trim().toUpperCase())
+        }
+        const prefixes = (ourCarrierPrefixes || []).map(p => String(p).toUpperCase()).filter(Boolean)
+        summary.oursDetection.flightNumberCount = fnSetUpper.size
+        summary.oursDetection.carrierPrefixes = prefixes.slice()
 
-        const isOursCode = (code) => {
-            if (!code) return false
+        const ownMatchSource = (code) => {
+            if (!code) return null
             const c = code.trim().toUpperCase()
-            if (fnSet.has(code) || fnSet.has(c)) return true
+            if (fnSet.has(code) || fnSet.has(c) || fnSetUpper.has(c)) return "flight-number"
             for (const p of prefixes) {
-                if (c.startsWith(p + " ") || c === p) return true
+                if (c.startsWith(p + " ") || c === p) return "carrier-prefix"
             }
-            return false
+            return null
         }
 
         // Mutate isOurs per leg.
         for (const conn of connections) {
             for (const leg of conn.legs || []) {
                 if (leg.isGround) continue
-                leg.isOurs = isOursCode(leg.flightCode)
+                const source = ownMatchSource(leg.flightCode)
+                leg.isOurs = !!source
+                if (source) {
+                    leg.oursDetectionSource = source
+                    summary.oursDetection.matchedOwnLegs++
+                    if (source === "flight-number") summary.oursDetection.exactFlightNumberMatches++
+                    if (source === "carrier-prefix") summary.oursDetection.prefixMatches++
+                }
             }
         }
+        summary.oursDetection.prefixFallbackOnly = summary.oursDetection.matchedOwnLegs > 0
+            && summary.oursDetection.exactFlightNumberMatches === 0
+            && summary.oursDetection.prefixMatches > 0
 
         // Pass 1 — compute rank flavors.
         for (let i = 0; i < connections.length; i++) {
@@ -626,18 +896,30 @@ class RouteAssistantOrsScraper {
      */
     async scrape(hubIata, destIata, params) {
         const pair = RouteAssistantOrsScraper._pairKey(hubIata, destIata)
-        if (this._sessionCache.has(pair)) return this._sessionCache.get(pair)
 
         params = params || {}
         const departureH   = params.departureH != null ? params.departureH : 0
         const arrivalH     = params.arrivalH   != null ? params.arrivalH   : 72
         const useGround    = params.useGround !== false
         const carrierOverride = params.carrierOverride || null
+        const pageStaggerMs = params.pageStaggerMs != null ? Math.max(0, Number(params.pageStaggerMs) || 0) : 750
+        const pageRateLimitRetryMs = params.pageRateLimitRetryMs != null
+            ? Math.max(0, Number(params.pageRateLimitRetryMs) || 0)
+            : 3000
         // Backwards-compat: if a single `payload` is passed (legacy callers),
-        // wrap into a single-element classesToScrape.
-        const classesToScrape = (Array.isArray(params.classesToScrape) && params.classesToScrape.length)
-            ? params.classesToScrape
-            : (params.payload ? [params.payload] : ["ECONOMY", "BUSINESS", "FIRST"])
+        // wrap into a single-element classesToScrape. Default includes Cargo
+        // so the analyser and cargo autopricer have the same freshness path
+        // as Y/C/F.
+        const classesToScrape = RouteAssistantOrsScraper._normaliseClassesToScrape(params)
+        const memoKey = RouteAssistantOrsScraper._scrapeMemoKey(hubIata, destIata, Object.assign({}, params, {
+            classesToScrape,
+            departureH,
+            arrivalH,
+            useGround,
+            carrierOverride,
+            pageStaggerMs
+        }))
+        if (!params.context && this._sessionCache.has(memoKey)) return this._sessionCache.get(memoKey)
 
         // Resolve carrier prefixes + flight-number set ONCE — they're
         // identical across classes and the schedule cache lookup is cheap
@@ -647,6 +929,7 @@ class RouteAssistantOrsScraper {
             if (typeof AES !== "undefined" && AES.getAirlineIdentity) airline = AES.getAirlineIdentity()
         } catch (e) { /* ignore */ }
         const fnSet = await RouteAssistantOrsScraper.getOurFlightNumbers(this.server, airline)
+        let flightNumbersSource = fnSet.size ? "enterprise-schedule-cache" : "none"
         // Orchestrator path — the route-sync orchestrator harvests fresh flight
         // numbers from the schedule-page scrape that just ran for this route
         // and unions them in here. Without this, a freshly-scraped route whose
@@ -660,10 +943,20 @@ class RouteAssistantOrsScraper {
             for (const fn of iter) {
                 if (fn) fnSet.add(String(fn).trim())
             }
+            flightNumbersSource = "route-sync-schedule-scrape"
         }
         const prefixes = await RouteAssistantOrsScraper.getOurCarrierPrefixes(
-            this.server, airline, carrierOverride
+            this.server, airline, carrierOverride, {includeInitials: !fnSet.size}
         )
+        if (!carrierOverride) {
+            const seenPrefixes = new Set(prefixes.map(p => String(p).toUpperCase()))
+            for (const prefix of RouteAssistantOrsScraper._carrierPrefixesFromFlightNumbers(fnSet)) {
+                if (!seenPrefixes.has(prefix)) {
+                    prefixes.push(prefix)
+                    seenPrefixes.add(prefix)
+                }
+            }
+        }
 
         const byClass = {}
         const classesScraped = []
@@ -674,7 +967,10 @@ class RouteAssistantOrsScraper {
             const tag = pair + " " + cls + " (" + (i + 1) + "/" + classesToScrape.length + ")"
             try {
                 const result = await this._scrapeOneClass(hubIata, destIata, {
-                    payload: cls, departureH, arrivalH, useGround
+                    payload: cls, departureH, arrivalH, useGround,
+                    flightNumbersSource,
+                    pageStaggerMs,
+                    pageRateLimitRetryMs
                 }, fnSet, prefixes)
                 if (result) {
                     byClass[cls] = result.classRecord
@@ -699,11 +995,15 @@ class RouteAssistantOrsScraper {
         }
 
         const fields = {
+            server: this.server,
             params: {departureH, arrivalH, useGround},
             ourFlightIds:       Array.from(allOurFlightIds),
             ourCarrierPrefixes: prefixes,
             byClass,
-            classesScraped
+            classesScraped,
+            oursDetection: RouteAssistantOrsScraper._aggregateOursDetection(
+                byClass, fnSet, prefixes, flightNumbersSource
+            )
         }
         // Calibration-set context — opaque passthrough. Caller (typically the
         // orchestrator's contextBuilder) supplies a snapshot of the route
@@ -715,7 +1015,7 @@ class RouteAssistantOrsScraper {
             fields.context = params.context
         }
         const saved = await RouteAssistantOrsScraper.saveRecord(hubIata, destIata, fields)
-        this._sessionCache.set(pair, saved)
+        if (!params.context) this._sessionCache.set(memoKey, saved)
         this._consecutiveErrors = 0
 
         // Slice 2c — log a rating observation for the per-route per-class
@@ -764,16 +1064,37 @@ class RouteAssistantOrsScraper {
         } catch (e) { /* best-effort — fall through to logging */ }
         if (!autoLog) return
 
-        // Read the matching markets-page ownPricing snapshot (one
-        // storage call). Keyed `routeAssistant:markets:ownPricing:<HUB>-<DEST>`
-        // — directional, mirrors the ORS record key.
+        // Read the matching markets-page ownPricing snapshot. Prefer the
+        // account-scoped loader; fall back to direct key reads for stripped
+        // contexts/tests where the markets scraper module is absent.
         const pair = String(hubIata || "").toUpperCase() + "-" + String(destIata || "").toUpperCase()
-        const opKey = "routeAssistant:markets:ownPricing:" + pair
         let ownPricing = null
         try {
-            const out = await chrome.storage.local.get([opKey])
-            ownPricing = out && out[opKey] ? out[opKey] : null
+            if (typeof RouteAssistantMarketsPageScraper !== "undefined"
+                    && typeof RouteAssistantMarketsPageScraper.bulkLoadCache === "function") {
+                const map = await RouteAssistantMarketsPageScraper.bulkLoadCache(
+                    [{hub: hubIata, dest: destIata}],
+                    {families: ["ownPricing"]}
+                )
+                const bucket = map && map.get(pair)
+                ownPricing = bucket && bucket.ownPricing || null
+            }
         } catch (e) { /* best-effort */ }
+        if (!ownPricing) {
+            try {
+                const keys = ["routeAssistant:markets:ownPricing:" + pair]
+                try {
+                    if (typeof acctKey === "function") {
+                        const scoped = acctKey("routeAssistant:markets:ownPricing", pair)
+                        if (keys.indexOf(scoped) < 0) keys.unshift(scoped)
+                    }
+                } catch (_) {}
+                const out = await chrome.storage.local.get(keys)
+                for (const k of keys) {
+                    if (out && out[k]) { ownPricing = out[k]; break }
+                }
+            } catch (e) { /* best-effort */ }
+        }
 
         const prices = (ownPricing && ownPricing.prices) || {}
         const byClass = savedRecord.byClass || {}
@@ -836,6 +1157,10 @@ class RouteAssistantOrsScraper {
         const departureH  = params.departureH
         const arrivalH    = params.arrivalH
         const useGround   = params.useGround
+        const pageStaggerMs = params.pageStaggerMs != null ? Math.max(0, Number(params.pageStaggerMs) || 0) : 750
+        const pageRateLimitRetryMs = params.pageRateLimitRetryMs != null
+            ? Math.max(0, Number(params.pageRateLimitRetryMs) || 0)
+            : 3000
         const baseUrl     = "https://" + this.server + ".airlinesim.aero"
         const orsUrl      = baseUrl + "/app/info/ors"
 
@@ -844,7 +1169,11 @@ class RouteAssistantOrsScraper {
         // POST; sharing the session across classes returns PageExpiredException).
         let initialHtml
         try {
-            const resp = await fetch(orsUrl, {credentials: "include"})
+            const resp = await RouteAssistantOrsScraper._fetchWithRateLimitRetry(
+                orsUrl,
+                {credentials: "include", referrer: orsUrl},
+                pageRateLimitRetryMs
+            )
             if (!resp.ok) {
                 if (resp.status === 429 || resp.status === 503) {
                     throw new RouteAssistantOrsScraper._RateLimitError(resp.status, "GET ors")
@@ -866,9 +1195,17 @@ class RouteAssistantOrsScraper {
             return null
         }
         const initialDoc = new DOMParser().parseFromString(initialHtml, "text/html")
+        // The page now ships TWO post forms: a 1-input "searchQuery" bar
+        // (`-base.search`) plus the structured ORS form (`-form`). Pick the
+        // structured one by matching the action so hidden-field harvesting
+        // reads from the right form if AS ever adds CSRF tokens.
         const formId = (() => {
-            const f = initialDoc.querySelector("form[method='post']")
-            return f ? f.getAttribute("id") : null
+            const forms = initialDoc.querySelectorAll("form[method='post']")
+            for (const f of forms) {
+                const action = f.getAttribute("action") || ""
+                if (/\.-form(?:\b|$)/.test(action)) return f.getAttribute("id")
+            }
+            return forms[0] ? forms[0].getAttribute("id") : null
         })()
         const hiddenFields = RouteAssistantOrsScraper.parseHiddenFields(initialDoc, formId)
 
@@ -889,12 +1226,15 @@ class RouteAssistantOrsScraper {
         const postUrl = baseUrl + "/app/info/ors?" + formAction
         let resultHtml
         try {
-            const resp = await fetch(postUrl, {
+            // referrer must be the ORS page itself; AS rejects /app/info/ors
+            // POSTs from foreign Referers with HTTP 500 (Spring/Wicket layer).
+            const resp = await RouteAssistantOrsScraper._fetchWithRateLimitRetry(postUrl, {
                 method:      "POST",
                 credentials: "include",
+                referrer:    orsUrl,
                 headers:     {"Content-Type": "application/x-www-form-urlencoded"},
                 body:        body.toString()
-            })
+            }, pageRateLimitRetryMs)
             if (!resp.ok) {
                 if (resp.status === 429 || resp.status === 503) {
                     throw new RouteAssistantOrsScraper._RateLimitError(resp.status, "POST ors")
@@ -931,7 +1271,12 @@ class RouteAssistantOrsScraper {
             page++
             const pageUrl = baseUrl + "/app/info/ors?" + nextHref.replace(/^\.\/ors\?/, "")
             try {
-                const r = await fetch(pageUrl, {credentials: "include"})
+                await RouteAssistantOrsScraper._sleep(pageStaggerMs)
+                let r = await RouteAssistantOrsScraper._fetchWithRateLimitRetry(
+                    pageUrl,
+                    {credentials: "include", referrer: orsUrl},
+                    pageRateLimitRetryMs
+                )
                 if (!r.ok) {
                     if (r.status === 429 || r.status === 503) {
                         throw new RouteAssistantOrsScraper._RateLimitError(r.status, "GET page " + page)
@@ -953,7 +1298,9 @@ class RouteAssistantOrsScraper {
 
         // Step 4 — compute ranks for THIS class. Empty results (zero
         // connections) are valid and produce all-null rank flavors.
-        const ranks = RouteAssistantOrsScraper.computeRanks(allConnections, fnSet, prefixes)
+        const ranks = RouteAssistantOrsScraper.computeRanks(allConnections, fnSet, prefixes, {
+            flightNumbersSource: params.flightNumbersSource || "schedule-cache"
+        })
 
         const ourFlightIds = []
         const compactConnections = []
@@ -972,6 +1319,7 @@ class RouteAssistantOrsScraper {
                     status:        leg.status,
                     isOurs:        !!leg.isOurs,
                     isGround:      !!leg.isGround,
+                    oursDetectionSource: leg.oursDetectionSource || null,
                     carrierPrefix: leg.isGround
                         ? null
                         : RouteAssistantOrsScraper._carrierPrefixFromCode(leg.flightCode)
@@ -994,13 +1342,74 @@ class RouteAssistantOrsScraper {
         return {classRecord, ourFlightIds}
     }
 
+    static _aggregateOursDetection(byClass, fnSet, prefixes, source) {
+        const out = {
+            flightNumbersSource: source || "schedule-cache",
+            flightNumberCount:   0,
+            matchedOwnLegs:      0,
+            exactFlightNumberMatches: 0,
+            prefixMatches:       0,
+            carrierPrefixes:     (prefixes || []).map(p => String(p).toUpperCase()).filter(Boolean),
+            prefixFallbackOnly:  false,
+            classes:             {}
+        }
+        const set = fnSet instanceof Set ? fnSet : new Set(fnSet || [])
+        out.flightNumberCount = set.size
+        for (const cls in (byClass || {})) {
+            const det = byClass[cls] && byClass[cls].oursDetection
+            if (!det) continue
+            out.classes[cls] = {
+                matchedOwnLegs: det.matchedOwnLegs || 0,
+                exactFlightNumberMatches: det.exactFlightNumberMatches || 0,
+                prefixMatches: det.prefixMatches || 0,
+                prefixFallbackOnly: !!det.prefixFallbackOnly
+            }
+            out.matchedOwnLegs += det.matchedOwnLegs || 0
+            out.exactFlightNumberMatches += det.exactFlightNumberMatches || 0
+            out.prefixMatches += det.prefixMatches || 0
+        }
+        out.prefixFallbackOnly = out.matchedOwnLegs > 0
+            && out.exactFlightNumberMatches === 0
+            && out.prefixMatches > 0
+        return out
+    }
+
     // Custom rate-limit error so the bulk runner can detect it.
     static _RateLimitError = class extends Error {
         constructor(status, where) {
             super("ORS rate limit (" + status + ") at " + where)
             this._isRateLimit = true
             this.status = status
+            // Cross-context signal: the scrape-orchestrator's background-tab
+            // pool listens for `chrome.storage.onChanged` on this key so it
+            // can trip its breaker IMMEDIATELY (skip the 3-strike threshold)
+            // when ORS reports 429/503. Fire-and-forget; service-worker may
+            // be unavailable in some contexts.
+            try { RouteAssistantOrsScraper._signalRateLimit(status, where) }
+            catch (e) { /* noop */ }
         }
+    }
+
+    /**
+     * Write a transient hint to chrome.storage.local under
+     * `aes:scrape-orchestrator:rateLimitSignal`. The background-tab-pool
+     * subscribes to chrome.storage.onChanged on this key and trips its
+     * circuit breaker on the next job-result. Best-effort — failures are
+     * swallowed since the bulk runner's own breaker still applies.
+     */
+    static _signalRateLimit(status, where) {
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return
+        const signal = {
+            status: status,
+            source: "ors-scraper",
+            at:     Date.now(),
+            where:  where || null
+        }
+        try {
+            chrome.storage.local.set({"aes:scrape-orchestrator:rateLimitSignal": signal}, () => {
+                void (chrome.runtime && chrome.runtime.lastError)
+            })
+        } catch (e) { /* noop */ }
     }
 
     // ------------------------------------------------------------------
@@ -1077,4 +1486,8 @@ class RouteAssistantOrsScraper {
             tryDispatch()
         })
     }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantOrsScraper = RouteAssistantOrsScraper
 }

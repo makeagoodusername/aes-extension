@@ -76,12 +76,23 @@
 
     async function _loadTopRoutes(hubIata) {
         if (!hubIata || typeof chrome === "undefined") return []
-        const key = TOP_ROUTES_PREFIX + hubIata
+        const keys = []
         try {
-            const out = await chrome.storage.local.get([key])
-            const blob = out && out[key]
-            if (!blob || !Array.isArray(blob.rows)) return []
-            return blob.rows
+            if (typeof acctKey === "function") {
+                const scoped = acctKey("routeAssistant:topRoutes", hubIata)
+                if (scoped) keys.push(scoped)
+            }
+        } catch (_) {}
+        keys.push(TOP_ROUTES_PREFIX + hubIata)
+        try {
+            const out = await chrome.storage.local.get(Array.from(new Set(keys)))
+            for (const key of keys) {
+                const blob = out && out[key]
+                if (!blob || !Array.isArray(blob.rows)) continue
+                if (String(blob.hub || "").toUpperCase() !== _normaliseHub(hubIata)) continue
+                return blob.rows
+            }
+            return []
         } catch (e) {
             console.warn("[fleet-command-bulk-apply] topRoutes load failed", e)
             return []

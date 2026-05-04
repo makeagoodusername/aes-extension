@@ -27,7 +27,7 @@
  *   {ts, server, airlineCode,
  *    fleet:           [{aircraftId, registration, equipment, typeId, age,
  *                       seats, cargoCapacity, rangeKm, cruiseSpeedKmh,
- *                       paxSatisfaction, currentLocationIata, status,
+ *                       paxSatisfaction, orsAttraction, currentLocationIata, status,
  *                       wear: {ratio, ratioStatus, condition, conditionStatus,
  *                              equilibriumWeeklyHours, weeklyHoursLast7d,
  *                              ratioForecast7d, maxWeeklyBlockHours,
@@ -40,11 +40,20 @@
  *                                  competitor: {flightCount, seatCount,
  *                                                ourFlightCount, dominantCarrier,
  *                                                priceMin, priceMax, scrapedAt},
+ *                                  activeFlightControls: {inflight, avgCm5,
+ *                                                cm5Count, missingFinancials,
+ *                                                tailRegs, flightNumbers,
+ *                                                flightIds, fnIds} | null,
  *                                  override: {paxLF, cargoLF, yieldPerKm, note,
  *                                              expiresAt} | null,
  *                                  watchlisted, alreadyScheduled,
  *                                  snapshotAt}]}],
+ *    companyReputation: {displayName, airlineCode, enterpriseId,
+ *                        ratingLabel, ratingScore, ratingNorm,
+ *                        scrapedAt, source} | null,
  *    serviceProfiles: [{id, name, classScore: {Y, C, F}, scrapedAt}],
+ *    serviceCategoryProfiles: {[profileId]: {profileId, profileName,
+ *                              reputationExposure, weakestCategories}},
  *    crew:            {bySkillLabel: {employed, active, required,
  *                                       reserve, marketAvailable},
  *                       byPosition:   {[positionId]: {label, group, employed,
@@ -54,6 +63,9 @@
  *                                       nextPayTierPctVsCountry, pendingChange,
  *                                       moodDigit, moodTrend}},
  *                       formContext:  {actionUrl, hidden, perRow, capturedAt} | null},
+ *    crewRoleProfiles: {[positionId]: {responsibilityClass, reputationWeight,
+ *                                      serviceWeight, reliabilityWeight,
+ *                                      paySensitivity, weeklyPayCost}},
  *    cash:            {bankBalance, weeklyResult, runwayWeeks},
  *    sisters:         {leasing, capital, assets, cashflow},
  *    rivals:          [{enterpriseId, name, hubs, alliance, sharedRoutes}],
@@ -89,6 +101,11 @@
 
     function _safe(p, fallback) {
         return p.catch(() => fallback)
+    }
+
+    function _num(v, fallback) {
+        const n = Number(v)
+        return Number.isFinite(n) ? n : fallback
     }
 
     // ── Fleet + per-tail enrichment ─────────────────────────────────────
@@ -216,6 +233,8 @@
                 rangeKm:             spec ? (spec.range          != null ? spec.range          : null) : null,
                 cruiseSpeedKmh:      spec ? (spec.speed          != null ? spec.speed          : null) : null,
                 paxSatisfaction:     spec ? (spec.paxSatisfaction != null ? spec.paxSatisfaction : null) : null,
+                orsAttraction:       spec ? (spec.orsAttraction   != null ? spec.orsAttraction   : null) : null,
+                customerAttraction:  spec ? (spec.customerAttraction != null ? spec.customerAttraction : null) : null,
                 currentLocationIata: a.currentLocationIata || a.locationIata || null,
                 status:              a.status || null,
                 wear:                wear,
@@ -370,38 +389,87 @@
     }
 
     function _summarizeCompetitorRecord(rec) {
-        // Records may carry `competitors[]` or `pax[]` (market-share family);
-        // we surface a tolerant summary that doesn't assume one shape.
+        // bulkLoadCache returns a route-family bundle
+        // `{competitors, ownPricing, marketShare, historic}`, while older
+        // callers may still pass flattened `{competitors[], pax[], cargo[]}`
+        // records. Normalise both shapes so downstream world-view ranking can
+        // recover the dominant competitor enterpriseId from market-share.
+        const competitorList = Array.isArray(rec && rec.competitors)
+            ? rec.competitors
+            : ((rec && rec.competitors && Array.isArray(rec.competitors.competitors))
+                ? rec.competitors.competitors
+                : [])
+        const pax = Array.isArray(rec && rec.pax)
+            ? rec.pax
+            : ((rec && rec.marketShare && Array.isArray(rec.marketShare.pax))
+                ? rec.marketShare.pax
+                : [])
+        const cargo = Array.isArray(rec && rec.cargo)
+            ? rec.cargo
+            : ((rec && rec.marketShare && Array.isArray(rec.marketShare.cargo))
+                ? rec.marketShare.cargo
+                : [])
+        const scrapedAt = (rec && rec.scrapedAt)
+            || (rec && rec.marketShare && rec.marketShare.scrapedAt)
+            || (rec && rec.competitors && rec.competitors.scrapedAt)
+            || null
+
         const out = {
             flightCount:     null,
             seatCount:       null,
             ourFlightCount:  null,
             dominantCarrier: null,
+            dominantEnterpriseId: null,
             priceMin:        null,
             priceMax:        null,
-            scrapedAt:       rec.scrapedAt || null
+            byClass:         null,
+            scrapedAt:       scrapedAt
         }
-        if (Array.isArray(rec.competitors)) {
-            out.flightCount = rec.competitors.length
+        if (competitorList.length) {
+            out.flightCount = competitorList.length
             let prices = []
             let ours = 0
-            for (const c of rec.competitors) {
+            // Per-class price arrays — every flight row carries serviceClass
+            // ("Y" | "C" | "F" | "Cargo"). Pre-summary the autopricer compared
+            // each class's own price against a band polluted by other classes;
+            // splitting here lets _targetPct read a clean per-class band.
+            const byCls = {Y: [], C: [], F: [], Cargo: []}
+            for (const c of competitorList) {
                 if (!c) continue
-                if (c.isOurs) ours++
-                if (isFinite(Number(c.price))) prices.push(Number(c.price))
+                if (c.isOurs) { ours++; continue }
+                const px = Number(c.price)
+                if (!isFinite(px)) continue
+                prices.push(px)
+                const cls = String(c.serviceClass || "").trim()
+                if (byCls[cls]) byCls[cls].push(px)
             }
             out.ourFlightCount = ours
             if (prices.length) {
                 out.priceMin = Math.min.apply(null, prices)
                 out.priceMax = Math.max.apply(null, prices)
             }
+            const byClass = {}
+            let any = false
+            for (const k of ["Y", "C", "F", "Cargo"]) {
+                const arr = byCls[k]
+                if (!arr.length) continue
+                byClass[k] = {
+                    priceMin: Math.min.apply(null, arr),
+                    priceMax: Math.max.apply(null, arr),
+                    samples:  arr.length
+                }
+                any = true
+            }
+            if (any) out.byClass = byClass
         }
-        if (Array.isArray(rec.pax) && rec.pax.length) {
-            const top = rec.pax[0]
+        if (pax.length) {
+            const top = pax[0]
             if (top && top.name) out.dominantCarrier = top.name
-        } else if (Array.isArray(rec.cargo) && rec.cargo.length && !out.dominantCarrier) {
-            const top = rec.cargo[0]
+            if (top && top.enterpriseId != null) out.dominantEnterpriseId = top.enterpriseId
+        } else if (cargo.length && !out.dominantCarrier) {
+            const top = cargo[0]
             if (top && top.name) out.dominantCarrier = top.name
+            if (top && top.enterpriseId != null) out.dominantEnterpriseId = top.enterpriseId
         }
         return out
     }
@@ -409,22 +477,39 @@
     // ── ORS cache + ownPricing attach (Velvet Cascade · PR 1A) ──────────
 
     async function _attachOrsCache(hubs) {
-        if (!_has("RouteAssistantOrsScraper")) return
+        if (!_has("RouteAssistantOrsScraper") && !_has("RouteAssistantOrsIntelligence")) return
         const pairs = []
         for (const h of hubs) for (const r of (h && h.byRoute) || []) {
             if (r && r.dest) pairs.push([h.iata, r.dest])
         }
         if (!pairs.length) return
         let cache
-        try { cache = await window.RouteAssistantOrsScraper.bulkLoadCache(pairs, {}) }
+        try {
+            cache = window.RouteAssistantOrsIntelligence
+                ? await window.RouteAssistantOrsIntelligence.bulkLoadRecords(pairs, {})
+                : await window.RouteAssistantOrsScraper.bulkLoadCache(pairs, {})
+        }
         catch (_) { return }
         if (!cache || typeof cache.get !== "function") return
+        const svc = window.RouteAssistantOrsIntelligence
+            ? new window.RouteAssistantOrsIntelligence()
+            : null
         for (const h of hubs) for (const r of (h && h.byRoute) || []) {
             const rec = cache.get(_routeKey(h.iata, r.dest))
             if (!rec) continue
             r.orsByClass    = rec.byClass || null
             r.orsScrapedAt  = rec.scrapedAt || null
             r.classesScraped = rec.classesScraped || null
+            if (svc) {
+                const composite = svc.getComposite({orsByClass: rec.byClass}, null)
+                r.orsReadiness = {
+                    usable: composite && (composite.rankAny != null || composite.rankNonstop != null
+                        || composite.ourTopRating != null),
+                    warnings: rec.oursDetection && rec.oursDetection.prefixFallbackOnly
+                        ? ["prefix-fallback-only"] : [],
+                    oursDetection: rec.oursDetection || null
+                }
+            }
         }
     }
 
@@ -605,7 +690,9 @@
                     cargoCapacity:   best.cargoCapacity,
                     range:           best.rangeKm,
                     speed:           best.cruiseSpeedKmh,
-                    paxSatisfaction: best.paxSatisfaction
+                    paxSatisfaction: best.paxSatisfaction,
+                    orsAttraction:   best.orsAttraction,
+                    customerAttraction: best.customerAttraction
                 }
             }
         }
@@ -638,6 +725,155 @@
             console.warn("[AesStrategy] service profiles load failed", e)
             return null
         }
+    }
+
+    async function _loadCompanyReputation() {
+        if (!_has("AesCompanyReputationStore")) return null
+        try {
+            return await window.AesCompanyReputationStore.loadLatest()
+        } catch (e) {
+            console.warn("[AesStrategy] company reputation load failed", e)
+            return null
+        }
+    }
+
+    const DEFAULT_ROLE_PROFILE = Object.freeze({
+        responsibilityClass: "operations",
+        reputationWeight:   0.35,
+        serviceWeight:      0.30,
+        reliabilityWeight:  0.55,
+        paySensitivity:     0.50
+    })
+    const GROUP_ROLE_PROFILE = Object.freeze({
+        "flight crew": Object.freeze({
+            responsibilityClass: "flight",
+            reputationWeight:   0.75,
+            serviceWeight:      0.35,
+            reliabilityWeight:  1.00,
+            paySensitivity:     0.85
+        }),
+        "cabin crew": Object.freeze({
+            responsibilityClass: "cabin",
+            reputationWeight:   1.00,
+            serviceWeight:      0.90,
+            reliabilityWeight:  0.70,
+            paySensitivity:     0.90
+        }),
+        "ground crew": Object.freeze({
+            responsibilityClass: "ground",
+            reputationWeight:   0.55,
+            serviceWeight:      0.45,
+            reliabilityWeight:  0.85,
+            paySensitivity:     0.65
+        })
+    })
+    const CATEGORY_REPUTATION_WEIGHT = Object.freeze({
+        drinks:              0.80,
+        snacks:              0.85,
+        entrees:             1.00,
+        additionalEntrees:   0.95,
+        foodPresentation:    0.90,
+        headphones:          0.65,
+        newspapersMagazines: 0.45,
+        flightMagazines:     0.40
+    })
+
+    function _resolveReputationPlanning(strategySettings) {
+        const block = (strategySettings && strategySettings.reputationPlanning) || {}
+        return {
+            enabled:           block.enabled !== false,
+            targetRatingScore: _num(block.targetRatingScore, 8),
+            categoryWeights:   block.categoryWeights || {},
+            roleWeights:       block.roleWeights || {}
+        }
+    }
+
+    function _roleProfileFor(role, planning) {
+        const groupKey = String(role && role.group || "").toLowerCase()
+        const base = GROUP_ROLE_PROFILE[groupKey] || DEFAULT_ROLE_PROFILE
+        const overrides = (planning && planning.roleWeights) || {}
+        const key = base.responsibilityClass
+        const override = _num(overrides[key], NaN)
+        const reputationWeight = Number.isFinite(override)
+            ? Math.max(0, Math.min(10, override))
+            : base.reputationWeight
+        const salary = _num(role && role.salaryPerEmployee, 0)
+        const nextSalary = _num(role && role.nextWeekSalaryPerEmployee, salary)
+        const employed = _num(role && role.employed, 0)
+        const countryAvg = _num(role && role.countryAverage, 0)
+        return {
+            positionId:          role && role.positionId || null,
+            label:               role && role.label || null,
+            group:               role && role.group || null,
+            responsibilityClass: base.responsibilityClass,
+            reputationWeight:    reputationWeight,
+            serviceWeight:       base.serviceWeight,
+            reliabilityWeight:   base.reliabilityWeight,
+            paySensitivity:      base.paySensitivity,
+            currentPayTierPct:   countryAvg > 0 && salary > 0 ? Math.round((salary / countryAvg) * 100) : null,
+            nextPayTierPct:      countryAvg > 0 && nextSalary > 0 ? Math.round((nextSalary / countryAvg) * 100) : null,
+            weeklyPayCost:       salary * employed,
+            nextWeeklyPayCost:   nextSalary * employed,
+            moodDigit:           role && role.moodDigit != null ? role.moodDigit : null,
+            moodTrend:           role && role.moodTrend != null ? role.moodTrend : null,
+            pendingChange:       !!(role && role.pendingChange)
+        }
+    }
+
+    function _deriveCrewRoleProfiles(crew, strategySettings) {
+        const byPosition = crew && crew.byPosition
+        if (!byPosition || typeof byPosition !== "object") return null
+        const planning = _resolveReputationPlanning(strategySettings)
+        const out = {}
+        for (const positionId of Object.keys(byPosition)) {
+            const role = Object.assign({positionId: positionId}, byPosition[positionId] || {})
+            out[positionId] = _roleProfileFor(role, planning)
+        }
+        return out
+    }
+
+    function _deriveServiceCategoryProfiles(serviceProfiles, strategySettings) {
+        if (!Array.isArray(serviceProfiles) || !serviceProfiles.length) return null
+        const planning = _resolveReputationPlanning(strategySettings)
+        const overrides = planning.categoryWeights || {}
+        const out = {}
+        for (const profile of serviceProfiles) {
+            if (!profile || profile.id == null) continue
+            const categories = profile.categories || {}
+            const categoryWeights = {}
+            const weakest = []
+            let weightSum = 0
+            let weightedStrength = 0
+            for (const catKey of Object.keys(categories)) {
+                const cat = categories[catKey] || {}
+                const override = _num(overrides[catKey], NaN)
+                const weight = Number.isFinite(override)
+                    ? Math.max(0, Math.min(10, override))
+                    : (CATEGORY_REPUTATION_WEIGHT[catKey] != null ? CATEGORY_REPUTATION_WEIGHT[catKey] : 0.50)
+                categoryWeights[catKey] = weight
+                const vals = ["Y", "C", "F"]
+                    .map(cls => _num(cat[cls], NaN))
+                    .filter(Number.isFinite)
+                if (!vals.length) continue
+                const avg = vals.reduce((s, v) => s + v, 0) / vals.length
+                weightSum += weight
+                weightedStrength += weight * avg
+                weakest.push({category: catKey, avgLevel: avg, weight: weight})
+            }
+            weakest.sort((a, b) => (a.avgLevel - b.avgLevel) || (b.weight - a.weight))
+            out[String(profile.id)] = {
+                profileId:           profile.id,
+                profileName:         profile.name || ("#" + profile.id),
+                classScore:          profile.classScore || null,
+                categories:          categories,
+                categoryWeights:     categoryWeights,
+                reputationExposure:  weightSum > 0 ? weightSum : 0,
+                weightedLevel:       weightSum > 0 ? weightedStrength / weightSum : null,
+                weakestCategories:   weakest.slice(0, 3),
+                scrapedAt:           profile.scrapedAt || null
+            }
+        }
+        return out
     }
 
     async function _loadCrew() {
@@ -687,6 +923,7 @@
                 for (const role of section.roles) {
                     if (!role || !role.positionId) continue
                     byPosition[role.positionId] = {
+                        positionId:                 role.positionId,
                         label:                     role.label                     || null,
                         group:                     section.group                  || null,
                         employed:                  role.employed                  != null ? role.employed                  : null,
@@ -758,6 +995,131 @@
         catch (e) {
             console.warn("[AesStrategy] ledger load failed", e)
             return null
+        }
+    }
+
+    // ── Live/in-flight controls ────────────────────────────────────────
+
+    function _aircraftFlightsRecordMatches(key, rec, server, airlineCode) {
+        if (!rec || rec.type !== "aircraftFlights" || !Array.isArray(rec.flights)) return false
+        if (server && rec.server && String(rec.server) !== String(server)) return false
+        if (server && String(key || "").indexOf(String(server)) !== 0) return false
+        if (String(key || "").indexOf("aircraftFlights") < 0) return false
+        // Newer records are airline-scoped. Legacy records do not carry
+        // `airline`; keep them readable, but never mix a known other sister
+        // airline into this snapshot.
+        if (airlineCode && rec.airline && String(rec.airline) !== String(airlineCode)) return false
+        return true
+    }
+
+    function _flightInfoFor(all, server, airlineCode, flightId) {
+        if (flightId == null) return null
+        const keys = []
+        if (server && airlineCode) keys.push(String(server) + String(airlineCode) + "flightInfo" + flightId)
+        if (server) keys.push(String(server) + "flightInfo" + flightId)
+        for (const k of keys) {
+            if (all[k]) return all[k]
+        }
+        return null
+    }
+
+    async function _loadActiveFlightsByRoute(server, airlineCode) {
+        const map = new Map()
+        if (!server || typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
+            return map
+        }
+        let all = {}
+        try { all = await chrome.storage.local.get(null) || {} }
+        catch (_) { return map }
+        const seenFlights = new Set()
+        for (const key of Object.keys(all)) {
+            const rec = all[key]
+            if (!_aircraftFlightsRecordMatches(key, rec, server, airlineCode)) continue
+            for (const f of rec.flights || []) {
+                if (!f) continue
+                const status = String(f.status || "").toLowerCase()
+                if (status !== "inflight") continue
+                const hub = String(f.originIata || "").toUpperCase()
+                const dest = String(f.destinationIata || "").toUpperCase()
+                if (!hub || !dest) continue
+                const dedup = f.flightId != null
+                    ? "id:" + String(f.flightId)
+                    : "row:" + [f.flightNumber || "", f.flightNumberId || "",
+                                f.depUtc || "", hub, dest].join("|")
+                if (seenFlights.has(dedup)) continue
+                seenFlights.add(dedup)
+
+                const info = _flightInfoFor(all, server, rec.airline || airlineCode, f.flightId)
+                    || _flightInfoFor(all, server, airlineCode, f.flightId)
+                const cm5 = info && info.money && info.money.CM5 ? Number(info.money.CM5.Total) : NaN
+                const actualPair = _routeKey(hub, dest)
+                const routePairs = [actualPair]
+                const reversePair = _routeKey(dest, hub)
+                if (reversePair !== actualPair) routePairs.push(reversePair)
+                for (const pair of routePairs) {
+                    let slot = map.get(pair)
+                    if (!slot) {
+                        slot = {
+                            inflight: 0,
+                            cm5Total: 0,
+                            cm5Count: 0,
+                            missingFinancials: 0,
+                            tailRegs: new Set(),
+                            flightNumbers: new Set(),
+                            flightIds: new Set(),
+                            fnIds: new Set(),
+                            aircraftIds: new Set(),
+                            sourcePairs: new Set(),
+                            newestDepUtc: null
+                        }
+                        map.set(pair, slot)
+                    }
+                    slot.inflight++
+                    slot.sourcePairs.add(actualPair)
+                    if (rec.registration) slot.tailRegs.add(String(rec.registration))
+                    if (rec.aircraftId) slot.aircraftIds.add(String(rec.aircraftId))
+                    if (f.flightNumber) slot.flightNumbers.add(String(f.flightNumber))
+                    if (f.flightId != null) slot.flightIds.add(String(f.flightId))
+                    if (f.flightNumberId != null) slot.fnIds.add(String(f.flightNumberId))
+                    if (f.depUtc && (!slot.newestDepUtc || String(f.depUtc) > String(slot.newestDepUtc))) {
+                        slot.newestDepUtc = f.depUtc
+                    }
+                    if (isFinite(cm5)) {
+                        slot.cm5Total += cm5
+                        slot.cm5Count++
+                    } else {
+                        slot.missingFinancials++
+                    }
+                }
+            }
+        }
+        for (const [pair, slot] of map) {
+            map.set(pair, {
+                inflight:          slot.inflight,
+                avgCm5:            slot.cm5Count ? slot.cm5Total / slot.cm5Count : null,
+                cm5Total:          slot.cm5Count ? slot.cm5Total : null,
+                cm5Count:          slot.cm5Count,
+                missingFinancials: slot.missingFinancials,
+                tailRegs:          Array.from(slot.tailRegs).slice(0, 8),
+                flightNumbers:     Array.from(slot.flightNumbers).slice(0, 12),
+                flightIds:         Array.from(slot.flightIds).slice(0, 12),
+                fnIds:             Array.from(slot.fnIds).slice(0, 12),
+                aircraftIds:       Array.from(slot.aircraftIds).slice(0, 8),
+                sourcePairs:        Array.from(slot.sourcePairs).slice(0, 12),
+                newestDepUtc:      slot.newestDepUtc
+            })
+        }
+        return map
+    }
+
+    function _attachActiveFlightControls(hubs, activeByRoute) {
+        if (!activeByRoute || typeof activeByRoute.get !== "function") return
+        for (const h of hubs || []) {
+            for (const r of (h && h.byRoute) || []) {
+                if (!r || !r.dest) continue
+                const rec = activeByRoute.get(_routeKey(h.iata, r.dest))
+                if (rec && rec.inflight > 0) r.activeFlightControls = rec
+            }
         }
     }
 
@@ -970,6 +1332,7 @@
         if (!_has("RouteAssistantWatchlistStore"))  missing.push("RouteAssistantWatchlistStore")
         if (!_has("RouteAssistantMarketsPageScraper")) missing.push("RouteAssistantMarketsPageScraper")
         if (!_has("RouteAssistantServiceProfileScraper")) missing.push("RouteAssistantServiceProfileScraper")
+        if (!_has("AesCompanyReputationStore")) missing.push("AesCompanyReputationStore")
         if (!_has("CrewMgmtStaffPilotsScraper"))    missing.push("CrewMgmtStaffPilotsScraper")
         if (!_has("RouteAssistantSettings"))        missing.push("RouteAssistantSettings")
         if (!_has("RouteAssistantOrsSnapshotStore"))     missing.push("RouteAssistantOrsSnapshotStore")
@@ -978,6 +1341,7 @@
         const [
             ledger,
             serviceProfiles,
+            companyReputation,
             crewBySkill,
             staffOverview,
             settings,
@@ -986,6 +1350,7 @@
         ] = await Promise.all([
             _loadLedger(server, airlineCode),
             _safe(_loadServiceProfiles(),  null),
+            _safe(_loadCompanyReputation(), null),
             _safe(_loadCrew(),             null),
             _safe(_loadStaffOverview(),    null),
             _safe(_loadSettings(),         null),
@@ -1026,6 +1391,10 @@
         }
         if (!_has("CrewMgmtStaffOverviewScraper")) missing.push("CrewMgmtStaffOverviewScraper")
         if (!staffOverview) missing.push("crew.byPosition")
+        if (!companyReputation || !companyReputation.ratingLabel) missing.push("companyReputation.rating")
+
+        const crewRoleProfiles = _deriveCrewRoleProfiles(crew, strategySettings)
+        const serviceCategoryProfiles = _deriveServiceCategoryProfiles(serviceProfiles, strategySettings)
 
         const fleet = await _enrichFleet(server, fleetRaw, typesByTypeId, ledger)
         const hubs  = _buildHubs(ledger)
@@ -1040,6 +1409,7 @@
             _attachOwnPricing(hubs),
             _attachCalibrationCorpus(hubs)
         ])
+        _attachActiveFlightControls(hubs, await _loadActiveFlightsByRoute(server, airlineCode))
         _attachRouteSpec(hubs, fleet)
         _attachCacheAges(hubs, Date.now())
 
@@ -1058,8 +1428,11 @@
             accountId:        accountId,
             fleet:            fleet,
             hubs:             hubs,
+            companyReputation: companyReputation,
             serviceProfiles:  serviceProfiles,
+            serviceCategoryProfiles: serviceCategoryProfiles,
             crew:             crew,
+            crewRoleProfiles: crewRoleProfiles,
             cash:             cash,
             sisters:          sisters,
             rivals:           [],   // populated in Slice 5 (cross-airline / enterprise scraper)
