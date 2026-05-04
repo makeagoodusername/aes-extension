@@ -60,7 +60,7 @@
         },
         {
             "js": [
-                "js/jquery-3.4.1.min.js",
+                "js/jquery-3.7.1.slim.min.js",
                 "helpers.js",
                 "modules/_shared/boot.js",
                 "modules/_shared/account-registry.js",
