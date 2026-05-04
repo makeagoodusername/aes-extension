@@ -48,11 +48,65 @@
 
     function _hasOrs(route) {
         if (!route || !route.orsByClass) return false
+        if (route.orsReadiness && route.orsReadiness.usable === false) return false
         for (const k in route.orsByClass) {
             const c = route.orsByClass[k]
             if (c && Array.isArray(c.connections) && c.connections.length) return true
         }
         return false
+    }
+
+    function _orsPlaystyle(snapshot) {
+        const ors = (snapshot && snapshot.settings && snapshot.settings.ors) || {}
+        const mode = /^(adaptive|balanced|monopoly|competitive|premium)$/.test(String(ors.playstyle || ""))
+            ? String(ors.playstyle) : "adaptive"
+        return {
+            mode,
+            monopolyMultiplier: Math.max(0, Math.min(2, _num(ors.monopolyOrsMultiplier, 0.35))),
+            competitiveMultiplier: Math.max(0, Math.min(3, _num(ors.competitiveOrsMultiplier, 1.35))),
+            competitiveRivalFlights: Math.max(1, _num(ors.competitiveRivalFlights, 6)),
+            maxComfortDelta: Math.max(0, Math.min(5, Math.round(_num(ors.maxCompetitiveComfortDelta, 3))))
+        }
+    }
+
+    function _rivalPressure(route, cfg) {
+        const c = route && route.competitor
+        if (!c || c.flightCount == null) return null
+        const rivals = Math.max(0, _num(c.flightCount, 0) - _num(c.ourFlightCount, 0))
+        return Math.max(0, Math.min(1, rivals / Math.max(1, cfg.competitiveRivalFlights)))
+    }
+
+    function _playstyleMultiplier(snapshot, route) {
+        const cfg = _orsPlaystyle(snapshot)
+        if (cfg.mode === "balanced") return 1
+        if (cfg.mode === "monopoly") return cfg.monopolyMultiplier
+        if (cfg.mode === "competitive" || cfg.mode === "premium") return cfg.competitiveMultiplier
+        const pressure = _rivalPressure(route, cfg)
+        if (pressure == null) return 1
+        return cfg.monopolyMultiplier
+            + (cfg.competitiveMultiplier - cfg.monopolyMultiplier) * pressure
+    }
+
+    function _scaleWeightsForPlaystyle(weights, snapshot, route) {
+        const mult = _playstyleMultiplier(snapshot, route)
+        if (!isFinite(mult) || Math.abs(mult - 1) < 1e-6) return weights
+        const out = Object.assign({}, weights || {})
+        out.rankWeight = Math.max(0, _num(out.rankWeight, 0) * mult)
+        const total = _num(out.shareWeight, 0) + _num(out.profitWeight, 0) + _num(out.rankWeight, 0)
+        if (total > 0) {
+            out.shareWeight /= total
+            out.profitWeight /= total
+            out.rankWeight /= total
+        }
+        return out
+    }
+
+    function _comfortGrid(snapshot) {
+        const cfg = _orsPlaystyle(snapshot)
+        const max = cfg.mode === "balanced" ? 2 : cfg.maxComfortDelta
+        const out = []
+        for (let i = 0; i <= max; i++) out.push(i)
+        return out.length ? out : COMFORT_GRID
     }
 
     /**
@@ -77,7 +131,13 @@
             ratingComfortLift:     orsParams.ratingComfortLift != null
                 ? Number(orsParams.ratingComfortLift) : undefined,
             shareTemperature:      orsParams.shareTemperature != null
-                ? Number(orsParams.shareTemperature) : undefined
+                ? Number(orsParams.shareTemperature) : undefined,
+            aircraftAttractionNeutral: orsParams.aircraftAttractionNeutral != null
+                ? Number(orsParams.aircraftAttractionNeutral) : undefined,
+            aircraftAttractionScale: orsParams.aircraftAttractionScale != null
+                ? Number(orsParams.aircraftAttractionScale) : undefined,
+            aircraftAttractionMaxBonus: orsParams.aircraftAttractionMaxBonus != null
+                ? Number(orsParams.aircraftAttractionMaxBonus) : undefined
         }
 
         return {
@@ -118,13 +178,14 @@
         if (!solver) return out
 
         // For each candidate delta, sum the best-J across all eligible routes.
-        for (const delta of COMFORT_GRID) {
+        for (const delta of _comfortGrid(snapshot)) {
             let total = 0
             let evaluated = 0
             for (const h of hubs) for (const r of (h && h.byRoute) || []) {
-                const weights = window.AesStrategyObjective
+                const rawWeights = window.AesStrategyObjective
                     ? window.AesStrategyObjective.resolveForRoute(snapshot, h.iata, r.dest).weights
                     : {shareWeight: 0.4, profitWeight: 0.4, rankWeight: 0.2}
+                const weights = _scaleWeightsForPlaystyle(rawWeights, snapshot, r)
                 const input = _buildRouteInput(snapshot, h.iata, r, weights, delta)
                 if (!input) continue
                 input.bounds.comfortMax = delta
@@ -164,7 +225,11 @@
             const weights = window.AesStrategyObjective
                 ? window.AesStrategyObjective.resolveForRoute(snapshot, h.iata, r.dest)
                 : null
-            const w = (weights && weights.weights) || {shareWeight: 0.4, profitWeight: 0.4, rankWeight: 0.2}
+            const w = _scaleWeightsForPlaystyle(
+                (weights && weights.weights) || {shareWeight: 0.4, profitWeight: 0.4, rankWeight: 0.2},
+                snapshot,
+                r
+            )
             const kind = (weights && weights.kind) || "balanced"
 
             const input = _buildRouteInput(snapshot, h.iata, r, w, comfortDelta)
@@ -192,6 +257,11 @@
                     + " · share=" + _round(w.shareWeight, 2)
                     + " profit=" + _round(w.profitWeight, 2)
                     + " rank=" + _round(w.rankWeight, 2))
+                const playstyleMult = _playstyleMultiplier(snapshot, r)
+                if (Math.abs(playstyleMult - 1) >= 0.01) {
+                    rationale.push("[ors-playstyle] rank/service weight ×" + _round(playstyleMult, 2)
+                        + " from " + _orsPlaystyle(snapshot).mode + " competition mode")
+                }
 
                 const profitDelta = _num(res.best.profitDelta, 0)
                 out.push({

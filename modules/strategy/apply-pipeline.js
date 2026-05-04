@@ -8,6 +8,7 @@
  * single entry point that calls existing appliers in a fixed order:
  *
  *      schedules → service moves → price moves → crew moves
+ *      → route creations → alliance / IL → slot bids
  *
  * Tier gate is the first short-circuit. `tier === "preview-only"` blocks
  * every actuator regardless of per-domain enable flags. After tier
@@ -38,6 +39,8 @@
  *     selected?: Set<string> | string[],   // decision-ids to apply
  *                                           //   (omit → apply every applicable
  *                                           //    decision in the plan)
+ *     diff?:    {decisions: Array},        // reviewed decision set from
+ *                                           //   the strategy panel
  *     ctx?:     {server, airlineCode},     // override snapshot context
  *     source?:  string,                    // audit tag — default "strategy"
  *     onProgress?: fn(event)               // {kind, decisionId, …}
@@ -61,6 +64,37 @@
 ;(function () {
     if (typeof window === "undefined") return
     const ns = window.AesStrategy || (window.AesStrategy = {})
+
+    // Tiny shared bus on the AesStrategy namespace. ~12 emit sites across
+    // canopy stores, layered family/division/fleet, fleet-optimizer-settings,
+    // rebalance-applier, and strategy-briefing-tile guard on
+    // `window.AesStrategy && window.AesStrategy.bus` and silently no-op
+    // when the bus is missing. Nothing was instantiating it. Mirror the
+    // shape from `aircraft-flight-plan/host.js` and `journal-store.js`.
+    if (!ns.bus) {
+        const _handlers = new Map()
+        ns.bus = {
+            on(name, h) {
+                if (typeof h !== "function") return
+                let set = _handlers.get(name)
+                if (!set) { set = new Set(); _handlers.set(name, set) }
+                set.add(h)
+            },
+            off(name, h) {
+                const set = _handlers.get(name)
+                if (set) set.delete(h)
+            },
+            emit(name, payload) {
+                const set = _handlers.get(name)
+                if (!set) return
+                for (const h of Array.from(set)) {
+                    try { h(payload) }
+                    catch (e) { console.warn("[AesStrategy.bus] handler threw for '" + name + "'", e) }
+                }
+            }
+        }
+    }
+
     if (typeof ns.apply === "function") return
 
     const AUDIT_KEY     = "aesStrategy:audit"
@@ -96,6 +130,23 @@
     function _settings() { return window.AesStrategySettings }
     function _diff()     { return ns.diffPlan }
     function _now()      { return Date.now() }
+
+    async function _routeAssistantPricingApplyConfig() {
+        const safe = {enabled: false, dryRunOnly: true}
+        const loader = window.RouteAssistantSettings
+        if (!loader || typeof loader.load !== "function") return safe
+        try {
+            const settings = await loader.load()
+            const apply = settings && settings.pricing && settings.pricing.apply
+            if (!apply || typeof apply !== "object") return safe
+            return {
+                enabled:    apply.enabled === true,
+                dryRunOnly: apply.dryRunOnly !== false
+            }
+        } catch (_) {
+            return safe
+        }
+    }
 
     function _selectedSet(opts) {
         const sel = opts && opts.selected
@@ -410,6 +461,17 @@
         } catch (_) { return null }
     }
 
+    function _computeAbsolutePrice(current, pct, classKey) {
+        const cur = Number(current)
+        const p = Number(pct)
+        if (!isFinite(cur) || !isFinite(p) || cur <= 0) return cur
+        const raw = cur * (p / 100)
+        if (classKey === "Cargo" || Math.abs(cur) < 10 || Math.abs(raw) < 10) {
+            return Math.max(0.01, Math.round(raw * 100) / 100)
+        }
+        return Math.max(1, Math.round(raw))
+    }
+
     /**
      * Build a HUB-DEST → cacheAge index from a snapshot once, so the
      * inner loop avoids O(routes×decisions) lookups.
@@ -448,8 +510,31 @@
             return {ok: false, error: "missing server"}
         }
         const Applier = window.RouteAssistantPricingApplier
+        const raApply = await _routeAssistantPricingApplyConfig()
+        if (!raApply.enabled) {
+            for (const d of decisions) {
+                skipped.push({decisionId: d.id, domain: "price", reason: "route-assistant-pricing-disabled"})
+                _emit(opts, {
+                    kind: "skipped",
+                    decisionId: d.id,
+                    domain: "price",
+                    reason: "route-assistant-pricing-disabled"
+                })
+                _recordPriceDiagnostic("skip", {
+                    hub: d.payload && d.payload.hub,
+                    dest: d.payload && d.payload.dest,
+                    reason: "routeAssistantPricingDisabled"
+                })
+            }
+            return {ok: true, pricingGate: true}
+        }
         let applier
-        try { applier = new Applier(server, {applyEnabled: true, dryRunOnly: false}) }
+        try {
+            applier = new Applier(server, {
+                applyEnabled: raApply.enabled,
+                dryRunOnly:   raApply.dryRunOnly
+            })
+        }
         catch (e) {
             const err = (e && e.message) || String(e)
             for (const d of decisions) {
@@ -507,7 +592,7 @@
                 allOk = false
                 continue
             }
-            const newPrice = Math.max(1, Math.round(cached * (Number(p.toPct) / 100)))
+            const newPrice = _computeAbsolutePrice(cached, p.toPct, cls)
             const prices   = {[cls]: newPrice}
             // Thread the price-move's `impactWeekly` (projected weekly profit
             // delta from price-moves.js) into the applier as `projectedDelta`
@@ -520,7 +605,8 @@
                     source: (opts && opts.source) || "strategy",
                     projectedDelta: isFinite(impact) ? {profitPerWeek: impact} : null
                 })
-                const ok = !!(r && (r.status === "verified" || r.status === "posted"))
+                const ok = !!(r && (r.status === "verified" || r.status === "posted"
+                    || (raApply.dryRunOnly && r.status === "dry-run")))
                 if (!ok) allOk = false
                 const logId = (r && r.logId) || null
                 applied.push({decisionId: d.id, domain: "price", ok: ok,
@@ -713,17 +799,63 @@
     }
 
     /**
-     * Crew sub-pipeline. Plain form-encoded POST per call.
+     * Slice 20 — slot bid sub-pipeline.
+     *
+     * The live AS bid form is not mapped yet, so Strategy deliberately
+     * routes this as a dry-run queue/logging path. AesSlotBidder still
+     * records the attempt to AesSlotStore, which gives the Strategy menu
+     * a real, inspectable action without risking a live slot write.
      */
-    async function _applyCrewMoves(decisions, ctx, applied, skipped, opts) {
+    async function _applySlotBids(decisions, ctx, applied, skipped, opts) {
         if (!decisions.length) return {ok: true}
-        if (typeof window.CrewMgmtStaffPilotsApplier !== "function") {
+        if (!window.AesSlotBidder || typeof window.AesSlotBidder.apply !== "function") {
             for (const d of decisions) {
-                skipped.push({decisionId: d.id, domain: "crew", reason: "actuator-missing"})
-                _emit(opts, {kind: "skipped", decisionId: d.id, domain: "crew", reason: "actuator-missing"})
+                skipped.push({decisionId: d.id, domain: "slotBid", reason: "actuator-missing"})
+                _emit(opts, {kind: "skipped", decisionId: d.id, domain: "slotBid", reason: "actuator-missing"})
             }
             return {ok: true, missingActuator: true}
         }
+
+        let allOk = true
+        for (const d of decisions) {
+            const p = d.payload || {}
+            const bidAmount = Number(p.suggestedBid || p.minBid || p.currentBid)
+            const req = {
+                server:    p.server || (ctx && ctx.server) || null,
+                iata:      p.iata || p.airport || null,
+                slotId:    p.slotId || null,
+                bidAmount: bidAmount,
+                dryRun:    true
+            }
+            try {
+                const r = await window.AesSlotBidder.apply(req)
+                const ok = !!(r && r.ok)
+                if (!ok) allOk = false
+                applied.push({
+                    decisionId: d.id,
+                    domain:     "slotBid",
+                    ok:         ok,
+                    result:     r,
+                    error:      ok ? null : (r && (r.reason || r.error)) || "unknown"
+                })
+                _emit(opts, {kind: "result", decisionId: d.id, domain: "slotBid", ok: ok})
+                _busEmit("slotBid", {decisionId: d.id, hub: null, dest: req.iata, ok: ok})
+            } catch (e) {
+                allOk = false
+                const err = (e && e.message) || String(e)
+                applied.push({decisionId: d.id, domain: "slotBid", ok: false, error: err})
+                _emit(opts, {kind: "result", decisionId: d.id, domain: "slotBid", ok: false, error: err})
+                _busEmit("slotBid", {decisionId: d.id, hub: null, dest: req.iata, ok: false})
+            }
+        }
+        return {ok: allOk}
+    }
+
+    /**
+     * Crew sub-pipeline. Plain form-encoded POST per call.
+     */
+    async function _applyCrewMoves(decisions, ctx, applied, skipped, opts, settings) {
+        if (!decisions.length) return {ok: true}
         const server = ctx && ctx.server
         if (!server) {
             for (const d of decisions) {
@@ -733,18 +865,49 @@
             }
             return {ok: false, error: "missing server"}
         }
-        const applier = new window.CrewMgmtStaffPilotsApplier()
+        const pilotApplier = typeof window.CrewMgmtStaffPilotsApplier === "function"
+            ? new window.CrewMgmtStaffPilotsApplier()
+            : null
+        const payCfg = settings && settings.crewPay && settings.crewPay.apply || {}
+        const payApplier = typeof window.CrewMgmtPayTierApplier === "function"
+            ? new window.CrewMgmtPayTierApplier(server, {
+                applyLog:     typeof window.CrewMgmtPayTierApplyLog === "function"
+                    ? new window.CrewMgmtPayTierApplyLog() : null,
+                applyEnabled: payCfg.enabled !== false,
+                dryRunOnly:   payCfg.dryRunOnly !== false
+            })
+            : null
         let allOk = true
         for (const d of decisions) {
             const p = d.payload || {}
+            const isPay = p.action === "raisePay" || p.action === "cutPay"
+            if (isPay && !payApplier) {
+                skipped.push({decisionId: d.id, domain: "crew", reason: "pay-actuator-missing"})
+                _emit(opts, {kind: "skipped", decisionId: d.id, domain: "crew", reason: "pay-actuator-missing"})
+                continue
+            }
+            if (!isPay && !pilotApplier) {
+                skipped.push({decisionId: d.id, domain: "crew", reason: "pilot-actuator-missing"})
+                _emit(opts, {kind: "skipped", decisionId: d.id, domain: "crew", reason: "pilot-actuator-missing"})
+                continue
+            }
             try {
-                const r = await applier.hireOrTrain({
-                    server:  server,
-                    skillId: p.skillId,
-                    amount:  p.amount,
-                    mode:    p.action
-                })
-                const ok = r && r.status === "posted"
+                const r = isPay
+                    ? await payApplier.apply(p.positionId, p.recommendedSalary, {
+                        source:    opts.source || "strategy",
+                        label:     p.skillLabel || p.group || null,
+                        payTierPp: p.amount
+                    })
+                    : await pilotApplier.hireOrTrain({
+                        server:  server,
+                        skillId: p.skillId,
+                        amount:  p.amount,
+                        mode:    p.action
+                    })
+                const ok = isPay
+                    ? r && (r.status === "verified" || r.status === "posted"
+                            || r.status === "dry-run" || r.status === "noop")
+                    : r && r.status === "posted"
                 if (!ok) allOk = false
                 applied.push({decisionId: d.id, domain: "crew", ok: ok,
                               result: r,
@@ -784,7 +947,8 @@
         const tier = settingsLoader.resolveTier(settings)
 
         const diffFn = _diff()
-        const diff = diffFn ? diffFn(plan, null) : {decisions: [], summary: {}}
+        const reviewedDiff = o.diff && Array.isArray(o.diff.decisions) ? o.diff : null
+        const diff = reviewedDiff || (diffFn ? diffFn(plan, (o && o.snapshot) || null) : {decisions: [], summary: {}})
         const allDecisions = diff.decisions || []
         const sel = _selectedSet(o)
 
@@ -814,7 +978,10 @@
         }
 
         // ── Pre-bucket selected, applicable decisions per domain ─────────
-        const buckets = {schedule: [], service: [], price: [], crew: [], routeCreation: [], alliance: []}
+        const buckets = {
+            schedule: [], service: [], price: [], crew: [],
+            routeCreation: [], alliance: [], slotBid: []
+        }
         for (const d of allDecisions) {
             if (sel && !sel.has(d.id)) {
                 skipped.push({decisionId: d.id, domain: d.domain, reason: "deselected"})
@@ -888,7 +1055,7 @@
         // 4. Crew moves.
         if (!aborted && buckets.crew.length) {
             _emit(o, {kind: "domain-start", domain: "crew", count: buckets.crew.length})
-            await _applyCrewMoves(buckets.crew, ctx, applied, skipped, o)
+            await _applyCrewMoves(buckets.crew, ctx, applied, skipped, o, settings)
         }
 
         // 5. Route creations (Slice 6) — last so a partial schedule failure
@@ -909,9 +1076,16 @@
             await _applyAllianceMoves(buckets.alliance, ctx, applied, skipped, o)
         }
 
+        // 7. Slot bids (Slice 20) — dry-run queue/logging until the AS
+        //    bid form POST shape is mapped.
+        if (!aborted && buckets.slotBid.length) {
+            _emit(o, {kind: "domain-start", domain: "slotBid", count: buckets.slotBid.length})
+            await _applySlotBids(buckets.slotBid, ctx, applied, skipped, o)
+        }
+
         // ── Aborted — anything still in a bucket counts as not-attempted ──
         if (aborted) {
-            for (const dom of ["service", "price", "crew", "routeCreation", "alliance"]) {
+            for (const dom of ["service", "price", "crew", "routeCreation", "alliance", "slotBid"]) {
                 for (const d of buckets[dom]) {
                     if (!applied.find(a => a.decisionId === d.id)
                         && !skipped.find(s => s.decisionId === d.id)) {
@@ -950,6 +1124,51 @@
             applyReport: report
         }, accountId)
 
+        // ── Slice 5 — outcome recording ──────────────────────────────────
+        // Capture a "before" measurement so `learn.js` can attribute the
+        // observed delta back to weights once the user reopens the panel
+        // ≥ window-hours later. Skip when learning is paused so the ring
+        // doesn't fill with no-attribution-coming records.
+        // Recorded BEFORE journaling so Slice 26 Phase 2 can stamp the
+        // resulting outcomeId onto each journal entry's `outcomeRef`,
+        // letting lesson-miner.js join journal × outcomes per decision.
+        let outcomeIdForJournal = null
+        try {
+            const learningEnabled = !!(settings && settings.learningEnabled)
+            if (!aborted && okCount > 0 && learningEnabled
+                    && window.AesStrategyOutcomes
+                    && typeof window.AesStrategyOutcomes.record === "function") {
+                // Reuse snapshotForApply when an upstream sub-pipeline
+                // already composed one — saves a third snapshot fetch on
+                // a busy apply.
+                let snapForMeasure = (o && o.snapshot) || snapshotForApply || null
+                if (!snapForMeasure && window.AesStrategy
+                                    && typeof window.AesStrategy.snapshot === "function") {
+                    try { snapForMeasure = await window.AesStrategy.snapshot({}) }
+                    catch (_) { snapForMeasure = null }
+                }
+                const before = window.AesStrategyOutcomes.measure(snapForMeasure, plan)
+                let weightsAtApply = null
+                if (window.AesStrategyLearn
+                        && typeof window.AesStrategyLearn.getCurrentWeights === "function") {
+                    try { weightsAtApply = await window.AesStrategyLearn.getCurrentWeights(accountId) }
+                    catch (_) { weightsAtApply = null }
+                }
+                const outcome = await window.AesStrategyOutcomes.record({
+                    planId:      plan && plan.planId,
+                    applyTs:     ts,
+                    before:      before,
+                    weights:     weightsAtApply,
+                    server:      ctx.server,
+                    airlineCode: ctx.airlineCode,
+                    accountId:   accountId
+                })
+                if (outcome && outcome.outcomeId) outcomeIdForJournal = outcome.outcomeId
+            }
+        } catch (e) {
+            console.warn("[AES strategy/apply] outcome record failed", e)
+        }
+
         // ── Slice 26 — journal record per applied decision ───────────────
         // Active recording (vs passive subscription) because the audit
         // ring's rationale strings would be lost on a 500-deep oldValue/
@@ -978,55 +1197,20 @@
                             ok:         a.ok,
                             error:      a.error || null,
                             logId:      a.logId || null,
-                            rationale:  Array.isArray(d.rationale) ? d.rationale.slice(0, 4) : []
+                            rationale:  Array.isArray(d.rationale) ? d.rationale.slice(0, 4) : [],
+                            // Cluster keys for Slice 26 Phase 2 lesson-miner.
+                            distanceKm:     (d.payload && Number(d.payload.distanceKm)) || null,
+                            incumbentCount: (d.payload && Number(d.payload.incumbentCount)) || null,
+                            equipFamily:    (d.payload && d.payload.equipFamily)        || null
                         },
-                        source: "apply-pipeline",
-                        ts:     ts
+                        source:     "apply-pipeline",
+                        ts:         ts,
+                        outcomeRef: outcomeIdForJournal
                     })
                 }
             }
         } catch (e) {
             console.warn("[AES strategy/apply] journal record failed", e)
-        }
-
-        // ── Slice 5 — outcome recording ──────────────────────────────────
-        // Capture a "before" measurement so `learn.js` can attribute the
-        // observed delta back to weights once the user reopens the panel
-        // ≥ window-hours later. Skip when learning is paused so the ring
-        // doesn't fill with no-attribution-coming records.
-        try {
-            const learningEnabled = !!(settings && settings.learningEnabled)
-            if (!aborted && okCount > 0 && learningEnabled
-                    && window.AesStrategyOutcomes
-                    && typeof window.AesStrategyOutcomes.record === "function") {
-                // Reuse snapshotForApply when an upstream sub-pipeline
-                // already composed one — saves a third snapshot fetch on
-                // a busy apply.
-                let snapForMeasure = (o && o.snapshot) || snapshotForApply || null
-                if (!snapForMeasure && window.AesStrategy
-                                    && typeof window.AesStrategy.snapshot === "function") {
-                    try { snapForMeasure = await window.AesStrategy.snapshot({}) }
-                    catch (_) { snapForMeasure = null }
-                }
-                const before = window.AesStrategyOutcomes.measure(snapForMeasure, plan)
-                let weightsAtApply = null
-                if (window.AesStrategyLearn
-                        && typeof window.AesStrategyLearn.getCurrentWeights === "function") {
-                    try { weightsAtApply = await window.AesStrategyLearn.getCurrentWeights(accountId) }
-                    catch (_) { weightsAtApply = null }
-                }
-                await window.AesStrategyOutcomes.record({
-                    planId:      plan && plan.planId,
-                    applyTs:     ts,
-                    before:      before,
-                    weights:     weightsAtApply,
-                    server:      ctx.server,
-                    airlineCode: ctx.airlineCode,
-                    accountId:   accountId
-                })
-            }
-        } catch (e) {
-            console.warn("[AES strategy/apply] outcome record failed", e)
         }
 
         _emit(o, {kind: "done", report: report})

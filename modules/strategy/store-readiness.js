@@ -47,6 +47,31 @@
         schedule:  12 * 3600 * 1000
     }
     const MARKET_MAX_AGE_DAYS_FOR_PROBE = 14
+    const PLACEHOLDER_SERVERS = /^(test|mock|example|localhost|local|127|0)$/i
+
+    function _locationInfo() {
+        try {
+            return {
+                hostname: String(location && location.hostname || ""),
+                protocol: String(location && location.protocol || "")
+            }
+        } catch (_) {
+            return {hostname: "", protocol: ""}
+        }
+    }
+
+    function _looksLikeAirlineSimServer(server) {
+        const s = String(server || "").trim()
+        return /^[a-z0-9][a-z0-9-]*$/i.test(s) && !PLACEHOLDER_SERVERS.test(s)
+    }
+
+    function _canAutoSeedNetwork(server) {
+        if (!_looksLikeAirlineSimServer(server)) return false
+        const loc = _locationInfo()
+        if (/\.airlinesim\.aero$/i.test(loc.hostname)) return true
+        return /^chrome-extension:$/i.test(loc.protocol)
+            || /^moz-extension:$/i.test(loc.protocol)
+    }
 
     function _ago(ts) {
         if (!ts) return "?"
@@ -163,10 +188,70 @@
         return out
     }
 
+    // ── Remote refresh helpers ──────────────────────────────────────────
+
+    function _remote() {
+        return window.AesStrategyRemoteRefresh
+            && typeof window.AesStrategyRemoteRefresh.run === "function"
+            ? window.AesStrategyRemoteRefresh
+            : null
+    }
+
+    function _remoteProgressText(p) {
+        if (!p) return ""
+        if (p.stage === "phase-start") return p.label || p.phaseId || "phase"
+        if (p.stage === "phase-jobs") return (p.label || p.phaseId || "phase") + " · " + (p.total || 0) + " tabs"
+        if (p.stage === "progress") {
+            const ev = p.event || {}
+            const pair = (p.done || 0) + "/" + (p.total || 0)
+            if (ev.type === "job-start") return (p.label || p.phaseId || "phase") + " · " + pair + " · opening"
+            if (ev.type === "job-done") return (p.label || p.phaseId || "phase") + " · " + pair + " · saved"
+            if (ev.type === "job-fail") return (p.label || p.phaseId || "phase") + " · " + pair + " · failed"
+            return (p.label || p.phaseId || "phase") + " · " + pair
+        }
+        if (p.stage === "done") {
+            const r = p.report || {}
+            return "remote refresh " + (r.okJobs || 0) + "/" + (r.totalJobs || 0) + " tabs"
+        }
+        return p.stage || ""
+    }
+
+    function _remoteAction(label, opts, phases, extra) {
+        const R = _remote()
+        if (!R) return null
+        if (!_canAutoSeedNetwork(opts && opts.server)) return null
+        return {
+            kind: "seed",
+            label,
+            remote: true,
+            run: async (subOpts) => {
+                const payload = Object.assign({}, opts || {}, extra || {}, {phases: phases || undefined})
+                await R.run(payload, (p) => {
+                    if (subOpts && typeof subOpts.onProgress === "function") {
+                        const sub = _remoteProgressText(p)
+                        if (sub) subOpts.onProgress({sub})
+                    }
+                })
+            }
+        }
+    }
+
+    function _remotePhasesForItems(items) {
+        const phases = []
+        const need = key => (items || []).some(it => it && it.key === key && it.status !== "filled")
+        const add = id => { if (phases.indexOf(id) < 0) phases.push(id) }
+        if (need("fleet") || need("crewPilots")) add("foundation")
+        if (need("routes") || need("markets")) add("per-hub")
+        if (need("schedules")) add("per-aircraft")
+        if (need("markets")) add("per-route")
+        return phases
+    }
+
     // ── Probes ───────────────────────────────────────────────────────────
 
     function _aircraftFromSnapshot(snapshot) {
         if (!snapshot || !snapshot.fleet) return []
+        if (Array.isArray(snapshot.fleet)) return snapshot.fleet
         return Array.isArray(snapshot.fleet.aircraft) ? snapshot.fleet.aircraft : []
     }
 
@@ -178,12 +263,23 @@
                     detail: aircraft.length + " tail" + (aircraft.length === 1 ? "" : "s") + " in roster",
                     action: null}
         }
+        // Spell out the scoped airline in the seed-button label and the
+        // "no data" detail. Without this the user can't tell whether the
+        // scrape will hit the panel-scoped airline or the AS session
+        // airline (it's always the latter — see panel.js scope-mismatch
+        // banner). Surfacing the name in the label makes the misroute
+        // obvious before the user clicks.
+        const a = String((o && o.airline) || "").trim()
+        const airlineLbl = a ? " (" + a + ")" : ""
         return {key: "fleet", label: "Fleet roster",
                 status: "empty", count: 0,
-                detail: "No aircraft cached for this airline. Open the Fleet Management page to seed.",
-                action: {kind: "nav",
-                         label: "Open /app/fleets →",
-                         url: "/app/fleets"}}
+                detail: _remote()
+                    ? "No aircraft cached" + (a ? " for " + a : "") + ". Refresh seeds /app/fleets in a background tab — make sure your AS session is logged into " + (a || "the right airline") + " first."
+                    : "No aircraft cached" + (a ? " for " + a : "") + ". Open the Fleet Management page to seed.",
+                action: _remoteAction("Fetch fleet" + airlineLbl + " →", o, ["foundation"])
+                    || {kind: "nav",
+                        label: "Open /app/fleets →",
+                        url: "/app/fleets"}}
     }
 
     async function _probeSchedules(o) {
@@ -225,7 +321,16 @@
                 o.currentSchedules.forEach((_v, k) => idsCached.add(String(k)))
             }
             const missing = aircraft.filter(a => !idsCached.has(String(a.aircraftId || a.id))).slice(0, 5)
-            if (missing.length) {
+            const remoteMissing = aircraft.filter(a => !idsCached.has(String(a.aircraftId || a.id)))
+            const remoteAction = _remoteAction(
+                "Fetch " + remoteMissing.length + " schedule" + (remoteMissing.length === 1 ? "" : "s") + " →",
+                o,
+                ["per-aircraft"],
+                {aircraft: remoteMissing}
+            )
+            if (remoteAction) {
+                item.action = remoteAction
+            } else if (missing.length) {
                 item.action = {kind: "nav-list",
                                label: "Seed by visiting:",
                                items: missing.map(a => ({
@@ -248,18 +353,23 @@
         }
         return {key: "routes", label: "Routes known",
                 status: "empty", count: 0,
-                detail: "No routes enumerable. Visit accounting once so per-route ledger seeds.",
-                action: {kind: "nav",
-                         label: "Open accounting →",
-                         url: "/app/finance/accounting/0"}}
+                detail: _remote()
+                    ? "No routes enumerable. Refresh can open hub scheduling pages to seed top-route lists."
+                    : "No routes enumerable. Visit accounting once so per-route ledger seeds.",
+                action: _remoteAction("Fetch hub routes →", o, ["per-hub"])
+                    || {kind: "nav",
+                        label: "Open accounting →",
+                        url: "/app/finance/accounting/0"}}
     }
 
     async function _probeMarkets(o, routes) {
         if (typeof window.RouteAssistantMarketsPageScraper === "undefined") {
             return {key: "markets", label: "Market data (competitors + own pricing)",
                     status: "module-missing", count: 0,
-                    detail: "RouteAssistantMarketsPageScraper not loaded on this page.",
-                    action: null}
+                    detail: _remote()
+                        ? "Markets scraper not loaded here; Refresh will seed markets via background route tabs."
+                        : "RouteAssistantMarketsPageScraper not loaded on this page.",
+                    action: _remoteAction("Fetch market tabs →", o, ["per-route"], {routes})}
         }
         if (!o.server) {
             return {key: "markets", label: "Market data (competitors + own pricing)",
@@ -301,24 +411,103 @@
             action: null
         }
         if (missingCount > 0) {
+            const remoteAction = _remoteAction(
+                "Fetch " + missingCount + " market" + (missingCount === 1 ? "" : "s") + " →",
+                o,
+                ["per-route"],
+                {routes}
+            )
+            if (remoteAction) {
+                item.action = remoteAction
+            } else if (_canAutoSeedNetwork(o.server)) {
+                item.action = {
+                    kind: "seed",
+                    label: "Seed " + missingCount + " market" + (missingCount === 1 ? "" : "s") + " →",
+                    run: async (subOpts) => {
+                        const inst = new window.RouteAssistantMarketsPageScraper(o.server, {})
+                        const missing = []
+                        for (const r of routes) {
+                            const k = r.hub + "-" + r.dest
+                            const rec = cache.get(k)
+                            if (!rec || !(rec.competitors || rec.ownPricing)) missing.push(r)
+                        }
+                        if (!missing.length) return
+                        await inst.bulkScrape(missing, {
+                            concurrency: 3,
+                            staggerMs: 600,
+                            onProgress: (done, total) => {
+                                if (subOpts && subOpts.onProgress) {
+                                    subOpts.onProgress({sub: done + "/" + total + " routes"})
+                                }
+                            }
+                        })
+                    }
+                }
+            } else {
+                item.action = {
+                    kind: "nav-list",
+                    label: "Seed by visiting:",
+                    items: routes.slice(0, 5).map(r => ({
+                        label: r.hub + "-" + r.dest,
+                        url: "/app/com/markets/" + r.hub + r.dest
+                    }))
+                }
+            }
+        }
+        return item
+    }
+
+    async function _probeOrs(o, routes) {
+        if (typeof window.RouteAssistantOrsIntelligence === "undefined") {
+            return {key: "ors", label: "ORS readiness",
+                    status: "module-missing", count: 0,
+                    detail: "RouteAssistantOrsIntelligence not loaded on this page.",
+                    action: null}
+        }
+        if (!routes.length) {
+            return {key: "ors", label: "ORS readiness",
+                    status: "empty", count: 0,
+                    detail: "No routes to probe (depends on Routes known).",
+                    action: null}
+        }
+        let coverage = null
+        try {
+            const svc = new window.RouteAssistantOrsIntelligence(o.server)
+            coverage = await svc.getCoverage(routes, {settings: o.settings || null})
+        } catch (e) {
+            return {key: "ors", label: "ORS readiness",
+                    status: "empty", count: 0,
+                    detail: "Probe failed: " + ((e && e.message) || String(e)),
+                    action: null}
+        }
+        const total = coverage.totalRoutes || routes.length
+        const covered = coverage.coveredRoutes || 0
+        const stale = coverage.staleRoutes ? coverage.staleRoutes.length : 0
+        const missing = coverage.missingRoutes ? coverage.missingRoutes.length : Math.max(0, total - covered)
+        const status = covered === 0 ? "empty" : ((covered < total || stale > 0) ? "partial" : "filled")
+        const item = {
+            key: "ors", label: "ORS readiness",
+            status, count: covered,
+            detail: covered + " of " + total + " route" + (total === 1 ? "" : "s")
+                + " covered · " + stale + " stale"
+                + (coverage.breaker && coverage.breaker.active ? " · breaker cooldown" : ""),
+            action: null
+        }
+        if ((missing > 0 || stale > 0) && !(coverage.breaker && coverage.breaker.active)
+                && _canAutoSeedNetwork(o.server)) {
             item.action = {
                 kind: "seed",
-                label: "Seed " + missingCount + " market" + (missingCount === 1 ? "" : "s") + " →",
+                label: "Sync " + (missing + stale) + " ORS route"
+                    + ((missing + stale) === 1 ? "" : "s") + " →",
                 run: async (subOpts) => {
-                    const inst = new window.RouteAssistantMarketsPageScraper(o.server, {})
-                    const missing = []
-                    for (const r of routes) {
-                        const k = r.hub + "-" + r.dest
-                        const rec = cache.get(k)
-                        if (!rec || !(rec.competitors || rec.ownPricing)) missing.push(r)
-                    }
-                    if (!missing.length) return
-                    await inst.bulkScrape(missing, {
-                        concurrency: 3,
-                        staggerMs: 600,
-                        onProgress: (done, total) => {
+                    const svc = new window.RouteAssistantOrsIntelligence(o.server)
+                    await svc.sync(routes, {
+                        settings: o.settings || null,
+                        includeFresh: false,
+                        source: "strategy-readiness",
+                        onProgress: (p) => {
                             if (subOpts && subOpts.onProgress) {
-                                subOpts.onProgress({sub: done + "/" + total + " routes"})
+                                subOpts.onProgress({sub: (p.done || 0) + "/" + (p.total || 0) + " routes"})
                             }
                         }
                     })
@@ -332,8 +521,10 @@
         if (typeof window.CrewMgmtStaffPilotsScraper === "undefined") {
             return {key: "crewPilots", label: "Crew · pilots",
                     status: "module-missing", count: 0,
-                    detail: "CrewMgmtStaffPilotsScraper not loaded.",
-                    action: null}
+                    detail: _remote()
+                        ? "Crew scraper not loaded here; Refresh will seed crew through the staff pages."
+                        : "CrewMgmtStaffPilotsScraper not loaded.",
+                    action: _remoteAction("Fetch crew →", o, ["foundation"])}
         }
         let rec = null
         try {
@@ -353,12 +544,23 @@
             action: null
         }
         if (status !== "filled" && o.server) {
-            item.action = {
-                kind: "seed",
-                label: rec ? "Refresh crew →" : "Seed crew →",
-                run: async () => {
-                    const inst = new window.CrewMgmtStaffPilotsScraper()
-                    await inst.scrape(o.server)
+            const remoteAction = _remoteAction(rec ? "Refresh crew →" : "Seed crew →", o, ["foundation"])
+            if (remoteAction) {
+                item.action = remoteAction
+            } else if (_canAutoSeedNetwork(o.server)) {
+                item.action = {
+                    kind: "seed",
+                    label: rec ? "Refresh crew →" : "Seed crew →",
+                    run: async () => {
+                        const inst = new window.CrewMgmtStaffPilotsScraper()
+                        await inst.scrape(o.server)
+                    }
+                }
+            } else {
+                item.action = {
+                    kind: "nav",
+                    label: "Open staff →",
+                    url: "/action/enterprise/staffPilots"
                 }
             }
         }
@@ -406,6 +608,7 @@
         items.push(await _probeSchedules(o))
         items.push(await _probeRoutes(o, routes))
         items.push(await _probeMarkets(o, routes))
+        items.push(await _probeOrs(o, routes))
         items.push(await _probeCrewPilots(o))
         items.push(await _probeOutcomes(o))
         return items
@@ -419,7 +622,58 @@
      * sub-progress notes from the seeders.
      */
     async function seedMissing(opts, onProgress) {
-        const items = await probe(opts || {})
+        const o = opts || {}
+        const routes = enumerateRoutes(o)
+        const items = await probe(o)
+        const R = _remote()
+        if (R) {
+            const phases = _remotePhasesForItems(items)
+            if (phases.length) {
+                const report = {ran: phases.length, ok: 0, errors: [], remote: true}
+                if (onProgress) onProgress({stage: "start", total: phases.length})
+                try {
+                    const remoteReport = await R.run(Object.assign({}, o, {phases, routes}), (p) => {
+                        if (!onProgress) return
+                        if (p.stage === "phase-start") {
+                            onProgress({stage: "seeding", label: p.label || p.phaseId, done: report.ok, total: phases.length})
+                        } else {
+                            const sub = _remoteProgressText(p)
+                            if (sub) {
+                                onProgress({stage: "seeding", label: "Remote refresh", done: report.ok, total: phases.length, sub})
+                            }
+                        }
+                    })
+                    report.ok = remoteReport && remoteReport.ok ? phases.length : Math.max(0, phases.length - 1)
+                    if (remoteReport && !remoteReport.ok) {
+                        report.errors.push({key: "remote", error: remoteReport.haltReason || "remote refresh failed"})
+                    }
+                } catch (e) {
+                    report.errors.push({key: "remote", error: (e && e.message) || String(e)})
+                }
+                const orsItem = items.find(it => it && it.key === "ors"
+                    && it.status !== "filled" && it.action && it.action.kind === "seed")
+                if (orsItem) {
+                    report.ran++
+                    try {
+                        if (onProgress) onProgress({
+                            stage: "seeding", label: orsItem.label, done: report.ok, total: report.ran
+                        })
+                        await orsItem.action.run({
+                            onProgress: (sub) => {
+                                if (onProgress) onProgress(Object.assign({
+                                    stage: "seeding", label: orsItem.label, done: report.ok, total: report.ran
+                                }, sub))
+                            }
+                        })
+                        report.ok++
+                    } catch (e) {
+                        report.errors.push({key: "ors", error: (e && e.message) || String(e)})
+                    }
+                }
+                if (onProgress) onProgress({stage: "done", total: report.ran, ok: report.ok, errors: report.errors})
+                return report
+            }
+        }
         const seedables = items.filter(it =>
             it.action && it.action.kind === "seed" && it.status !== "filled")
         const total = seedables.length
@@ -461,7 +715,11 @@
         probe:                       probe,
         seedMissing:                 seedMissing,
         enumerateRoutes:             enumerateRoutes,
-        bootstrapRoutesFromFleetsDom: bootstrapRoutesFromFleetsDom
+        bootstrapRoutesFromFleetsDom: bootstrapRoutesFromFleetsDom,
+        _internals: {
+            _looksLikeAirlineSimServer,
+            _canAutoSeedNetwork
+        }
     }
 
     // ── ?aes-debug smoke ─────────────────────────────────────────────────

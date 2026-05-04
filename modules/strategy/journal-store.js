@@ -170,7 +170,7 @@
         if (!ACTIONS.has(o.action)) {
             throw new Error("AesStrategyJournal.record: invalid action " + o.action)
         }
-        return {
+        const entry = {
             id:         o.id || _entryId(),
             ts:         Number(o.ts) > 0 ? Number(o.ts) : Date.now(),
             accountId:  o.accountId != null ? String(o.accountId) : null,
@@ -183,6 +183,10 @@
             source:     typeof o.source === "string" && o.source ? o.source : "panel",
             reasonText: _trimReason(o.reasonText)
         }
+        // Phase 2 reserved slot — populated for `apply-decision` entries by
+        // apply-pipeline.js so lesson-miner can join journal × outcomes.
+        if (o.outcomeRef != null) entry.outcomeRef = String(o.outcomeRef)
+        return entry
     }
 
     async function record(opts) {

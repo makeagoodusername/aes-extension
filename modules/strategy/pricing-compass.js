@@ -111,7 +111,7 @@
         if (!route) {
             return {competitorBand: null, ownPricing: null, ors: null,
                     congestion: null, demand: null, competitorIncome: null,
-                    elasticity: null, cacheAges: null}
+                    elasticity: null, cacheAges: null, orsReadiness: null}
         }
         const c = route.competitor || null
         const competitorBand = (c && c.priceMin != null && c.priceMax != null) ? {
@@ -129,7 +129,9 @@
             Cargo:     _num(route.ownPricing.prices.Cargo, null),
             scrapedAt: _num(route.ownPricing.scrapedAt, null)
         } : null
-        const ors = route.orsByClass ? {
+        const orsReadiness = route.orsReadiness || null
+        const orsReady = !(orsReadiness && orsReadiness.usable === false)
+        const ors = (route.orsByClass && orsReady) ? {
             byClass:   route.orsByClass,
             rankAny:   _num(route.orsByClass && route.orsByClass.rankAny, null),
             scrapedAt: _num(route.orsScrapedAt, null)
@@ -152,7 +154,8 @@
             demand:         demand,
             competitorIncome: null,           // attached post-proposer (rationale-derived)
             elasticity:       null,           // attached post-proposer
-            cacheAges:        route.cacheAge || null
+            cacheAges:        route.cacheAge || null,
+            orsReadiness:     orsReadiness
         }
     }
 
@@ -267,7 +270,12 @@
         const blockers = []
         if (!signals.competitorBand) blockers.push("no competitor band cached")
         if (!signals.ownPricing)     blockers.push("no own-price cached")
-        if (!signals.ors)            blockers.push("no ORS data cached")
+        if (!signals.ors) {
+            const rw = signals.orsReadiness && signals.orsReadiness.warnings || []
+            blockers.push(signals.orsReadiness
+                ? "ORS not ready" + (rw.length ? ": " + rw[0] : "")
+                : "no ORS data cached")
+        }
         return {
             hasCompetitorBand: !!signals.competitorBand,
             hasOwnPricing:     !!signals.ownPricing,

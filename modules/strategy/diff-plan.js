@@ -30,8 +30,8 @@
  *               predictedWeeklyProfit, predictedOrsAvg},
  *     decisions: [{
  *       id:            "<unique-string>",
- *       kind:          "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction"|"alliance",
- *       domain:        "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction"|"alliance",
+ *       kind:          "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction"|"alliance"|"slot-bid",
+ *       domain:        "schedule"|"service"|"price"|"crew"|"routeCreation"|"competitorReaction"|"alliance"|"slotBid",
  *       title:         "JFK → LAX × 7 legs"           // human label
  *       subtitle:      "tail N123AA · widebody · 65h" // optional 2nd line
  *       rationale:     [string],                      // bullet rationale
@@ -59,6 +59,12 @@
     const _num = (window.AesUtils && window.AesUtils._num)
         || function (v, f) { const n = Number(v); return isFinite(n) ? n : f }
 
+    function _fmtSignedMoney(value) {
+        const n = _num(value, 0)
+        const sign = n > 0 ? "+" : ""
+        return sign + Math.round(n).toLocaleString() + " AS$/wk"
+    }
+
     /**
      * Map a strategy plan leg → the shape AesAfpScheduleDiff.compare()
      * matches on (`{origin, destination, depTimeLocal}`). Plan legs use
@@ -83,14 +89,14 @@
      * (caller treats null as "no current data — every plan leg counts as
      * added", matching the v1 stub semantics for that one tail).
      */
-    function _diffAircraft(aircraft, currentSchedules) {
+    function _diffAircraft(aircraft, currentSchedules, diffOpts) {
         if (!currentSchedules || typeof currentSchedules.get !== "function") return null
         const cur = currentSchedules.get(String(aircraft.aircraftId))
         if (!cur) return null
         const D = (typeof window !== "undefined") ? window.AesAfpScheduleDiff : null
         if (!D || typeof D.compare !== "function") return null
         const proposed = (aircraft.legs || []).map(_planLegToMatchable).filter(Boolean)
-        const result = D.compare(Array.isArray(cur) ? cur : [], proposed)
+        const result = D.compare(Array.isArray(cur) ? cur : [], proposed, diffOpts)
         return {
             kept:    result.keep.length,
             added:   result.add.length,
@@ -164,8 +170,14 @@
         return {value: v, unit: "pct", tone: v > 0 ? "ok" : "warn",
                 label: (v > 0 ? "+" : "") + v + "% budget"}
     }
+    function _impactSlotBid(payload) {
+        const v = _num(payload && payload.score, NaN)
+        if (!isFinite(v)) return null
+        return {value: v, unit: "score", tone: "muted",
+                label: "score " + v.toFixed(2)}
+    }
 
-    function _scheduleDecisions(plan, currentSchedules) {
+    function _scheduleDecisions(plan, currentSchedules, diffOpts) {
         const out = []
         const aircraft = (plan && plan.perAircraft) || []
         for (const a of aircraft) {
@@ -177,7 +189,7 @@
             const cap   = _num(a.utilization && a.utilization.capWeeklyHours, 0)
             const hubLabel = a.hub || "?"
             const eq = a.equipment || ("type " + (a.typeId || "?"))
-            const adiff = _diffAircraft(a, currentSchedules)
+            const adiff = _diffAircraft(a, currentSchedules, diffOpts)
             // Subtitle gets a diff hint when we have one — "+3 / -1" beats
             // a meaningless "12 legs on aircraft" when the user is trying
             // to gauge change vs. status quo.
@@ -280,13 +292,23 @@
                 domain:       "crew",
                 title:        titleAction + " " + titleAmount + " · "
                                   + (m.skillLabel || ("type " + m.typeId)),
-                subtitle:     "Need " + m.flightsNeeded + " · active "
-                                  + (m.activeNow != null ? m.activeNow : "?"),
+                subtitle:     isPay
+                    ? ("Cost Δ " + _fmtSignedMoney(m.weeklyCostDelta)
+                        + (m.recommendedSalary ? " · new " + Math.round(m.recommendedSalary).toLocaleString() + " AS$" : "")
+                        + (m.responsibilityClass ? " · " + m.responsibilityClass : ""))
+                    : ("Need " + m.flightsNeeded + " · active "
+                                  + (m.activeNow != null ? m.activeNow : "?")),
                 rationale:    Array.isArray(m.rationale) ? m.rationale.slice() : [],
                 payload:      m,
-                applicable:   !isPay && m.skillId != null,
+                applicable:   isPay
+                    ? (m.positionId != null && m.recommendedSalary != null)
+                    : m.skillId != null,
                 applicableNote: isPay
-                    ? "Pay-tier actuator not yet implemented — surface as a testable hypothesis; apply manually on /app/enterprise/staffPilots."
+                    ? (m.positionId == null
+                        ? "Position ID missing — open /action/enterprise/staffOverview to seed the pay-tier form context."
+                        : (m.recommendedSalary == null
+                            ? "Recommended salary missing — refresh staff overview and rerun the plan."
+                            : "Pay-tier applier available; default strategy.crewPay.apply.dryRunOnly keeps this as an auditable dry-run until verified."))
                     : (m.skillId == null
                         ? "Skill ID missing — open the staff page (/app/enterprise/staffPilots) to seed CrewMgmtStaffPilotsScraper."
                         : "")
@@ -420,7 +442,8 @@
 
     /**
      * Pass-through builder for advisory decisions emitted by async
-     * proposers (sister-coordination, fleet-renewal, marketing-tuner).
+     * proposers (sister-coordination, fleet-renewal, marketing-tuner,
+     * slot-tuner).
      * Producers already shape id/domain/title/rationale/payload — we only
      * decorate `_impact` so the chip slot matches the existing rows. All
      * three domains arrive `applicable: false` from their producers, which
@@ -437,6 +460,7 @@
             if      (d.domain === "sister")        imp = _impactSister(d.payload)
             else if (d.domain === "fleet-renewal") imp = _impactFleetRenewal(d.payload)
             else if (d.domain === "marketing")     imp = _impactMarketing(d.payload)
+            else if (d.domain === "slotBid")       imp = _impactSlotBid(d.payload)
             if (imp) dec._impact = imp
             out.push(dec)
         }
@@ -449,6 +473,7 @@
         if (typeof summary.profileChanges      !== "number") summary.profileChanges      = 0
         if (typeof summary.crewHires           !== "number") summary.crewHires           = 0
         if (typeof summary.crewTraining        !== "number") summary.crewTraining        = 0
+        if (typeof summary.crewPayWeeklyCostDelta !== "number") summary.crewPayWeeklyCostDelta = 0
         if (typeof summary.routeCreationProposals !== "number") summary.routeCreationProposals = 0
 
         // Real per-aircraft schedule diff totals when we have current
@@ -498,13 +523,14 @@
 
     function diffPlan(plan, _snapshot, opts) {
         const currentSchedules = opts && opts.currentSchedules ? opts.currentSchedules : null
+        const scheduleDiffOptions = opts && opts.scheduleDiffOptions ? opts.scheduleDiffOptions : null
         const allianceMoves    = opts && opts.allianceMoves    ? opts.allianceMoves    : null
         const advisory         = (opts && opts.advisoryDecisions) || []
         if (!plan && !advisory.length && !(allianceMoves && allianceMoves.length)) {
             return {summary: _summary(null, [], currentSchedules), decisions: []}
         }
         const decisions = []
-            .concat(_scheduleDecisions(plan, currentSchedules))
+            .concat(_scheduleDecisions(plan, currentSchedules, scheduleDiffOptions))
             .concat(_serviceDecisions(plan))
             .concat(_priceDecisions(plan))
             .concat(_crewDecisions(plan))
@@ -513,13 +539,13 @@
             .concat(_allianceDecisions(allianceMoves))
             .concat(_advisoryDecisions(advisory))
         // Stable order — apply-pipeline order, then by id within domain.
-        // Competitor reactions / alliance / sister-coordination / fleet-
-        // renewal / marketing are advisory-only and sort to the end so
-        // applicable rows lead the list.
+        // Competitor reactions / alliance / slot / sister-coordination /
+        // fleet-renewal / marketing are proposer domains and sort after
+        // core operating changes so applicable rows lead the list.
         const domainOrder = {
             schedule: 0, service: 1, price: 2, crew: 3, routeCreation: 4,
             competitorReaction: 5, alliance: 6,
-            sister: 7, "fleet-renewal": 8, marketing: 9
+            slotBid: 7, sister: 8, "fleet-renewal": 9, marketing: 10
         }
         decisions.sort((a, b) => {
             const da = domainOrder[a.domain] ?? 99
@@ -560,6 +586,13 @@
                 const r = await window.AesStrategyMarketingTuner.computeProposals({snapshot: snapshot})
                 if (Array.isArray(r)) for (const d of r) if (d) out.push(d)
             } catch (e) { console.warn("[AES diff-plan] marketing tuner threw", e) }
+        }
+        if (window.AesStrategySlotTuner
+                && typeof window.AesStrategySlotTuner.computeProposals === "function") {
+            try {
+                const r = await window.AesStrategySlotTuner.computeProposals({snapshot: snapshot})
+                if (Array.isArray(r)) for (const d of r) if (d) out.push(d)
+            } catch (e) { console.warn("[AES diff-plan] slot tuner threw", e) }
         }
         return out
     }

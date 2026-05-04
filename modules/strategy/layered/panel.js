@@ -36,6 +36,7 @@
     ]
 
     let _root = null
+    let _escHandler = null
 
     function _getNested(obj, path) {
         const parts = path.split(".")
@@ -137,6 +138,7 @@
     function _modalShell() {
         const overlay = _el("div", {
             "data-aes-layered-panel": "1",
+            "class": "aes-layered-panel",
             style: {
                 position: "fixed", inset: "0", background: "rgba(0,0,0,0.55)",
                 zIndex: "999999", display: "flex", alignItems: "center",
@@ -145,6 +147,10 @@
             }
         })
         const dialog = _el("div", {
+            "class": "aes-layered-dialog",
+            "role": "dialog",
+            "aria-modal": "true",
+            "aria-label": "Layered strategy overrides",
             style: {
                 width: "min(820px, 92vw)", maxHeight: "86vh",
                 background: "#181818", border: "1px solid #333",
@@ -160,7 +166,9 @@
 
     function close() {
         if (_root && _root.parentNode) _root.parentNode.removeChild(_root)
+        if (_escHandler) document.removeEventListener("keydown", _escHandler, true)
         _root = null
+        _escHandler = null
     }
 
     async function _renderKillSwitchRow(host) {
@@ -536,6 +544,13 @@
         _renderTabsAndBody()
 
         document.body.appendChild(overlay)
+        _escHandler = function (e) {
+            if (e.key === "Escape") {
+                e.stopPropagation()
+                close()
+            }
+        }
+        document.addEventListener("keydown", _escHandler, true)
     }
 
     window.AesStrategyLayeredPanel = {open: open, close: close}

@@ -251,6 +251,43 @@
                 })
             }
         } catch (_) { /* bus failure must not break the storage path */ }
+
+        // Slice D3 — narrative trail. Append a journal entry so the
+        // activity-strip + briefing surfaces show "intervention staged"
+        // alongside applied moves and overrides. setWeight maps cleanly
+        // onto the locked weight-change action; other kinds use
+        // apply-decision (the enum has no kind-agnostic "staged" verb).
+        // Failure here must not roll back the storage write.
+        try {
+            const J = window.AesStrategyJournal
+            if (J && typeof J.record === "function") {
+                if (intervention.kind === "setWeight"
+                        && intervention.name && typeof intervention.value === "number") {
+                    const ns = window.AesStrategy
+                    const before = (ns && typeof ns.getWeights === "function")
+                        ? (ns.getWeights() || {})[intervention.name]
+                        : null
+                    J.record({
+                        action: "weight-change",
+                        before: (typeof before === "number") ? {[intervention.name]: before} : null,
+                        after:  {[intervention.name]: intervention.value},
+                        source: "panel",
+                        reasonText: payload.reason
+                            ? ("intervention " + dispatchId + ": " + payload.reason)
+                            : ("intervention " + dispatchId + " staged from " + originForkId)
+                    }).catch(() => {})
+                } else {
+                    J.record({
+                        action: "apply-decision",
+                        before: null,
+                        after:  {dispatchId, intervention: payload.intervention, applied: false},
+                        source: "panel",
+                        reasonText: "intervention staged: " + payload.summary
+                    }).catch(() => {})
+                }
+            }
+        } catch (_) { /* never block the staging path on a journal failure */ }
+
         return dispatchId
     }
 

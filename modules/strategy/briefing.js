@@ -594,6 +594,8 @@
             scrapeFreshnessMs:  _scrapeFreshnessMs(snapshot)
         })
 
+        const riskRegister = await _buildRiskRegister({server, airline})
+
         const diagnostics = {missing: [], notes: []}
         if (!snapshot)             diagnostics.missing.push("snapshot")
         if (!diff)                 diagnostics.missing.push("plan")
@@ -604,6 +606,15 @@
 
         const autoOpenBucketId = weekId
             || ("synth-" + Math.floor(generatedAt / (7 * DAY_MS)))
+
+        try {
+            if (window.CentralHubBus && typeof window.CentralHubBus.emit === "function") {
+                window.CentralHubBus.emit("signal:briefing:risk-loaded", {
+                    count: (riskRegister && riskRegister.count) || 0,
+                    byCategory: (riskRegister && riskRegister.byCategory) || null
+                })
+            }
+        } catch (_) { /* noop */ }
 
         return {
             generatedAt: generatedAt,
@@ -618,8 +629,151 @@
             drifted:     drifted,
             opportunities: opportunities,
             risk:        risk,
+            riskRegister: riskRegister,
             diagnostics: diagnostics
         }
+    }
+
+    // ── Risk register (K12 — Conductor scenario fires by category) ──────
+
+    /** Map a Conductor scenarioId to a top-level risk category for the
+     *  briefing modal. New scenarios default to "operational" until the
+     *  curator extends this map. */
+    const SCENARIO_CATEGORY = {
+        CashStep:               "financial",
+        CashRunwayDefence:      "financial",
+        MaintenanceWatch:       "operational",
+        ConditionWatch:         "operational",
+        FleetIdle:              "operational",
+        WaveStress:             "operational",
+        CrewShortfall:          "operational",
+        ProfitDecay:            "competitive",
+        OrsRegression:          "competitive",
+        CompetitorEntry:        "competitive",
+        CompetitorExit:         "competitive",
+        DemandShift:            "competitive",
+        PricingSpiralRisk:      "competitive",
+        ServiceDrift:           "operational",
+        SisterCannibalisation:  "operational",
+        HubImbalance:           "operational"
+    }
+
+    async function _buildRiskRegister(host) {
+        // K12-full — delegate to the shared helper when loaded; legacy
+        // inline fallback keeps the briefing functional in non-dashboard
+        // scopes that don't yet load risk-register.js.
+        if (window.AesConductorRiskRegister && typeof window.AesConductorRiskRegister.build === "function") {
+            try {
+                const reg = await window.AesConductorRiskRegister.build(host, {fireLimit: 5, proposalLimit: 10})
+                if (reg) return reg
+            } catch (_) { /* fall through to legacy */ }
+        }
+
+        const out = {count: 0, byCategory: {financial: 0, operational: 0, competitive: 0, regulatory: 0},
+                     fires: [], driftProposals: []}
+        if (!host || !host.server) return out
+        const fires = await _safeConductorFires(host)
+        const proposals = await _safeDriftProposals(host)
+        // K9 — pre-fetch trust + fireUx settings so attention.score can rank.
+        const trustByScenario = await _safeTrustLoad(host)
+        const fireUxSettings  = await _safeFireUxSettings(host)
+
+        const interestingFires = []
+        for (const f of fires) {
+            if (!f) continue
+            if (f.dismissedAt) continue
+            const sev = String(f.severity || "info")
+            const fav = f.outcome && f.outcome.favourable === false
+            const interesting = fav || sev === "alert" || sev === "warn"
+            if (!interesting) continue
+            const cat = SCENARIO_CATEGORY[f.scenarioId] || "operational"
+            out.byCategory[cat] = (out.byCategory[cat] || 0) + 1
+            interestingFires.push(f)
+        }
+
+        // K9 — attention-score sort when available; fall back to severity.
+        let ranked
+        if (window.AesConductorAttention && typeof window.AesConductorAttention.sortFires === "function") {
+            ranked = window.AesConductorAttention.sortFires(interestingFires, trustByScenario, fireUxSettings, Date.now())
+        } else {
+            const sevWeight = (s) => s === "alert" ? 3 : s === "warn" ? 2 : 1
+            ranked = interestingFires.slice().sort((a, b) => {
+                const sw = sevWeight(b.severity || "info") - sevWeight(a.severity || "info")
+                if (sw !== 0) return sw
+                return (b.firedAt || 0) - (a.firedAt || 0)
+            })
+        }
+        const candidates = ranked.map(f => ({
+            fireId:      f.id,
+            scenarioId:  f.scenarioId,
+            label:       f.label || f.scenarioId,
+            severity:    String(f.severity || "info"),
+            category:    SCENARIO_CATEGORY[f.scenarioId] || "operational",
+            rationale:   f.rationale || "",
+            firedAt:     f.firedAt || 0,
+            openUrl:     (f.payload && f.payload.openUrl) || null
+        }))
+        out.fires = candidates.slice(0, 5)
+        out.count = candidates.length
+
+        const recent = (proposals || []).slice(-10).reverse()
+        out.driftProposals = recent.map(p => ({
+            scenarioId: p.scenarioId,
+            key:        p.key,
+            current:    p.current,
+            proposed:   p.proposed,
+            reason:     p.reason || "",
+            createdAt:  p.createdAt || 0,
+            accepted:   !!p.accepted
+        }))
+        return out
+    }
+
+    async function _safeConductorFires(host) {
+        try {
+            if (window.AesConductorScenarioStore
+                    && typeof window.AesConductorScenarioStore.all === "function") {
+                const r = await window.AesConductorScenarioStore.all(host)
+                return Array.isArray(r) ? r : []
+            }
+            const key = "aesConductor:fires:" + host.server + ":" + (host.airline || "")
+            const blob = await chrome.storage.local.get([key])
+            const v = blob && blob[key]
+            return Array.isArray(v) ? v : []
+        } catch (_) { return [] }
+    }
+
+    async function _safeDriftProposals(host) {
+        try {
+            const key = "aesConductor:driftProposals:" + host.server + ":" + (host.airline || "")
+            const blob = await chrome.storage.local.get([key])
+            const v = blob && blob[key]
+            return Array.isArray(v) ? v : []
+        } catch (_) { return [] }
+    }
+
+    /** K9 — pre-fetch trust posterior map; gracefully degrade to {} so the
+     *  fallback severity sort still works. */
+    async function _safeTrustLoad(host) {
+        try {
+            if (window.AesConductorTrustStore && typeof window.AesConductorTrustStore.load === "function") {
+                const r = await window.AesConductorTrustStore.load(host)
+                return (r && typeof r === "object") ? r : {}
+            }
+        } catch (_) { /* noop */ }
+        return {}
+    }
+
+    /** K9 — pre-fetch the per-fire UX settings (pin/snooze) for the
+     *  attention scorer. Returns {fireUx: {}} when storage is unavailable. */
+    async function _safeFireUxSettings(host) {
+        try {
+            if (window.AesConductorAttention && typeof window.AesConductorAttention.readFireUxSettings === "function") {
+                const r = await window.AesConductorAttention.readFireUxSettings(host)
+                return r || {fireUx: {}}
+            }
+        } catch (_) { /* noop */ }
+        return {fireUx: {}}
     }
 
     // ── Defensive readers ───────────────────────────────────────────────
@@ -661,6 +815,8 @@
         _largestDrift:       _largestDrift,
         _topOpportunities:   _topOpportunities,
         _buildRisk:          _buildRisk,
-        _driftTone:          _driftTone
+        _buildRiskRegister:  _buildRiskRegister,
+        _driftTone:          _driftTone,
+        SCENARIO_CATEGORY:   SCENARIO_CATEGORY
     }
 })()

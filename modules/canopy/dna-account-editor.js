@@ -191,16 +191,13 @@
             const rp = eff.riskProfile
             if (!rp) return
             try {
-                const out = await chrome.storage.local.get(["settings"])
-                const next = out.settings || {}
-                next.strategy = next.strategy || {}
-                if (next.strategy.riskProfile === rp) {
+                const current = await window.AesStrategySettings.load()
+                if (current.riskProfile === rp) {
                     window.alert("Strategy riskProfile already matches DNA: " + rp)
                     return
                 }
-                if (!window.confirm("Set strategy.riskProfile to '" + rp + "' for the active account? (Was: " + (next.strategy.riskProfile || "unset") + ")")) return
-                next.strategy.riskProfile = rp
-                await chrome.storage.local.set({settings: next})
+                if (!window.confirm("Set strategy.riskProfile to '" + rp + "' for the active account? (Was: " + (current.riskProfile || "unset") + ")")) return
+                await window.AesStrategySettings.save({riskProfile: rp})
                 window.alert("Strategy riskProfile updated.")
             } catch (e) {
                 window.alert("Sync failed: " + (e && e.message))
