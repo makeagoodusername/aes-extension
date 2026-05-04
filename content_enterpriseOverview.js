@@ -1,10 +1,17 @@
 "use strict";
 //MAIN
 //Global vars
-var server,airlineId,activeTab,compData;
+//
+// `airlineId` is the COMPETITOR airline being viewed (from the URL).
+// `ownerAirlineId` is the controlled airline the user is logged in as
+// (the one whose competitor list this competitor will be filed under).
+// Backports upstream v0.7.5 owner-scoped competitor monitoring — see
+// helpers.js AES.getCompetitorMonitoringKey for the key shape.
+var server,airlineId,ownerAirlineId,activeTab,compData;
 $(function(){
     server = getServerName();
     airlineId = getAirlineId();
+    ownerAirlineId = getOwnerAirlineId();
     const activeClass = $(".nav-tabs .active").attr('class');
     if (!activeClass) {
       // Page renders without .nav-tabs (e.g. /app/info/enterprises/me has no
@@ -13,13 +20,20 @@ $(function(){
       return;
     }
     activeTab = activeClass.split(" ")[0];
-    let key = server+airlineId+'competitorMonitoring';
-    chrome.storage.local.get([key], function(compMonitoringData) {
-      compData = compMonitoringData[key];
+    // Item 32/27 backport: per-controlled-airline competitor scoping.
+    // DUAL-READ: prefer the new owner-scoped key, fall back to the legacy
+    // unscoped key for users who tracked competitors before this upgrade.
+    // Legacy keys are NEVER deleted by AES code — they remain readable
+    // until the user explicitly clears storage.
+    let key = AES.getCompetitorMonitoringKey(server, ownerAirlineId, airlineId);
+    let legacyKey = AES.getCompetitorMonitoringKey(server, null, airlineId);
+    chrome.storage.local.get([key, legacyKey], function(compMonitoringData) {
+      compData = compMonitoringData[key] || compMonitoringData[legacyKey];
       if(!compData){
         compData = {
           key:key,
           server:server,
+          ownerId:ownerAirlineId,
           id:airlineId,
           type:"competitorMonitoring",
           tab0:{},
@@ -27,6 +41,13 @@ $(function(){
           tracking:0,
           autoExtract:0
         }
+      } else {
+        // Migrate the in-memory blob onto the new owner-scoped key on every
+        // load (the legacy blob on disk is left in place by design — see
+        // dual-read comment above). Subsequent saves will write to the new
+        // key, so future page loads will find it directly.
+        compData.key = key;
+        compData.ownerId = ownerAirlineId;
       }
       displayMain();
 
@@ -52,6 +73,7 @@ function displayMain(){
       //Update tracker
       compData.tracking =1;
       chrome.storage.local.set({[compData.key]: compData}, function() {});
+      updateCompetitorMonitoringIndex(true);
 
       //Action bar
       let actionBar = $('<ul class="as-panel as-action-bar"></ul>');
@@ -83,6 +105,7 @@ function displayMain(){
       //Update tracker
       compData.tracking =0;
       chrome.storage.local.set({[compData.key]: compData}, function() {});
+      updateCompetitorMonitoringIndex(false);
       //Display
       divComp.empty();
     }
@@ -100,6 +123,40 @@ function displayMain(){
   let mainDiv = $('<div id="aes-panel-airline-competitive-monitoring"></div>').append('<h3>AirlineSim Enhancement Suite Airline</h3>',panel,divComp);
   $(".container-fluid:eq(2) h2").after(mainDiv);
 }
+// Item 27 backport (upstream v0.7.5): maintain a per-controlled-airline
+// index of tracked competitor airlineIds. Dashboard reads this index
+// instead of grep-by-suffix scanning every storage key. Index is
+// dedup'd defensively on every write.
+function updateCompetitorMonitoringIndex(tracking) {
+  if (!ownerAirlineId || !airlineId) {
+    // Without a known owner we cannot index this competitor. The blob is
+    // still saved under the legacy unscoped key path (see DUAL-READ
+    // comment at the top of this file) so the data is not lost.
+    return;
+  }
+
+  let indexKey = AES.getCompetitorMonitoringIndexKey(server, ownerAirlineId);
+  chrome.storage.local.get({[indexKey]: []}, function(result) {
+    let index = Array.isArray(result[indexKey]) ? result[indexKey].map(String) : [];
+    let competitorId = String(airlineId);
+    index = index.filter(function(id, position) {
+      return index.indexOf(id) == position;
+    });
+
+    if (tracking) {
+      if (index.indexOf(competitorId) == -1) {
+        index.push(competitorId);
+      }
+    } else {
+      index = index.filter(function(id) {
+        return id != competitorId;
+      });
+    }
+
+    chrome.storage.local.set({[indexKey]: index}, function() {});
+  });
+}
+
 function displayAutomation(actionBar){
   if(!compData.autoExtract){ //
     let span = $('<span></span>');
@@ -364,13 +421,43 @@ function getTab2Data(){
   //First table
   let data = {};
   let table = $(".tab-content table");
+  // Item 24 backport (upstream v0.7.5): label-based row lookup. The fork
+  // previously used positional `tbody:eq(N) tr:eq(N) td:eq(1)` selectors
+  // which silently returned NaN whenever AS reordered table rows. The
+  // upstream `getNumberByLabel(labels, fallbackCell)` helper walks every
+  // tbody row, matches the leading th/td against any of the supplied
+  // label substrings (case-insensitive), and returns the second cell's
+  // numeric value. The original positional cell is supplied as a
+  // fallback for layouts where the label has been removed entirely.
+  let getNumber = function(text) {
+    let number = text.trim().split('(')[0].replace(/\D/g, '');
+    return number ? parseInt(number, 10) : NaN;
+  };
+  let getNumberByLabel = function(labels, fallbackCell) {
+    let value;
+    table.find('tbody tr').each(function() {
+      let label = $(this).find('th, td').first().text().trim().toLowerCase();
+      let found = labels.some(function(match) {
+        return label.indexOf(match) != -1;
+      });
+      if (found) {
+        value = getNumber($(this).find('td:eq(1)').text());
+        return false;
+      }
+    });
+    if (value !== undefined) {
+      return value;
+    }
+    return getNumber(fallbackCell.text());
+  };
+
   data.week = parseInt(table.find('tr:eq(0) th:eq(2)').text().trim().replace(/\D/g, ''),10);
-  data.airportsServed = parseInt(table.find('tbody:eq(0) tr:eq(0) td:eq(1)').text().trim().split('(')[0].replace(/\D/g, ''),10);
-  data.operatedFlights = parseInt(table.find('tbody:eq(0) tr:eq(1) td:eq(1)').text().trim().split('(')[0].replace(/\D/g, ''),10);
-  data.seatsOffered = parseInt(table.find('tbody:eq(1) tr:eq(2) td:eq(1)').text().trim().split('(')[0].replace(/\D/g, ''),10);
-  data.sko = parseInt(table.find('tbody:eq(1) tr:eq(5) td:eq(1)').text().trim().split('(')[0].replace(/\D/g, ''),10);
-  data.cargoOffered = parseInt(table.find('tbody:eq(2) tr:eq(2) td:eq(1)').text().split('(')[0].trim().replace(/\D/g, ''),10);
-  data.fko = parseInt(table.find('tbody:eq(2) tr:eq(5) td:eq(1)').text().trim().split('(')[0].replace(/\D/g, ''),10);
+  data.airportsServed = getNumberByLabel(['airports served'], table.find('tbody:eq(0) tr:eq(0) td:eq(1)'));
+  data.operatedFlights = getNumberByLabel(['operated flights'], table.find('tbody:eq(0) tr:eq(1) td:eq(1)'));
+  data.seatsOffered = getNumberByLabel(['seats offered'], table.find('tbody:eq(1) tr:eq(2) td:eq(1)'));
+  data.sko = getNumberByLabel(['seat kilometer offered', 'sko'], table.find('tbody:eq(1) tr:eq(5) td:eq(1)'));
+  data.cargoOffered = getNumberByLabel(['units offered'], table.find('tbody:eq(2) tr:eq(2) td:eq(1)'));
+  data.fko = getNumberByLabel(['freight kilometer offered', 'fko'], table.find('tbody:eq(2) tr:eq(5) td:eq(1)'));
   data.tab2data=2;
   return data;
 }
@@ -388,6 +475,58 @@ function getAirlineId(){
   id = id.split("/");
   id = id[id.length-1];
   return id;
+}
+// Item 27 backport: derive the controlled-airline (owner) numeric id so
+// competitor blobs can be scoped per controlled airline. The AS top-nav
+// dropdown lists every controlled airline as
+// `<a href="/app/enterprise/dashboard?select=<id>">…</a>`; the active
+// airline is the one whose name matches the current selection. We try
+// several DOM affordances in priority order:
+//   1. `.as-navbar-main .dropdown.open .active a[href*="select="]`
+//      (open-dropdown active row — most explicit)
+//   2. `.as-navbar-main .dropdown-menu a.active[href*="select="]`
+//      (collapsed dropdown active row — same idea)
+//   3. The first `select=` link whose text matches the navbar's current
+//      airline name (last-resort name-match)
+// Returns "" if no match — `updateCompetitorMonitoringIndex` then no-ops
+// and the legacy unscoped key path keeps working.
+function getOwnerAirlineId(){
+  let candidate = '';
+  let extractId = function(href) {
+    if (!href) return '';
+    let match = href.match(/select=(\d+)/);
+    return match ? match[1] : '';
+  };
+
+  // Try active dropdown rows first
+  let activeLink = $('.as-navbar-main .dropdown a.active[href*="select="]').first();
+  if (activeLink.length) {
+    candidate = extractId(activeLink.attr('href'));
+    if (candidate) return candidate;
+  }
+  let activeRow = $('.as-navbar-main .dropdown-menu li.active a[href*="select="]').first();
+  if (activeRow.length) {
+    candidate = extractId(activeRow.attr('href'));
+    if (candidate) return candidate;
+  }
+
+  // Fallback: match the navbar's current airline display name against
+  // each select= link in the menu.
+  let displayName = $('.as-navbar-main .dropdown > a.name span').first().text().trim()
+    || $('.as-navbar-main .dropdown > a.name').first().text().trim();
+  if (displayName) {
+    let menuLinks = $('.as-navbar-main .dropdown-menu a[href*="select="]');
+    menuLinks.each(function() {
+      let link = $(this);
+      let linkName = link.find('span').first().text().trim() || link.text().trim();
+      if (linkName === displayName) {
+        candidate = extractId(link.attr('href'));
+        return false;
+      }
+    });
+  }
+
+  return candidate || '';
 }
 function getServerName(){
   let server = window.location.hostname

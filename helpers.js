@@ -158,6 +158,51 @@ class AES {
     }
 
     /**
+     * Returns the storage key for a competitor-monitoring record.
+     *
+     * Backports upstream v0.7.5's owner-scoped competitor monitoring
+     * (CHANGELOG: "Fixed Competitor Monitoring so each controlled airline
+     * has its own competitor list instead of sharing one server-wide list").
+     *
+     * When `ownerAirlineId` is provided, returns the new owner-scoped key:
+     *   `<server><ownerAirlineId>_<competitorAirlineId>competitorMonitoring`
+     * When `ownerAirlineId` is falsy, returns the legacy unscoped key:
+     *   `<server><competitorAirlineId>competitorMonitoring`
+     *
+     * Callers that want to dual-read should call this helper twice — once
+     * with the owner id, once with `null` — and prefer the owner-scoped
+     * blob if it exists. See content_dashboard.js for the read-side dual
+     * lookup. Legacy unscoped blobs are never deleted by AES code.
+     *
+     * @param {string} server
+     * @param {string|null} ownerAirlineId
+     * @param {string} competitorAirlineId
+     * @returns {string}
+     */
+    static getCompetitorMonitoringKey(server, ownerAirlineId, competitorAirlineId) {
+        if (ownerAirlineId) {
+            return `${server}${ownerAirlineId}_${competitorAirlineId}competitorMonitoring`
+        }
+
+        return `${server}${competitorAirlineId}competitorMonitoring`
+    }
+
+    /**
+     * Returns the storage key for the owner-scoped competitor-monitoring
+     * index. The index is an array of competitor airlineIds the user is
+     * currently tracking under THIS controlled airline. The dashboard reads
+     * the index to enumerate competitor blobs without grep-by-suffix
+     * scanning all of chrome.storage.local.
+     *
+     * @param {string} server
+     * @param {string} ownerAirlineId
+     * @returns {string}
+     */
+    static getCompetitorMonitoringIndexKey(server, ownerAirlineId) {
+        return `${server}${ownerAirlineId}competitorMonitoringIndex`
+    }
+
+    /**
      * Formats a currency value local standards
      * @param {integer} currency value
      * @param {string} alignment: "right" | "left"

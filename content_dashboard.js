@@ -1611,28 +1611,137 @@ function displayCompetitorMonitoring() {
 
 }
 
+// Item 27 backport (upstream v0.7.5): the controlled-airline (owner)
+// numeric id is required to read the per-controlled-airline competitor
+// index. URL `?select=<id>` is the canonical source on the enterprise
+// dashboard (`/app/enterprise/dashboard?select=<id>`); fall back to any
+// `enterprises/<id>` link on the page if a user lands here from a
+// shared link without a select query string. Returns "" when no owner
+// can be identified — the dashboard then falls back to the legacy
+// grep-by-suffix loader so existing competitor blobs remain visible.
+function getCompetitorMonitoringOwnerId() {
+    let match = (window.location.search || '').match(/[?&]select=(\d+)/);
+    if (match) return match[1];
+    let link = $('a[href*="/app/info/enterprises/"]').filter(function() {
+        return /enterprises\/\d+/.test($(this).attr('href') || '');
+    }).first();
+    if (link.length) {
+        let m = (link.attr('href') || '').match(/enterprises\/(\d+)/);
+        if (m) return m[1];
+    }
+    return '';
+}
+
 function displayCompetitorMonitoringAirlinesTable(div) {
     let compAirlines = [];
     let compAirlinesSchedule = [];
-    chrome.storage.local.get(null, function(items) {
-        //Get data
-        for (let key in items) {
-            if (items[key].type) {
-                if (items[key].type == 'competitorMonitoring') {
-                    if (items[key].server == server) {
-                        if (items[key].tracking) {
-                            compAirlines.push(items[key]);
+    let ownerAirlineId = getCompetitorMonitoringOwnerId();
+    let indexKey = ownerAirlineId
+        ? AES.getCompetitorMonitoringIndexKey(server, ownerAirlineId)
+        : null;
+
+    // Item 27/32 backport: prefer the per-controlled-airline index for
+    // O(N) reads instead of scanning the entire chrome.storage.local
+    // namespace. DUAL-READ contract: if the index is missing OR the
+    // owner id cannot be derived, fall back to the legacy grep-by-suffix
+    // loader so blobs written under `<server><airlineId>competitorMonitoring`
+    // (pre-v0.7.5 fork installs) remain readable. Legacy blobs are NEVER
+    // deleted by the dashboard — they continue to live alongside the new
+    // owner-scoped blobs until the user explicitly clears storage.
+    let loadCompAirlines = function(done) {
+        if (!ownerAirlineId || !indexKey) {
+            // No owner id — fall straight to legacy scan.
+            return loadLegacyByScan(done);
+        }
+        chrome.storage.local.get([indexKey], function(indexResult) {
+            let index = Array.isArray(indexResult[indexKey]) ? indexResult[indexKey].map(String) : null;
+            if (!index) {
+                // Index missing — first run since upgrade. Scan once,
+                // populate the index from whatever competitor blobs we
+                // find for this owner (or unscoped legacy ones), then
+                // proceed.
+                return loadLegacyByScan(function() {
+                    if (compAirlines.length) {
+                        let competitorIds = compAirlines.map(function(a) { return String(a.id); })
+                            .filter(function(id, i, arr) { return arr.indexOf(id) === i; });
+                        chrome.storage.local.set({[indexKey]: competitorIds}, function() {});
+                    } else {
+                        // Persist an empty index so we don't re-scan
+                        // every dashboard mount when there are no
+                        // competitors to display.
+                        chrome.storage.local.set({[indexKey]: []}, function() {});
+                    }
+                    done();
+                });
+            }
+            // Index hit — load only the indexed competitor blobs (with
+            // dual-read fallback to the legacy unscoped key per
+            // competitor).
+            let keys = [];
+            index.forEach(function(competitorId) {
+                keys.push(AES.getCompetitorMonitoringKey(server, ownerAirlineId, competitorId));
+                keys.push(AES.getCompetitorMonitoringKey(server, null, competitorId));
+            });
+            if (!keys.length) {
+                return done();
+            }
+            chrome.storage.local.get(keys, function(items) {
+                index.forEach(function(competitorId) {
+                    let scopedKey = AES.getCompetitorMonitoringKey(server, ownerAirlineId, competitorId);
+                    let legacyKey = AES.getCompetitorMonitoringKey(server, null, competitorId);
+                    let blob = items[scopedKey] || items[legacyKey];
+                    if (blob && blob.type == 'competitorMonitoring' && blob.server == server && blob.tracking) {
+                        compAirlines.push(blob);
+                    }
+                });
+                done();
+            });
+        });
+    };
+
+    let loadLegacyByScan = function(done) {
+        chrome.storage.local.get(null, function(items) {
+            for (let key in items) {
+                if (items[key] && items[key].type) {
+                    if (items[key].type == 'competitorMonitoring') {
+                        if (items[key].server == server) {
+                            // When the index is the source of truth this
+                            // path is suppressed; here we accept any blob
+                            // matching the server, because we are
+                            // bootstrapping the index for the first time.
+                            // If a blob has an `ownerId` and it does not
+                            // match the current owner, skip it — it
+                            // belongs to a different controlled airline.
+                            if (items[key].ownerId && ownerAirlineId && items[key].ownerId != ownerAirlineId) {
+                                continue;
+                            }
+                            if (items[key].tracking) {
+                                compAirlines.push(items[key]);
+                            }
                         }
                     }
                 }
-                if (items[key].type == 'schedule') {
+            }
+            done();
+        });
+    };
+
+    let loadSchedules = function(done) {
+        chrome.storage.local.get(null, function(items) {
+            for (let key in items) {
+                if (items[key] && items[key].type == 'schedule') {
                     if (items[key].server == server) {
-                        let airline = items[key].airline
-                        compAirlinesSchedule[airline] = items[key];
+                        let airlineCode = items[key].airline;
+                        compAirlinesSchedule[airlineCode] = items[key];
                     }
                 }
             }
-        }
+            done();
+        });
+    };
+
+    loadCompAirlines(function() {
+        loadSchedules(function() {
 
         //Check if any airlines exist
         let rows = [];
@@ -1821,15 +1930,39 @@ function displayCompetitorMonitoringAirlinesTable(div) {
                 //Remove airline '
                 data.actionRemoveAirline = $('<button type="button" id="aes-compMon-btn-remove-' + data.airlineCode + '" class="btn btn-xs btn-default">Remove</button>');
                 //Remove airline action
+                // Item 27 backport: dual-read on remove. Prefer the new
+                // owner-scoped key, fall back to the legacy unscoped key.
+                // After clearing `tracking`, also drop this competitor
+                // from the owner-scoped index so future dashboard loads
+                // skip it cleanly. Legacy blob (if it was the source) is
+                // re-saved with `tracking: 0` — we never delete it.
                 $('#aes-div-dashboard').on('click', 'button#aes-compMon-btn-remove-' + data.airlineCode, function() {
-                    let key = server + data.airlineId + 'competitorMonitoring';
+                    let scopedKey = AES.getCompetitorMonitoringKey(server, ownerAirlineId, data.airlineId);
+                    let legacyKey = AES.getCompetitorMonitoringKey(server, null, data.airlineId);
                     let remove = $(this);
-                    chrome.storage.local.get([key], function(compMonitoringData) {
-                        let compData = compMonitoringData[key];
-                        compData.tracking = 0;
-                        chrome.storage.local.set({
-                            [compData.key]: compData }, function() {
+                    chrome.storage.local.get([scopedKey, legacyKey], function(compMonitoringData) {
+                        let blob = compMonitoringData[scopedKey] || compMonitoringData[legacyKey];
+                        if (!blob) {
                             $(remove).closest("tr").remove();
+                            return;
+                        }
+                        blob.tracking = 0;
+                        let writeKey = blob.key || scopedKey;
+                        chrome.storage.local.set({[writeKey]: blob}, function() {
+                            $(remove).closest("tr").remove();
+                            // Update the index — only meaningful when we
+                            // know the owner. No-op when ownerAirlineId
+                            // could not be derived (legacy installs that
+                            // never set up the index).
+                            if (ownerAirlineId && indexKey) {
+                                chrome.storage.local.get({[indexKey]: []}, function(result) {
+                                    let index = Array.isArray(result[indexKey]) ? result[indexKey].map(String) : [];
+                                    index = index.filter(function(id) {
+                                        return id != String(data.airlineId);
+                                    });
+                                    chrome.storage.local.set({[indexKey]: index}, function() {});
+                                });
+                            }
                         });
                     });
                 });
@@ -1845,6 +1978,14 @@ function displayCompetitorMonitoringAirlinesTable(div) {
 
             });
         } else {
+            // Item 26 backport (upstream v0.7.5): the filter UI (Options +
+            // Columns chrome) used to be skipped entirely when no
+            // competitors were tracked, leaving the user with a single
+            // bare warning row and no obvious next action. Build a single
+            // header column "Status" so the warning lives inside the
+            // table instead of replacing it; the filter chrome below is
+            // appended unconditionally.
+            hrows.push($('<tr></tr>').append('<th>Status</th>'));
             rows.push('<tr><td><span class="warning">No airlines marked for competitor monitoring. Open airline info page to mark airline for tracking.</span></td></tr>');
         }
 
@@ -1854,10 +1995,12 @@ function displayCompetitorMonitoringAirlinesTable(div) {
         let table = $('<table id="aes-table-competitorMonitoring" class="table table-bordered table-striped table-hover"></table>').append(thead, tbody);
         let tableWell = $('<div style="overflow-x:auto;" class="as-table-well"></div>').append(table);
 
-        //Options
+        //Options — always rendered so the user can flip column visibility
+        //and reload the table even when no competitors are tracked yet.
         let divRow = $('<div class="row"></div>').append(displayCompetitorMonitoringAirlinesTableOptions(), displayCompetitorMonitoringAirlinesTableCollumns());
         div.append(divRow, tableWell);
-    });
+        }); // end loadSchedules
+    }); // end loadCompAirlines
 }
 
 function displayCompetitorMonitoringAirlineScheduleTable(mainDiv, scheduleData, data) {
