@@ -16,8 +16,8 @@ mutates AS state (none expected for slices 1–6).
 | # | Slice | Disposition | Touches | Commit |
 |---|---|---|---|---|
 | 1 | Settings save/load race fix | [FIXED] | settings-bridge.js, content_inventory.js, content_settings.js | 447e7ca |
-| 2 | Grouped inventory tables (Group by flight) | [FIXED] | content_inventory.js | (this commit) |
-| 3 | Inventory pricing reference recommendations (opt-in) | (pending) |  |  |
+| 2 | Grouped inventory tables (Group by flight) | [FIXED] | content_inventory.js | 199ceee |
+| 3 | Inventory pricing reference recommendations (opt-in) | [FIXED] | content_inventory.js (toggle: 2dcb2cd) | (this commit) |
 | 4 | HUB override controls + auto-detection | (pending) |  |  |
 | 5 | Richer Fleet Management extraction | (pending) |  |  |
 | 6 | Aircraft Profitability new columns | (pending) |  |  |
@@ -195,5 +195,107 @@ match → return before re-rendering.
 
 - `content_inventory.js` — grouped-mode parser + observer + signature
   rerender + AesBoot anchor function + H3 IDs
+
+**Territory:** Agent 7 (content scripts).
+
+---
+
+## Slice 3 — Inventory pricing reference recommendations, opt-in (v0.7.8)
+
+**Disposition:** [FIXED] (rendering side; toggle was committed separately as
+`2dcb2cd` by parallel work)
+
+**Origin:** Upstream CHANGELOG 0.7.8: *"Added an opt-in Inventory Pricing
+setting for reference recommendations when the current route price has no
+finished or inflight results yet."* and *"Updated Inventory Pricing analysis
+to separate executable recommendations from reference recommendations…"*.
+
+**Context:**
+
+The opt-in setting `invPricing.showReferenceRecommendation` (default `0`),
+the AS Settings UI checkbox, and the click handler that uses slice 1's
+`mutateArea` RMW pattern were committed as `2dcb2cd` by parallel work.
+That commit explicitly punted the analyzer + rendering side as a follow-up,
+which is what this slice does.
+
+**Diagnosis (current fork):**
+
+Current's `getAnalysis` populates `analysis.data[cmp].demandFallback = 1`
+when the per-class flightArray comes from settled or observed flights rather
+than current-price-matched flights — i.e., the current price had no flight
+results yet. Upstream calls this exact case the "reference recommendation"
+case: in this state the executable recommendation is conservative (or
+absent), and the user benefits from a simpler step-table read against the
+analysis price as a baseline.
+
+Current's analysis object had no `displayReferenceRec()`, no
+`referenceRecommendation`/`referenceNewPrice` fields, and no `Reference`
+column in the rendered table. The setting toggle had no rendering effect.
+
+**Fix:**
+
+1. `createEmptyClassAnalysis` now initializes `referenceRecommendation: 0`,
+   `referenceRecType: "neutral"`, `referenceNewPrice: 0`,
+   `referenceNewPricePoint: 0`, parallel to upstream.
+
+2. New `generateReferenceRecommendation(analysis, prices)` — ported from
+   upstream v0.7.8. Iterates compartments, gates on
+   `valid && demandFallback`, applies `getInventoryLoadStep` against the
+   active recommendation config and computes a hypothetical new price using
+   `analysisPricePoint + step.step`, clamped to `[minPrice, maxPrice]`.
+   Reuses current's `roundInventoryPrice(cmp, …)` so Cargo decimals are
+   preserved.
+
+3. `getAnalysis` calls `generateReferenceRecommendation` after
+   `generateRecommendation`, so the reference fields are populated whenever
+   the analysis runs (cheap; no I/O, just step-table arithmetic).
+
+4. New `analysis.displayReferenceRec(cmp)` method — recType-tinted span with
+   the reference recommendation text and a `→ price (point%)` suffix when a
+   `referenceNewPrice` was computed. Returns `'-'` when no reference applies
+   (covers the confidently-grounded case where `demandFallback === 0`).
+
+5. `displayAnalysis` reads `settings.invPricing.showReferenceRecommendation`
+   into a local `showReference`. When truthy: appends a `<th>Reference</th>`
+   header, a per-cmp `<td>` cell rendering `displayReferenceRec`, and bumps
+   the spacer/trailing-colspan math (`totalCols`/`trailingCols`) to keep the
+   footer aligned. When falsy: layout is unchanged (8-column default
+   preserved). Default OFF satisfies inviolable rule §7.
+
+**Inviolable rules check:**
+- §1 no new POSTs: pure analysis + DOM rendering; no new request paths.
+- §2 storage contracts: no key change; uses existing
+  `settings.invPricing.recommendation` step config.
+- §6 strategy pure-function cores: not applicable; this is content-script
+  rendering, not a strategy-module core.
+- §7 no silent default flips: setting defaults `0` (off); `2dcb2cd` already
+  recorded the default in both default-settings paths.
+
+**Note on semantics divergence from upstream:**
+
+Upstream gates the reference recommendation on `!useCurrentPrice`. Current's
+`useCurrentPrice` flag has slightly different semantics (it can be 1 even
+when the data came from a fallback path), so this port gates on
+`demandFallback === 1` instead — semantically equivalent to "the
+recommendation is grounded in observation rather than current-price flight
+rows", which is the case CHANGELOG 0.7.8 calls out.
+
+**Verification:**
+
+- Static: `node --check content_inventory.js` clean.
+- Behavioral: open `/app/com/inventory/<route>` for a route with no recent
+  finished/inflight flights at the current price; toggle
+  `Show reference recommendation when current price has no flight results
+  yet` ON in the Settings page; reload Inventory; the analysis table now has
+  a `Reference` column showing the step-table read against the analysis
+  price for any compartment in `demandFallback` state. Toggle OFF; column
+  disappears and the existing 8-column layout returns.
+
+**Files changed:**
+
+- `content_inventory.js` — `createEmptyClassAnalysis` reference fields,
+  `generateReferenceRecommendation`, analysis `displayReferenceRec` method,
+  `displayAnalysis` conditional column + footer colspan
+- (toggle UI + defaults: already committed as `2dcb2cd`)
 
 **Territory:** Agent 7 (content scripts).

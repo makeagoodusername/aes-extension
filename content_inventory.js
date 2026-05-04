@@ -535,7 +535,11 @@ function createEmptyClassAnalysis(cmp, price) {
         currentPricePoint: price ? price.currentPricePoint : 0,
         defaultPrice: price ? price.defaultPrice : 0,
         confidence: 0,
-        breakdown: null
+        breakdown: null,
+        referenceRecommendation: 0,
+        referenceRecType: "neutral",
+        referenceNewPrice: 0,
+        referenceNewPricePoint: 0
     }
 }
 
@@ -685,6 +689,25 @@ function getAnalysis(flights, prices, storedData) {
             } else {
                 return '-'
             }
+        },
+        displayReferenceRec: function(cmp) {
+            const row = this.data[cmp]
+            if (!row || !row.referenceRecommendation) return '-'
+
+            let span = $('<span></span>').text(row.referenceRecommendation)
+            switch (row.referenceRecType) {
+                case 'good': span.addClass('good'); break
+                case 'bad': span.addClass('bad'); break
+                default: span.addClass('warning')
+            }
+
+            if (row.referenceNewPrice) {
+                span.append(
+                    $('<span></span>').html(' → ' + formatCurrency(row.referenceNewPrice, cmp) + ' AS$ (' + displayPerc(row.referenceNewPricePoint, 'price') + ')')
+                )
+            }
+
+            return span
         },
         displayPrice: function(cmp, type) {
             const row = this.data[cmp] || {}
@@ -868,6 +891,7 @@ function getAnalysis(flights, prices, storedData) {
 
     //END extract each cmp analysis
     analysis = generateRecommendation(analysis, prices);
+    analysis = generateReferenceRecommendation(analysis, prices);
 
     //Make route index
     analysis = generateRouteIndex(analysis);
@@ -895,6 +919,61 @@ function generateRecommendation(analysis, prices) {
         }
     }
     return analysis;
+}
+
+/**
+ * Compute a step-table-based "reference" recommendation anchored on the
+ * analysis price (not the current price). Useful when the current route
+ * price has no finished or inflight results yet — the executable
+ * recommendation in generateRecommendation() may be conservative or
+ * unavailable, but the simpler step-table read against the analysis price
+ * still gives the user a baseline to compare against.
+ *
+ * Backport of upstream AES v0.7.8 `generateReferenceRecommendation`. Only
+ * populates referenceRecommendation/referenceNewPrice when demandFallback
+ * is set (i.e., the current price didn't yield enough data for direct
+ * grounding); for confidently-grounded compartments the executable
+ * recommendation already reflects current-price data, so the reference
+ * column is left blank.
+ */
+function generateReferenceRecommendation(analysis, prices) {
+    for (let cmp in analysis.data) {
+        const item = analysis.data[cmp]
+        if (!item.valid || !item.demandFallback) continue
+
+        const priceDetails = prices[cmp] || null
+        if (!priceDetails || !priceDetails.defaultPrice) continue
+
+        const config = getInventoryRecommendationConfig(cmp)
+        const load = Math.round(analysis.getLoad(cmp) * 100)
+        const step = getInventoryLoadStep(load, config)
+        if (!step) {
+            item.referenceRecommendation = "No matching step"
+            item.referenceRecType = "neutral"
+            continue
+        }
+
+        const targetPricePoint = Math.min(
+            config.maxPrice,
+            Math.max(config.minPrice, item.analysisPricePoint + step.step)
+        )
+
+        if (step.step < 0) item.referenceRecType = "bad"
+        else if (step.step > 0) item.referenceRecType = "good"
+        else item.referenceRecType = "neutral"
+
+        if (targetPricePoint === item.analysisPricePoint && step.step !== 0) {
+            if (targetPricePoint === config.minPrice) item.referenceRecommendation = "At lowest"
+            else if (targetPricePoint === config.maxPrice) item.referenceRecommendation = "At highest"
+        }
+
+        if (!item.referenceRecommendation) {
+            item.referenceRecommendation = step.name
+            item.referenceNewPricePoint = targetPricePoint
+            item.referenceNewPrice = roundInventoryPrice(cmp, (targetPricePoint / 100) * priceDetails.defaultPrice)
+        }
+    }
+    return analysis
 }
 
 function suggestInventoryPriceMove(cmp, classData, previousData) {
@@ -1085,6 +1164,8 @@ function displayAnalysis(analysis, prices) {
     `
     );
 
+    const showReference = !!(settings && settings.invPricing && settings.invPricing.showReferenceRecommendation)
+
     //Table head
     let th = [];
     th.push('<th>SC</th>');
@@ -1095,6 +1176,9 @@ function displayAnalysis(analysis, prices) {
     th.push('<th class="aes-text-right">Current Price</th>');
     th.push('<th>Recommendation</th>');
     th.push('<th class="aes-text-right">New Price</th>');
+    if (showReference) {
+        th.push('<th>Reference</th>');
+    }
     let headRow = $('<tr></tr>').append(th);
     let thead = $('<thead></thead>').append(headRow);
 
@@ -1110,20 +1194,25 @@ function displayAnalysis(analysis, prices) {
         td.push('<td class="aes-text-right">' + analysis.displayPrice(cmp, 'current') + '</td>');
         td.push('<td>' + analysis.displayRec(cmp) + '</td>');
         td.push('<td class="aes-text-right">' + analysis.displayPrice(cmp, 'new') + '</td>');
+        if (showReference) {
+            td.push($('<td></td>').append(analysis.displayReferenceRec(cmp)));
+        }
         let row = $('<tr></tr>').append(td);
         tbody.append(row);
     }
 
     //Table footer
+    const totalCols = showReference ? 9 : 8;
+    const trailingCols = showReference ? 4 : 3;
     let footRow = []
-    footRow.push('<tr><td colspan="9"></td></tr>');
+    footRow.push('<tr><td colspan="' + totalCols + '"></td></tr>');
     //Total PAX
     let tf = [];
     tf.push('<th>Total PAX</th>');
     tf.push('<td colspan="2"></td>');
     tf.push($('<td></td>').html(analysis.displayTotalLoad('pax')));
     tf.push($('<td class="aes-text-right"></td>').html(analysis.displayTotalIndex('pax')));
-    tf.push('<td colspan="3"></td>');
+    tf.push('<td colspan="' + trailingCols + '"></td>');
     footRow.push($('<tr></tr>').append(tf));
     //Total
     tf = [];
@@ -1131,7 +1220,7 @@ function displayAnalysis(analysis, prices) {
     tf.push('<td colspan="2"></td>');
     tf.push($('<td></td>').html(analysis.displayTotalLoad('all')));
     tf.push($('<td class="aes-text-right"></td>').html(analysis.displayTotalIndex('all')));
-    tf.push('<td colspan="3"></td>');
+    tf.push('<td colspan="' + trailingCols + '"></td>');
     footRow.push($('<tr></tr>').append(tf));
     let tfoot = $('<tfoot></tfoot>').append(footRow);
 
