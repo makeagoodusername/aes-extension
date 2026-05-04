@@ -80,6 +80,21 @@
         return instance
     }
 
+    /** K4 — resolve a (resourceType, resourceId) for a routine instance from
+     *  the def's `resourceType` declaration. Returns null when the routine
+     *  doesn't opt into locks. Resource id defaults to instance.target;
+     *  account-singleton routines override to `<server>:<airline>`. */
+    function _lockSpec(def, instance, host) {
+        if (!def || !def.resourceType) return null
+        const resType = String(def.resourceType)
+        let resId = instance && instance.target
+        if (resType === "account") {
+            resId = String(host.server) + ":" + String(host.airline || "")
+        }
+        if (!resId) return null
+        return {resType, resId}
+    }
+
     async function _step(def, instance, event, host) {
         if (typeof def.advance !== "function") return
         let result
@@ -111,6 +126,26 @@
         }])
         if (instance.history.length > 20) instance.history = instance.history.slice(-20)
         await window.AesConductorRoutineStore.update(host, instance)
+
+        // K4 — acquire lock on enter `proposing`; release on `completed`/`expired`.
+        const ls = window.AesConductorLockStore
+        const spec = _lockSpec(def, instance, host)
+        if (ls && spec) {
+            try {
+                if (nextState === "proposing" && from !== "proposing") {
+                    await ls.acquire(host, spec.resType, spec.resId, def.id, {
+                        reason: result.reason || "",
+                        ttlMs:  (typeof def.lockTtlMs === "number" && def.lockTtlMs > 0)
+                            ? def.lockTtlMs : undefined
+                    })
+                } else if ((nextState === "completed" || nextState === "expired") && from !== nextState) {
+                    await ls.release(host, spec.resType, spec.resId, def.id, {
+                        reason: nextState === "completed" ? "owner" : "manual"
+                    })
+                }
+            } catch (_) { /* noop */ }
+        }
+
         try {
             if (window.CentralHubBus) {
                 window.CentralHubBus.emit("conductor:routine:transition", {

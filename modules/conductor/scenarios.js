@@ -73,6 +73,32 @@
         return (typeof v === "number" && isFinite(v)) ? v : def
     }
 
+    /** K13 — return baseline.mean + zSigma·sd when a baseline exists with at
+     *  least PRIOR_N0 samples; else fall back to the hand-tuned `def`. The
+     *  caller picks `zSigma` (e.g. -2 for "two-sigma below mean → fire"). The
+     *  shipped default still wins when the user/drift overlay set a value via
+     *  `_threshold` — call sites should resolve the user overlay first and
+     *  pass that as `def` so the precedence is user > drift > learned > shipped. */
+    function _zThreshold(ctx, metric, scope, scopeId, zSigma, def) {
+        if (!ctx || !ctx.baselines) return def
+        const composite = String(metric) + ":" + String(scope || "global") + ":" + String(scopeId || "")
+        const e = ctx.baselines[composite]
+        if (!e || typeof e.n !== "number" || e.n < 4) return def
+        const sd = Math.sqrt(Math.max(e.var || 0, 1e-9))
+        if (!isFinite(sd) || sd === 0) return def
+        const out = e.mean + zSigma * sd
+        return isFinite(out) ? out : def
+    }
+
+    /** K15 — read a forecast envelope from ctx; null when the cache lacks
+     *  the metric. Shape: {p10, p50, p90, model, n, fit}. */
+    function _forecast(ctx, metric, scope, scopeId) {
+        if (!ctx || !ctx.forecasts) return null
+        const composite = String(metric) + ":" + String(scope || "global") + ":" + String(scopeId || "")
+        const e = ctx.forecasts[composite]
+        return (e && typeof e === "object") ? e : null
+    }
+
     // K10 evaluator constants — recovery thresholds and per-scenario KPI windows.
     const DAY_MS                  = 24 * 3600 * 1000
     const KPI_MAINT_MS            = 14 * DAY_MS
@@ -321,12 +347,53 @@
         }
     }
 
+    // K15 — CashCrunchForecast: fires when the linear forecast of cash
+    // balance crosses below `cashFloor` within the horizon. Pulls the
+    // P50/P10 envelope from `ctx.forecasts` (populated by ForecastStore).
+    // Defaults: cashFloor = 1M AS$, horizon = 4 weeks. Re-fires at most
+    // once per 24h via a payload-time check on prior fires (engine layer
+    // dedup is left for K2.1; we keep the rationale stable so the user-
+    // visible row collapses across re-fires until horizon shifts).
+    const DEFAULT_CASH_FLOOR_FORECAST = 1_000_000
+    const CashCrunchForecast = {
+        id:       "CashCrunchForecast",
+        label:    "Cash runway forecast",
+        severity: "alert",
+        tier:     "alert",
+        forecast: [{metric: "cash.balance", scope: "global", scopeId: "", horizonDays: 28, model: "linear"}],
+        match: (signal, ctx) => {
+            if (!signal || signal.type !== "cash.balance.changed") return null
+            const f = _forecast(ctx, "cash.balance", "global", "")
+            if (!f) return null
+            const floor = _threshold(ctx, "CashCrunchForecast", "CASH_FLOOR", DEFAULT_CASH_FLOOR_FORECAST)
+            const p50 = _num(f.p50)
+            const p10 = _num(f.p10)
+            if (p50 == null) return null
+            if (p50 >= floor && (p10 == null || p10 >= floor)) return null
+            const days = (typeof f.horizon === "number" ? f.horizon : 28)
+            const triggered = p50 < floor ? "P50" : "P10"
+            return {
+                rationale: "Cash forecast " + triggered + " in " + days + "d ≈ "
+                    + Math.round((triggered === "P50" ? p50 : p10) / 1000).toLocaleString() + "k"
+                    + " — below " + Math.round(floor / 1000).toLocaleString() + "k floor",
+                payload: {
+                    floor: floor,
+                    horizonDays: days,
+                    p10: p10, p50: p50, p90: _num(f.p90),
+                    model: f.model || "linear",
+                    triggered: triggered
+                }
+            }
+        }
+    }
+
     const ProfitDecay = {
         id:       "ProfitDecay",
         label:    "Route profit decay",
         severity: "warn",
         tier:     "alert",
         defaultTierCap: "apply-confirm",
+        forecast: [{metric: "route.profit", scope: "route", scopeId: "*", horizonDays: 28, model: "linear"}],
         match: (signal, ctx) => {
             if (!signal || signal.type !== "route.profit.changed") return null
             const p = signal.payload || {}
@@ -334,6 +401,19 @@
             const pct = _num(p.pct)
             const decayPct = _threshold(ctx, "ProfitDecay", "PROFIT_DECAY_PCT", DEFAULT_PROFIT_DECAY_PCT)
             if (pct == null || pct > -decayPct) return null   // pct is signed (negative = drop)
+            // K13 — anomaly check vs learned route.profit baseline. Once a
+            // baseline has ≥4 samples, require z ≤ -1.5σ before firing — this
+            // suppresses noise dips on routes with inherently volatile profit.
+            // Routes with no baseline yet still fire on the pct trigger alone.
+            const rk = (p.hub && p.dest) ? (String(p.hub).toUpperCase() + "-" + String(p.dest).toUpperCase()) : null
+            if (rk && ctx && ctx.baselines) {
+                const e = ctx.baselines["route.profit:route:" + rk]
+                if (e && typeof e.n === "number" && e.n >= 4 && typeof p.to === "number" && isFinite(p.to)) {
+                    const sd = Math.sqrt(Math.max(e.var || 0, 1e-9))
+                    const z = sd > 0 ? (p.to - e.mean) / sd : 0
+                    if (z > -1.5) return null
+                }
+            }
             return {
                 rationale: (p.hub || "?") + "→" + (p.dest || "?") + " profit "
                     + Math.round(pct * 100) + "% (now ≈" + Math.round((p.to || 0) / 1000) + "k/wk, "
@@ -572,7 +652,7 @@
     const ALL = [
         MaintenanceWatch, ConditionWatch,
         CompetitorEntry, CompetitorExit,
-        CashStep,
+        CashStep, CashCrunchForecast,
         ProfitDecay, ProfitRecovery,
         OrsRegression, OrsRecovery,
         AutoDriveActivity
@@ -582,7 +662,7 @@
         all: () => ALL.slice(),
         MaintenanceWatch, ConditionWatch,
         CompetitorEntry, CompetitorExit,
-        CashStep,
+        CashStep, CashCrunchForecast,
         ProfitDecay, ProfitRecovery,
         OrsRegression, OrsRecovery,
         AutoDriveActivity

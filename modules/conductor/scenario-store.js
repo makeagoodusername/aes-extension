@@ -27,12 +27,35 @@
  *
  * 200 cap matches CONDUCTOR-ROADMAP §V's per-scenario fire cap; we share
  * one buffer across all scenarios for the thin slice and partition in K10.
+ *
+ * Concurrency (H-004 fix):
+ *   chrome.storage.local read-modify-write is racey across concurrent callers
+ *   (e.g. outcome-driver writing applyOutcome at the same moment a user
+ *   dismiss tap fires, or two outcome-driver ticks overlapping). Without
+ *   serialization the second write wins and silently drops the first
+ *   mutation, breaking K10 outcome attribution and K11 trust scoring.
+ *   We funnel every read-modify-write (and standalone writes like clear)
+ *   through a single tail-Promise queue so writes are strictly serialized
+ *   per page-context. Reads stay direct (they are snapshot consumers).
  */
 ;(function () {
     if (typeof window === "undefined" || window.AesConductorScenarioStore) return
 
     const PREFIX = "aesConductor:fires:"
     const CAP    = 200
+
+    // Tail-Promise write queue — serializes all chrome.storage writes for this
+    // store within the current page context. One write completes before the
+    // next read-modify-write begins, eliminating the H-004 race that was
+    // dropping K10 outcome attribution + K11 trust scoring under concurrency.
+    let _writeChain = Promise.resolve()
+    function _enqueue(fn) {
+        const next = _writeChain.then(fn).catch(e => {
+            try { console.error("[scenario-store] write failed", e) } catch (_) {}
+        })
+        _writeChain = next
+        return next
+    }
 
     function _key(host) {
         if (!host || !host.server) return null
@@ -51,10 +74,12 @@
     async function append(host, fire) {
         const key = _key(host)
         if (!key || !fire) return
-        const arr = await _read(key)
-        arr.push(fire)
-        if (arr.length > CAP) arr.splice(0, arr.length - CAP)
-        try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
+        return _enqueue(async () => {
+            const arr = await _read(key)
+            arr.push(fire)
+            if (arr.length > CAP) arr.splice(0, arr.length - CAP)
+            try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
+        })
     }
 
     async function recent(host, n, opts) {
@@ -68,19 +93,21 @@
     async function dismiss(host, fireId) {
         const key = _key(host)
         if (!key || !fireId) return
-        const arr = await _read(key)
-        let mutated = false
-        for (const f of arr) {
-            if (f && f.id === fireId && !f.dismissedAt) {
-                f.dismissedAt = Date.now()
-                f.acceptanceState = "dismissed"
-                mutated = true
-                break
+        return _enqueue(async () => {
+            const arr = await _read(key)
+            let mutated = false
+            for (const f of arr) {
+                if (f && f.id === fireId && !f.dismissedAt) {
+                    f.dismissedAt = Date.now()
+                    f.acceptanceState = "dismissed"
+                    mutated = true
+                    break
+                }
             }
-        }
-        if (mutated) {
-            try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
-        }
+            if (mutated) {
+                try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
+            }
+        })
     }
 
     /** K10 — record that the user opened the fire's recommended surface.
@@ -89,20 +116,22 @@
     async function accept(host, fireId) {
         const key = _key(host)
         if (!key || !fireId) return
-        const arr = await _read(key)
-        let mutated = false
-        for (const f of arr) {
-            if (!f || f.id !== fireId) continue
-            if (f.acceptanceState === "dismissed" || f.dismissedAt) break
-            if (f.acceptanceState === "accepted")  break
-            f.acceptanceState = "accepted"
-            f.acceptedAt      = Date.now()
-            mutated = true
-            break
-        }
-        if (mutated) {
-            try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
-        }
+        return _enqueue(async () => {
+            const arr = await _read(key)
+            let mutated = false
+            for (const f of arr) {
+                if (!f || f.id !== fireId) continue
+                if (f.acceptanceState === "dismissed" || f.dismissedAt) break
+                if (f.acceptanceState === "accepted")  break
+                f.acceptanceState = "accepted"
+                f.acceptedAt      = Date.now()
+                mutated = true
+                break
+            }
+            if (mutated) {
+                try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
+            }
+        })
     }
 
     /** K10 — write an evaluator outcome onto a fire. Called from the
@@ -112,19 +141,21 @@
     async function applyOutcome(host, fireId, outcome) {
         const key = _key(host)
         if (!key || !fireId || !outcome) return
-        const arr = await _read(key)
-        let mutated = false
-        for (const f of arr) {
-            if (!f || f.id !== fireId) continue
-            if (f.outcome && f.outcome.terminal) break
-            f.outcome   = outcome
-            f.outcomeAt = Date.now()
-            mutated = true
-            break
-        }
-        if (mutated) {
-            try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
-        }
+        return _enqueue(async () => {
+            const arr = await _read(key)
+            let mutated = false
+            for (const f of arr) {
+                if (!f || f.id !== fireId) continue
+                if (f.outcome && f.outcome.terminal) break
+                f.outcome   = outcome
+                f.outcomeAt = Date.now()
+                mutated = true
+                break
+            }
+            if (mutated) {
+                try { await chrome.storage.local.set({[key]: arr}) } catch (_) { /* noop */ }
+            }
+        })
     }
 
     /** Snapshot every fire across the ring, regardless of dismissal state.
@@ -138,7 +169,9 @@
     async function clear(host) {
         const key = _key(host)
         if (!key) return
-        try { await chrome.storage.local.set({[key]: []}) } catch (_) { /* noop */ }
+        return _enqueue(async () => {
+            try { await chrome.storage.local.set({[key]: []}) } catch (_) { /* noop */ }
+        })
     }
 
     window.AesConductorScenarioStore = {

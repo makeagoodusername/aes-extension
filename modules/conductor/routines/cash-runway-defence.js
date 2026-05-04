@@ -48,6 +48,8 @@
         watchScenarios:   ["CashStep"],
         watchSignalTypes: ["cash.balance.changed"],
         spawnFromScenarioFire: true,
+        // K4 — reserve the account so multiple cash routines don't pile up.
+        resourceType:     "account",
 
         resolveTarget: (event) => {
             if (!event) return null
@@ -141,7 +143,10 @@
         }
     }
 
-    if (!window.AesConductorRoutines) {
+    // Registry shape lives in modules/conductor/routines/_registry.js, which
+    // the manifest loads before this file. Defensive fallback in case the
+    // load-order assumption is ever broken — keeps this file self-healing.
+    if (!window.AesConductorRoutines || typeof window.AesConductorRoutines.register !== "function") {
         window.AesConductorRoutines = {
             _defs: {},
             register(d) { if (d && d.id) this._defs[d.id] = d },

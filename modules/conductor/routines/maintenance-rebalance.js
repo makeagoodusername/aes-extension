@@ -37,6 +37,8 @@
         watchScenarios:   ["MaintenanceWatch"],
         watchSignalTypes: ["maintenance.ratio.changed"],
         spawnFromScenarioFire: true,
+        // K4 — reserve the tail while proposing so no other routine grabs it.
+        resourceType:     "aircraft",
 
         resolveTarget: (event) => {
             if (!event) return null
@@ -115,7 +117,10 @@
         }
     }
 
-    if (!window.AesConductorRoutines) {
+    // Registry shape lives in modules/conductor/routines/_registry.js, which
+    // the manifest loads before this file. Defensive fallback in case the
+    // load-order assumption is ever broken — keeps this file self-healing.
+    if (!window.AesConductorRoutines || typeof window.AesConductorRoutines.register !== "function") {
         window.AesConductorRoutines = {
             _defs: {},
             register(d) { if (d && d.id) this._defs[d.id] = d },
