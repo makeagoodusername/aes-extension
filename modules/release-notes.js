@@ -25,6 +25,43 @@
     // real release-notes copy before shipping. Adding new entries keyed by
     // future version_name strings is the supported way to extend this.
     const RELEASE_NOTES = {
+        "0.6.13-beta": {
+            title: "Release Notes",
+            releaseDate: "2026-05-04",
+            summary: "This release backports a stack of proven fixes and features from the upstream AirlineSim Enhancement Suite v0.7.0 through v0.7.8 line, while keeping every fork-specific subsystem (route-assistant, strategy, conductor, central-hub) intact.",
+            sections: [
+                {
+                    title: "Added",
+                    items: [
+                        "Inventory \"Group by flight\" layouts are now supported. AES re-renders automatically when you toggle the AS layout, no full page refresh required.",
+                        "Optional reference recommendations on Inventory Pricing - turn on \"Show reference recommendation\" in Settings to see what AES would suggest when the current price has no flight results yet.",
+                        "Aircraft Flights page now auto-detects the home base (HUB) from each tail's flight history, with an override input + save/reset controls when you want to force a different hub. The override syncs back into Fleet Management and Aircraft Profitability.",
+                        "Fleet Management table extracts richer per-tail data: delivery status, ownership, pilot assignment, seat configuration, schedule state. New Model header and HUB column.",
+                        "Aircraft Profitability tile now shows the new columns (HUB, schedule state Active/Locked/Conflict/Empty, pilot, ownership, seat config) sourced from the richer fleet extraction.",
+                        "Per-controlled-airline competitor monitoring - each airline you control now keeps its own competitor list instead of sharing one server-wide list. Existing tracked competitors keep loading via dual-read fallback."
+                    ]
+                },
+                {
+                    title: "Changed",
+                    items: [
+                        "Vendored jQuery upgraded from 3.4.1 to 3.7.1 (slim build) - same proven version the upstream extension ships.",
+                        "Inventory analysis table merges \"New Price\" into the recommendation arrow and right-aligns the load column for cleaner reading.",
+                        "Personnel Management applies salary changes in one pass instead of requiring a refresh per row.",
+                        "Competitor Monitoring scrape uses label-based row lookup, so it no longer breaks when AS reorders facts/figures rows.",
+                        "Competitor Monitoring filter chrome is rendered even before any competitors are tracked, so the filter UI stays discoverable."
+                    ]
+                },
+                {
+                    title: "Fixed",
+                    items: [
+                        "Inventory Pricing settings toggles (auto price update, auto tab close, history table options) are no longer overwritten by stale settings snapshots from another AS tab. Saves now use a read-modify-write primitive.",
+                        "Fleet Management aircraft-id capture now tolerates relative paths (../aircraft/123) and other AS link variants - undelivered tails are kept in storage by registration when no aircraftId is yet assigned.",
+                        "Empty profit / extract-date cells in Fleet Management render as centered \"--\" placeholders instead of empty cells, so columns don't visually collapse.",
+                        "Aircraft Flights toast banners now render with the correct success/warning/error styling (the option key was being mis-routed)."
+                    ]
+                }
+            ]
+        },
         "0.6.12-beta": {
             title: "Release Notes",
             releaseDate: "2026-05-04",
