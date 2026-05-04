@@ -20,7 +20,7 @@ mutates AS state (none expected for slices 1–6).
 | 3 | Inventory pricing reference recommendations (opt-in) | [FIXED] | content_inventory.js (toggle: 2dcb2cd) | 91c42c4 |
 | 4 | HUB override controls + auto-detection | [FIXED] | content_aircraftFlights.js, modules/aircraft-flights/info-panel.js | 0d85fb1 |
 | 5 | Richer Fleet Management extraction | [FIXED] (items 13/16/17/19/22) / [DEFERRED] (item 12) | content_fleetManagement.js | 57c8807 (+60960d3) |
-| 6 | Aircraft Profitability new columns | [FIXED] | content_dashboard.js | (this commit) |
+| 6 | Aircraft Profitability new columns | [FIXED] | content_dashboard.js | 152d427 |
 
 ---
 
