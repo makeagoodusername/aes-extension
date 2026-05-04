@@ -199,7 +199,9 @@
             if (area !== "local") return
             const server = state.ctx && state.ctx.server ? String(state.ctx.server) : ""
             for (const k in changes) {
-                if (k.startsWith("competitorIntel:") || k.startsWith("routeAssistant:ors:")) {
+                if (k.startsWith("competitorIntel:")
+                        || k.startsWith("routeAssistant:ors:")
+                        || k.startsWith("routeAssistant:markets:competitors:")) {
                     _refreshData()
                     break
                 }
