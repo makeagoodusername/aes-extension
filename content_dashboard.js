@@ -3236,9 +3236,19 @@ function generateTable(tableOptionsRule) {
                 btn.click(function() {
                     let urls = $('tbody tr', table).has('input:checked').map(function() {
                         let id = $(this).attr('id');
-                        let url = 'https://' + server + '.airlinesim.aero/app/fleets/aircraft/' + id + '/1';
-                        return url;
-                    }).toArray();
+                        if (!id) return null;
+                        return 'https://' + server + '.airlinesim.aero/app/fleets/aircraft/' + id + '/1';
+                    }).toArray().filter(function(url) {
+                        return !!url;
+                    });
+                    if (!urls.length) {
+                        let originalText = btn.text();
+                        btn.text('No delivered aircraft selected').delay(900).queue(function(next) {
+                            btn.text(originalText);
+                            next();
+                        });
+                        return;
+                    }
                     //Open new tabs
                     for (let i = 0; i < urls.length; i++) {
                         window.open(urls[i], '_blank');
@@ -3265,6 +3275,7 @@ function generateTable(tableOptionsRule) {
                     let aircraftKey = [];
                     $('tbody tr', table).has('input:checked').each(function() {
                         let localId = $(this).attr('id');
+                        if (!localId) return;
                         id.push(localId);
                         aircraftKey.push(server + 'aircraftFlights' + localId);
                         $(this).remove();
