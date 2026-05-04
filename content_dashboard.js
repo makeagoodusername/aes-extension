@@ -3441,35 +3441,52 @@ function generateTable(tableOptionsRule) {
             function masterTableOptionsRemoveAircraft() {
                 let btn = $('<button type="button" class="btn btn-default">remove aircraft (permanent)</button>');
                 btn.click(function() {
+                    // Item 11 (upstream v0.7.7): also remove undelivered tails
+                    // by registration. Item 19 stores them keyed by reg when
+                    // aircraftId is null; the legacy delete path here only
+                    // matched by id and silently skipped them.
                     let id = [];
+                    let registrations = [];
                     let aircraftKey = [];
                     $('tbody tr', table).has('input:checked').each(function() {
                         let localId = $(this).attr('id');
-                        if (!localId) return;
-                        id.push(localId);
-                        aircraftKey.push(server + 'aircraftFlights' + localId);
+                        let registration = ($(this).find('.aircraftProfitability-registration').text() || '').trim();
+                        if (localId) {
+                            id.push(localId);
+                            aircraftKey.push(server + 'aircraftFlights' + localId);
+                        } else if (registration) {
+                            registrations.push(registration);
+                        }
                         $(this).remove();
                     });
-                    if (id.length) {
-                        let fleetKey = server + airline.name + 'aircraftFleet';
-                        chrome.storage.local.get(fleetKey, function(result) {
-                            let storedFleetData = result[fleetKey];
-                            let newFleet = storedFleetData.fleet.filter(function(value) {
-                                let keep = 1;
-                                id.forEach(function(idVal) {
-                                    if (idVal == value.aircraftId) {
-                                        keep = 0;
-                                    }
-                                });
-                                return keep;
-                            });
-                            storedFleetData.fleet = newFleet;
-                            chrome.storage.local.set({
-                                [fleetKey]: storedFleetData }, function() {
-                                chrome.storage.local.remove(aircraftKey, function() {});
-                            });
+                    if (!id.length && !registrations.length) return;
+                    // Drive-by: align with the read-path key sanitization at
+                    // line 3044 — `airline.name` raw breaks for any airline
+                    // with whitespace/punctuation.
+                    let fleetKey = server + airline.name.trim().replace(/[^A-Za-z0-9]/g, '') + 'aircraftFleet';
+                    chrome.storage.local.get(fleetKey, function(result) {
+                        let storedFleetData = result[fleetKey];
+                        if (!storedFleetData || !Array.isArray(storedFleetData.fleet)) {
+                            if (aircraftKey.length) chrome.storage.local.remove(aircraftKey, function() {});
+                            return;
+                        }
+                        let newFleet = storedFleetData.fleet.filter(function(value) {
+                            for (let i = 0; i < id.length; i++) {
+                                if (id[i] == value.aircraftId) return false;
+                            }
+                            if (!value.aircraftId && value.registration) {
+                                for (let i = 0; i < registrations.length; i++) {
+                                    if (registrations[i] === value.registration) return false;
+                                }
+                            }
+                            return true;
                         });
-                    }
+                        storedFleetData.fleet = newFleet;
+                        chrome.storage.local.set({
+                            [fleetKey]: storedFleetData }, function() {
+                            if (aircraftKey.length) chrome.storage.local.remove(aircraftKey, function() {});
+                        });
+                    });
                 });
                 return btn;
             }
