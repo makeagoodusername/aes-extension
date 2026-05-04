@@ -30,6 +30,8 @@ class RouteAssistantWaveRouteFitter {
      *   - hubIata:      hub
      *   - placedDests:  Set<destIata>          - routes already in plan
      *   - spareByWave:  Map<waveId, {short, medium, long}>  - capacity remaining
+     *   - forcedDests:  Set<destIata>          - routes pinned to a wave
+     *   - excludedDests: Set<destIata>         - routes demoted from this plan
      *   - profitMax:    number                  - top profitPerWeek across rows
      *   - rangeBuckets: object                  - preset's rangeBuckets factor
      * @returns {{
@@ -55,13 +57,17 @@ class RouteAssistantWaveRouteFitter {
             breakdown: {
                 bucketCapacity: 0, profitPotential: 0, demandSignal: 0,
                 connectionPotential: 0, aircraftViability: 0
-            }
+            },
+            forced:   false,
+            excluded: false
         }
         if (!row || !row.destIata) {
             result.reasons.push("missing route metadata")
             return result
         }
         const destU = String(row.destIata).toUpperCase()
+        result.forced = !!(c.forcedDests && c.forcedDests.has(destU))
+        result.excluded = !!(c.excludedDests && c.excludedDests.has(destU))
         const bucket = (typeof ScheduleFactors !== "undefined" && c.rangeBuckets)
             ? ScheduleFactors.bucketize(row.distanceKm
                 ? ScheduleFactors.kmToNm(row.distanceKm) : 0, c.rangeBuckets)
@@ -208,6 +214,10 @@ class RouteAssistantWaveRouteFitter {
             else if (b.demandSignal >= 70) result.reasons.push("High demand.")
             else if (b.bucketCapacity === 100) result.reasons.push("Open slot in plan.")
         }
+        if (result.excluded) result.reasons.unshift("Demoted from this wave plan.")
+        if (result.forced && result.category === "in-plan") {
+            result.reasons.unshift("Pinned to this wave plan.")
+        }
 
         return result
     }
@@ -238,10 +248,15 @@ class RouteAssistantWaveRouteFitter {
         }
         if (!plan || !plan.preset) return out
 
-        // Build placed-dest set + spare-by-wave map ONCE.
+        // Build placed/forced/excluded sets + spare-by-wave map ONCE.
+        const forcedDests = new Set((plan.forcedDests || [])
+            .map(d => String(d || "").toUpperCase()).filter(Boolean))
+        const excludedDests = new Set((plan.excludedDests || [])
+            .map(d => String(d || "").toUpperCase()).filter(Boolean))
         for (const p of (plan.placements || [])) {
             const d = String(p.route && p.route.destination || "").toUpperCase()
             if (d) out.placedDests.add(d)
+            if (d && p.forced) forcedDests.add(d)
         }
 
         const placementCountByWaveBucket = new Map()  // "waveId:bucket" → count
@@ -285,6 +300,8 @@ class RouteAssistantWaveRouteFitter {
             fleetSpecs:   c.fleetSpecs,
             hubIata:      c.hubIata,
             placedDests:  out.placedDests,
+            forcedDests:  forcedDests,
+            excludedDests: excludedDests,
             spareByWave:  out.spareByWave,
             profitMax:    out.profitMax,
             rangeBuckets: buckets

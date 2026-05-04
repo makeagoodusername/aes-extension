@@ -111,6 +111,43 @@ class RouteAssistantOrsModel {
         const observedPrices = (route.ownPricing && route.ownPricing.prices) || {}
         const observedY = _safeNumber(observedPrices.Y)
 
+        // Aircraft-fit bonus (passenger preference for the right airframe on
+        // this route's distance bucket). Caller may pass `route.aircraftBonus`
+        // explicitly; otherwise we auto-derive from the strategy heuristic
+        // table when it's loaded. Stays 0 when the modifier module isn't on
+        // the page (route-assistant runs standalone in some surfaces).
+        let aircraftBonus = Number(route.aircraftBonus)
+        if (!isFinite(aircraftBonus)) aircraftBonus = 0
+        const modifierRoot = (typeof window !== "undefined")
+            ? window
+            : ((typeof globalThis !== "undefined") ? globalThis : null)
+        const aircraftModifier = modifierRoot && modifierRoot.AesStrategyAircraftOrsModifier
+        if (!aircraftBonus
+            && aircraftModifier
+            && typeof aircraftModifier.lookup === "function") {
+            try {
+                const spec = route.spec || (route.aircraft && route.aircraft.spec)
+                const dist = _safeNumber(route.distanceKm)
+                const derived = aircraftModifier.lookup(
+                    spec, dist,
+                    (input.modelParams && input.modelParams.aircraftOrsModifier) || null
+                )
+                if (Number.isFinite(derived) && derived !== 0) {
+                    aircraftBonus = derived
+                    notes.push("aircraft-fit bonus " + (derived > 0 ? "+" : "")
+                        + derived + " pts ("
+                        + (aircraftModifier.categoryFor(spec && spec.seats) || "?")
+                        + " on " + (aircraftModifier.distanceBucketFor(dist) || "?")
+                        + " route)")
+                }
+            } catch (_) { /* never let modifier lookup break the projection */ }
+        }
+        aircraftBonus += RouteAssistantOrsModel._aircraftAttractionBonus(
+            route.spec || (route.aircraft && route.aircraft.spec) || route.aircraft,
+            params,
+            notes
+        )
+
         for (const cls of ["Y", "C", "F"]) {
             const payload  = RouteAssistantOrsModel.CLASS_PAYLOAD[cls]
             const classRec = byClass[payload]
@@ -137,7 +174,7 @@ class RouteAssistantOrsModel {
                 observedPrice: observed,
                 newPrice:      newPrice,
                 comfortDelta:  Number(scenario.comfortDelta) || 0,
-                aircraftBonus: Number(route.aircraftBonus) || 0,
+                aircraftBonus: aircraftBonus,
                 params:        params,
                 T:             T,
                 notes:         notes,
@@ -322,11 +359,36 @@ class RouteAssistantOrsModel {
                 C: (_safeNumber(observedPrices.C) != null)
                     ? _safeNumber(observedPrices.C) * (Number(scenario.priceMultipliers.C) || 1) : null,
                 F: (_safeNumber(observedPrices.F) != null)
-                    ? _safeNumber(observedPrices.F) * (Number(scenario.priceMultipliers.F) || 1) : null
+                    ? _safeNumber(observedPrices.F) * (Number(scenario.priceMultipliers.F) || 1) : null,
+                Cargo: (_safeNumber(observedPrices.Cargo) != null)
+                    ? _safeNumber(observedPrices.Cargo) * cargoMult : null
             },
             elasticity: elast,
             adjustedPool: projPool
         }
+    }
+
+    static _aircraftAttractionBonus(spec, params, notes) {
+        if (!spec) return 0
+        const raw = _safeNumber(
+            spec.orsAttraction != null ? spec.orsAttraction
+                : (spec.customerAttraction != null ? spec.customerAttraction : spec.paxSatisfaction)
+        )
+        if (raw == null) return 0
+        const neutral = _safeNumber(params && params.aircraftAttractionNeutral)
+        const scale = _safeNumber(params && params.aircraftAttractionScale)
+        const cap = _safeNumber(params && params.aircraftAttractionMaxBonus)
+        const n = neutral != null ? neutral : 50
+        const s = scale != null ? scale : 0.04
+        const c = cap != null ? Math.max(0, cap) : 3
+        if (s <= 0 || c <= 0) return 0
+        const bonus = Math.max(-c, Math.min(c, (raw - n) * s))
+        if (bonus !== 0) {
+            notes && notes.push("aircraft ORS attraction "
+                + (bonus > 0 ? "+" : "") + Math.round(bonus * 100) / 100
+                + " pts (spec " + raw + ", neutral " + n + ")")
+        }
+        return bonus
     }
 
     /**
@@ -942,6 +1004,10 @@ function _revenueWeek(econ, freq) {
     const f = _safeNumber(freq) || 0
     if (f <= 0) return null
     return Math.round((econ.breakdown.revenue || 0) * f)
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantOrsModel = RouteAssistantOrsModel
 }
 
 if (typeof module !== "undefined" && module.exports) {

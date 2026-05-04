@@ -7,11 +7,12 @@
  * parallel-scanner writes to it.
  *
  *   routeAssistant:demand:<IATA> → {iata, name?, airportId?, countryId?,
- *                                    paxScore, cargoScore, scrapedAt}
+ *                                    sizeScore, paxScore, cargoScore, scrapedAt}
  *
  * Country-level lookups (every airport in country X) are written in bulk via
  * `saveCountryAirports()` so a single CountryScraper run populates dozens of
- * destinations at once. Stale entries (older than `MAX_AGE_MS`) are not
+ * destinations at once. `sizeScore` is the AS airport size/capacity bar,
+ * also scored 0-10. Stale entries (older than `MAX_AGE_MS`) are not
  * served by `get()`; callers should treat a miss as "needs rescrape".
  *
  * Slice-1 foundation: TTL/freshness logic now flows through the shared
@@ -97,26 +98,29 @@ class RouteAssistantDemandStore {
         const toStore = Object.assign({scrapedAt: Date.now()}, record, {iata: iata})
         const cache = RouteAssistantDemandStore._cache()
         if (cache) await cache.set(iata, toStore)
-        else       await chrome.storage.local.set({[RouteAssistantDemandStore._key(iata)]: toStore})
-        if (typeof AesDataBus !== "undefined") {
-            AesDataBus.emit("data:route-assistant:demand:saved", {iata: iata, count: 1})
+        else if (typeof AesWriteThrough !== "undefined") {
+            await AesWriteThrough.put(RouteAssistantDemandStore._key(iata), toStore)
+        } else {
+            await chrome.storage.local.set({[RouteAssistantDemandStore._key(iata)]: toStore})
         }
+        RouteAssistantDemandStore._emitSaved({iata: iata, count: 1})
         return toStore
     }
 
     /**
      * Bulk-save every airport returned by a single CountryScraper run.
-     * `airports` is the array shape {iata, name, airportId, paxScore,
-     * cargoScore} — all entries share the same `countryId`.
+     * `airports` is the array shape {iata, name, airportId, sizeScore,
+     * paxScore, cargoScore} — all entries share the same `countryId`.
      *
      * Coalesces to ONE bus emit with the count, not N — see the coalescing
      * rule documented in modules/_shared/data-bus-topics.js.
      */
-    static async saveCountryAirports(countryId, airports) {
+    static async saveCountryAirports(countryId, airports, opts) {
         if (!airports || !airports.length) return
         const writes = {}
         const now = Date.now()
         let count = 0
+        const countryName = opts && opts.countryName ? String(opts.countryName) : null
         for (const a of airports) {
             if (!a || !a.iata) continue
             const iata = String(a.iata).toUpperCase()
@@ -125,18 +129,32 @@ class RouteAssistantDemandStore {
                 name:       a.name || null,
                 airportId:  a.airportId || null,
                 countryId:  countryId || null,
+                countryName: countryName,
+                sizeScore:  typeof a.sizeScore  === "number" ? a.sizeScore  : null,
                 paxScore:   typeof a.paxScore   === "number" ? a.paxScore   : null,
                 cargoScore: typeof a.cargoScore === "number" ? a.cargoScore : null,
                 scrapedAt:  now
             }
             count++
         }
-        if (count) await chrome.storage.local.set(writes)
-        if (count && typeof AesDataBus !== "undefined") {
-            AesDataBus.emit("data:route-assistant:demand:saved", {
+        if (count) {
+            const hint = {
                 countryId: countryId || null,
                 count:     count
-            })
+            }
+            const keys = Object.keys(writes)
+            const chunkSize = RouteAssistantDemandStore.WRITE_CHUNK_SIZE || 250
+            for (let i = 0; i < keys.length; i += chunkSize) {
+                const chunk = {}
+                for (const key of keys.slice(i, i + chunkSize)) chunk[key] = writes[key]
+                if (typeof AesWriteThrough !== "undefined") {
+                    await AesWriteThrough.set(chunk)
+                } else {
+                    await chrome.storage.local.set(chunk)
+                }
+                if (i + chunkSize < keys.length) await RouteAssistantDemandStore._yield()
+            }
+            RouteAssistantDemandStore._emitSaved(hint)
         }
     }
 
@@ -149,13 +167,33 @@ class RouteAssistantDemandStore {
         for (const k in all) {
             if (k.indexOf(RouteAssistantDemandStore.KEY_PREFIX) === 0) drop.push(k)
         }
-        if (drop.length) await chrome.storage.local.remove(drop)
-        if (drop.length && typeof AesDataBus !== "undefined") {
-            AesDataBus.emit("data:route-assistant:demand:saved", {cleared: true, count: drop.length})
+        if (drop.length) {
+            const hint = {cleared: true, count: drop.length}
+            if (typeof AesWriteThrough !== "undefined") {
+                await AesWriteThrough.remove(drop, {
+                    topic: "data:route-assistant:demand:saved",
+                    hint:  hint
+                })
+            } else {
+                await chrome.storage.local.remove(drop)
+                RouteAssistantDemandStore._emitSaved(hint)
+            }
         }
         return drop.length
     }
+
+    static _emitSaved(hint) {
+        if (typeof AesDataBus !== "undefined" && typeof AesDataBus.emit === "function") {
+            AesDataBus.emit("data:route-assistant:demand:saved", hint || {})
+        }
+    }
+
+    static _yield() {
+        return new Promise(resolve => setTimeout(resolve, 0))
+    }
 }
+
+RouteAssistantDemandStore.WRITE_CHUNK_SIZE = 250
 
 // Slice-1 foundation: register the TTL sweep with the shared cleanup
 // registry so a single boot-time + alarm-driven pass handles it instead
@@ -164,8 +202,16 @@ class RouteAssistantDemandStore {
 ;(function () {
     if (typeof AesCleanup === "undefined") return
     AesCleanup.register("route-assistant:demand", async () => {
-        const cache = RouteAssistantDemandStore._cache()
-        if (cache && cache.cleanup) return cache.cleanup()
-        return {removed: 0, kept: 0}
+        // The country seed can create thousands of demand keys. Scanning the
+        // entire chrome.storage namespace on every tab-idle cleanup used to
+        // deserialize that whole cache right after a seed completed, which is
+        // exactly when the browser is under the most pressure. Freshness is
+        // enforced on reads, so stale demand records can be left in place until
+        // the user explicitly clears/reseeds them.
+        return {skipped: true, reason: "read-time-ttl"}
     }, {everyMs: 24 * 3600e3})
 })()
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantDemandStore = RouteAssistantDemandStore
+}

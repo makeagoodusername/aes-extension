@@ -51,6 +51,13 @@
     // by user click is preferable to silent resume of a partial run.
     const RUN_STATE_KEY            = 'scrapeOrchestrator:runState';
 
+    // Cross-context rate-limit signal — written by RouteAssistantOrsScraper
+    // when it observes a 429/503. We listen for chrome.storage.onChanged on
+    // this key, mark the in-flight job's result with rateLimited=true, and
+    // trip the breaker IMMEDIATELY in _onJobResult (skipping the 3-strike
+    // threshold) so the run halts before AS bans the session.
+    const RATE_LIMIT_SIGNAL_KEY    = 'aes:scrape-orchestrator:rateLimitSignal';
+
     // ---------------------------------------------------------------
     // Run state — only one orchestrator run at a time
     // ---------------------------------------------------------------
@@ -207,14 +214,59 @@
         _finishRun({reason: state.haltReason || 'done'});
     }
 
+    // ---------------------------------------------------------------
+    // Cross-context rate-limit listener
+    // ---------------------------------------------------------------
+    // ors-scraper.js writes `aes:scrape-orchestrator:rateLimitSignal` when
+    // it observes 429/503. Mark the most recent job-result that lands in
+    // _onJobResult with rateLimited=true so the breaker trips IMMEDIATELY.
+    // We track the latest signal timestamp; _onJobResult consumes it once.
+    let _latestRateLimitSignalAt = 0;
+    try {
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+            chrome.storage.onChanged.addListener((changes, area) => {
+                if (area !== 'local') return;
+                const ch = changes[RATE_LIMIT_SIGNAL_KEY];
+                if (!ch || !ch.newValue) return;
+                const at = Number(ch.newValue.at) || Date.now();
+                if (at > _latestRateLimitSignalAt) _latestRateLimitSignalAt = at;
+            });
+        }
+    } catch (_) { /* noop — listener is best-effort */ }
+
     function _onJobResult(job, result) {
+        // Cross-context rate-limit signal: if ors-scraper wrote a fresh
+        // signal while this job was in flight, force the breaker now.
+        if (_latestRateLimitSignalAt && state.startedAt
+            && _latestRateLimitSignalAt >= state.startedAt
+            && !result.rateLimited) {
+            result.rateLimited = true;
+            // Consume the signal so subsequent jobs don't re-trigger.
+            _latestRateLimitSignalAt = 0;
+        }
+        if (result.rateLimited && !state.haltReason) {
+            // IMMEDIATE trip — skip the 3-strike threshold. The run still
+            // records the job (failed or otherwise) but no further dispatch
+            // happens.
+            state.haltReason       = 'circuit-breaker';
+            state.breakerTrippedAt = Date.now();
+            _broadcastProgress({
+                type:        'breaker-trip',
+                cooldownMs:  BREAKER_COOLDOWN_MS,
+                failures:    state.consecutiveFailures + 1,
+                reason:      'rate-limit-signal',
+                recentFails: state.failedJobs.slice(-BREAKER_FAIL_THRESHOLD)
+            });
+        }
         if (result.ok) {
             state.consecutiveFailures = 0;
             _broadcastProgress({
                 type:       'job-done',
                 jobId:      job.jobId,
                 phaseId:    job.phaseId,
+                url:        job.url,
                 durationMs: result.durationMs,
+                storageKeys: result.storageKeys || [],
                 completed:  state.completedJobs.size,
                 total:      state.plan.length
             });
@@ -235,6 +287,8 @@
                 phaseId:   job.phaseId,
                 url:       job.url,
                 error:     result.error,
+                durationMs: result.durationMs,
+                storageKeys: result.storageKeys || [],
                 completed: state.completedJobs.size,
                 total:     state.plan.length
             });
@@ -282,10 +336,14 @@
         // produces a byte-identical record — value-diff polling would never
         // see it. The onChanged event fires regardless.
         let storageWrote = false;
+        const storageKeys = new Set();
         const onChanged = (changes, area) => {
             if (area !== 'local' || !job.expectStorageKeyPrefix) return;
             for (const k in changes) {
-                if (k.indexOf(job.expectStorageKeyPrefix) >= 0) { storageWrote = true; return; }
+                if (k.indexOf(job.expectStorageKeyPrefix) >= 0) {
+                    storageWrote = true;
+                    storageKeys.add(k);
+                }
             }
         };
         if (job.expectStorageKeyPrefix) chrome.storage.onChanged.addListener(onChanged);
@@ -309,13 +367,20 @@
             // boot) without writing any specific key.
             if (job.expectStorageKeyPrefix) {
                 const wrote = await _pollForStorageWrite(
-                    job.expectStorageKeyPrefix, beforeKeys, storagePollMs, () => storageWrote
+                    job.expectStorageKeyPrefix, beforeKeys, storagePollMs, () => storageWrote, storageKeys
                 );
-                if (!wrote) throw new Error('storage-key-never-appeared');
+                if (!wrote && !(job.acceptExistingStorage && beforeKeys && beforeKeys.size > 0)) {
+                    throw new Error('storage-key-never-appeared');
+                }
             }
-            return {ok: true, durationMs: Date.now() - start};
+            return {ok: true, durationMs: Date.now() - start, storageKeys: Array.from(storageKeys)};
         } catch (err) {
-            return {ok: false, durationMs: Date.now() - start, error: (err && err.message) || String(err)};
+            return {
+                ok: false,
+                durationMs: Date.now() - start,
+                error: (err && err.message) || String(err),
+                storageKeys: Array.from(storageKeys)
+            };
         } finally {
             if (job.expectStorageKeyPrefix) {
                 try { chrome.storage.onChanged.removeListener(onChanged); } catch (_) { /* noop */ }
@@ -350,12 +415,13 @@
     function _waitForTabComplete(tabId, timeoutMs) {
         return new Promise((resolve, reject) => {
             let done = false;
+            let timer = null;
             const finish = (err) => {
                 if (done) return;
                 done = true;
                 try { chrome.tabs.onUpdated.removeListener(listener); } catch (_) { /* noop */ }
                 try { chrome.tabs.onRemoved.removeListener(removed); } catch (_) { /* noop */ }
-                clearTimeout(timer);
+                if (timer) clearTimeout(timer);
                 if (err) reject(err); else resolve();
             };
             const listener = (updatedId, changeInfo) => {
@@ -365,9 +431,23 @@
             const removed = (closedId) => {
                 if (closedId === tabId) finish(new Error('tab closed before load completed'));
             };
-            const timer = setTimeout(() => finish(new Error('tab load timeout')), timeoutMs);
             chrome.tabs.onUpdated.addListener(listener);
             chrome.tabs.onRemoved.addListener(removed);
+            timer = setTimeout(() => finish(new Error('tab load timeout')), timeoutMs);
+            // A freshly-created hidden tab can reach complete before the
+            // onUpdated listener is attached, especially for cached AS pages.
+            // Query once after wiring listeners so those already-complete tabs
+            // do not sit until the load timeout.
+            try {
+                chrome.tabs.get(tabId, (tab) => {
+                    const lastErr = chrome.runtime.lastError;
+                    if (done) return;
+                    if (lastErr) return finish(new Error(lastErr.message || 'tab lookup failed'));
+                    if (tab && tab.status === 'complete') finish(null);
+                });
+            } catch (e) {
+                finish(e);
+            }
         });
     }
 
@@ -396,7 +476,7 @@
         return out;
     }
 
-    async function _pollForStorageWrite(prefix, beforeKeys, timeoutMs, wroteFn) {
+    async function _pollForStorageWrite(prefix, beforeKeys, timeoutMs, wroteFn, changedKeys) {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
             if (state.abortFlag) return false;
@@ -404,7 +484,10 @@
             const now = await _snapshotStorageKeys(prefix);
             for (const [k, sig] of now) {
                 const before = beforeKeys.get(k);
-                if (before === undefined || before !== sig) return true;
+                if (before === undefined || before !== sig) {
+                    if (changedKeys) changedKeys.add(k);
+                    return true;
+                }
             }
             await _sleep(STORAGE_POLL_INTERVAL_MS);
         }

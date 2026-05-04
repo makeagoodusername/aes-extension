@@ -9,7 +9,7 @@
  *
  *   chrome.storage.local["routeAssistant:typeSpec:<typeId>"] = {
  *       typeId, typeName, seats, cargoCapacity, speed, range,
- *       paxSatisfaction, fetchedAt
+ *       paxSatisfaction, orsAttraction, customerAttraction, fetchedAt
  *   }
  *
  * Failed fetches are NOT cached — `save()` rejects records that have no usable
@@ -70,10 +70,16 @@ class RouteAssistantTypeSpecsStore {
         const hasAnyData = (record.seats != null && record.seats > 0)
                         || (record.range != null && record.range > 0)
                         || (record.cargoCapacity != null && record.cargoCapacity > 0)
+                        || (record.orsAttraction != null && record.orsAttraction > 0)
+                        || (record.customerAttraction != null && record.customerAttraction > 0)
         if (!hasAnyData) return false
 
         const stamped = Object.assign({fetchedAt: Date.now()}, record)
         await RouteAssistantTypeSpecsStore._store().set(record.typeId, stamped)
         return true
     }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantTypeSpecsStore = RouteAssistantTypeSpecsStore
 }

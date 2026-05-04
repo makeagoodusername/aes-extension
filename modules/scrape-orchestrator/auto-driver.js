@@ -25,7 +25,12 @@
     const SELF_TICK_MS  = 5 * 60 * 1000
     const MIN_GAP_MS    = 60 * 1000
     const BOOT_DELAY_MS = 4000
-    const MANDATORY_PHASES = ["foundation", "per-hub", "per-aircraft", "per-route"]
+    // `ors-rank` is mandatory + the cheapest-to-run mandatory phase (no
+     // hidden tabs, postRun-only). Ordering doesn't matter — pickStalest
+     // selects by overdue-ratio, not list position. Including it here lets
+     // the auto-driver refresh ORS competitive data on its 4h cadence
+     // independently of the heavier per-route scrape.
+    const MANDATORY_PHASES = ["foundation", "per-hub", "per-aircraft", "per-route", "ors-rank"]
 
     let _selfTimer  = null
     let _lastTickAt = 0
@@ -69,7 +74,7 @@
         try {
             try { await chrome.storage.local.set({"aesAutoDrive:silentRunActive": true}) } catch (_) {}
             const orch = new window.ScrapeOrchestrator({})
-            await orch.start({phaseFilter: [phaseId]})
+            await orch.start({phaseFilter: [phaseId], source: "auto"})
             out.ranPhase = phaseId
         } catch (e) {
             console.warn("[AES auto-drive] phase", phaseId, "threw", (e && e.message) || e)

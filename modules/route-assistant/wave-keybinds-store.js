@@ -37,12 +37,25 @@ class RouteAssistantWaveKeybindsStore {
 
     static _key()       { return acctKey(RouteAssistantWaveKeybindsStore.SCOPE_PREFIX, "") }
     static _legacyKey() { return RouteAssistantWaveKeybindsStore.LEGACY_KEY }
+    static _contextInvalidated(err) {
+        const msg = err && err.message ? err.message : String(err || "")
+        return /Extension context invalidated/i.test(msg)
+    }
 
     static async load() {
         const ns = RouteAssistantWaveKeybindsStore._key()
         const lg = RouteAssistantWaveKeybindsStore._legacyKey()
         const keys = (ns === lg) ? [ns] : [ns, lg]
-        const out  = await chrome.storage.local.get(keys)
+        let out = {}
+        try {
+            out = await chrome.storage.local.get(keys)
+        } catch (err) {
+            if (RouteAssistantWaveKeybindsStore._contextInvalidated(err)) {
+                return {bindings: Object.assign({}, RouteAssistantWaveKeybindsStore.DEFAULT_BINDINGS),
+                        overrides: {}}
+            }
+            throw err
+        }
         const raw  = (out[ns] !== undefined) ? out[ns] : (out[lg] || null)
         const overrides = (raw && typeof raw.bindings === "object") ? raw.bindings : {}
         return {bindings: Object.assign({}, RouteAssistantWaveKeybindsStore.DEFAULT_BINDINGS, overrides),
@@ -64,13 +77,25 @@ class RouteAssistantWaveKeybindsStore {
             next[actionId] = String(chord)
         }
         const ns = RouteAssistantWaveKeybindsStore._key()
-        await chrome.storage.local.set({[ns]: {bindings: next, updatedAt: Date.now()}})
+        try {
+            await chrome.storage.local.set({[ns]: {bindings: next, updatedAt: Date.now()}})
+        } catch (err) {
+            if (RouteAssistantWaveKeybindsStore._contextInvalidated(err)) return null
+            throw err
+        }
         return next[actionId] || RouteAssistantWaveKeybindsStore.DEFAULT_BINDINGS[actionId] || null
     }
 
     static async resetAll() {
         const ns = RouteAssistantWaveKeybindsStore._key()
-        await chrome.storage.local.remove([ns])
+        try {
+            await chrome.storage.local.remove([ns])
+        } catch (err) {
+            if (RouteAssistantWaveKeybindsStore._contextInvalidated(err)) {
+                return Object.assign({}, RouteAssistantWaveKeybindsStore.DEFAULT_BINDINGS)
+            }
+            throw err
+        }
         return Object.assign({}, RouteAssistantWaveKeybindsStore.DEFAULT_BINDINGS)
     }
 

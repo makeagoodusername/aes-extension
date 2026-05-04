@@ -10,7 +10,7 @@ Migration policy: the factory is **opt-in** for stores that already match its sh
 | ----- | ---- | ------- | ------------------ |
 | `settings-store.js` | All RA user prefs (filters, scoring, view modes, presets, etc.) | `settings.routeAssistant` (shared blob) + `settings.acct.<id>.routeAssistant` (L2) | No — single blob; pending L2-aware `AesSettings.getAreaScoped` variant. |
 | `alert-rules-store.js` | Per-route alert rules + last-fired tracking | L2 namespaced `routeAssistant:alertRules` (legacy + acct) | No — L2-scoped, single blob. |
-| `service-config-store.js` | Service-profile config knobs | TBD (read source) | Probably not — config blob. |
+| `service-config-store.js` | Service-profile config knobs | L2 `routeAssistant:serviceConfig` (legacy + acct) | Probably not — config blob. |
 
 ## Per-route metadata (one chrome.storage key per route)
 
@@ -18,7 +18,7 @@ Migration policy: the factory is **opt-in** for stores that already match its sh
 | ----- | ------------ | ------- | ------------------ |
 | `route-note-store.js` | `<HUB>-<DEST>` | L2 `routeAssistant:routeNote` (legacy + acct) | Partially — domain shape fits, but L2 logic stays hand-rolled. |
 | `route-overrides-store.js` | `<HUB>-<DEST>` | L2 namespaced | Same as route-note. |
-| `interline-store.js` | `<HUB>-<DEST>` | `routeAssistant:interline:<HUB>-<DEST>` | **Yes** — non-L2; CRUD substrate would replace `_key`/load/save/loadAll. |
+| `interline-store.js` | `<HUB>-<DEST>` | L2 `routeAssistant:interline` (legacy + acct) | Partially — domain validation plus L2 legacy fallback stays hand-rolled. |
 | `wave-overrides-store.js` | per-route wave state | L2 namespaced | Partially — same as route-note. |
 
 ## Per-airline / per-fleet caches

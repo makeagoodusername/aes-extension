@@ -20,10 +20,10 @@
  * Each phase's buildJobs is called AFTER all prior phases complete so
  * fan-out enumerations see fresh storage.
  *
- * Phase 4 (per-route) intentionally does NOT include ORS — the existing
- * `RouteAssistantOrsScraper.bulkLoad()` + dispatch loop is fetch-based
- * and stays in-tab; the orchestrator triggers it separately after
- * Phase 4's tab work completes.
+ * Phase 4 (per-route) runs markets + inventory in hidden tabs, then uses
+ * the ORS intelligence facade in-tab for schedule → ORS sync. ORS still
+ * needs one Wicket GET → POST handshake per route/class, but the schedule
+ * scrape now feeds fresh flight numbers into the ORS pass.
  */
 
 class ScrapeOrchestratorPhases {
@@ -62,6 +62,7 @@ class ScrapeOrchestratorPhases {
             ScrapeOrchestratorPhases._perHub(),
             ScrapeOrchestratorPhases._perAircraft(),
             ScrapeOrchestratorPhases._perRoute(),
+            ScrapeOrchestratorPhases._orsRank(),
             ScrapeOrchestratorPhases._perCompetitor(),
             ScrapeOrchestratorPhases._flightsFrom()
         ]
@@ -202,21 +203,95 @@ class ScrapeOrchestratorPhases {
                 }
                 return jobs
             },
-            // After the per-route tabs settle, kick off the existing ORS
-            // bulk runner via fetch (in-tab, no hidden tab needed). The
-            // orchestrator calls this hook between phase tab work and
-            // moving on.
+            // After the per-route tabs settle, run the route-sync pipeline
+            // (schedule scrape first, ORS second) so ORS owns detection gets
+            // fresh flight numbers from the just-scraped scheduling page.
             postRun: async (host) => {
-                if (!window.RouteAssistantOrsScraper) return {skipped: true, reason: "ORS scraper not loaded"}
+                if (!window.RouteAssistantOrsIntelligence) return {skipped: true, reason: "ORS intelligence not loaded"}
+                if (!window.RouteAssistantRouteSync) return {skipped: true, reason: "route-sync not loaded"}
                 const routes = await host.enumerators.enumerateAllRoutes(host.server)
                 if (!routes.length) return {skipped: true, reason: "no routes"}
                 try {
-                    const scraper = new window.RouteAssistantOrsScraper(host.server, {})
-                    if (typeof scraper.bulkScrape !== "function") {
-                        return {skipped: true, reason: "ORS bulkScrape unavailable"}
-                    }
-                    const out = await scraper.bulkScrape(routes, {concurrency: 2, staggerMs: 1500})
-                    return {ok: true, totalRoutes: routes.length, ...out}
+                    let settings = null
+                    try {
+                        const got = await chrome.storage.local.get(["settings"])
+                        settings = got && got.settings && got.settings.routeAssistant || null
+                    } catch (_) {}
+                    const svc = new window.RouteAssistantOrsIntelligence(host.server, {settings})
+                    const out = await svc.sync(routes, {
+                        settings,
+                        includeFresh: true,
+                        source: "scrape-orchestrator",
+                        concurrency: 2,
+                        staggerMs: 1500
+                    })
+                    return {ok: !!(out && out.ok), totalRoutes: routes.length, ...out}
+                } catch (e) {
+                    return {ok: false, error: (e && e.message) || String(e)}
+                }
+            }
+        }
+    }
+
+    /**
+     * ORS-rank — runs the ORS intelligence sync on its own cadence so the
+     * analyser keeps fresh competitive-rank data even when per-route's
+     * markets/inventory tabs are still within their 24h window. The phase
+     * has no own jobs (no hidden tabs); the entire payload is the postRun
+     * which calls `RouteAssistantOrsIntelligence.sync()` against the live
+     * topRoutes set.
+     *
+     * Why a separate phase from per-route's existing postRun: per-route
+     * gates ORS on a 24h cadence and only runs when per-route is the
+     * stalest mandatory phase. Auto-pricing decisions read ORS rank +
+     * rating gap on every tick — letting that data go stale for a full
+     * day under-fits the silent loop and the competitive analyser. This
+     * phase's cadence (DEFAULT_CADENCE_MS["ors-rank"] = 4h) means the
+     * auto-driver can pick it on its own.
+     *
+     * Honours the per-route postRun gate — if RouteAssistantOrsIntelligence
+     * isn't loaded on this tab the phase no-ops cleanly.
+     */
+    static _orsRank() {
+        return {
+            id:          "ors-rank",
+            label:       "ORS rank refresh",
+            optional:    false,
+            concurrency: 1,
+            staggerMs:   0,
+            // No tab-fan-out — the buildJobs returns an empty list so the
+            // orchestrator's tab pool stays idle and we run straight into
+            // postRun. Mirrors how per-route's postRun is structured but
+            // without the markets+inventory pre-warm.
+            buildJobs:   async () => [],
+            postRun:     async (host) => {
+                if (!window.RouteAssistantOrsIntelligence) {
+                    return {skipped: true, reason: "ORS intelligence not loaded"}
+                }
+                if (!window.RouteAssistantRouteSync) {
+                    return {skipped: true, reason: "route-sync not loaded"}
+                }
+                const routes = await host.enumerators.enumerateAllRoutes(host.server)
+                if (!routes.length) return {skipped: true, reason: "no routes"}
+                let settings = null
+                try {
+                    const got = await chrome.storage.local.get(["settings"])
+                    settings = got && got.settings && got.settings.routeAssistant || null
+                } catch (_) { /* defaults below */ }
+                try {
+                    const svc = new window.RouteAssistantOrsIntelligence(host.server, {settings})
+                    // includeFresh:false — the dedicated cadence already
+                    // guarantees we re-enter periodically, so each run
+                    // refreshes only the stale slice instead of the full
+                    // network. Smaller bursts = better rate-limit behaviour.
+                    const out = await svc.sync(routes, {
+                        settings,
+                        includeFresh: false,
+                        source:       "ors-rank-phase",
+                        concurrency:  2,
+                        staggerMs:    1500
+                    })
+                    return {ok: !!(out && out.ok), totalRoutes: routes.length, ...out}
                 } catch (e) {
                     return {ok: false, error: (e && e.message) || String(e)}
                 }

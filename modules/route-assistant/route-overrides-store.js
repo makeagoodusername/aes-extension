@@ -258,3 +258,7 @@ class RouteAssistantRouteOverridesStore {
      */
     static get PREFIX() { return RouteAssistantRouteOverridesStore.LEGACY_PREFIX }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantRouteOverridesStore = RouteAssistantRouteOverridesStore
+}

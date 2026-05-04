@@ -225,3 +225,7 @@ class RouteAssistantSandboxScenariosStore {
     /** L2 deprecated — preserve for any reader still doing key arithmetic. */
     static get PREFIX() { return RouteAssistantSandboxScenariosStore.LEGACY_PREFIX }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantSandboxScenariosStore = RouteAssistantSandboxScenariosStore
+}

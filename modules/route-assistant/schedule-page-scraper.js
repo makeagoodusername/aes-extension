@@ -72,6 +72,15 @@ class RouteAssistantSchedulePageScraper {
         return isFinite(n) && n > 0 ? n : null
     }
 
+    static _handleInvalidatedContext(err) {
+        const msg = err && err.message ? err.message : String(err || "")
+        if (!/Extension context invalidated/i.test(msg)) return false
+        try {
+            if (window.AESSiteSkin?.handleInvalidatedContext?.(err)) return true
+        } catch (_) {}
+        return true
+    }
+
     static _isExpired(record, maxAgeDays) {
         if (!maxAgeDays) return false
         if (!record || typeof record.scrapedAt !== "number") return false
@@ -98,7 +107,13 @@ class RouteAssistantSchedulePageScraper {
         const all = []
         for (const k of nsKeys) all.push(k)
         for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
-        const out = await chrome.storage.local.get(all)
+        let out = {}
+        try {
+            out = await chrome.storage.local.get(all)
+        } catch (e) {
+            if (RouteAssistantSchedulePageScraper._handleInvalidatedContext(e)) return new Map()
+            throw e
+        }
         const map = new Map()
         for (let i = 0; i < pairs.length; i++) {
             const ns = nsKeys[i]
@@ -123,7 +138,12 @@ class RouteAssistantSchedulePageScraper {
             scrapedAt: Date.now(),
             source:    source || "fetch"
         }, fields || {})
-        await chrome.storage.local.set({[key]: rec})
+        try {
+            await chrome.storage.local.set({[key]: rec})
+        } catch (e) {
+            if (RouteAssistantSchedulePageScraper._handleInvalidatedContext(e)) return rec
+            throw e
+        }
         if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
             window.AesDataBus.emit("data:route-assistant:schedule:updated", {
                 hub:  rec.hub,
@@ -136,13 +156,18 @@ class RouteAssistantSchedulePageScraper {
     static async loadRecord(hub, dest) {
         const ns = RouteAssistantSchedulePageScraper._key(hub, dest)
         const lg = RouteAssistantSchedulePageScraper._legacyKey(hub, dest)
-        if (ns === lg) {
-            const out = await chrome.storage.local.get([ns])
-            return out[ns] || null
+        try {
+            if (ns === lg) {
+                const out = await chrome.storage.local.get([ns])
+                return out[ns] || null
+            }
+            const out = await chrome.storage.local.get([ns, lg])
+            if (out[ns] !== undefined) return out[ns]
+            return out[lg] || null
+        } catch (e) {
+            if (RouteAssistantSchedulePageScraper._handleInvalidatedContext(e)) return null
+            throw e
         }
-        const out = await chrome.storage.local.get([ns, lg])
-        if (out[ns] !== undefined) return out[ns]
-        return out[lg] || null
     }
 
     /**
@@ -400,4 +425,8 @@ class RouteAssistantSchedulePageScraper {
             tryDispatch()
         })
     }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantSchedulePageScraper = RouteAssistantSchedulePageScraper
 }

@@ -23,6 +23,8 @@ class AesCompetitorOutlinePanel {
     static async show(opts) {
         if (AesCompetitorOutlinePanel._instance) {
             // Already open — just refresh.
+            if (opts && opts.server) AesCompetitorOutlinePanel._instance.server = opts.server
+            if (opts && opts.airline) AesCompetitorOutlinePanel._instance.airline = opts.airline
             AesCompetitorOutlinePanel._instance.refresh()
             return AesCompetitorOutlinePanel._instance
         }
@@ -34,10 +36,12 @@ class AesCompetitorOutlinePanel {
 
     constructor(opts) {
         this.server = opts.server || ""
+        this.airline = opts.airline || ""
         this.outline = null
         this.selectedId = null
         this.searchQuery = ""
         this.sortKey = "threat"
+        this.relationshipFilter = "rivals"
         this.root = null
         this.scoreboardEl = null
         this.listEl = null
@@ -170,7 +174,36 @@ class AesCompetitorOutlinePanel {
         ].join(";")
         search.addEventListener("input", () => {
             this.searchQuery = search.value || ""
-            this._renderList()
+            this._renderViews()
+        })
+
+        const filter = document.createElement("select")
+        filter.style.cssText = [
+            "padding:" + T.sp[1] + " " + T.sp[2],
+            "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+            "border-radius:" + T.geom.radius,
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body
+        ].join(";")
+        const filterOptions = [
+            ["rivals", "Rivals only"],
+            ["excluded", "Excluded partners"],
+            ["all", "All observed"]
+        ]
+        for (const [v, l] of filterOptions) {
+            const o = document.createElement("option")
+            o.value = v
+            o.textContent = l
+            filter.appendChild(o)
+        }
+        filter.value = this.relationshipFilter
+        filter.addEventListener("change", () => {
+            this.relationshipFilter = filter.value
+            const rows = this._filteredSortedCompetitors()
+            if (!rows.find(c => c.enterpriseId === this.selectedId)) {
+                this.selectedId = rows.length ? rows[0].enterpriseId : null
+            }
+            this._renderViews()
         })
 
         const sort = document.createElement("select")
@@ -183,6 +216,11 @@ class AesCompetitorOutlinePanel {
         ].join(";")
         const sortOptions = [
             ["threat", "Sort: Threat"],
+            ["profit", "Sort: Est. profit"],
+            ["revenue", "Sort: Est. revenue"],
+            ["fleet", "Sort: Fleet size"],
+            ["passengers", "Sort: Pax/cargo"],
+            ["freshness", "Sort: Freshness"],
             ["routes", "Sort: Route count"],
             ["flights", "Sort: Weekly flights"],
             ["name", "Sort: Name"]
@@ -195,7 +233,7 @@ class AesCompetitorOutlinePanel {
         }
         sort.addEventListener("change", () => {
             this.sortKey = sort.value
-            this._renderList()
+            this._renderViews()
         })
 
         const refresh = document.createElement("button")
@@ -210,7 +248,7 @@ class AesCompetitorOutlinePanel {
         close.style.cssText = this._btnCss(T, false)
         close.addEventListener("click", () => this.close())
 
-        header.append(title, sub, search, sort, refresh, close)
+        header.append(title, sub, search, filter, sort, refresh, close)
         return header
     }
 
@@ -235,14 +273,16 @@ class AesCompetitorOutlinePanel {
         this.statusEl.textContent = "Aggregating…"
         try {
             this.outline = await window.AesCompetitorOutlineAggregator.build({
-                server: this.server
+                server: this.server,
+                airline: this.airline
             })
             if (!this.selectedId && this.outline.competitors.length) {
-                this.selectedId = this.outline.competitors[0].enterpriseId
+                const rows = this._filteredSortedCompetitors()
+                this.selectedId = rows.length
+                    ? rows[0].enterpriseId
+                    : this.outline.competitors[0].enterpriseId
             }
-            this._renderScoreboard()
-            this._renderList()
-            this._renderMain()
+            this._renderViews()
             this.statusEl.textContent = this._statusText()
         } catch (e) {
             console.warn("[AES competitor-outline] aggregator failed", e)
@@ -250,11 +290,31 @@ class AesCompetitorOutlinePanel {
         }
     }
 
+    _renderViews() {
+        this._ensureSelectionForFilter()
+        this._renderScoreboard()
+        this._renderList()
+        this._renderMain()
+        if (this.statusEl) this.statusEl.textContent = this._statusText()
+    }
+
+    _ensureSelectionForFilter() {
+        const rows = this._filteredSortedCompetitors()
+        if (!rows.length) {
+            this.selectedId = null
+            return
+        }
+        if (!rows.find(c => c.enterpriseId === this.selectedId)) {
+            this.selectedId = rows[0].enterpriseId
+        }
+    }
+
     _statusText() {
         if (!this.outline) return ""
         const o = this.outline
         return [
-            o.competitors.length + " competitors",
+            (o.rivalCount != null ? o.rivalCount : this._rivalRows().length) + " rivals",
+            (o.excludedCount || 0) + " excluded",
             o.totalRoutes + " routes",
             o.uncontested + " uncontested lanes",
             "scraped " + this._fmtAgo(o.scrapedAt)
@@ -274,14 +334,16 @@ class AesCompetitorOutlinePanel {
         const T = window.AESTokens
         if (!this.scoreboardEl) return
         this.scoreboardEl.textContent = ""
-        const top = (this.outline.competitors || [])
+        const top = this._filteredSortedCompetitors()
             .slice()
             .sort((a, b) => (b.summary.threatScore || 0) - (a.summary.threatScore || 0))
             .slice(0, 8)
         if (!top.length) {
             const empty = document.createElement("span")
             empty.style.cssText = "color:" + T.color.slate + ";font-style:italic;"
-            empty.textContent = "No competitors tracked yet — visit /app/info/airports/<id> or /app/info/enterprises/<id> on this server to seed data."
+            empty.textContent = this.relationshipFilter === "excluded"
+                ? "No excluded partner/self rows in the current cache."
+                : "No rivals tracked yet — visit /app/info/airports/<id> or /app/info/enterprises/<id> on this server to seed data."
             this.scoreboardEl.appendChild(empty)
             return
         }
@@ -305,8 +367,12 @@ class AesCompetitorOutlinePanel {
             name.style.cssText = "font-size:" + T.fs.body + ";"
             const sub = document.createElement("span")
             sub.style.cssText = "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";"
-            sub.textContent = "lead " + c.summary.threatScore
+            sub.textContent = (c.relationship && c.relationship.label ? c.relationship.label + " · " : "")
+                + "lead " + c.summary.threatScore
                 + " · " + c.summary.totalRoutes + " routes"
+                + (c.financials && c.financials.totalEstimatedWeeklyProfit != null
+                    ? " · est " + this._fmtMoney(c.financials.totalEstimatedWeeklyProfit) + "/wk"
+                    : "")
                 + (c.summary.counterableRoutes > 0
                     ? " · " + c.summary.counterableRoutes + " counter"
                     : "")
@@ -316,9 +382,7 @@ class AesCompetitorOutlinePanel {
             card.append(name, sub)
             card.addEventListener("click", () => {
                 this.selectedId = c.enterpriseId
-                this._renderScoreboard()
-                this._renderList()
-                this._renderMain()
+                this._renderViews()
             })
             this.scoreboardEl.appendChild(card)
         }
@@ -360,15 +424,17 @@ class AesCompetitorOutlinePanel {
             head.append(name, code)
             const sub = document.createElement("div")
             sub.style.cssText = "color:" + T.color.slate + ";font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";margin-top:2px;"
-            sub.textContent = "lead " + c.summary.threatScore
+            sub.textContent = (c.relationship && c.relationship.label ? c.relationship.label + " · " : "")
+                + "lead " + c.summary.threatScore
                 + " · " + c.summary.totalRoutes + " routes"
                 + " · " + c.summary.totalWeeklyFlights + " flights/wk"
+                + (c.financials && c.financials.totalEstimatedWeeklyProfit != null
+                    ? " · est " + this._fmtMoney(c.financials.totalEstimatedWeeklyProfit) + "/wk"
+                    : "")
             row.append(head, sub)
             row.addEventListener("click", () => {
                 this.selectedId = c.enterpriseId
-                this._renderScoreboard()
-                this._renderList()
-                this._renderMain()
+                this._renderViews()
             })
             this.listEl.appendChild(row)
         }
@@ -377,15 +443,26 @@ class AesCompetitorOutlinePanel {
     _filteredSortedCompetitors() {
         if (!this.outline) return []
         let out = (this.outline.competitors || []).slice()
+        if (this.relationshipFilter === "rivals") {
+            out = out.filter(c => !c.relationship || c.relationship.includedAsRival !== false)
+        } else if (this.relationshipFilter === "excluded") {
+            out = out.filter(c => c.relationship && c.relationship.includedAsRival === false)
+        }
         const q = this.searchQuery.trim().toLowerCase()
         if (q) {
             out = out.filter(c =>
                 (c.name || "").toLowerCase().indexOf(q) >= 0
                 || (c.code || "").toLowerCase().indexOf(q) >= 0
+                || (c.relationship && (c.relationship.label || "").toLowerCase().indexOf(q) >= 0)
                 || (c.alliance && (c.alliance.name || "").toLowerCase().indexOf(q) >= 0))
         }
         const cmp = {
             threat:  (a, b) => (b.summary.threatScore || 0) - (a.summary.threatScore || 0),
+            profit:  (a, b) => this._financialValue(b, "profit") - this._financialValue(a, "profit"),
+            revenue: (a, b) => this._financialValue(b, "revenue") - this._financialValue(a, "revenue"),
+            fleet:   (a, b) => this._financialValue(b, "fleet") - this._financialValue(a, "fleet"),
+            passengers: (a, b) => this._financialValue(b, "passengers") - this._financialValue(a, "passengers"),
+            freshness: (a, b) => this._financialValue(b, "freshness") - this._financialValue(a, "freshness"),
             routes:  (a, b) => (b.summary.totalRoutes || 0) - (a.summary.totalRoutes || 0),
             flights: (a, b) => (b.summary.totalWeeklyFlights || 0) - (a.summary.totalWeeklyFlights || 0),
             name:    (a, b) => String(a.name || "").localeCompare(String(b.name || ""))
@@ -394,16 +471,40 @@ class AesCompetitorOutlinePanel {
         return out
     }
 
+    _rivalRows() {
+        if (!this.outline) return []
+        return (this.outline.competitors || [])
+            .filter(c => !c.relationship || c.relationship.includedAsRival !== false)
+    }
+
+    _financialValue(c, key) {
+        const f = c && c.financials || {}
+        const facts = f.publicFacts || {}
+        if (key === "profit") return Number(f.totalEstimatedWeeklyProfit) || 0
+        if (key === "revenue") return Number(f.estimatedWeeklyRouteRevenue) || 0
+        if (key === "fleet") return Number(facts.aircraft) || 0
+        if (key === "passengers") return (Number(facts.passengers) || 0) + (Number(facts.cargo) || 0)
+        if (key === "freshness") {
+            return Number(f.freshness && (f.freshness.routeAt || f.freshness.enterpriseAt)) || 0
+        }
+        return 0
+    }
+
     _renderMain() {
         const T = window.AESTokens
         if (!this.mainEl) return
         this.mainEl.textContent = ""
         if (!this.outline) return
-        const c = (this.outline.competitors || []).find(x => x.enterpriseId === this.selectedId)
+        const visible = this._filteredSortedCompetitors()
+        let c = visible.find(x => x.enterpriseId === this.selectedId)
+        if (!c && visible.length) {
+            c = visible[0]
+            this.selectedId = c.enterpriseId
+        }
         if (!c) {
             const empty = document.createElement("p")
             empty.style.cssText = "color:" + T.color.slate + ";margin:0;"
-            empty.textContent = "Pick a competitor to see their routes."
+            empty.textContent = "No enterprises match the current outline filter."
             this.mainEl.appendChild(empty)
             return
         }
@@ -421,6 +522,10 @@ class AesCompetitorOutlinePanel {
         meta.style.cssText = "color:" + T.color.slate + ";font-family:" + T.font.mono
             + ";font-size:" + T.fs.micro + ";"
         const metaParts = []
+        if (c.relationship && c.relationship.label) {
+            metaParts.push("relationship: " + c.relationship.label
+                + (c.relationship.includedAsRival ? " (rival)" : " (excluded)"))
+        }
         if (c.alliance && c.alliance.name) metaParts.push("alliance: " + c.alliance.name)
         if (c.baseCountry && c.baseCountry.name) metaParts.push(c.baseCountry.name)
         if (c.fleet && c.fleet.totalCount != null) {
@@ -430,6 +535,11 @@ class AesCompetitorOutlinePanel {
         meta.textContent = metaParts.join(" · ") || "—"
         head.appendChild(meta)
         this.mainEl.appendChild(head)
+
+        this.mainEl.appendChild(this._buildFinancialStrip(c, T))
+        if (this.outline.ourFinancials) {
+            this.mainEl.appendChild(this._buildOurFinancialStrip(this.outline.ourFinancials, T))
+        }
 
         // Fleet-by-type strip
         if (c.fleet && Array.isArray(c.fleet.byType) && c.fleet.byType.length) {
@@ -478,6 +588,92 @@ class AesCompetitorOutlinePanel {
         p.style.cssText = "color:" + T.color.slate + ";margin:0;"
         p.textContent = msg
         host.appendChild(p)
+    }
+
+    _buildFinancialStrip(c, T) {
+        const f = c.financials || {}
+        const facts = f.publicFacts || {}
+        const wrap = document.createElement("div")
+        wrap.style.cssText = [
+            "margin-bottom:" + T.sp[3],
+            "padding:" + T.sp[2],
+            "background:" + T.color.bone2,
+            "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+            "border-radius:" + T.geom.radius,
+            "display:flex",
+            "flex-wrap:wrap",
+            "gap:" + T.sp[3],
+            "align-items:baseline"
+        ].join(";")
+        wrap.appendChild(this._stripMetric(T, "Rival finance", f.label || "Estimated"))
+        wrap.appendChild(this._stripMetric(T, "Relationship",
+            c.relationship ? c.relationship.label : "Unclassified"))
+        wrap.appendChild(this._stripMetric(T, "Est. profit/wk",
+            f.totalEstimatedWeeklyProfit != null ? this._fmtMoney(f.totalEstimatedWeeklyProfit) : "—"))
+        wrap.appendChild(this._stripMetric(T, "Est. revenue/wk",
+            f.estimatedWeeklyRouteRevenue != null ? this._fmtMoney(f.estimatedWeeklyRouteRevenue) : "—"))
+        wrap.appendChild(this._stripMetric(T, "Routes",
+            c.summary.totalRoutes + " · " + c.summary.totalWeeklyFlights + "/wk"))
+        wrap.appendChild(this._stripMetric(T, "Scale",
+            (facts.aircraft != null ? facts.aircraft + " ac" : "—")
+                + (facts.passengers != null ? " · pax " + this._fmtCompact(facts.passengers) : "")
+                + (facts.cargo != null ? " · cargo " + this._fmtCompact(facts.cargo) : "")))
+        const ageAt = f.freshness && (f.freshness.routeAt || f.freshness.enterpriseAt)
+        const hint = f.confidence === "missing"
+            ? "Missing route finance inputs"
+            : "confidence " + (f.confidence || "low") + (ageAt ? " · " + this._fmtAgo(ageAt) : "")
+        wrap.appendChild(this._stripMetric(T, "Data", hint))
+        return wrap
+    }
+
+    _buildOurFinancialStrip(fin, T) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = [
+            "margin-bottom:" + T.sp[3],
+            "padding:" + T.sp[2],
+            "background:" + T.color.bone,
+            "border:" + T.geom.bw1 + " solid " + T.color.oxide,
+            "border-radius:" + T.geom.radius,
+            "display:flex",
+            "flex-wrap:wrap",
+            "gap:" + T.sp[3],
+            "align-items:baseline"
+        ].join(";")
+        const latest = fin.latest || {}
+        const routes = fin.routes || {}
+        const fleet = fin.fleet || {}
+        wrap.appendChild(this._stripMetric(T, "Our enterprise", fin.label || "Actual"))
+        wrap.appendChild(this._stripMetric(T, "Cash",
+            fin.cashBalance != null ? this._fmtMoney(fin.cashBalance) : "—"))
+        wrap.appendChild(this._stripMetric(T, "Revenue",
+            latest.revenue != null ? this._fmtMoney(latest.revenue) : "—"))
+        wrap.appendChild(this._stripMetric(T, "EBIT",
+            latest.ebit != null ? this._fmtMoney(latest.ebit) : "—"))
+        wrap.appendChild(this._stripMetric(T, "EBT",
+            latest.ebt != null ? this._fmtMoney(latest.ebt) : "—"))
+        wrap.appendChild(this._stripMetric(T, "Route profit/wk",
+            routes.totalProfitPerWeek != null ? this._fmtMoney(routes.totalProfitPerWeek) : "—"))
+        wrap.appendChild(this._stripMetric(T, "Fleet profit",
+            fleet.totalProfit != null ? this._fmtMoney(fleet.totalProfit) : "—"))
+        const fresh = fin.freshness && fin.freshness.snapshotAt
+        wrap.appendChild(this._stripMetric(T, "Snapshot",
+            latest.weekId || (fresh ? this._fmtAgo(fresh) : "—")))
+        return wrap
+    }
+
+    _stripMetric(T, label, value) {
+        const box = document.createElement("span")
+        box.style.cssText = "display:inline-flex;flex-direction:column;gap:2px;min-width:84px;"
+        const l = document.createElement("span")
+        l.textContent = label
+        l.style.cssText = "font-family:" + T.font.display + ";font-size:" + T.fs.micro
+            + ";letter-spacing:" + T.track.caps + ";text-transform:uppercase;color:" + T.color.slate + ";"
+        const v = document.createElement("strong")
+        v.textContent = value == null || value === "" ? "—" : String(value)
+        v.style.cssText = "font-family:" + T.font.mono + ";font-size:" + T.fs.body
+            + ";font-weight:600;color:" + T.color.oxide + ";"
+        box.append(l, v)
+        return box
     }
 
     _buildRouteTable(c, T) {
@@ -696,6 +892,15 @@ class AesCompetitorOutlinePanel {
     }
 
     _fmtMoney(n) {
+        if (n == null || !isFinite(n)) return "—"
+        const abs = Math.abs(n)
+        if (abs >= 1e9) return (n / 1e9).toFixed(2) + "B"
+        if (abs >= 1e6) return (n / 1e6).toFixed(2) + "M"
+        if (abs >= 1e3) return (n / 1e3).toFixed(1) + "k"
+        return String(Math.round(n))
+    }
+
+    _fmtCompact(n) {
         if (n == null || !isFinite(n)) return "—"
         const abs = Math.abs(n)
         if (abs >= 1e9) return (n / 1e9).toFixed(2) + "B"

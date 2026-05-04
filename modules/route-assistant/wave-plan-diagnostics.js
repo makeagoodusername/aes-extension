@@ -29,6 +29,7 @@ class RouteAssistantWavePlanDiagnostics {
      * @param {object} ctx
      *   - hubIata: string
      *   - selectedSpec: aircraft spec or null
+     *   - fleetSpecs: aircraft specs for Fleet mode, or null
      *   - carrierClassifier: optional (kept for parity; we use build.connections)
      *   - fleetCount: number of fleet aircraft assigned to this preset (≥ 1)
      * @returns {object}
@@ -48,7 +49,8 @@ class RouteAssistantWavePlanDiagnostics {
             connectionMix:   {own: 0, interline: 0, alliance: 0},
             capacityByHour:  new Array(24).fill(0),
             warnings:        [],
-            hasFleetContext: !!c.selectedSpec,
+            hasFleetContext: !!(c.selectedSpec
+                || (Array.isArray(c.fleetSpecs) && c.fleetSpecs.length)),
             componentScores: {utilization: 0, profit: 0, connections: 0,
                               demand: 0, warningsHealth: 0}
         }
@@ -374,4 +376,8 @@ class RouteAssistantWavePlanDiagnostics {
         if (fitQuality === "warn") return "#fbbf24"
         return "#ef4444"
     }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantWavePlanDiagnostics = RouteAssistantWavePlanDiagnostics
 }

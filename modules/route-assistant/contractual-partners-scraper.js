@@ -272,3 +272,7 @@ function parsePartnersHtml(html) {
         parserNotes: notes.length ? notes.join("; ") : null
     }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantContractualPartnersScraper = RouteAssistantContractualPartnersScraper
+}

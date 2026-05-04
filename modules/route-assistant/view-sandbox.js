@@ -18,3 +18,7 @@ class RouteAssistantSandboxView {
         panel._renderOrsSandbox(sorted)
     }
 }
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantSandboxView = RouteAssistantSandboxView
+}

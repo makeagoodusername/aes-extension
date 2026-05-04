@@ -8,7 +8,7 @@
  *
  * Storage layout:
  *   key:   `routeAssistant:waveOverrides:<HUB>:<presetId>`
- *   value: { [destIata]: waveId }
+ *   value: { [destIata]: waveId | "__exclude__" }
  *
  * Per-(hub, preset) so overrides on one wave plan don't leak into
  * another, and per-hub so cross-hub view (slice 2) keeps overrides
@@ -16,11 +16,16 @@
  * 13-char values), no expiry needed.
  */
 class RouteAssistantWaveOverridesStore {
+    static EXCLUDE_VALUE = "__exclude__"
 
     static _key(hubIata, presetId) {
         const hub = String(hubIata || "").toUpperCase()
         const pid = String(presetId || "")
         return "routeAssistant:waveOverrides:" + hub + ":" + pid
+    }
+
+    static isExcludeValue(value) {
+        return String(value || "") === RouteAssistantWaveOverridesStore.EXCLUDE_VALUE
     }
 
     /** Load the override map for (hub, preset). Returns {} if none. */
@@ -32,6 +37,7 @@ class RouteAssistantWaveOverridesStore {
             const map = blob[key]
             return (map && typeof map === "object") ? map : {}
         } catch (e) {
+            if (window.AESSiteSkin?.handleInvalidatedContext?.(e)) return {}
             console.warn("[AES wave-overrides] load failed:", e)
             return {}
         }
@@ -54,6 +60,7 @@ class RouteAssistantWaveOverridesStore {
                 await chrome.storage.local.set({[key]: cleaned})
             }
         } catch (e) {
+            if (window.AESSiteSkin?.handleInvalidatedContext?.(e)) return
             console.warn("[AES wave-overrides] save failed:", e)
         }
     }
@@ -62,6 +69,14 @@ class RouteAssistantWaveOverridesStore {
     static async set(hubIata, presetId, destIata, waveId) {
         const map = await RouteAssistantWaveOverridesStore.load(hubIata, presetId)
         map[String(destIata).toUpperCase()] = String(waveId)
+        await RouteAssistantWaveOverridesStore.save(hubIata, presetId, map)
+        return map
+    }
+
+    /** Convenience — exclude a route from the greedy/optimised wave build. */
+    static async exclude(hubIata, presetId, destIata) {
+        const map = await RouteAssistantWaveOverridesStore.load(hubIata, presetId)
+        map[String(destIata).toUpperCase()] = RouteAssistantWaveOverridesStore.EXCLUDE_VALUE
         await RouteAssistantWaveOverridesStore.save(hubIata, presetId, map)
         return map
     }
@@ -89,6 +104,7 @@ class RouteAssistantWaveOverridesStore {
         const map = await RouteAssistantWaveOverridesStore.load(hubIata, presetId)
         let changed = false
         for (const d in map) {
+            if (RouteAssistantWaveOverridesStore.isExcludeValue(map[d])) continue
             if (!valid.has(String(map[d]))) {
                 delete map[d]
                 changed = true

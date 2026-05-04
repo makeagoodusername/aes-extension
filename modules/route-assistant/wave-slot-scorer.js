@@ -100,6 +100,9 @@ class RouteAssistantWaveSlotScorer {
         // ---- 2. Profit fit ----
         const row = route._scoredRow
         const prof = row && Number(row.profitPerWeek)
+        const hasProfitSignal = row && row.profitPerWeek !== null && row.profitPerWeek !== undefined
+            && row.profitPerWeek !== "" && isFinite(prof)
+        const knownNonPositiveProfit = hasProfitSignal && prof <= 0
         if (isFinite(prof) && prof > 0 && c.profitMax > 0) {
             result.breakdown.profitFit = Math.max(0, Math.min(100,
                 Math.round((prof / c.profitMax) * 100)))
@@ -107,6 +110,10 @@ class RouteAssistantWaveSlotScorer {
         } else if (isFinite(prof) && prof > 0) {
             result.breakdown.profitFit = 60
             result.marginalProfit = prof
+        } else if (knownNonPositiveProfit) {
+            result.breakdown.profitFit = 0
+            result.marginalProfit = prof
+            result.reasons.push("Known non-positive profit estimate.")
         } else if (!c.selectedSpec
                 && (!c.fleetSpecs || !c.fleetSpecs.length)) {
             // No fleet → can't estimate; use paxScore as a neutral proxy.
@@ -185,7 +192,8 @@ class RouteAssistantWaveSlotScorer {
         )
 
         // Viability gate.
-        result.viable = b.rangeFit > 0
+        result.viable = !knownNonPositiveProfit
+            && b.rangeFit > 0
             && b.aircraftAvailability > 0
             && spareThisBucket > 0
 

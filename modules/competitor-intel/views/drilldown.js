@@ -80,6 +80,18 @@
         const rec = row && row.record
         if (!rec) { host.textContent = "No record."; return }
 
+        // Stamp the IATA→enterpriseId pairing the moment a real drilldown
+        // opens — the user has volunteered intent that this airline is worth
+        // tracking, so future markets-derived rows for the same IATA can
+        // upgrade to the rich AS profile link without waiting for the next
+        // full hub data load.
+        if (window.AesCompetitorIntelHost
+                && typeof window.AesCompetitorIntelHost.stampIataMapping === "function") {
+            const server = (ctx && ctx.server) || (rec && rec.server)
+            window.AesCompetitorIntelHost.stampIataMapping(
+                server, rec.iata, rec.enterpriseId, rec.name)
+        }
+
         // Header strip — name, IATA, alliance, base country, freshness.
         const headStrip = document.createElement("div")
         headStrip.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;padding-bottom:10px;"
@@ -185,6 +197,30 @@
             }
             host.append(feed)
         }
+
+        // Open detail button — switch the hub content area to the rich
+        // airline-detail view (map + waves + hubs + routes). Closes this
+        // slide-in panel since the detail view replaces it. Falls back to
+        // logging when the host shell isn't reachable (e.g. drilldown
+        // mounted from a different surface in a future expansion).
+        const detailBtn = document.createElement("button")
+        detailBtn.textContent = "🗺 Open detail view →"
+        detailBtn.style.cssText = "background:#1e3a8a;color:#e5e7eb;border:1px solid #67e8f9;"
+            + "border-radius:3px;padding:6px 12px;cursor:pointer;font-size:11px;margin-right:8px;font-weight:600;"
+        detailBtn.addEventListener("click", () => {
+            const id = (rec && rec.enterpriseId) || sel.id
+            if (!id) return
+            close()
+            if (window.CentralHubBus && typeof window.CentralHubBus.emit === "function") {
+                try {
+                    window.CentralHubBus.emit("focus-enterprise", {
+                        enterpriseId: String(id),
+                        source: "competitor-intel-drilldown"
+                    })
+                } catch (e) { /* best-effort */ }
+            }
+        })
+        host.append(detailBtn)
 
         // Open log button
         const logBtn = document.createElement("button")

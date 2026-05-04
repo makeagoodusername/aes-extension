@@ -778,6 +778,10 @@ class RouteAssistantCompassView {
     }
 }
 
+if (typeof window !== "undefined") {
+    window.RouteAssistantCompassView = RouteAssistantCompassView
+}
+
 // ── ?aes-debug smoke ──────────────────────────────────────────────────
 try {
     if (typeof location !== "undefined" && /[?&]aes-debug\b/.test(location.search || "")) {

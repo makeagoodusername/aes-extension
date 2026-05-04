@@ -24,6 +24,12 @@
         "per-hub":        6 * 60 * 60 * 1000,
         "per-aircraft":  12 * 60 * 60 * 1000,
         "per-route":     24 * 60 * 60 * 1000,
+        // ORS rank turns over fast (competitor schedule changes, our own
+        // applies, fare moves) and the silent auto-pricer reads it on
+        // every tick. 4h keeps the analyser current without burning the
+        // ORS rate budget. Cheaper than per-route because the phase has
+        // no tab-fan-out — only the postRun ORS sync runs.
+        "ors-rank":       4 * 60 * 60 * 1000,
         "per-competitor": 2 * 24 * 60 * 60 * 1000,
         "flightsfrom":    7 * 24 * 60 * 60 * 1000
     }
