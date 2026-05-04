@@ -114,3 +114,114 @@ Logged in `audit/manifest-requests.md` (this session's entry):
 - Real release-notes copy for `0.6.12-beta`?
 - Should the manifest ever widen the ORS URL match (e.g., to `/action/info/ors*`)?
   Current pattern is the same as upstream.
+
+---
+
+# Session 2 — Upstream v0.7.0–v0.7.8 changelog backport (2026-05-04)
+
+**Plan:** `~/.claude/plans/quiet-booping-cookie.md`
+**Approach:** Cherry-pick + bugfix port driven by `audit/integration-delta-matrix.md`.
+**Outcome:** 15 commits, 19 of 49 changelog items absorbed, 18 already-ported,
+6 not-applicable, 3 risk-skip, 3 deferred.
+
+## Commit chain (oldest → newest)
+
+| Commit | Item(s) | Headline |
+|---|---|---|
+| `88cec4c` | infra | jQuery 3.4.1 → 3.7.1 slim (matches upstream vendor) |
+| `447e7ca` | 1 | settings-bridge `mutateArea` RMW for cross-tab race |
+| `044f9d1` | — | record commit hash for slice 1 |
+| `2dcb2cd` | 6 | inventory `showReferenceRecommendation` opt-in toggle |
+| `60960d3` | 18 | fleet-management aircraftId regex tolerates relative paths |
+| `199ceee` | 3, 7 | inventory grouped tables + auto-rerender on layout toggle |
+| `91c42c4` | 4 | inventory reference recommendation rendering |
+| `57c8807` | 13, 16, 17, 19, 22 | fleet-management modernization batch |
+| `ba2167e` | 49 | personnel salary one-pass apply (no refresh loop) |
+| `0d85fb1` | 14 (UI) | aircraft-flights HUB auto-detect + override controls |
+| `152d427` | 15 | dashboard aircraft-profitability v0.7.6 columns |
+| `cf8e8c6` | — | record commit hash for slice 6 |
+| `96da7dd` | 14, 20, 21 | aircraft-flights HUB sync to fleet + toast type bugfix |
+| `9c1c5be` | 24, 26, 27, 32 | per-controlled-airline competitor monitoring + label-based scrape |
+| `b0a13db` | release | bump 0.6.12-beta → 0.6.13-beta + release notes |
+
+## Items absorbed (19)
+
+`1, 3, 4, 6, 7, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 26, 27, 32, 49`
+
+## Already-ported pre-session (18)
+
+`2, 5, 8, 28, 29, 33, 34, 35, 36, 37, 40, 41, 42, 44, 45, 46, 47, 31`
+(see delta matrix for evidence)
+
+## Not-applicable (6)
+
+`2, 5, 28, 33, 35, 43` — fork architecture differs in a way that makes the
+upstream fix moot (e.g., fork's analyzer doesn't fall back to historical
+snapshots so the 0.7.8 zero-fallback bug has no analogue here).
+
+## Risk-skip (3, deliberately NOT ported)
+
+- **`38`** — fork's load-index formula `(analysisPricePoint + load*100*3)/4`
+  is calibrated to its profile/route-pressure model; reverting to upstream's
+  `(10**(pp/100-1)) * load*100` would break thresholds.
+- **`43`** — fork's procedural `content_flightInfo.js` carries F-9228-807
+  airline-scoped key + chrome.runtime.lastError surfacing; the upstream
+  class-based refactor doesn't.
+- **`48`** — fork's route-mgmt tab cap of 10 is intentional (UAS staggering);
+  do not downgrade to upstream's 6.
+
+## Deferred (3, ports declined or moved out of scope)
+
+- **`12`** — Fleet Management filter panel + native selection link integration.
+  Big additive UX (~150 LOC + MutationObserver scaffold + boot/render
+  lifecycle change). TODO marker in `fltmng_display`; full rationale in
+  `audit/findings-upstream-integration.md` slice 5 entry.
+- **`30`** — AP age aggregation averaged in summary row. Fork's `generateTable`
+  has no summary/footer-row infrastructure; would require synthesizing one.
+- **`9, 10, 11, 23, 25, 39`** — dashboard render-path changes that compose
+  awkwardly with fork-specific subsystems (L2 account scoping, hand-rolled
+  per-pane sorters, central-hub tile feed). Left for a follow-up session
+  with explicit user sign-off per item.
+
+## Verification
+
+- `node --check` clean across all touched files (helpers.js,
+  content_inventory.js, content_settings.js, content_dashboard.js,
+  content_fleetManagement.js, content_aircraftFlights.js,
+  content_personnelManagement.js, content_enterpriseOverview.js,
+  modules/release-notes.js, modules/_shared/settings-bridge.js,
+  modules/_background/legacy-defaults.js).
+- `python3 -c "import json; json.load(open('manifest.json'))"` valid.
+- All 11 upstream URL match blocks confirmed to carry the canonical
+  upstream content_*.js + module in fork manifest blocks.
+- Storage-key contracts preserved (additive fields only on every blob;
+  no rename/reshape).
+- CLAUDE.md §3 invariants honored — no new POST paths, no submit
+  bypass, no silent default flips, gated apply pipeline untouched.
+
+## Live verification still recommended
+
+These require user's Chrome instance (auto-mode session can't drive AS UI):
+
+1. Inventory page with `Group by flight` toggled — confirm AES analysis
+   re-renders in place (no full refresh prompt).
+2. Inventory Pricing settings → toggle `Show reference recommendation` →
+   re-open inventory page → confirm Reference column appears for routes
+   where `useCurrentPrice` is false.
+3. Aircraft Flights page on a tail — confirm HUB Detected/Override row
+   appears and Save/Reset persist.
+4. Fleet Management page after the above — confirm HUB column populates
+   with the override.
+5. Personnel salary apply with multiple rows needing change — confirm
+   single click adjusts every row without page refresh.
+6. Two AS tabs (Settings + Inventory) — toggle in one, reload other,
+   confirm no clobber (slice 1 settings race fix).
+7. Release notes dialog auto-opens once after extension reload at
+   0.6.13-beta; AES footer link reopens it.
+
+## Open questions for the user
+
+- Item 12 filter panel: should we ship the deferred port in a follow-up,
+  or leave it as a fork-divergence (the fork has its own
+  `quick-price-applier`-like UX in some panes)?
+- Items 9/10/11/23/25/39 dashboard items: prioritize per-item or batch?
