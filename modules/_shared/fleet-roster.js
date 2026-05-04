@@ -56,7 +56,8 @@ class AesFleetRoster {
         let chosen = null
         let ambiguous = false
         if (airlineCode) {
-            chosen = matching.find(r => String(r.airline) === String(airlineCode)) || null
+            chosen = matching.find(r =>
+                AesFleetRoster._sameAirline(r.airline, airlineCode)) || null
         }
         if (!chosen) {
             chosen = matching.slice().sort((a, b) => b.fleet.length - a.fleet.length)[0]
@@ -118,6 +119,16 @@ class AesFleetRoster {
             ambiguous: ambiguous,
             server:    server || null
         }
+    }
+
+    static _sameAirline(a, b) {
+        const aa = AesFleetRoster._normaliseAirlineKey(a)
+        const bb = AesFleetRoster._normaliseAirlineKey(b)
+        return !!aa && aa === bb
+    }
+
+    static _normaliseAirlineKey(value) {
+        return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "")
     }
 
     static _build(rec, ambiguous, server) {

@@ -41,6 +41,15 @@
         return Date.now() - ts <= ttlMs
     }
 
+    function handleInvalidatedContext(err) {
+        const msg = err && err.message ? err.message : String(err || "")
+        if (!/Extension context invalidated/i.test(msg)) return false
+        try {
+            if (window.AESSiteSkin?.handleInvalidatedContext?.(err)) return true
+        } catch (_) {}
+        return true
+    }
+
     /**
      * @param {object} opts
      *   prefix          chrome.storage key prefix INCLUDING delimiter
@@ -135,8 +144,23 @@
         }
         const freshnessField = (fOpts && fOpts.freshnessField) || DEFAULT_FRESHNESS_FIELD
 
+        function writer() {
+            return (typeof window !== "undefined" && window.AesWriteThrough) || null
+        }
+
         async function getStale() {
-            const out = await chrome.storage.local.get([key])
+            const w = writer()
+            if (w && typeof w.get === "function") {
+                const value = await w.get(key)
+                return value || null
+            }
+            let out
+            try {
+                out = await chrome.storage.local.get([key])
+            } catch (e) {
+                if (handleInvalidatedContext(e)) return null
+                throw e
+            }
             return out[key] || null
         }
 
@@ -154,14 +178,32 @@
             if (toStore && typeof toStore === "object" && toStore[freshnessField] == null) {
                 toStore[freshnessField] = Date.now()
             }
-            await chrome.storage.local.set({[key]: toStore})
+            const w = writer()
+            if (w && typeof w.put === "function") await w.put(key, toStore)
+            else {
+                try {
+                    await chrome.storage.local.set({[key]: toStore})
+                } catch (e) {
+                    if (handleInvalidatedContext(e)) return toStore
+                    throw e
+                }
+            }
             return toStore
         }
 
         async function cleanup() {
             const rec = await getStale()
             if (rec && !isFreshRecord(rec, ttlMs, freshnessField)) {
-                await chrome.storage.local.remove([key])
+                const w = writer()
+                if (w && typeof w.remove === "function") await w.remove([key])
+                else {
+                    try {
+                        await chrome.storage.local.remove([key])
+                    } catch (e) {
+                        if (handleInvalidatedContext(e)) return {removed: 0, kept: 0}
+                        throw e
+                    }
+                }
                 return {removed: 1, kept: 0}
             }
             return {removed: 0, kept: rec ? 1 : 0}

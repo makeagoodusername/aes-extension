@@ -32,6 +32,12 @@
  * Pass the prefix INCLUDING its trailing colon (or whatever delimiter the
  * existing store used) — the factory does string concatenation, no
  * normalisation. Keep it identical to the legacy prefix when migrating.
+ *
+ * Optional plumbing hooks:
+ *   topic        AesDataBus topic to emit after set/delete
+ *   publish      use AesDataBus.publish(topic, value, hint) instead of emit
+ *   makePayload  (suffix, value, ctx) → event hint
+ *   makeValue    (suffix, value, ctx) → publish value
  */
 function createPrefixStore(opts) {
     const prefix = opts && opts.prefix
@@ -39,6 +45,35 @@ function createPrefixStore(opts) {
         throw new Error("createPrefixStore: opts.prefix (string) required")
     }
     const fullKey = (suffix) => prefix + String(suffix)
+    const topic = opts && opts.topic
+
+    function _writer() {
+        return (typeof window !== "undefined" && window.AesWriteThrough) || null
+    }
+
+    function _handleInvalidatedContext(err) {
+        const msg = err && err.message ? err.message : String(err || "")
+        if (!/Extension context invalidated/i.test(msg)) return false
+        try {
+            if (window.AESSiteSkin?.handleInvalidatedContext?.(err)) return true
+        } catch (_) {}
+        return true
+    }
+
+    function _eventOpts(suffix, value, op) {
+        if (!topic) return null
+        const ctx = {prefix: prefix, suffix: suffix, value: value, op: op}
+        return {
+            topic:   topic,
+            publish: !!(opts && opts.publish),
+            hint:    opts && typeof opts.makePayload === "function"
+                ? () => opts.makePayload(suffix, value, ctx)
+                : {suffix: suffix},
+            value:   opts && typeof opts.makeValue === "function"
+                ? () => opts.makeValue(suffix, value, ctx)
+                : value
+        }
+    }
 
     return {
         prefix,
@@ -46,19 +81,58 @@ function createPrefixStore(opts) {
         async get(suffix) {
             if (suffix == null || suffix === "") return null
             const key = fullKey(suffix)
-            const out = await chrome.storage.local.get([key])
+            const writer = _writer()
+            if (writer && typeof writer.get === "function") {
+                const value = await writer.get(key)
+                return value === undefined ? null : value
+            }
+            let out
+            try {
+                out = await chrome.storage.local.get([key])
+            } catch (e) {
+                if (_handleInvalidatedContext(e)) return null
+                throw e
+            }
             return (key in out) ? out[key] : null
         },
 
         async set(suffix, value) {
             if (suffix == null || suffix === "") return null
-            await chrome.storage.local.set({[fullKey(suffix)]: value})
+            const key = fullKey(suffix)
+            const writer = _writer()
+            if (writer && typeof writer.put === "function") {
+                await writer.put(key, value, _eventOpts(suffix, value, "set"))
+            } else {
+                try {
+                    await chrome.storage.local.set({[key]: value})
+                } catch (e) {
+                    if (_handleInvalidatedContext(e)) return value
+                    throw e
+                }
+                if (topic && typeof AesDataBus !== "undefined") {
+                    AesDataBus.emit(topic, {suffix: suffix})
+                }
+            }
             return value
         },
 
         async delete(suffix) {
             if (suffix == null || suffix === "") return
-            await chrome.storage.local.remove([fullKey(suffix)])
+            const key = fullKey(suffix)
+            const writer = _writer()
+            if (writer && typeof writer.remove === "function") {
+                await writer.remove([key], _eventOpts(suffix, null, "delete"))
+            } else {
+                try {
+                    await chrome.storage.local.remove([key])
+                } catch (e) {
+                    if (_handleInvalidatedContext(e)) return
+                    throw e
+                }
+                if (topic && typeof AesDataBus !== "undefined") {
+                    AesDataBus.emit(topic, {suffix: suffix, deleted: true})
+                }
+            }
         },
 
         async bulkGet(suffixes) {
@@ -66,7 +140,18 @@ function createPrefixStore(opts) {
             const ids = suffixes.filter(s => s != null && s !== "")
             if (!ids.length) return new Map()
             const keys = ids.map(fullKey)
-            const blob = await chrome.storage.local.get(keys)
+            const writer = _writer()
+            let blob
+            if (writer && typeof writer.getMany === "function") {
+                blob = await writer.getMany(keys)
+            } else {
+                try {
+                    blob = await chrome.storage.local.get(keys)
+                } catch (e) {
+                    if (_handleInvalidatedContext(e)) return new Map()
+                    throw e
+                }
+            }
             const map = new Map()
             for (let i = 0; i < ids.length; i++) {
                 if (keys[i] in blob) map.set(ids[i], blob[keys[i]])
@@ -75,7 +160,13 @@ function createPrefixStore(opts) {
         },
 
         async getAll() {
-            const all = await chrome.storage.local.get(null)
+            let all
+            try {
+                all = await chrome.storage.local.get(null)
+            } catch (e) {
+                if (_handleInvalidatedContext(e)) return []
+                throw e
+            }
             const out = []
             for (const k in all) {
                 if (k.indexOf(prefix) !== 0) continue

@@ -99,6 +99,25 @@
 
     const DEFAULT_LIMIT = 1000
 
+    function _handleInvalidatedContext(err) {
+        const msg = err && err.message ? err.message : String(err || "")
+        if (!/Extension context invalidated/i.test(msg)) return false
+        try {
+            if (window.AESSiteSkin?.handleInvalidatedContext?.(err)) return true
+        } catch (_) {}
+        return true
+    }
+
+    async function _storageGet(keys) {
+        try {
+            if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return {}
+            return await chrome.storage.local.get(keys)
+        } catch (e) {
+            if (_handleInvalidatedContext(e)) return {}
+            throw e
+        }
+    }
+
     /**
      * Pricing adapter — 1:1 mapping from RouteAssistantPricingApplyLog
      * entries. The pricing log already carries the richest envelope
@@ -106,7 +125,7 @@
      * normalise the field names + build a per-class delta summary.
      */
     async function _pricingAdapter() {
-        const got = await chrome.storage.local.get([PRICING_KEY]).catch(() => ({}))
+        const got = await _storageGet([PRICING_KEY])
         const rec = got[PRICING_KEY]
         if (!rec || !Array.isArray(rec.entries)) return []
         return rec.entries.map(e => {
@@ -141,7 +160,7 @@
      * skips this domain entirely. Summary names changed amenities + Δ.
      */
     async function _serviceProfileAdapter() {
-        const got = await chrome.storage.local.get([SERVICE_KEY]).catch(() => ({}))
+        const got = await _storageGet([SERVICE_KEY])
         const rec = got[SERVICE_KEY]
         if (!rec || !Array.isArray(rec.entries)) return []
         return rec.entries.map(e => {
@@ -171,7 +190,7 @@
      * its pricing changes.
      */
     async function _flightNumbersAdapter() {
-        const got = await chrome.storage.local.get([FLIGHT_NUM_KEY]).catch(() => ({}))
+        const got = await _storageGet([FLIGHT_NUM_KEY])
         const rec = got[FLIGHT_NUM_KEY]
         if (!rec || !Array.isArray(rec.entries)) return []
         return rec.entries.map(e => {
@@ -213,7 +232,7 @@
      * lands in `pricingApplyLog` with `source: "strategy"`).
      */
     async function _strategyAdapter() {
-        const got = await chrome.storage.local.get([STRATEGY_KEY]).catch(() => ({}))
+        const got = await _storageGet([STRATEGY_KEY])
         const ring = Array.isArray(got[STRATEGY_KEY]) ? got[STRATEGY_KEY] : []
         return ring.map(e => {
             if (!e) return null
@@ -251,7 +270,7 @@
      * fall through with hub-only scope.
      */
     async function _autoSchedulerAdapter() {
-        const got = await chrome.storage.local.get([AUTO_SCHEDULER_KEY]).catch(() => ({}))
+        const got = await _storageGet([AUTO_SCHEDULER_KEY])
         const rec = got[AUTO_SCHEDULER_KEY]
         if (!rec || !Array.isArray(rec.entries)) return []
         return rec.entries.map(e => {
@@ -290,7 +309,7 @@
      * by-pair view picks it up alongside that route's pricing changes.
      */
     async function _afpAuditAdapter() {
-        const got = await chrome.storage.local.get([AFP_AUDIT_KEY]).catch(() => ({}))
+        const got = await _storageGet([AFP_AUDIT_KEY])
         const rec = got[AFP_AUDIT_KEY]
         if (!rec || !Array.isArray(rec.entries)) return []
         return rec.entries.map(e => {
@@ -368,6 +387,7 @@
         const sinceMs = isFinite(opts.sinceMs) ? opts.sinceMs : 0
         const limit = isFinite(opts.limit) && opts.limit > 0 ? opts.limit : DEFAULT_LIMIT
         const lists = await Promise.all(want.map(d => ADAPTERS[d](opts).catch(e => {
+            if (_handleInvalidatedContext(e)) return []
             console.warn("[AES change-log] adapter " + d + " threw", e)
             return []
         })))
@@ -581,6 +601,7 @@
                 raw:      r
             }))
         } catch (e) {
+            if (_handleInvalidatedContext(e)) return []
             console.warn("[AES change-log] loadActiveExperiments threw", e)
             return []
         }
@@ -619,9 +640,41 @@
                 raw:      p
             }]
         } catch (e) {
+            if (_handleInvalidatedContext(e)) return []
             console.warn("[AES change-log] loadPendingDispatches threw", e)
             return []
         }
+    }
+
+    /**
+     * Slice E2 — fence-post emit. Per-domain audit/apply stores call this
+     * after a successful append so subscribers (activity-strip, briefing
+     * tile) can refresh "since last visit" lines without polling. Cheap:
+     * the bus payload is a tiny hint; the unified read still goes through
+     * loadAll() lazily.
+     *
+     * Coalescing: callers passing a `count` > 1 stand for batch appends so
+     * the activity-strip can render "N pricing applies" instead of N events.
+     * Subscribers debounce on their side; this emitter does not.
+     */
+    function recordFencePost(domain, payload) {
+        if (!domain || typeof domain !== "string") return
+        if (DOMAINS.indexOf(domain) < 0) return
+        try {
+            if (typeof window === "undefined") return
+            const hint = {
+                domain:   domain,
+                count:    (payload && Number.isFinite(payload.count)) ? payload.count : 1,
+                latestAt: (payload && Number.isFinite(payload.latestAt)) ? payload.latestAt : Date.now(),
+                source:   payload && payload.source || null
+            }
+            if (window.CentralHubBus && typeof window.CentralHubBus.emit === "function") {
+                window.CentralHubBus.emit("data:audit:change:recorded", hint)
+            }
+            if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+                window.AesDataBus.emit("data:audit:change:recorded", hint)
+            }
+        } catch (_) { /* fence-posts must never break callers */ }
     }
 
     window.AesChangeLogAggregator = {
@@ -631,6 +684,7 @@
         loadByPair,
         loadActiveExperiments,
         loadPendingDispatches,
-        detectActiveRoute
+        detectActiveRoute,
+        recordFencePost
     }
 })()

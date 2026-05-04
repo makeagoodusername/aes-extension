@@ -227,6 +227,18 @@ window.AES_DATA_BUS_TOPICS = [
         notes:    "transition event — fires only when the cached entry.tier changes between two record() calls. Consumers: K11 tile, future K6 history strip"
     },
     {
+        topic:    "data:conductor:trust:decayed",
+        emittedBy: "modules/conductor/trust-driver.js  // _sweepDecay (6h sweep + baseline-tick subscriber)",
+        hint:     "{scenarioId, fromTier, toTier, halfLifeWeeks}",
+        notes:    "K11.1 — fires once per scenario whose tier moved due to evidence half-life decay (default 16w). Pure consequence of elapsed time, not a new outcome; K11 tile re-renders, drift ceiling clamps unchanged."
+    },
+    {
+        topic:    "data:audit:change:recorded",
+        emittedBy: "modules/_shared/change-log-aggregator.js  // recordFencePost",
+        hint:     "{domain, count, latestAt, source?}",
+        notes:    "Slice E2 fence-post — per-domain stores call recordFencePost() after a successful append. Coalesced batch counts in `count`. Activity strip + future audit-timeline tile subscribe to refresh without polling."
+    },
+    {
         topic:    "signal:conductor:drift",
         emittedBy: "modules/conductor/drift-driver.js",
         hint:     "{scenarioId, polarity, magnitude}",
@@ -243,6 +255,50 @@ window.AES_DATA_BUS_TOPICS = [
         emittedBy: "modules/conductor/threshold-store.js  // apply",
         hint:     "{scenarioId, key, before, after, source}",
         notes:    "fired after a user accepts a drift threshold proposal (live or dry-run); rationale strings on subsequent fires reference the overlay"
+    },
+
+    // -- conductor K9 (attention picker) --
+    {
+        topic:    "data:conductor:fireUx:saved",
+        emittedBy: "modules/conductor/attention.js  // applyFireUx",
+        hint:     "{server, airline, fireId, action: 'pin'|'unpin'|'snooze'|'unsnooze'}",
+        notes:    "K9 — fired after the user pins/snoozes a scenario fire; consumers re-render attention queue + risk-dashboard tile"
+    },
+
+    // -- conductor K4 (reservation locks) --
+    {
+        topic:    "data:conductor:lock:acquired",
+        emittedBy: "modules/conductor/lock-store.js  // acquire",
+        hint:     "{resourceType, resourceId, owner, ttlMs}",
+        notes:    "K4 — routine reserves a tail/route/account; conductor-tile shows 🔒 glyph; future K17 conflict resolver consumes"
+    },
+    {
+        topic:    "data:conductor:lock:released",
+        emittedBy: "modules/conductor/lock-store.js  // release|prune",
+        hint:     "{resourceType, resourceId, owner, reason: 'owner'|'ttl'|'manual'}",
+        notes:    "K4 — fires on explicit release and on TTL-expiry sweep"
+    },
+
+    // -- conductor K13 (baseline learning) --
+    {
+        topic:    "data:conductor:baseline:updated",
+        emittedBy: "modules/conductor/baseline-store.js  // update (debounced 5s)",
+        hint:     "{metric, scope, scopeId, n, mean}",
+        notes:    "K13 — coalesced one event per write batch; consumed by K15 forecast-store (opportunistic refresh) + future drift-detector recalibration"
+    },
+    {
+        topic:    "signal:conductor:baseline:tick",
+        emittedBy: "modules/conductor/baseline-driver.js  // chrome.alarms 24h",
+        hint:     "{at}",
+        notes:    "K13 — daily roll-up tick; consumed by K15 forecast-store.refresh"
+    },
+
+    // -- conductor K15 (short-horizon forecasts) --
+    {
+        topic:    "data:conductor:forecast:updated",
+        emittedBy: "modules/conductor/forecast-store.js  // refresh",
+        hint:     "{host, count}",
+        notes:    "K15 — fired after forecast-store.refresh() completes (count = forecasts persisted); consumed by conductor-tile + risk-dashboard"
     },
 
     // -- strategy slice 21 — scenario forks --

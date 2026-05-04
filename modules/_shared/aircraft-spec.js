@@ -28,7 +28,7 @@
  * Spec shape (matches `spec-resolver.js`'s output):
  *
  *   {typeId, typeName, seats, cargoCapacity, cruiseSpeedKmh, range,
- *    paxSatisfaction, source}
+ *    paxSatisfaction, orsAttraction, customerAttraction, source}
  *   source ∈ "current" | "cached" | "fetched"
  *
  * Graceful degradation: when `RouteAssistantTypeSpecsStore` or
@@ -125,6 +125,8 @@ class AesAircraftSpec {
             cruiseSpeedKmh:  record.speed          != null ? record.speed          : null,
             range:           record.range          != null ? record.range          : null,
             paxSatisfaction: record.paxSatisfaction != null ? record.paxSatisfaction : null,
+            orsAttraction:   record.orsAttraction   != null ? record.orsAttraction   : null,
+            customerAttraction: record.customerAttraction != null ? record.customerAttraction : null,
             source
         }
     }

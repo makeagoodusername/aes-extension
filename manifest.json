@@ -49,6 +49,7 @@
                 "css/skin/skin-ops.css"
             ],
             "js": [
+                "modules/_shared/storage-fallback.js",
                 "modules/site-skin/bootstrap.js"
             ],
             "matches": [
@@ -71,6 +72,8 @@
                 "modules/_shared/store-cache.js",
                 "modules/_shared/write-through.js",
                 "modules/_shared/settings-bridge.js",
+                "modules/_shared/legacy-settings-defaults.js",
+                "modules/_shared/legacy-settings-guard.js",
                 "modules/_shared/prefix-store.js",
                 "modules/_shared/fleet-roster.js",
                 "modules/_shared/aircraft-info-hub.js",
@@ -169,6 +172,7 @@
                 "modules/unified-settings/adapters/schedule-management.js",
                 "modules/unified-settings/adapters/competitor-intel.js",
                 "modules/unified-settings/adapters/per-cabin-pricing.js",
+                "modules/_shared/menu-route-and-open.js",
                 "modules/aes-menu.js",
                 "modules/command-bridge/menu-installer.js",
                 "modules/about-dialog.js",
