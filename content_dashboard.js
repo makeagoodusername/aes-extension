@@ -2,6 +2,7 @@
 //MAIN
 //Global vars
 var settings, airline, server, todayDate;
+var dashboardControlPanelExpanded = {};
 
 function saveDashboardArea(area, done) {
     return Promise.resolve(window.AesSettings.saveArea(area, settings[area]))
@@ -9,6 +10,25 @@ function saveDashboardArea(area, done) {
             if (typeof done === "function") done(result);
             return result;
         });
+}
+
+function dashboardControlPanelStateKey(title) {
+    let activeDashboard = $("#aes-select-dashboard-main").val() || "dashboard";
+    return activeDashboard + ":" + title;
+}
+
+function bindClosableDashboardPanel(stateKey, panelEl) {
+    if (dashboardControlPanelExpanded[stateKey] !== undefined) {
+        if (dashboardControlPanelExpanded[stateKey]) {
+            panelEl.show();
+        } else {
+            panelEl.hide();
+        }
+    }
+    return function() {
+        panelEl.toggle();
+        dashboardControlPanelExpanded[stateKey] = panelEl.is(":visible");
+    };
 }
 function initLegacyDashboard(ctx) {
     if (!document.querySelector("#enterprise-dashboard")) {
@@ -1019,11 +1039,9 @@ function displayRouteManagementFilters() {
     //Closable legend
     let link = $('<a style="cursor: pointer;"></a>').text('Filters');
     let legend = $('<legend></legend>').html(link);
-    link.click(function() {
-        divForAll.toggle();
-    });
 
     let divForAll = $('<div style="display: none;"></div>').append(divTable, saveBtn, saveSpan);
+    link.click(bindClosableDashboardPanel(dashboardControlPanelStateKey('Filters'), divForAll));
     let fieldset = $('<fieldset></fieldset>').append(legend, divForAll);
     let div = $('<div class="col-md-4"></div>').append(fieldset);
 
@@ -1083,9 +1101,7 @@ function displayRouteManagementCollumns() {
     //Closable legend
     let link = $('<a style="cursor: pointer;"></a>').text('Columns');
     let legend = $('<legend></legend>').html(link);
-    link.click(function() {
-        $('#aes-div-routeManagement-collumns').toggle();
-    });
+    link.click(bindClosableDashboardPanel(dashboardControlPanelStateKey('Columns'), divTable));
 
     let fieldset = $('<fieldset></fieldset>').append(legend, divTable);
     let div = $('<div class="col-md-4"></div>').append(fieldset);
@@ -2183,9 +2199,7 @@ function displayCompetitorMonitoringAirlinesTableCollumns() {
     //Closable legend
     let link = $('<a style="cursor: pointer;"></a>').text('Columns');
     let legend = $('<legend></legend>').html(link);
-    link.click(function() {
-        $('#aes-div-competitorMonitoring-collumns').toggle();
-    });
+    link.click(bindClosableDashboardPanel(dashboardControlPanelStateKey('Columns'), divTable));
     let fieldset = $('<fieldset></fieldset>').append(legend, divTable);
     let div = $('<div class="col-md-4"></div>').append(fieldset);
     return div;
@@ -3130,9 +3144,7 @@ function generateTable(tableOptionsRule) {
         //Closable legend
         let link = $('<a style="cursor: pointer;"></a>').text('Options');
         let legend = $('<legend></legend>').html(link);
-        link.click(function() {
-            div.toggle();
-        });
+        link.click(bindClosableDashboardPanel(dashboardControlPanelStateKey('Options'), div));
         let fieldset = $('<fieldset></fieldset>').append(legend, div);
         return fieldset;
 
@@ -3349,9 +3361,7 @@ function generateTable(tableOptionsRule) {
         //Closable legend
         let link = $('<a style="cursor: pointer;"></a>').text('Filter');
         let legend = $('<legend></legend>').html(link);
-        link.click(function() {
-            divTable.toggle();
-        });
+        link.click(bindClosableDashboardPanel(dashboardControlPanelStateKey('Filter'), divTable));
         let fieldset = $('<fieldset></fieldset>').append(legend, divTable);
         return fieldset;
         //Functions
@@ -3410,9 +3420,7 @@ function generateTable(tableOptionsRule) {
         //Closable legend
         let link = $('<a style="cursor: pointer;"></a>').text('Columns');
         let legend = $('<legend></legend>').html(link);
-        link.click(function() {
-            divTable.toggle();
-        });
+        link.click(bindClosableDashboardPanel(dashboardControlPanelStateKey('Columns'), divTable));
         let fieldset = $('<fieldset></fieldset>').append(legend, divTable);
         return fieldset;
     }
