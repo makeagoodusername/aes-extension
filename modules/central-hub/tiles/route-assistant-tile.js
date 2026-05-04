@@ -18,9 +18,28 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
         this.requiresAirline = false
     }
 
-    watchedStorageKeys() { return ["routeAssistant:topRoutes:"] }
+    watchedStorageKeys() {
+        return [
+            "settings",
+            "routeAssistant:topRoutes:",
+            "routeAssistant:ors:",
+            "routeAssistant:orsHealth",
+            "routeAssistant:markets:",
+            "routeAssistant:inventory:",
+            "routeAssistant:yieldHistory:",
+            "routeAssistant:override"
+        ]
+    }
 
-    openHref() { return "/app/com/scheduling" }
+    openHandler() {
+        return async () => {
+            const hubs = await this._loadHubs()
+            const target = this._firstSchedulingTarget(hubs)
+            window.location.href = target
+                ? "/app/com/scheduling/" + encodeURIComponent(target)
+                : "/app/com/scheduling"
+        }
+    }
 
     async _loadHubs() {
         const entries = await this._loadByPrefix("routeAssistant:topRoutes")
@@ -35,6 +54,23 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
         return out
     }
 
+    _firstSchedulingTarget(hubs) {
+        for (const hubInfo of hubs || []) {
+            const target = this._scheduleTargetForHub(hubInfo)
+            if (target && target.length === 6) return target
+        }
+        return null
+    }
+
+    _scheduleTargetForHub(hubInfo) {
+        const hub = String((hubInfo && hubInfo.hub) || "").toUpperCase()
+        if (!/^[A-Z]{3}$/.test(hub)) return null
+        const rows = (hubInfo && hubInfo.record && hubInfo.record.rows) || []
+        const firstRoute = rows.find(r => r && (r.destIata || r.dest))
+        const firstDest = firstRoute ? String(firstRoute.destIata || firstRoute.dest || "").toUpperCase() : ""
+        return hub + (/^[A-Z]{3}$/.test(firstDest) ? firstDest : "")
+    }
+
     async loadStatus() {
         const hubs = await this._loadHubs()
         if (!hubs.length) {
@@ -46,20 +82,29 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
         }
         const totalRows = hubs.reduce(
             (acc, h) => acc + ((h.record.rows && h.record.rows.length) || 0), 0)
+        const ors = await this._loadOrsCoverage(hubs)
         const newest = hubs[0].record.snapshotAt
             ? new Date(hubs[0].record.snapshotAt).toISOString().substring(0, 10)
             : ""
+        const orsTxt = ors && ors.totalRoutes
+            ? " · ORS " + ors.coveragePct + "% covered"
+                + (ors.breaker && ors.breaker.active ? " · cooldown" : "")
+            : ""
         return {
             badge: hubs.length + " HUBS",
-            badgeKind: window.CentralHubStatusBadges.KIND.OK,
+            badgeKind: (ors && ors.breaker && ors.breaker.active)
+                ? window.CentralHubStatusBadges.KIND.WARN
+                : window.CentralHubStatusBadges.KIND.OK,
             summary: totalRows + " scored routes across " + hubs.length + " hub"
-                + (hubs.length === 1 ? "" : "s") + (newest ? " · refreshed " + newest : "")
+                + (hubs.length === 1 ? "" : "s") + (newest ? " · refreshed " + newest : "") + orsTxt
         }
     }
 
     async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
-        host.textContent = ""
+        const renderSeq = (this._renderBodySeq || 0) + 1
+        this._renderBodySeq = renderSeq
+        const isCurrentRender = () => this._renderBodySeq === renderSeq && host === this.bodyEl
 
         // CH-5d-2: pin the filter on the instance so a storage refresh keeps it.
         if (focusFilter && focusFilter.type === "fired-alerts") {
@@ -67,16 +112,25 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
         }
 
         const hubs = await this._loadHubs()
+        if (!isCurrentRender()) return
         if (!hubs.length) {
-            this._renderEmptyState(host, "Visit a /app/com/scheduling/<HUB> page (e.g. ATL) to publish a topRoutes snapshot.")
+            const autoPricing = await this._renderAutoPricingPanel(ctx, T)
+            if (!isCurrentRender()) return
+            host.textContent = ""
+            if (autoPricing) host.appendChild(autoPricing)
+            this._renderEmptyState(host, "Visit a /app/com/scheduling/<HUB> page (e.g. ATL) to publish a topRoutes snapshot.", {marginTop: T.sp[2]})
             return
         }
 
         if (this._filter === "fired-alerts") {
             const firedKeys = await this._loadFiredAlertRoutes()
-            host.appendChild(this._renderFilterBanner(firedKeys.size, T))
+            if (!isCurrentRender()) return
+            const frag = document.createDocumentFragment()
+            frag.appendChild(this._renderFilterBanner(firedKeys.size, T))
             if (!firedKeys.size) {
-                this._renderEmptyState(host, "No alert rules fired in the last 24 h.", {marginTop: T.sp[2]})
+                this._renderEmptyState(frag, "No alert rules fired in the last 24 h.", {marginTop: T.sp[2]})
+                host.textContent = ""
+                host.appendChild(frag)
                 return
             }
             const filteredHubs = hubs
@@ -90,33 +144,504 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
                 .filter(h => h.record.rows && h.record.rows.length)
 
             if (!filteredHubs.length) {
-                this._renderEmptyState(host,
+                this._renderEmptyState(frag,
                     firedKeys.size + " fired route"
                         + (firedKeys.size === 1 ? "" : "s") + " — none in cached topRoutes snapshots.",
                     {marginTop: T.sp[2]})
+                host.textContent = ""
+                host.appendChild(frag)
                 return
             }
             const wrap = document.createElement("div")
             wrap.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[3] + ";"
             for (const h of filteredHubs) wrap.appendChild(this._renderHub(h, T))
-            host.appendChild(wrap)
+            frag.appendChild(wrap)
+            host.textContent = ""
+            host.appendChild(frag)
             return
         }
 
+        const frag = document.createDocumentFragment()
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[3] + ";"
+
+        const autoPricing = await this._renderAutoPricingPanel(ctx, T)
+        if (!isCurrentRender()) return
+        if (autoPricing) frag.appendChild(autoPricing)
+
+        const ors = await this._loadOrsCoverage(hubs)
+        if (!isCurrentRender()) return
+        if (ors && ors.totalRoutes) frag.appendChild(this._renderOrsHealth(ors, T))
 
         for (const h of hubs.slice(0, 3)) {
             wrap.appendChild(this._renderHub(h, T))
         }
-        host.appendChild(wrap)
+        frag.appendChild(wrap)
 
         if (hubs.length > 3) {
             const more = document.createElement("p")
             more.style.cssText = "margin:" + T.sp[2] + " 0 0 0;color:" + T.color.slate + ";font-style:italic;"
             more.textContent = "+ " + (hubs.length - 3) + " more hubs cached."
-            host.appendChild(more)
+            frag.appendChild(more)
         }
+        host.textContent = ""
+        host.appendChild(frag)
+    }
+
+    _autoPricingHost(ctx) {
+        return {
+            server:  ctx && ctx.server || "",
+            airline: ctx && ctx.airline || ""
+        }
+    }
+
+    _autoPricingFollowMode() {
+        return this._autoPricingFollow || null
+    }
+
+    async _autoPricingPreview(ctx) {
+        if (!window.AesRoutePriceAutomator
+                || typeof window.AesRoutePriceAutomator.preview !== "function") {
+            return null
+        }
+        const opts = {limit: 75}
+        if (this._autoPricingFollowMode()) opts.followMode = this._autoPricingFollowMode()
+        return await window.AesRoutePriceAutomator.preview(this._autoPricingHost(ctx), opts)
+    }
+
+    async _renderAutoPricingPanel(ctx, T) {
+        const box = document.createElement("div")
+        box.className = "aes-auto-pricing-panel"
+        box.style.cssText = [
+            "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+            "background:" + T.color.bone2,
+            "padding:" + T.sp[3],
+            "display:flex",
+            "flex-direction:column",
+            "gap:" + T.sp[2],
+            "font-family:" + T.font.display,
+            "color:" + T.color.oxide,
+            "min-width:0"
+        ].join(";")
+
+        const head = document.createElement("div")
+        head.style.cssText = [
+            "display:flex",
+            "align-items:flex-start",
+            "justify-content:space-between",
+            "gap:" + T.sp[2],
+            "flex-wrap:wrap"
+        ].join(";")
+        const title = document.createElement("div")
+        title.style.cssText = "font-weight:" + T.fw.display + ";text-transform:uppercase;letter-spacing:" + T.track.caps + ";"
+        title.textContent = "Auto pricing"
+        const actions = document.createElement("div")
+        actions.style.cssText = "display:flex;align-items:center;gap:" + T.sp[2] + ";flex-wrap:wrap;"
+        head.append(title, actions)
+        box.appendChild(head)
+
+        if (!window.AesRoutePriceAutomator) {
+            this._renderEmptyState(box, "Dashboard price automator is not loaded on this page.")
+            return box
+        }
+
+        let preview = null
+        try {
+            preview = await this._autoPricingPreview(ctx)
+        } catch (e) {
+            const err = document.createElement("p")
+            err.style.cssText = "margin:0;color:" + T.color.crimson + ";"
+            err.textContent = "Preview failed: " + (e && e.message || String(e))
+            box.appendChild(err)
+            return box
+        }
+        this._lastAutoPricingPreview = preview
+
+        const state = preview && preview.state || {}
+        const counts = preview && preview.counts || {}
+        const status = document.createElement("div")
+        status.style.cssText = [
+            "display:flex",
+            "gap:" + T.sp[1],
+            "flex-wrap:wrap",
+            "align-items:center",
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.micro,
+            "letter-spacing:" + T.track.mono
+        ].join(";")
+        status.append(
+            this._signalChip(state.liveWrites ? "live gate" : "dry-run gate", state.liveWrites ? "warn" : "ok", T),
+            this._signalChip((state.strategy || "per-class-elasticity"), "muted", T),
+            this._signalChip((state.followMode || "watchlist"), "muted", T),
+            this._signalChip((counts.proposed || 0) + " proposed", counts.proposed ? "ok" : "muted", T),
+            this._signalChip((counts.cooldownBlocked || 0) + " cooldown", counts.cooldownBlocked ? "warn" : "muted", T),
+            this._signalChip((counts.capBlocked || 0) + " capped", counts.capBlocked ? "warn" : "muted", T),
+            this._signalChip((counts.withOwnPricing || 0) + " priced", counts.withOwnPricing ? "ok" : "muted", T),
+            this._signalChip((counts.withOrs || 0) + " ORS", counts.withOrs ? "ok" : "muted", T),
+            this._signalChip((counts.withActiveFlights || 0) + " in-air", counts.withActiveFlights ? "warn" : "muted", T),
+            this._signalChip((counts.withYieldHistory || 0) + " history", counts.withYieldHistory ? "ok" : "muted", T)
+        )
+        box.appendChild(status)
+
+        const follow = document.createElement("select")
+        follow.style.cssText = [
+            "background:" + T.color.bone,
+            "color:" + T.color.oxide,
+            "border:" + T.geom.bw1 + " solid " + T.color.oxide,
+            "border-radius:" + T.geom.radius,
+            "padding:" + T.sp[1] + " " + T.sp[2],
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body
+        ].join(";")
+        for (const opt of [
+            {value: "", label: "Saved scope"},
+            {value: "watchlist", label: "Watchlist"},
+            {value: "all", label: "All cached"}
+        ]) {
+            const el = document.createElement("option")
+            el.value = opt.value
+            el.textContent = opt.label
+            if ((this._autoPricingFollow || "") === opt.value) el.selected = true
+            follow.appendChild(el)
+        }
+        follow.addEventListener("change", () => {
+            this._autoPricingFollow = follow.value || null
+            this._renderBodySafe()
+        })
+        actions.appendChild(follow)
+
+        const refreshBtn = this._autoPricingButton("Preview", T, false)
+        refreshBtn.addEventListener("click", () => this._renderBodySafe())
+        actions.appendChild(refreshBtn)
+
+        const dryRunBtn = this._autoPricingButton("Dry-run tick", T, true)
+        dryRunBtn.disabled = !!this._autoPricingBusy
+        dryRunBtn.addEventListener("click", () => this._runAutoPricingTick(ctx, {forceDryRun: true}))
+        actions.appendChild(dryRunBtn)
+
+        const gatedBtn = this._autoPricingButton(state.liveWrites ? "Run live gate" : "Run gate", T, false)
+        gatedBtn.disabled = !!this._autoPricingBusy
+        gatedBtn.addEventListener("click", () => {
+            if (state.liveWrites && !window.confirm("Run a live silent-auto pricing tick with the current write gate?")) return
+            this._runAutoPricingTick(ctx, {forceDryRun: false})
+        })
+        actions.appendChild(gatedBtn)
+
+        if (this._autoPricingBusy) {
+            const busy = document.createElement("p")
+            busy.className = "aes-auto-pricing-busy"
+            busy.style.cssText = "margin:0;color:" + T.color.slate + ";font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";"
+            busy.textContent = "pricing tick running..."
+            box.appendChild(busy)
+        }
+
+        if (this._lastAutoPricingTick) {
+            box.appendChild(this._renderAutoPricingTickResult(this._lastAutoPricingTick, T))
+        }
+
+        const rows = this._autoPricingDisplayRows(preview)
+        if (!rows.length) {
+            this._renderEmptyState(box, "No cached route pricing inputs available yet.")
+            return box
+        }
+        const list = document.createElement("div")
+        list.className = "aes-auto-pricing-list"
+        list.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[2] + ";"
+        for (const row of rows) list.appendChild(this._renderAutoPricingRow(row, T))
+        box.appendChild(list)
+        return box
+    }
+
+    _autoPricingDisplayRows(preview) {
+        const rows = ((preview && preview.rows) || []).slice()
+        const byPair = new Map()
+        const addRows = (candidates, limit) => {
+            for (const row of candidates) {
+                if (!row || !row.pair || byPair.has(row.pair)) continue
+                byPair.set(row.pair, row)
+                if (byPair.size >= limit) return
+            }
+        }
+        const alpha = (a, b) => String(a.pair || "").localeCompare(String(b.pair || ""))
+        const proposed = rows.filter(r => r.stage === "proposed").sort(alpha)
+        const cooldown = rows.filter(r => r.stage === "cooldown").sort(alpha)
+        const cap = rows.filter(r => r.stage === "cap").sort(alpha)
+        const active = rows.filter(r =>
+            r.stage !== "proposed"
+                && r.stage !== "cooldown"
+                && r.stage !== "cap"
+                && r.activeFlightControls
+                && Number(r.activeFlightControls.inflight) > 0).sort(alpha)
+        const rich = rows.filter(r =>
+            r.stage !== "proposed"
+                && r.stage !== "cooldown"
+                && r.stage !== "cap"
+                && !(r.activeFlightControls && Number(r.activeFlightControls.inflight) > 0)
+                && r.pricingSignals
+                && (r.pricingSignals.demand || r.pricingSignals.competition
+                    || r.pricingSignals.ors || r.pricingSignals.history)).sort(alpha)
+        const other = rows.filter(r => r.stage !== "proposed" && r.stage !== "cooldown" && r.stage !== "cap").sort(alpha)
+        addRows(proposed, 4)
+        addRows(active, 6)
+        addRows(cooldown, 6)
+        addRows(cap, 6)
+        addRows(proposed, 6)
+        addRows(rich, 6)
+        addRows(other, 6)
+        return Array.from(byPair.values()).slice(0, 6)
+    }
+
+    async _runAutoPricingTick(ctx, opts) {
+        if (!window.AesRoutePriceAutomator
+                || typeof window.AesRoutePriceAutomator.runTick !== "function") return
+        if (this._autoPricingBusy) return
+        this._autoPricingBusy = true
+        await this._renderBodySafe()
+        try {
+            const runOpts = {
+                force: true,
+                maxRoutes: 5,
+                limit: 75
+            }
+            if (this._autoPricingFollowMode()) runOpts.followMode = this._autoPricingFollowMode()
+            if (opts && opts.forceDryRun) runOpts.forceDryRun = true
+            this._lastAutoPricingTick = await window.AesRoutePriceAutomator.runTick(this._autoPricingHost(ctx), runOpts)
+        } catch (e) {
+            this._lastAutoPricingTick = {
+                ranAt: Date.now(),
+                dryRun: !!(opts && opts.forceDryRun),
+                applied: 0,
+                proposed: 0,
+                blocked: 0,
+                perRoute: [],
+                error: {code: "uiTickThrew", message: String(e && e.message || e)}
+            }
+        } finally {
+            this._autoPricingBusy = false
+            this._patchAutoPricingTickResultInline()
+            this.refresh()
+        }
+    }
+
+    _patchAutoPricingTickResultInline() {
+        if (!this.bodyEl || !this._lastAutoPricingTick) return
+        const T = window.AESTokens
+        const panel = this.bodyEl.querySelector(".aes-auto-pricing-panel")
+        if (!panel) return
+        const busy = panel.querySelector(".aes-auto-pricing-busy")
+        if (busy) busy.remove()
+        const existing = panel.querySelector(".aes-auto-pricing-tick-result")
+        if (existing) existing.remove()
+        const resultEl = this._renderAutoPricingTickResult(this._lastAutoPricingTick, T)
+        const list = panel.querySelector(".aes-auto-pricing-list")
+        if (list) panel.insertBefore(resultEl, list)
+        else panel.appendChild(resultEl)
+    }
+
+    _renderAutoPricingTickResult(result, T) {
+        const wrap = document.createElement("div")
+        wrap.className = "aes-auto-pricing-tick-result"
+        const tone = result && result.error ? T.color.amber : T.color.moss
+        wrap.style.cssText = [
+            "border:" + T.geom.bw1 + " solid " + tone,
+            "background:" + (result && result.error ? T.color.amberSoft : T.color.bone),
+            "padding:" + T.sp[2],
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.micro,
+            "letter-spacing:" + T.track.mono,
+            "color:" + T.color.oxide
+        ].join(";")
+        const bits = [
+            result && result.dryRun ? "dry-run" : "gate",
+            "eligible " + ((result && result.eligible) || 0),
+            "proposed " + ((result && result.proposed) || 0),
+            (result && result.dryRun ? "simulated " : "applied ")
+                + ((result && result.dryRun && result.simulated != null)
+                    ? result.simulated
+                    : ((result && result.applied) || 0)),
+            "blocked " + ((result && result.blocked) || 0)
+        ]
+        if (result && result.error) bits.push(result.error.code + ": " + result.error.message)
+        wrap.textContent = bits.join(" · ")
+        return wrap
+    }
+
+    _renderAutoPricingRow(row, T) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = [
+            "border:" + T.geom.bw1 + " solid " + (row.stage === "proposed" ? T.color.moss : T.color.paperRule),
+            "background:" + T.color.bone,
+            "padding:" + T.sp[2],
+            "display:flex",
+            "flex-direction:column",
+            "gap:" + T.sp[1],
+            "min-width:0"
+        ].join(";")
+        const top = document.createElement("div")
+        top.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:" + T.sp[2] + ";flex-wrap:wrap;"
+        const name = document.createElement("div")
+        name.style.cssText = "font-weight:" + T.fw.display + ";font-family:" + T.font.mono + ";letter-spacing:" + T.track.mono + ";"
+        name.textContent = row.pair || ((row.hub || "") + "-" + (row.dest || ""))
+        const stageLabel = row.stage === "proposed" ? "proposal"
+            : row.stage === "cooldown" ? "cooldown"
+            : row.stage === "cap" ? "cap"
+            : "skip"
+        const stageTone = row.stage === "proposed" ? "ok"
+            : row.stage === "cooldown" ? "warn"
+            : row.stage === "cap" ? "warn"
+            : "muted"
+        const stage = this._signalChip(stageLabel, stageTone, T)
+        top.append(name, stage)
+        wrap.appendChild(top)
+
+        const summary = document.createElement("div")
+        summary.style.cssText = "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";letter-spacing:" + T.track.mono + ";color:" + T.color.oxide2 + ";"
+        summary.textContent = this._autoPricingPriceSummary(row)
+        wrap.appendChild(summary)
+
+        const chips = document.createElement("div")
+        chips.style.cssText = "display:flex;gap:" + T.sp[1] + ";flex-wrap:wrap;"
+        const labels = row.pricingSignals && row.pricingSignals.labels || []
+        for (const label of labels) chips.appendChild(this._signalChip(label, "muted", T))
+        if (row.activeFlightControls && row.activeFlightControls.inflight) {
+            const cm5 = row.activeFlightControls.avgCm5
+            chips.appendChild(this._signalChip(
+                "in-air " + row.activeFlightControls.inflight + (cm5 != null ? " CM5 " + Math.round(cm5) : ""),
+                cm5 != null && cm5 < 0 ? "warn" : "ok",
+                T
+            ))
+            if (row.activeFlightControls.sourcePairs && row.activeFlightControls.sourcePairs.length) {
+                chips.appendChild(this._signalChip(row.activeFlightControls.sourcePairs[0], "muted", T))
+            }
+        }
+        const cv = row.controlVariables || {}
+        if (cv.classScore != null) chips.appendChild(this._signalChip("demand " + cv.classScore, "muted", T))
+        if (cv.rankAny != null) chips.appendChild(this._signalChip("ORS #" + Math.round(cv.rankAny), cv.orsWeak ? "warn" : "ok", T))
+        if (cv.historyLatestProfitPerFlight != null) {
+            chips.appendChild(this._signalChip("yield " + Math.round(cv.historyLatestProfitPerFlight), cv.historyWeak ? "warn" : "ok", T))
+        }
+        wrap.appendChild(chips)
+
+        const reason = document.createElement("div")
+        reason.style.cssText = "font-size:" + T.fs.body + ";color:" + T.color.slate + ";"
+        reason.textContent = row.reason || ""
+        wrap.appendChild(reason)
+        return wrap
+    }
+
+    _autoPricingPriceSummary(row) {
+        const prev = row && row.prices || {}
+        const next = row && row.proposal && row.proposal.prices || {}
+        const parts = []
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
+            const p = prev[cls]
+            const n = next[cls]
+            if (p == null && n == null) continue
+            parts.push(cls + " " + this._formatClassPrice(cls, p)
+                + (n != null ? "→" + this._formatClassPrice(cls, n) : ""))
+        }
+        return parts.length ? parts.join(" · ") : "no cached prices"
+    }
+
+    _formatClassPrice(cls, value) {
+        const n = Number(value)
+        if (!isFinite(n)) return "—"
+        if (cls === "Cargo" && Math.abs(n) < 10) {
+            return (Math.round(n * 100) / 100).toFixed(2).replace(/\.?0+$/, "")
+        }
+        return String(Math.round(n))
+    }
+
+    _signalChip(label, tone, T) {
+        const chip = document.createElement("span")
+        const color = tone === "ok" ? T.color.moss
+            : tone === "warn" ? T.color.amber
+            : T.color.slate
+        chip.textContent = label
+        chip.style.cssText = [
+            "display:inline-flex",
+            "align-items:center",
+            "border:" + T.geom.bw1 + " solid " + color,
+            "color:" + color,
+            "background:" + T.color.bone,
+            "padding:1px " + T.sp[1],
+            "border-radius:" + T.geom.radius,
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.micro,
+            "letter-spacing:" + T.track.mono,
+            "white-space:nowrap"
+        ].join(";")
+        return chip
+    }
+
+    _autoPricingButton(label, T, primary) {
+        const btn = document.createElement("button")
+        btn.type = "button"
+        btn.textContent = label
+        btn.style.cssText = [
+            "background:" + (primary ? T.color.oxide : "transparent"),
+            "color:" + (primary ? T.color.bone : T.color.oxide),
+            "border:" + T.geom.bw1 + " solid " + T.color.oxide,
+            "border-radius:" + T.geom.radius,
+            "padding:" + T.sp[1] + " " + T.sp[3],
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body,
+            "font-weight:" + T.fw.display,
+            "text-transform:uppercase",
+            "letter-spacing:" + T.track.caps,
+            "cursor:pointer"
+        ].join(";")
+        return btn
+    }
+
+    _collectRoutes(hubs) {
+        const out = []
+        for (const h of hubs || []) {
+            const hub = h && h.hub
+            for (const row of (h && h.record && h.record.rows) || []) {
+                const dest = row && (row.destIata || row.dest)
+                if (!hub || !dest) continue
+                out.push(Object.assign({}, row, {hub, dest}))
+            }
+        }
+        return out
+    }
+
+    async _loadOrsCoverage(hubs) {
+        if (typeof window.RouteAssistantOrsIntelligence === "undefined") return null
+        try {
+            const routes = this._collectRoutes(hubs)
+            if (!routes.length) return null
+            let settings = null
+            try {
+                const got = await chrome.storage.local.get(["settings"])
+                settings = got && got.settings && got.settings.routeAssistant || null
+            } catch (_) { settings = null }
+            const svc = new window.RouteAssistantOrsIntelligence(this.ctx && this.ctx.server)
+            return await svc.getCoverage(routes, {writeHealth: false, settings})
+        } catch (e) {
+            return null
+        }
+    }
+
+    _renderOrsHealth(ors, T) {
+        const box = document.createElement("div")
+        const activeBreaker = ors.breaker && ors.breaker.active
+        box.style.cssText = "border:" + T.geom.bw1 + " solid "
+            + (activeBreaker ? T.color.amber : T.color.paperRule)
+            + ";background:" + (activeBreaker ? T.color.amberSoft : T.color.bone2)
+            + ";padding:" + T.sp[2] + " " + T.sp[3] + ";font-family:" + T.font.display
+            + ";font-size:" + T.fs.body + ";color:" + T.color.oxide + ";"
+        const missing = (ors.missingRoutes && ors.missingRoutes.length) || 0
+        const stale = (ors.staleRoutes && ors.staleRoutes.length) || 0
+        const warnings = (ors.warningRoutes && ors.warningRoutes.length) || 0
+        box.textContent = "ORS readiness: " + ors.coveragePct + "% covered"
+            + " · " + stale + " stale"
+            + " · " + missing + " missing"
+            + (warnings ? " · " + warnings + " warnings" : "")
+            + (activeBreaker ? " · cooldown " + Math.ceil(ors.breaker.remainingMs / 60000) + "m" : "")
+            + " · " + (ors.nextAction || "healthy")
+        return box
     }
 
     /**
@@ -197,7 +722,8 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
             + ";text-transform:uppercase;color:" + T.color.oxide + ";"
         hubName.textContent = hubInfo.hub
         const link = document.createElement("a")
-        link.href = "/app/com/scheduling/" + encodeURIComponent(hubInfo.hub) + encodeURIComponent(hubInfo.hub)
+        const scheduleTarget = this._scheduleTargetForHub(hubInfo) || hubInfo.hub
+        link.href = "/app/com/scheduling/" + encodeURIComponent(scheduleTarget)
         link.textContent = "Open scheduling →"
         link.style.cssText = "color:" + T.color.rust + ";font-size:" + T.fs.body + ";text-decoration:none;"
         heading.append(hubName, link)

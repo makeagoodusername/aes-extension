@@ -17,7 +17,7 @@ class CentralHubScheduleManagementTile extends window.CentralHubTile {
     constructor() {
         super()
         this.id = "schedule-management"
-        this.title = "Schedule Mgmt"
+        this.title = "Schedule Builder"
         this.section = "routes"
         this.priority = 20
         this.requiresAirline = false
@@ -25,11 +25,22 @@ class CentralHubScheduleManagementTile extends window.CentralHubTile {
 
     watchedStorageKeys(ctx) {
         const server = (ctx && ctx.server) || ""
+        const airline = this._airlineKey(ctx)
         // F-9230-003: dropped the bare "settings" prefix — that key holds every
         // module's settings slice, so watching it caused refreshes from
         // unrelated module writes. mount() attaches a slice-aware listener
         // that fires only on settings.scheduleManagement changes.
-        return [server + (ctx && ctx.airline || "") + "scheduleManagement:"]
+        return [server + airline + "scheduleManagement:"]
+    }
+
+    _airlineKey(ctx) {
+        try {
+            if (typeof AES !== "undefined" && typeof AES.getAirlineIdentity === "function") {
+                const identity = AES.getAirlineIdentity()
+                if (identity) return identity
+            }
+        } catch (_) { /* fall through */ }
+        return (ctx && ctx.airline) || ""
     }
 
     async mount(container, ctx, opts) {
@@ -77,7 +88,7 @@ class CentralHubScheduleManagementTile extends window.CentralHubTile {
 
     async _loadRecentSchedules() {
         const server = (this.ctx && this.ctx.server) || ""
-        const airline = (this.ctx && this.ctx.airline) || ""
+        const airline = this._airlineKey(this.ctx)
         if (!server) return []
         const indexKey = server + airline + "scheduleManagement:index"
         const blob = await chrome.storage.local.get([indexKey])
@@ -102,7 +113,7 @@ class CentralHubScheduleManagementTile extends window.CentralHubTile {
             return {
                 badge: "—",
                 badgeKind: window.CentralHubStatusBadges.KIND.MUTED,
-                summary: "No presets or generated schedules."
+                summary: "No builder presets or generated mock schedules."
             }
         }
         return {

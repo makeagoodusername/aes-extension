@@ -28,10 +28,44 @@ class CentralHubFleetCommandTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys() {
+        // Single-key prefixes (matched via `key.indexOf(p) === 0` by the
+        // base class) — these all start at offset 0 in the actual key, so
+        // they fire correctly. The fleet record key shape is
+        // `<server><airlineCode>aircraftFleet` which CANNOT be matched by
+        // an "aircraftFleet" prefix; that case is handled below in the
+        // mount() override via a suffix-matching listener.
         return [
             "aesAccounts", "aesCanopy:orgs", "aesCanopy:regions",
-            "aircraftFleet", "aircraftFlightPlan:state", "aircraftFlightPlan:maintenance"
+            "aircraftFlightPlan:state", "aircraftFlightPlan:maintenance"
         ]
+    }
+
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        // Cross-account fleet refresh: keys are `<server><airlineCode>aircraftFleet`
+        // — no shared prefix that the base class's prefix-matched listener
+        // can hit. Add a dedicated suffix-matching listener so every fleet
+        // scrape across any airline triggers a re-aggregate.
+        this._fleetSuffixListener = (changes, area) => {
+            if (area !== "local") return
+            for (const k in changes) {
+                if (k.length > "aircraftFleet".length
+                    && k.lastIndexOf("aircraftFleet") === k.length - "aircraftFleet".length) {
+                    this.refresh(); return
+                }
+            }
+        }
+        try { chrome.storage.onChanged.addListener(this._fleetSuffixListener) }
+        catch (_) { /* tile still works without it */ }
+    }
+
+    dispose() {
+        if (this._fleetSuffixListener) {
+            try { chrome.storage.onChanged.removeListener(this._fleetSuffixListener) }
+            catch (_) { /* noop */ }
+            this._fleetSuffixListener = null
+        }
+        super.dispose()
     }
 
     openHref() { return "/app/fleets" }
@@ -66,8 +100,14 @@ class CentralHubFleetCommandTile extends window.CentralHubTile {
 
     async renderBody(ctx, host) {
         const T = window.AESTokens
+        // Re-entrancy guard — concurrent renders from the shell's
+        // open-tile flow + bus-driven refreshes would otherwise both
+        // clear, both await `_resolveView`, then both append the full
+        // headline + pivot bars + footer, duplicating the body.
+        const gen = (this._renderGen = (this._renderGen || 0) + 1)
         host.textContent = ""
         const view = this._lastView || await this._resolveView()
+        if (gen !== this._renderGen) return
         if (!view || !view.tails.length) {
             const empty = document.createElement("p")
             empty.style.cssText = "color:" + T.color.slate + ";margin:0;"
@@ -135,8 +175,11 @@ class CentralHubFleetCommandTile extends window.CentralHubTile {
                 + "background:" + (active ? "rgba(59,130,246,0.12)" : "transparent") + ";"
                 + "color:" + (active ? "#cbd5e1" : T.color.slate) + ";"
             btn.addEventListener("click", () => {
+                // F-9228-705: pass the live ctx instead of an empty object so
+                // future ctx-aware logic in renderBody reads the right account
+                // context. Aligns with the base-class re-render path.
                 this._pivot = key
-                this.renderBody({}, host)
+                this.renderBody(this.ctx || {}, host)
             })
             wrap.appendChild(btn)
         }

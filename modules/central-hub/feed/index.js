@@ -23,17 +23,25 @@
     if (window.__aesHubFeedBooted) return
     window.__aesHubFeedBooted = true
 
-    // accounting → cash feed. Accounting writes are server+airline-prefixed
-    // (e.g. "ZB:1234:accounting:index"), so a startsWith bridge would miss
-    // them — we wire a substring matcher directly here. The slice's compute
-    // reads only the keys for the current airline ctx.
+    // accounting → cash feed AND market-scan → scanner feed. Both prefixes
+    // carry server inline (e.g. "ZB:1234:accounting:index", "FREE1marketScan:abc")
+    // so a startsWith bridge would miss them — we wire substring matchers
+    // directly here. Each emit is deduped per onChanged batch.
     try {
         chrome.storage.onChanged.addListener((changes, area) => {
             if (area !== "local") return
+            let firedAccounting = false
+            let firedScanner    = false
             for (const key in changes) {
-                if (key.indexOf("accounting:") < 0) continue
-                AesDataBus.emit("data:accounting:weekly:saved", {key: key})
-                return  // dedupe — one emit per onChanged batch
+                if (!firedAccounting && key.indexOf("accounting:") >= 0) {
+                    AesDataBus.emit("data:accounting:weekly:saved", {key: key})
+                    firedAccounting = true
+                }
+                if (!firedScanner && key.indexOf("marketScan:") >= 0) {
+                    AesDataBus.emit("data:scanner:scan:saved", {key: key})
+                    firedScanner = true
+                }
+                if (firedAccounting && firedScanner) break
             }
         })
     } catch (_) { /* chrome.storage unavailable — bus stays in-tab only */ }

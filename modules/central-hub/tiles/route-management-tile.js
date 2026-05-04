@@ -14,7 +14,7 @@ class CentralHubRouteManagementTile extends window.CentralHubTile {
     constructor() {
         super()
         this.id = "route-management"
-        this.title = "Route Mgmt"
+        this.title = "Current Routes"
         this.section = "routes"
         this.priority = 50
         this.requiresAirline = false
@@ -30,16 +30,35 @@ class CentralHubRouteManagementTile extends window.CentralHubTile {
         // refresh, so the tile never falls behind.
         const server = (ctx && ctx.server) || ""
         const airline = (ctx && ctx.airline) || ""
-        if (server && airline) return [server + airline + "schedule"]
-        return []
+        const keys = []
+        if (server && airline) keys.unshift(server + airline + "schedule")
+        return keys
     }
 
     openHandler() {
-        return () => {
+        return async () => {
+            let sched = null
+            try { sched = await this._loadSchedule() }
+            catch (_) { sched = null }
+            if (!sched || !sched.flights || !sched.flights.length) {
+                window.location.href = this._scheduleHref()
+                return
+            }
             if (window.CentralHubLegacy && typeof window.CentralHubLegacy.switchDropdownTo === "function") {
                 window.CentralHubLegacy.switchDropdownTo("routeManagement")
             }
         }
+    }
+
+    _scheduleHref() {
+        const links = Array.from(document.querySelectorAll("#enterprise-dashboard a[href]"))
+        const link = links.find(a => {
+            const href = a && a.href || ""
+            return href.indexOf("/app/info/enterprises/") !== -1
+                && /[?&]tab=3(?:&|$)/.test(href)
+        })
+        if (link && link.href) return link.href
+        return "/app/info/enterprises/me?tab=3"
     }
 
     /**
@@ -108,7 +127,7 @@ class CentralHubRouteManagementTile extends window.CentralHubTile {
             return {
                 badge: "—",
                 badgeKind: window.CentralHubStatusBadges.KIND.MUTED,
-                summary: "No schedule extracted. Visit /app/info/enterprises/<id>?tab=3."
+                summary: "No current schedule extracted. Open Flight schedule and run Extract."
             }
         }
         const flights = sched.flights.length
@@ -132,13 +151,15 @@ class CentralHubRouteManagementTile extends window.CentralHubTile {
         const T = window.AESTokens
         host.textContent = ""
         const sched = await this._loadSchedule()
+
         if (!sched || !sched.flights.length) {
             const empty = document.createElement("p")
             empty.style.cssText = "color:" + T.color.slate + ";margin:0;"
-            empty.textContent = "No flights stored. Run Extract from the enterprise schedule tab."
+            empty.textContent = "No current schedule stored. Run Extract from the enterprise Flight schedule tab."
             host.appendChild(empty)
             return
         }
+
         const byPair = new Map()
         for (const f of sched.flights) {
             if (!f || !f.origin || !f.destination) continue

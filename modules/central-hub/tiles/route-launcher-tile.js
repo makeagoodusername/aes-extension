@@ -64,9 +64,12 @@ class CentralHubRouteLauncherTile extends window.CentralHubTile {
             summaryBits.push("last: " + last.status + (last.dest ? " " + last.dest : ""))
         }
         const badgeText = a && a.aircraftId ? (a.registration || a.aircraftId) : "IDLE"
+        // F-9228-702: K.GOOD doesn't exist on CentralHubStatusBadges.KIND —
+        // the OK colour is K.OK. Without this fix every successful launch
+        // fell through to K.INFO/cobalt instead of K.OK/moss.
         const badgeKind = !a ? K.MUTED
                        : last && last.status === "failed" ? K.WARN
-                       : last && last.status === "created" ? K.GOOD || K.INFO
+                       : last && last.status === "created" ? (K.OK || K.INFO)
                        : K.INFO
         return {badge: String(badgeText), badgeKind, summary: summaryBits.join(" · ")}
     }
@@ -307,7 +310,10 @@ class CentralHubRouteLauncherTile extends window.CentralHubTile {
     _attachListeners() {
         if (this._unsubStatus) { this._unsubStatus(); this._unsubStatus = null }
         if (this._unsubActive) { this._unsubActive(); this._unsubActive = null }
-        this._unsubStatus = window.RouteLauncher.onStatus(() => this._renderFeed())
+        this._unsubStatus = window.RouteLauncher.onStatus(async () => {
+            await this._renderFeed()
+            await this._refreshHeaderOnly()
+        })
         this._unsubActive = window.RouteLauncher.onActiveChange(async () => {
             if (this._picker) this._picker.setActive(window.RouteLauncher.getActive() && window.RouteLauncher.getActive().aircraftId)
             // The pending storage echo from _persistActive will trigger an
@@ -317,6 +323,16 @@ class CentralHubRouteLauncherTile extends window.CentralHubTile {
             this._suppressNextStorageRefresh = true
             await super.refresh()
         })
+    }
+
+    async _refreshHeaderOnly() {
+        try {
+            const status = await this.loadStatus(this.ctx)
+            this._renderHeader(status)
+            this._lastStatus = status
+        } catch (e) {
+            console.warn("[RouteLauncher] header refresh failed", e)
+        }
     }
 
     dispose() {

@@ -72,17 +72,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
     }
 
     openHandler() {
-        return () => {
-            try {
-                if (window.AesStrategyPanel && typeof window.AesStrategyPanel.open === "function") {
-                    window.AesStrategyPanel.open()
-                } else {
-                    console.warn("[AES strategy tile] AesStrategyPanel not loaded")
-                }
-            } catch (e) {
-                console.warn("[AES strategy tile] open threw", e)
-            }
-        }
+        return () => this._openStrategyPanel()
     }
 
     /**
@@ -188,6 +178,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         const applied = await this._loadApplied()
 
         host.appendChild(this._buildOpenCta(T))
+        host.appendChild(this._buildStrategyMenuCard(T))
         host.appendChild(this._buildSettingsStrip(T, settings, tier))
         const autoCard = await this._buildAutoApplyDiagnosticCard(T, settings, tier)
         if (autoCard) host.appendChild(autoCard)
@@ -301,9 +292,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
                 + "font:600 11px " + T.font.display + ";letter-spacing:" + T.track.caps
                 + ";text-transform:uppercase;cursor:pointer;"
             cta.addEventListener("click", () => {
-                if (window.AesStrategyPanel && typeof window.AesStrategyPanel.open === "function") {
-                    window.AesStrategyPanel.open({plan: plan, snapshot: snap, diff: diff})
-                }
+                this._openStrategyPanel({plan: plan, snapshot: snap, diff: diff})
             })
             body.appendChild(cta)
         } catch (e) {
@@ -315,11 +304,167 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         }
     }
 
+    _buildStrategyMenuCard(T) {
+        const wrap = document.createElement("div")
+        wrap.className = "aes-strategy-menu-card"
+        wrap.dataset.aesStrategyMenu = "connected"
+        wrap.style.cssText = "border:" + T.geom.bw1 + " solid " + T.color.paperRule
+            + ";padding:" + T.sp[2] + " " + T.sp[3] + ";margin-bottom:" + T.sp[3]
+            + ";background:" + T.color.bone2 + ";"
+
+        const head = document.createElement("div")
+        head.style.cssText = "display:flex;justify-content:space-between;align-items:center;gap:"
+            + T.sp[2] + ";margin-bottom:" + T.sp[2] + ";"
+        const title = document.createElement("strong")
+        title.textContent = "Strategy menus"
+        title.style.cssText = "color:" + T.color.oxide + ";font-family:" + T.font.display
+            + ";text-transform:uppercase;letter-spacing:" + T.track.caps
+            + ";font-size:" + T.fs.body + ";"
+        const status = document.createElement("span")
+        status.dataset.aesStrategyMenuStatus = "1"
+        status.style.cssText = "color:" + T.color.slate + ";font-size:" + T.fs.body
+            + ";font-style:italic;text-align:right;"
+        status.textContent = "Preview, evidence, experiments, and diagnostics"
+        head.append(title, status)
+        wrap.appendChild(head)
+
+        const grid = document.createElement("div")
+        grid.style.cssText = [
+            "display:grid",
+            "grid-template-columns:repeat(auto-fit,minmax(160px,1fr))",
+            "gap:" + T.sp[2],
+            "align-items:stretch"
+        ].join(";")
+        const menuBtn = (target, label, detail, handler) => {
+            const btn = document.createElement("button")
+            btn.type = "button"
+            btn.dataset.aesStrategyMenuTarget = target
+            btn.style.cssText = [
+                "display:flex","flex-direction:column","align-items:flex-start","justify-content:flex-start",
+                "gap:2px","min-height:58px","text-align:left",
+                "background:" + T.color.bone,
+                "color:" + T.color.oxide,
+                "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+                "border-radius:" + T.geom.radius,
+                "padding:" + T.sp[2],
+                "font-family:" + T.font.display,
+                "cursor:pointer"
+            ].join(";")
+            const main = document.createElement("span")
+            main.textContent = label
+            main.style.cssText = "font-weight:" + T.fw.display + ";letter-spacing:" + T.track.caps
+                + ";text-transform:uppercase;font-size:11px;"
+            const sub = document.createElement("span")
+            sub.textContent = detail
+            sub.style.cssText = "color:" + T.color.slate + ";font-size:" + T.fs.body
+                + ";line-height:1.25;letter-spacing:0;text-transform:none;"
+            btn.append(main, sub)
+            btn.addEventListener("click", () => {
+                status.textContent = label
+                handler()
+            })
+            return btn
+        }
+
+        grid.appendChild(menuBtn("preview", "Preview/apply", "Modal with sections and decision filters",
+            () => this._openStrategyPanel({section: "decisions"})))
+        grid.appendChild(menuBtn("briefing", "Executive briefing", "Applied, drift, opportunities, risk",
+            () => this._activateStrategyTile("strategy-briefing", {open: true})))
+        grid.appendChild(menuBtn("hub-designer", "Hub designer", "Network candidates and hub risk",
+            () => this._activateStrategyTile("strategy-hub-designer", {open: true})))
+        grid.appendChild(menuBtn("portfolio", "Portfolio", "Multi-world capital and fleet allocation",
+            () => this._activateStrategyTile("strategy-portfolio", {expand: true})))
+        grid.appendChild(menuBtn("slot-trading", "Slot trading", "Airport slot opportunities and bid queue",
+            () => this._openSlotTrading()))
+        grid.appendChild(menuBtn("backtest", "Backtest", "Replay strategy against accounting history",
+            () => this._activateStrategyTile("strategy-backtest", {expand: true})))
+        grid.appendChild(menuBtn("layered", "Layered overrides", "Family, account, fleet, and route policy",
+            () => this._openLayeredOverrides()))
+        grid.appendChild(menuBtn("weekly-review", "Weekly review", "Post-apply review and outcome loop",
+            () => this._activateStrategyTile("weekly-review", {expand: true})))
+        grid.appendChild(menuBtn("diagnostics", "Diagnostics", "Data readiness, funnels, and blockers",
+            () => this._activateStrategyTile("diagnostics", {expand: true})))
+        wrap.appendChild(grid)
+        return wrap
+    }
+
+    _openStrategyPanel(opts) {
+        try {
+            if (window.AesStrategyPanel && typeof window.AesStrategyPanel.open === "function") {
+                const ret = window.AesStrategyPanel.open(opts || {})
+                if (ret && typeof ret.catch === "function") {
+                    ret.catch(e => console.warn("[AES strategy tile] strategy panel open failed", e))
+                }
+            } else {
+                console.warn("[AES strategy tile] AesStrategyPanel not loaded")
+            }
+        } catch (e) {
+            console.warn("[AES strategy tile] strategy panel open threw", e)
+        }
+    }
+
+    _openLayeredOverrides() {
+        try {
+            if (window.AesStrategyLayeredPanel && typeof window.AesStrategyLayeredPanel.open === "function") {
+                window.AesStrategyLayeredPanel.open({scope: "family"})
+                return
+            }
+        } catch (e) {
+            console.warn("[AES strategy tile] layered panel open threw", e)
+        }
+        this._openStrategyPanel({section: "settings"})
+    }
+
+    _openSlotTrading() {
+        this._activateStrategyTile("strategy-slot-trading", {expand: true})
+        this._openStrategyPanel({section: "decisions", domain: "slotBid", skipSeed: true})
+    }
+
+    _activateStrategyTile(tileId, opts) {
+        opts = opts || {}
+        const payload = {
+            tileId: tileId,
+            expand: opts.expand !== false,
+            scrollIntoView: true,
+            source: "strategy-menu"
+        }
+        try {
+            if (window.CentralHubBus && typeof window.CentralHubBus.emit === "function") {
+                window.CentralHubBus.emit("open-tile", payload)
+            }
+        } catch (e) {
+            console.warn("[AES strategy tile] open-tile emit failed", e)
+        }
+
+        const shell = window.__aesCentralHub
+        const tile = shell && shell.tilesById && typeof shell.tilesById.get === "function"
+            ? shell.tilesById.get(tileId)
+            : null
+        if (!tile) return
+        if (!window.CentralHubBus && payload.expand && !tile.expanded && typeof tile.toggle === "function") {
+            try { tile.toggle() } catch (_) {}
+        }
+        if (!window.CentralHubBus && tile.root && typeof tile.root.scrollIntoView === "function") {
+            try { tile.root.scrollIntoView({behavior: "smooth", block: "start"}) } catch (_) {}
+        }
+        if (opts.open && typeof tile.openHandler === "function") {
+            let handler = null
+            try { handler = tile.openHandler(tile.ctx || this.ctx || {}) } catch (e) {
+                console.warn("[AES strategy tile] tile openHandler lookup threw", e)
+            }
+            if (typeof handler === "function") {
+                Promise.resolve().then(handler).catch(e =>
+                    console.warn("[AES strategy tile] tile openHandler threw", e))
+            }
+        }
+    }
+
     _buildOpenCta(T) {
         const wrap = document.createElement("div")
         wrap.style.cssText = "margin-bottom:" + T.sp[2] + ";"
         const cta = document.createElement("button")
         cta.type = "button"
+        cta.dataset.aesStrategyOpenModal = "1"
         cta.textContent = "Open strategy modal"
         cta.style.cssText = "background:" + T.color.oxide + ";color:" + T.color.bone + ";"
             + "border:" + T.geom.bw1 + " solid " + T.color.oxide + ";"
@@ -327,9 +472,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
             + "font:600 12px " + T.font.display + ";letter-spacing:" + T.track.caps
             + ";text-transform:uppercase;cursor:pointer;"
         cta.addEventListener("click", () => {
-            if (window.AesStrategyPanel && typeof window.AesStrategyPanel.open === "function") {
-                window.AesStrategyPanel.open()
-            }
+            this._openStrategyPanel()
         })
         wrap.appendChild(cta)
         return wrap
@@ -1067,11 +1210,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
                     a.title = "Open strategy modal scoped to " + c.airline
                     a.addEventListener("click", (e) => {
                         e.preventDefault()
-                        try {
-                            if (window.AesStrategyPanel && typeof window.AesStrategyPanel.open === "function") {
-                                window.AesStrategyPanel.open({server: c.server, airlineCode: c.airline})
-                            }
-                        } catch (err) { console.warn("[AES strategy tile] open via portfolio threw", err) }
+                        this._openStrategyPanel({server: c.server, airlineCode: c.airline})
                     })
                     td.appendChild(a)
                 } else {
@@ -1152,11 +1291,7 @@ class CentralHubStrategyTile extends window.CentralHubTile {
             + ";background:" + T.color.bone2 + ";cursor:pointer;"
         row.title = "Open strategy modal scoped to " + (m.idleAirline.displayName || m.idleAirline.airline)
         row.addEventListener("click", () => {
-            try {
-                if (window.AesStrategyPanel && typeof window.AesStrategyPanel.open === "function") {
-                    window.AesStrategyPanel.open({server: server, airlineCode: m.idleAirline.airline})
-                }
-            } catch (e) { console.warn("[AES strategy tile] cross-airline open threw", e) }
+            this._openStrategyPanel({server: server, airlineCode: m.idleAirline.airline})
         })
 
         const idleLabel = m.idleAirline.displayName || m.idleAirline.airline

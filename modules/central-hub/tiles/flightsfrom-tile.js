@@ -13,7 +13,7 @@ class CentralHubFlightsFromTile extends window.CentralHubTile {
     constructor() {
         super()
         this.id = "flightsfrom"
-        this.title = "FlightsFrom"
+        this.title = "Demand Reference"
         this.section = "routes"
         this.priority = 60
         this.requiresAirline = false
@@ -22,7 +22,11 @@ class CentralHubFlightsFromTile extends window.CentralHubTile {
     watchedStorageKeys() { return ["flightsFrom:"] }
 
     openHandler() {
-        return () => CentralHubLegacy.switchDropdownTo("flightsFrom")
+        return () => {
+            if (window.CentralHubLegacy && typeof window.CentralHubLegacy.switchDropdownTo === "function") {
+                window.CentralHubLegacy.switchDropdownTo("flightsFrom")
+            }
+        }
     }
 
     async _listAirports() {
@@ -59,8 +63,12 @@ class CentralHubFlightsFromTile extends window.CentralHubTile {
             }
         }
         const totalRoutes = list.reduce((acc, a) => acc + (a.routeCount || 0), 0)
-        const newest = list[0].scrapedAt
-            ? new Date(list[0].scrapedAt).toISOString().substring(0, 10) : ""
+        // FlightsFromStore.listAirports sorts by IATA alphabetically, so list[0]
+        // is NOT the most recently scraped record. Compute max(scrapedAt) directly.
+        const newestTs = list.reduce(
+            (acc, a) => (a.scrapedAt && a.scrapedAt > acc) ? a.scrapedAt : acc, 0)
+        const newest = newestTs
+            ? new Date(newestTs).toISOString().substring(0, 10) : ""
         return {
             badge: list.length + " AIRPORTS",
             badgeKind: window.CentralHubStatusBadges.KIND.OK,

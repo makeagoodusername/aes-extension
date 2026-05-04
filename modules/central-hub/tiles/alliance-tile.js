@@ -15,7 +15,10 @@ class CentralHubAllianceTile extends window.CentralHubTile {
         super()
         this.id = "alliance"
         this.title = "Alliance"
-        this.section = "tools"
+        // Section must match the registry registration below ("operations")
+        // — `dataset.section` drives the bleed-strip accent color via
+        // CentralHubTile._sectionAccent, so a mismatch shows the wrong color.
+        this.section = "operations"
         this.priority = 40
         this.requiresAirline = true
 
@@ -61,7 +64,11 @@ class CentralHubAllianceTile extends window.CentralHubTile {
 
     _enterpriseIdFromUrl(url) {
         if (typeof url !== "string") return null
-        const m = url.match(/(?:enterprise|info\/enterprise)[/=](\d+)/i)
+        // AS member rows hand us `/app/info/enterprises/<id>` (plural) — the
+        // older regex required an exact `enterprise/` boundary so the trailing
+        // "s" silently broke every match. Accept the optional plural and the
+        // legacy `?id=<n>` query form alongside the path form.
+        const m = url.match(/enterprises?[/=](\d+)/i)
         return m ? m[1] : null
     }
 

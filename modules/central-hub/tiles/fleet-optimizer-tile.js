@@ -26,9 +26,17 @@ class CentralHubFleetOptimizerTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys(ctx) {
-        // Fleet keys + maintenance keys + optimizer settings.
+        // Fleet keys + maintenance keys + optimizer settings. Drop the
+        // server prefix when ctx hasn't supplied one — an empty-string
+        // prefix would match every storage change (k.indexOf("") === 0).
         const server = String(ctx && ctx.server || "")
-        return [server, "settings", "settings.strategy", "aircraftFlightPlan"]
+        // F-9228-704: dropped the dead "settings.strategy" prefix —
+        // settings is a single storage key holding a JSON blob; sub-keys
+        // inside aren't visible to chrome.storage.onChanged. The "settings"
+        // prefix already covers any change to that blob.
+        const out = ["settings", "aircraftFlightPlan"]
+        if (server) out.unshift(server)
+        return out
     }
 
     openHref() { return "/app/fleets" }
@@ -77,7 +85,7 @@ class CentralHubFleetOptimizerTile extends window.CentralHubTile {
             badge = sign + gap.toFixed(1) + "pp"
             if (Math.abs(gap) <= 0.5) kind = window.CentralHubStatusBadges.KIND.OK
             else if (Math.abs(gap) <= 2) kind = window.CentralHubStatusBadges.KIND.WARN
-            else                          kind = window.CentralHubStatusBadges.KIND.ERROR
+            else                          kind = window.CentralHubStatusBadges.KIND.ALERT
         }
         return {
             badge,
@@ -89,8 +97,13 @@ class CentralHubFleetOptimizerTile extends window.CentralHubTile {
 
     async renderBody(ctx, host) {
         const T = window.AESTokens
+        // Re-entrancy guard — concurrent renders (open-tile path + storage
+        // refresh) would otherwise duplicate the headline strip + stress
+        // candidate columns in the same host.
+        const gen = (this._renderGen = (this._renderGen || 0) + 1)
         host.textContent = ""
         const summary = this._lastSummary || await this._resolveSummary()
+        if (gen !== this._renderGen) return
         if (!summary || !summary.perAircraft.length) {
             const empty = document.createElement("p")
             empty.style.cssText = "color:" + T.color.slate + ";margin:0;"
@@ -169,6 +182,16 @@ class CentralHubFleetOptimizerTile extends window.CentralHubTile {
             left.textContent = r.registration || r.aircraftId
             left.title = r.suggestion || ""
             left.addEventListener("click", () => {
+                // F-9228-706: open the optimizer's own drilldown so the user
+                // can see the full classification + recommendation context
+                // instead of just being scrolled to fleet-hub / route-launcher.
+                // Falls back to the bus emit when the drilldown isn't loaded
+                // (legacy hub builds).
+                if (window.AesFleetHubOptimizerDrilldown
+                        && typeof window.AesFleetHubOptimizerDrilldown.open === "function") {
+                    window.AesFleetHubOptimizerDrilldown.open({focusedAircraftId: r.aircraftId})
+                    return
+                }
                 if (window.CentralHubBus) {
                     window.CentralHubBus.emit("focus-aircraft", {aircraftId: r.aircraftId})
                 }

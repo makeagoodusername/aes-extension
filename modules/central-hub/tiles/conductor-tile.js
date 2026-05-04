@@ -56,7 +56,13 @@
     function _fmtNum(v) { return (v == null || !isFinite(v)) ? "—" : String(Math.round(v)) }
 
     const SEVERITY_RANK = {alert: 3, warn: 2, info: 1}
-    function _sortFires(fires) {
+    /** K9-aware sort. When AesConductorAttention is loaded, score by
+     *  severity × trust × recency × pin/snooze. Falls back to the original
+     *  severity-bucket sort when the module is missing. */
+    function _sortFires(fires, trustByScenario, settings) {
+        if (window.AesConductorAttention && typeof window.AesConductorAttention.sortFires === "function") {
+            return window.AesConductorAttention.sortFires(fires, trustByScenario || {}, settings || {fireUx: {}}, Date.now())
+        }
         return fires.slice().sort((a, b) => {
             const sa = SEVERITY_RANK[a.severity] || 0
             const sb = SEVERITY_RANK[b.severity] || 0
@@ -101,6 +107,116 @@
         return span
     }
 
+    /** K15 — render a 1-line forecast chip "P50 -12% / 4w" when the fire's
+     *  scenario declares a `forecast:` field and an envelope is reachable.
+     *  Two sources, in order:
+     *    1. fire.payload.{p10,p50,p90,horizonDays}  (scenarios that consume
+     *       a forecast at match time, e.g. CashCrunchForecast)
+     *    2. AesConductorForecastStore cache for the scenario's first
+     *       declared (metric, scope, scopeId)
+     *  Returns null when neither resolves. The chip is informational only —
+     *  no click affordance — to keep row height stable. */
+    function _forecastChip(T, fire) {
+        if (!fire) return null
+        const scenarios = (window.AesConductorScenarios && window.AesConductorScenarios.all)
+            ? window.AesConductorScenarios.all() : []
+        const scenario = scenarios.find(s => s && s.id === fire.scenarioId) || null
+        if (!scenario || !scenario.forecast) return null
+
+        let env = null
+        const fp = fire.payload || {}
+        if (typeof fp.p50 === "number" && isFinite(fp.p50)) {
+            env = {p10: fp.p10, p50: fp.p50, p90: fp.p90, horizonDays: fp.horizonDays, model: fp.model}
+        } else {
+            const list = Array.isArray(scenario.forecast) ? scenario.forecast : [scenario.forecast]
+            const spec = list[0]
+            const fs = window.AesConductorForecastStore
+            if (spec && fs && typeof fs.peek === "function") {
+                const blob = fs.peek()
+                if (blob) {
+                    let composite = String(spec.metric) + ":" + String(spec.scope || "global")
+                        + ":" + String(spec.scopeId == null ? "" : spec.scopeId)
+                    let e = blob[composite]
+                    if (!e && spec.scopeId === "*") {
+                        const fp = fire.payload || {}
+                        const rk = (fp.hub && fp.dest) ? (String(fp.hub).toUpperCase() + "-" + String(fp.dest).toUpperCase()) : ""
+                        const id = spec.scope === "tail" ? (fp.aircraftId || "") : rk
+                        if (id) {
+                            composite = String(spec.metric) + ":" + String(spec.scope || "global") + ":" + id
+                            e = blob[composite]
+                        }
+                    }
+                    if (e && typeof e.p50 === "number") {
+                        env = {p10: e.p10, p50: e.p50, p90: e.p90, horizonDays: e.horizon, model: e.model}
+                    }
+                }
+            }
+        }
+        if (!env || typeof env.p50 !== "number" || !isFinite(env.p50)) return null
+
+        const horizon = (typeof env.horizonDays === "number" && env.horizonDays > 0) ? env.horizonDays : null
+        const horizonLabel = horizon != null
+            ? (horizon >= 7 ? Math.round(horizon / 7) + "w" : horizon + "d")
+            : ""
+        const fmt = (v) => {
+            if (typeof v !== "number" || !isFinite(v)) return "—"
+            const a = Math.abs(v)
+            if (a >= 1e6) return (v / 1e6).toFixed(1) + "M"
+            if (a >= 1e3) return Math.round(v / 1e3) + "k"
+            return Math.round(v).toString()
+        }
+        const text = "P50 " + fmt(env.p50) + (horizonLabel ? " / " + horizonLabel : "")
+        const span = document.createElement("span")
+        span.textContent = text
+        span.title = (env.model ? env.model + " · " : "")
+            + "P10 " + fmt(env.p10) + " · P50 " + fmt(env.p50) + " · P90 " + fmt(env.p90)
+            + (horizonLabel ? " · horizon " + horizonLabel : "")
+        span.style.cssText = "flex:0 0 auto;color:" + T.color.oxide2 + ";"
+            + "font-family:" + T.font.mono + ";font-size:10px;"
+            + "border:1px solid " + T.color.paperRule + ";border-radius:3px;"
+            + "padding:0 4px;letter-spacing:" + T.track.mono + ";"
+        return span
+    }
+
+    /** K4 — render the 🔒 glyph + tooltip when a routine is holding the
+     *  fire's resource. Returns null when no lock matches.
+     *  `locks` is the LockStore.loadCached(host) blob keyed by
+     *  "<resType>:<resId>"; we resolve the fire's payload to candidate
+     *  resource keys (aircraftId → aircraft, hub:dest → route) and pick
+     *  the first match. */
+    function _lockGlyph(T, fire, locks) {
+        if (!fire || !locks || typeof locks !== "object") return null
+        const p = fire.payload || {}
+        const candidates = []
+        if (p.aircraftId) candidates.push("aircraft:" + String(p.aircraftId))
+        if (p.hub && p.dest) {
+            candidates.push("route:" + String(p.hub).toUpperCase() + ":" + String(p.dest).toUpperCase())
+        }
+        if (fire.scenarioId === "CashStep" || fire.scenarioId === "CashCrunchForecast") {
+            if (fire.server && fire.airline) candidates.push("account:" + fire.server + ":" + fire.airline)
+        }
+        let entry = null
+        for (const k of candidates) {
+            const e = locks[k]
+            if (!e || typeof e !== "object") continue
+            const ttlMs = (typeof e.ttlMs === "number") ? e.ttlMs : 600_000
+            if (e.acquiredAt && (Date.now() - e.acquiredAt) > ttlMs) continue
+            entry = {key: k, e}
+            break
+        }
+        if (!entry) return null
+        const span = document.createElement("span")
+        span.textContent = "🔒"
+        const owner = entry.e.owner || "?"
+        const ageMs = entry.e.acquiredAt ? (Date.now() - entry.e.acquiredAt) : 0
+        const ageStr = _fmtAge(ageMs)
+        span.title = "Reserved by " + owner + " · " + entry.key + " · " + ageStr + " ago"
+            + (entry.e.reason ? "\n" + entry.e.reason : "")
+        span.style.cssText = "flex:0 0 auto;color:" + T.color.slate + ";"
+            + "font-family:" + T.font.mono + ";font-size:11px;cursor:default;"
+        return span
+    }
+
     function _payloadSummary(s) {
         const p = s.payload || {}
         switch (s.type) {
@@ -136,7 +252,7 @@
             this.id              = "conductor"
             this.title           = "Conductor"
             this.section         = "tools"
-            this.priority        = 7
+            this.priority        = 5
             this.requiresAirline = true
             this._activeFilter   = "all"
         }
@@ -148,6 +264,12 @@
             if (window.AesConductorSignalStore)   keys.push(window.AesConductorSignalStore.PREFIX   + tail)
             if (window.AesConductorScenarioStore) keys.push(window.AesConductorScenarioStore.PREFIX + tail)
             if (window.AesConductorRoutineStore)  keys.push(window.AesConductorRoutineStore.PREFIX  + tail)
+            // K9 — re-render when the user pins/snoozes a fire from any tab.
+            keys.push("aesConductor:settings:" + tail)
+            // K11 — re-render on trust posterior updates so the score reorders.
+            if (window.AesConductorTrustStore) keys.push(window.AesConductorTrustStore.PREFIX + tail)
+            // K4 — re-render lock glyph when a routine acquires/releases.
+            if (window.AesConductorLockStore)  keys.push(window.AesConductorLockStore.PREFIX  + tail)
             return keys
         }
 
@@ -186,7 +308,7 @@
             hostEl.textContent = ""
             hostEl.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[2] + ";padding:" + T.sp[3] + ";"
 
-            const [allSignals, fires, routines] = await Promise.all([
+            const [allSignals, fires, routines, trustByScenario, fireUxSettings, locks] = await Promise.all([
                 (typeof window.AesConductorSignalStore === "undefined")
                     ? Promise.resolve([])
                     : window.AesConductorSignalStore.recent(ctx, 200),
@@ -195,13 +317,29 @@
                     : window.AesConductorScenarioStore.recent(ctx, 30),
                 (typeof window.AesConductorRoutineStore === "undefined")
                     ? Promise.resolve([])
-                    : window.AesConductorRoutineStore.all(ctx)
+                    : window.AesConductorRoutineStore.all(ctx),
+                (window.AesConductorTrustStore && typeof window.AesConductorTrustStore.load === "function")
+                    ? window.AesConductorTrustStore.load(ctx).catch(() => ({}))
+                    : Promise.resolve({}),
+                (window.AesConductorAttention && typeof window.AesConductorAttention.readFireUxSettings === "function")
+                    ? window.AesConductorAttention.readFireUxSettings(ctx).catch(() => ({fireUx: {}}))
+                    : Promise.resolve({fireUx: {}}),
+                (window.AesConductorLockStore && typeof window.AesConductorLockStore.loadCached === "function")
+                    ? window.AesConductorLockStore.loadCached(ctx).catch(() => ({}))
+                    : Promise.resolve({})
             ])
+
+            // K15 — warm the forecast-store cache once per render so the
+            // forecast chips can resolve sync without an await per row.
+            try {
+                const fs = window.AesConductorForecastStore
+                if (fs && typeof fs.loadCached === "function") await fs.loadCached(ctx)
+            } catch (_) { /* noop */ }
             const filterDef = FILTERS.find(f => f.id === this._activeFilter) || FILTERS[0]
             const filtered = filterDef.match ? allSignals.filter(s => filterDef.match(s.type || "")) : allSignals
 
             hostEl.appendChild(this._buildRoutinesSection(T, routines))
-            hostEl.appendChild(this._buildScenarioSection(T, fires, ctx))
+            hostEl.appendChild(this._buildScenarioSection(T, fires, ctx, trustByScenario, fireUxSettings, locks))
             hostEl.appendChild(this._buildFilterRow(T))
             hostEl.appendChild(this._buildList(T, filtered))
             hostEl.appendChild(this._buildFooter(T, filtered.length, allSignals.length, ctx))
@@ -286,7 +424,7 @@
             return row
         }
 
-        _buildScenarioSection(T, fires, ctx) {
+        _buildScenarioSection(T, fires, ctx, trustByScenario, fireUxSettings, locks) {
             const wrap = document.createElement("div")
             wrap.style.cssText = "display:flex;flex-direction:column;gap:1px;"
                 + "border:1px solid " + T.color.paperRule + ";"
@@ -319,16 +457,16 @@
                 return wrap
             }
 
-            const sorted = _sortFires(fires)
+            const sorted = _sortFires(fires, trustByScenario, fireUxSettings)
             const now = Date.now()
             const limit = Math.min(sorted.length, 5)
             for (let i = 0; i < limit; i++) {
-                wrap.appendChild(this._buildScenarioRow(T, sorted[i], now, ctx))
+                wrap.appendChild(this._buildScenarioRow(T, sorted[i], now, ctx, fireUxSettings, locks))
             }
             return wrap
         }
 
-        _buildScenarioRow(T, fire, now, ctx) {
+        _buildScenarioRow(T, fire, now, ctx, fireUxSettings, locks) {
             const row = document.createElement("div")
             row.style.cssText = "display:flex;align-items:baseline;gap:" + T.sp[2] + ";"
                 + "padding:4px " + T.sp[2] + ";"
@@ -363,8 +501,19 @@
 
             row.append(dot, time, age, id, rationale)
 
+            // K4 — show 🔒 when a routine has reserved this fire's resource.
+            const lockGlyph = _lockGlyph(T, fire, locks)
+            if (lockGlyph) row.appendChild(lockGlyph)
+
             const chip = _outcomeChip(T, fire)
             if (chip) row.appendChild(chip)
+
+            // K15 — forecast chip. CashCrunchForecast stamps the envelope on
+            // the fire payload at match time; other scenarios with a declared
+            // `forecast:` field read live from the cached store. Hidden when
+            // no envelope is reachable. Compact "P50 -12% / 4w" style.
+            const fc = _forecastChip(T, fire)
+            if (fc) row.appendChild(fc)
 
             // K10 — Open CTA: deep-links to the scenario's recommended
             // surface (per scenario.openUrl) and writes acceptanceState.
@@ -395,6 +544,44 @@
                     })
                     row.appendChild(open)
                 }
+            }
+
+            // K9 — Pin/Snooze affordances. Pin floats the fire to the top of
+            // the attention queue across reloads; Snooze hides it for 24h.
+            if (ctx && fire.id && window.AesConductorAttention
+                    && typeof window.AesConductorAttention.applyFireUx === "function"
+                    && fire.acceptanceState !== "dismissed" && !fire.dismissedAt) {
+                const ux = (fireUxSettings && fireUxSettings.fireUx && fireUxSettings.fireUx[fire.id]) || null
+                const pinned = !!(ux && ux.pinned)
+                const snoozed = !!(ux && typeof ux.snoozedUntil === "number" && ux.snoozedUntil > now)
+
+                const pinBtn = document.createElement("button")
+                pinBtn.type = "button"
+                pinBtn.textContent = pinned ? "★" : "☆"
+                pinBtn.title = pinned ? "Unpin (drop attention bonus)" : "Pin (float to top of attention queue)"
+                pinBtn.style.cssText = "flex:0 0 auto;border:none;background:transparent;"
+                    + "color:" + (pinned ? "#facc15" : T.color.slate) + ";cursor:pointer;"
+                    + "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";padding:0 2px;"
+                pinBtn.addEventListener("click", async (e) => {
+                    e.stopPropagation()
+                    try { await window.AesConductorAttention.applyFireUx(ctx, fire.id, pinned ? "unpin" : "pin") } catch (_) {}
+                    this.refresh().catch(() => {})
+                })
+                row.appendChild(pinBtn)
+
+                const snoozeBtn = document.createElement("button")
+                snoozeBtn.type = "button"
+                snoozeBtn.textContent = snoozed ? "⏰" : "⌛"
+                snoozeBtn.title = snoozed ? "Unsnooze" : "Snooze 24h (hide from attention)"
+                snoozeBtn.style.cssText = "flex:0 0 auto;border:none;background:transparent;"
+                    + "color:" + (snoozed ? "#60a5fa" : T.color.slate) + ";cursor:pointer;"
+                    + "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";padding:0 2px;"
+                snoozeBtn.addEventListener("click", async (e) => {
+                    e.stopPropagation()
+                    try { await window.AesConductorAttention.applyFireUx(ctx, fire.id, snoozed ? "unsnooze" : "snooze") } catch (_) {}
+                    this.refresh().catch(() => {})
+                })
+                row.appendChild(snoozeBtn)
             }
 
             if (ctx && fire.id && window.AesConductorScenarioStore && typeof window.AesConductorScenarioStore.dismiss === "function") {
@@ -474,7 +661,12 @@
             const time = document.createElement("span")
             time.textContent = _fmtTime(s.firedAt)
             time.style.cssText = "color:" + T.color.slate + ";flex:0 0 auto;"
-            time.title = new Date(s.firedAt).toISOString()
+            // Defensive — `new Date(undefined).toISOString()` throws RangeError,
+            // which would tear the whole signal list down on a single
+            // malformed entry. Older callers (or seeded fixtures) may lack
+            // firedAt; surface "?" rather than crash.
+            try { time.title = new Date(s.firedAt).toISOString() }
+            catch (_) { time.title = "(no timestamp)" }
 
             const age = document.createElement("span")
             age.textContent = _fmtAge(now - s.firedAt) + " ago"
@@ -499,25 +691,78 @@
             const footer = document.createElement("div")
             footer.style.cssText = "display:flex;align-items:center;justify-content:space-between;"
                 + "color:" + T.color.slate + ";font-size:" + T.fs.micro + ";"
-                + "font-family:" + T.font.mono + ";"
+                + "font-family:" + T.font.mono + ";gap:" + T.sp[2] + ";flex-wrap:wrap;"
 
             const stats = document.createElement("span")
             stats.textContent = "Showing " + shown + " of " + total + " signals"
                 + " · cap " + (window.AesConductorSignalStore && window.AesConductorSignalStore.CAP || 500)
+            stats.style.cssText = "flex:1 1 auto;min-width:0;"
 
-            const clear = document.createElement("button")
-            clear.type = "button"
-            clear.textContent = "Clear"
-            clear.style.cssText = "padding:2px 8px;border:1px solid " + T.color.paperRule + ";"
-                + "background:transparent;color:" + T.color.oxide + ";cursor:pointer;"
-                + "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";"
-            clear.addEventListener("click", async () => {
-                if (typeof window.AesConductorSignalStore === "undefined") return
-                await window.AesConductorSignalStore.clear(ctx)
-                this.refresh().catch(() => {})
-            })
+            const actions = document.createElement("div")
+            actions.style.cssText = "display:flex;gap:" + T.sp[1] + ";flex:0 0 auto;flex-wrap:wrap;"
 
-            footer.append(stats, clear)
+            const _btn = (label, title, onClick) => {
+                const b = document.createElement("button")
+                b.type = "button"
+                b.textContent = label
+                b.title = title || ""
+                b.style.cssText = "padding:2px 8px;border:1px solid " + T.color.paperRule + ";"
+                    + "background:transparent;color:" + T.color.oxide + ";cursor:pointer;"
+                    + "font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";"
+                b.addEventListener("click", onClick)
+                return b
+            }
+
+            // K10 outcome-driver — manual tick. Lets the user score open
+            // fires now instead of waiting for the next interval.
+            if (window.AesConductorOutcomeDriver
+                    && typeof window.AesConductorOutcomeDriver.tickOnce === "function") {
+                actions.appendChild(_btn("Tick outcomes",
+                    "Run AesConductorOutcomeDriver.tickOnce({force:true}) — re-scores open fires now.",
+                    async (ev) => {
+                        const b = ev.currentTarget
+                        b.disabled = true
+                        try { await window.AesConductorOutcomeDriver.tickOnce({force: true}) }
+                        catch (_) {}
+                        finally { b.disabled = false }
+                        this.refresh().catch(() => {})
+                    }))
+            }
+
+            // Clear scenario fires.
+            if (window.AesConductorScenarioStore
+                    && typeof window.AesConductorScenarioStore.clear === "function") {
+                actions.appendChild(_btn("Clear fires",
+                    "Erase the per-airline scenario-fire ring.",
+                    async () => {
+                        if (!ctx) return
+                        await window.AesConductorScenarioStore.clear(ctx)
+                        this.refresh().catch(() => {})
+                    }))
+            }
+
+            // Clear routines.
+            if (window.AesConductorRoutineStore
+                    && typeof window.AesConductorRoutineStore.clear === "function") {
+                actions.appendChild(_btn("Clear routines",
+                    "Erase active + archived routine instances for this airline.",
+                    async () => {
+                        if (!ctx) return
+                        await window.AesConductorRoutineStore.clear(ctx)
+                        this.refresh().catch(() => {})
+                    }))
+            }
+
+            // Existing — clear signal ring.
+            actions.appendChild(_btn("Clear signals",
+                "Erase the per-airline conductor:signal ring.",
+                async () => {
+                    if (typeof window.AesConductorSignalStore === "undefined") return
+                    await window.AesConductorSignalStore.clear(ctx)
+                    this.refresh().catch(() => {})
+                }))
+
+            footer.append(stats, actions)
             return footer
         }
     }
@@ -526,7 +771,7 @@
         window.CentralHubTileRegistry.register({
             id:       "conductor",
             section:  "tools",
-            priority: 7,
+            priority: 5,
             factory:  () => new CentralHubConductorTile()
         })
     }

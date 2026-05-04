@@ -28,9 +28,21 @@ class CentralHubShell {
     }
 
     async mount(anchorEl) {
+        // Idempotency guard. The host's __aesCentralHubMounted flag closes
+        // the script-level race; this check closes the instance-level race
+        // where two shell objects could be constructed and both reach mount()
+        // before either has inserted its skeleton (the await on settings.load
+        // yields between the two sync checks in host.js).
+        if (this.root) return
+        if (document.getElementById("aes-central-hub")) return
+
         this.settings = await window.CentralHubSettings.load()
         this._migrateLegacyDashboardSetting()
         this._applyCubistMode()
+
+        // Re-check post-await: another mount may have completed during the
+        // settings load.
+        if (document.getElementById("aes-central-hub")) return
 
         const root = this._buildShellSkeleton()
         anchorEl.before(root)
@@ -71,13 +83,17 @@ class CentralHubShell {
 
         // CH-W3 — first-boot Cascade prompt. Non-blocking; the user
         // either dismisses or tries it. Re-prompt allowed after 60d
-        // (cascadePromptedAt is bumped on either action).
+        // (cascadePromptedAt is bumped on either action). FIX-A4-5 —
+        // cascadePromptDismissed permanently mutes the prompt when the
+        // user clicks "Don't show again".
         this._maybePromptCascade()
     }
 
     _maybePromptCascade() {
         if (!this.settings) return
         if (this.settings.layoutMode === "cascade") return
+        // FIX-A4-5 — honour permanent dismissal regardless of stamp age.
+        if (this.settings.cascadePromptDismissed === true) return
         const stamped = Number(this.settings.cascadePromptedAt) || 0
         const sixtyDays = 60 * 24 * 3600 * 1000
         if (stamped > 0 && Date.now() - stamped < sixtyDays) return
@@ -216,6 +232,15 @@ class CentralHubShell {
             root.appendChild(this.activityStrip.mount())
         }
 
+        // Slice E3 — signal-weather band sits between the activity strip
+        // and the hero. Read-only surface; mount() returns null when the
+        // settings gate is off so we never push an empty container.
+        if (typeof window.CentralHubSignalWeather === "function") {
+            this.signalWeather = new window.CentralHubSignalWeather()
+            const sw = this.signalWeather.mount()
+            if (sw) root.appendChild(sw)
+        }
+
         const cubistOn = !!(this.settings && this.settings.cubistMode)
         if (cubistOn && typeof window.CentralHubHeroPolyhedron === "function") {
             this.heroStrip = new window.CentralHubHeroPolyhedron({
@@ -350,6 +375,33 @@ class CentralHubShell {
             }
         })
 
+        const archiveBtn = document.createElement("button")
+        archiveBtn.type = "button"
+        archiveBtn.className = "aes-btn aes-central-hub__scrape-cache-btn"
+        archiveBtn.textContent = "Scrape cache"
+        archiveBtn.title = "Review scrape records and clear cached scrape data."
+        archiveBtn.style.cssText = [
+            "background:transparent",
+            "color:" + T.color.oxide,
+            "border:" + T.geom.bw1 + " solid " + T.color.oxide,
+            "border-radius:" + T.geom.radius,
+            "padding:" + T.sp[1] + " " + T.sp[3],
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body,
+            "font-weight:" + T.fw.display,
+            "text-transform:uppercase",
+            "letter-spacing:" + T.track.caps,
+            "cursor:pointer",
+            "flex:0 0 auto"
+        ].join(";")
+        archiveBtn.addEventListener("click", () => {
+            if (window.ScrapeArchiveModal && typeof window.ScrapeArchiveModal.open === "function") {
+                window.ScrapeArchiveModal.open({server: this.server, airline: this.airline})
+            } else {
+                console.warn("[AES Hub] ScrapeArchiveModal not loaded — check manifest order")
+            }
+        })
+
         const lastScrapeStamp = document.createElement("span")
         lastScrapeStamp.className = "aes-central-hub__last-scrape"
         lastScrapeStamp.style.cssText = [
@@ -418,7 +470,7 @@ class CentralHubShell {
             "flex:0 0 auto"
         ].join(";")
 
-        bar.append(title, subtitle, filter, scrapeBtn, lastScrapeStamp, autoDriveStrip, ctxStamp, stamp)
+        bar.append(title, subtitle, filter, scrapeBtn, archiveBtn, lastScrapeStamp, autoDriveStrip, ctxStamp, stamp)
 
         // CH-W3 — layout selector. Segmented control between Classic
         // (legacy section flow) and Cascade (salience-ranked masonry).
@@ -573,7 +625,7 @@ class CentralHubShell {
             const age = window.AesPhaseCadenceStore.ageMs(r)
             const fresh = isFinite(age) && age < cad * 0.5
             const stale = isFinite(age) && age >= cad
-            const color = fresh ? "#34d399" : stale ? "#f59e0b" : T.color.slate
+            const color = fresh ? T.color.moss : stale ? T.color.amber : T.color.slate
             const chip = document.createElement("span")
             chip.style.cssText = "color:" + color + ";"
             chip.textContent = "· " + p.short + " " + CentralHubShell._fmtAge(age)
@@ -656,14 +708,19 @@ class CentralHubShell {
         // HubFeed unread — many slices are not tile-keyed today, so v1
         // reads only slices whose name matches `hub:tile:<tileId>:unread`.
         // Tiles that don't emit such a slice contribute 0.
+        // HubFeed.list() returns slice metadata only ({name, hasValue, ...});
+        // the actual value is fetched via HubFeed.read(name).
         const hubFeedUnread = new Map()
-        if (window.HubFeed && typeof window.HubFeed.list === "function") {
+        if (window.HubFeed && typeof window.HubFeed.list === "function"
+                && typeof window.HubFeed.read === "function") {
             try {
                 const slices = window.HubFeed.list() || []
                 for (const s of slices) {
+                    if (!s || !s.hasValue) continue
                     const m = /^hub:tile:([^:]+):unread$/.exec(s.name || "")
                     if (!m) continue
-                    const v = (s.value && typeof s.value.count === "number") ? s.value.count : Number(s.value)
+                    const raw = window.HubFeed.read(s.name)
+                    const v = (raw && typeof raw.count === "number") ? raw.count : Number(raw)
                     if (typeof v === "number" && isFinite(v) && v > 0) {
                         hubFeedUnread.set(m[1], v)
                     }
@@ -985,14 +1042,17 @@ class CentralHubShell {
 
     _buildSectionContainer(section) {
         const T = window.AESTokens
-        const wrap = document.createElement("div")
+        const wrap = document.createElement("section")
         wrap.dataset.section = section.id
         wrap.dataset.aesSurface = "panel"
         wrap.id = "aes-central-hub-section-" + section.id
         wrap.className = "aes-central-hub__section"
+        wrap.setAttribute("role", "region")
+        wrap.setAttribute("aria-label", section.label + " tiles")
         wrap.style.cssText = "margin-bottom:" + T.sp[5] + ";"
 
         const header = document.createElement("h2")
+        header.id = "aes-central-hub-section-" + section.id + "-heading"
         header.textContent = section.label
         header.style.cssText = [
             "margin:0 0 " + T.sp[3] + " 0",
@@ -1005,6 +1065,7 @@ class CentralHubShell {
             "border-bottom:" + T.geom.bw2 + " solid " + T.color.oxide,
             "padding-bottom:" + T.sp[1]
         ].join(";")
+        wrap.setAttribute("aria-labelledby", header.id)
         wrap.appendChild(header)
         return wrap
     }
@@ -1063,13 +1124,36 @@ class CentralHubShell {
             }
 
             const wantExpand = payload.expand !== false
-            if (wantExpand && !tile.expanded) tile.toggle()
+            const hasFilter  = !!payload.filter
+            // T1 race fix: when both expand and filter are set, toggle()
+            // would fire its own filterless _renderBodySafe() and then we
+            // would fire a second filtered render — the two awaits race
+            // and double-append. When a filter is present we drive the
+            // expansion state directly (no auto-render) so only one
+            // render runs, with the filter.
+            if (wantExpand && !tile.expanded) {
+                if (hasFilter) {
+                    tile.expanded = true
+                    if (tile.bodyEl) tile.bodyEl.style.display = "block"
+                    if (tile.toggleBtn) {
+                        tile.toggleBtn.textContent = "▾"
+                        tile.toggleBtn.setAttribute("aria-label", "Collapse")
+                    }
+                    if (typeof tile._actionFadeOut === "function") tile._actionFadeOut()
+                    if (typeof tile._onToggleChange === "function") {
+                        try { tile._onToggleChange(tile.id, true) }
+                        catch (err) { console.warn("[AES Hub] toggle change cb threw", err) }
+                    }
+                } else {
+                    tile.toggle()
+                }
+            }
 
             if (payload.scrollIntoView !== false && tile.root) {
                 tile.root.scrollIntoView({behavior: "smooth", block: "start"})
             }
 
-            if (payload.filter && tile.expanded && typeof tile._renderBodySafe === "function") {
+            if (hasFilter && tile.expanded && typeof tile._renderBodySafe === "function") {
                 tile._renderBodySafe(payload.filter).catch(() => { /* noop */ })
             }
         })

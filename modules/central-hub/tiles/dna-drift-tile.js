@@ -40,18 +40,30 @@ class CentralHubDnaDriftTile extends window.CentralHubTile {
         return async () => {
             if (!this.expanded) this.toggle()
             if (window.AesCanopyDnaAccountEditor) window.AesCanopyDnaAccountEditor.open()
+            setTimeout(() => {
+                const visibleDialog = document.querySelector(".modal, [role='dialog'], .aes-canopy-dna-editor")
+                if (!visibleDialog && typeof this._showOpenFallbackFeedback === "function") {
+                    this._showOpenFallbackFeedback()
+                }
+            }, 160)
         }
     }
 
     _wireBus() {
         if (this._wired) return
+        // F-9228-700: route through the base class's `subscribeBus` so the
+        // disposers are tracked in `_busDisposers` and torn down by the
+        // base `dispose()` on hub unmount. The previous direct `.on(...)`
+        // calls left listeners attached across remounts — they piled up on
+        // each cascade-mode reflow and continued to invalidate `_cache` on
+        // detached tiles.
         const handler = () => { this._cache = null; this.refresh && this.refresh() }
-        try { if (window.CentralHubBus) {
-            window.CentralHubBus.on("canopy:dna-changed", handler)
-            window.CentralHubBus.on("canopy:dna-override-changed", handler)
-            window.CentralHubBus.on("canopy:roles-changed", handler)
-            window.CentralHubBus.on("canopy:affiliations-changed", handler)
-        } } catch (_) {}
+        try {
+            this.subscribeBus("canopy:dna-changed", handler)
+            this.subscribeBus("canopy:dna-override-changed", handler)
+            this.subscribeBus("canopy:roles-changed", handler)
+            this.subscribeBus("canopy:affiliations-changed", handler)
+        } catch (_) {}
         this._wired = true
     }
 
@@ -241,6 +253,11 @@ class CentralHubDnaDriftTile extends window.CentralHubTile {
 if (typeof window !== "undefined") {
     window.CentralHubDnaDriftTile = CentralHubDnaDriftTile
     if (window.CentralHubTileRegistry && typeof window.CentralHubTileRegistry.register === "function") {
-        window.CentralHubTileRegistry.register(new CentralHubDnaDriftTile())
+        window.CentralHubTileRegistry.register({
+            id:       "dna-drift",
+            section:  "fleet",
+            priority: 5,
+            factory:  () => new CentralHubDnaDriftTile()
+        })
     }
 }

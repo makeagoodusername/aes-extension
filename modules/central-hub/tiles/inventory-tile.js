@@ -31,6 +31,10 @@ class CentralHubInventoryTile extends window.CentralHubTile {
 
     openHandler(ctx) {
         return () => {
+            // F-9228-007: when no inventory is cached, /app/com/markets is
+            // the route-discovery surface — the user picks a market there
+            // and AS surfaces the inventory link. Empty-state summary
+            // documents this fallback so the button label and effect agree.
             const top = this._lastTopRoute
             const url = top
                 ? "/app/com/inventory/" + top.hub + top.dest
@@ -40,19 +44,31 @@ class CentralHubInventoryTile extends window.CentralHubTile {
     }
 
     async loadStatus(ctx) {
-        const {rows, totals} = await window.CentralInventorySummaryStore.loadAll({})
+        const accountId = (typeof currentAccountIdSync === "function")
+            ? currentAccountIdSync()
+            : (window.AesAccountKey
+                && typeof window.AesAccountKey.currentAccountIdSync === "function"
+                ? window.AesAccountKey.currentAccountIdSync()
+                : null)
+        const {rows, totals} = await window.CentralInventorySummaryStore.loadAll({accountId})
         if (!rows.length) {
+            // F-9228-008: don't leave a stale top route around — the Open
+            // button closure reads this and would otherwise navigate to a
+            // route that no longer has cached data.
+            this._lastTopRoute = null
             return {
                 badge: "—",
                 badgeKind: window.CentralHubStatusBadges.KIND.MUTED,
-                summary: "No inventory cached. Visit /app/com/inventory/<HUB><DEST> to seed."
+                summary: "No inventory cached. Click Open to pick a route, or visit /app/com/inventory/<HUB><DEST> to seed."
             }
         }
         this._lastTopRoute = rows[0]
         const N = rows.length
         const K = totals.lowLoadFlightCount
+        const F = totals.flightNumberCount || 0
         const summary = N + " route" + (N === 1 ? "" : "s") + " cached"
-            + (K > 0 ? ", " + K + " low-load flight" + (K === 1 ? "" : "s") : "")
+            + (F > 0 ? " · " + F + " flight number" + (F === 1 ? "" : "s") : "")
+            + (K > 0 ? " · " + K + " low-load flight" + (K === 1 ? "" : "s") : "")
         return {
             badge: String(N),
             badgeKind: K > 0
@@ -64,6 +80,15 @@ class CentralHubInventoryTile extends window.CentralHubTile {
 
     async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
+        // F-9228-009: a storage event (e.g. the inventory page-scraper
+        // writing a fresh blob) re-fires refresh() while the user is
+        // mid-edit on the quick-price form. The clobber below would lose
+        // their typed price without warning. If a form is open, defer the
+        // re-render until they finish (Apply or Cancel both trigger their
+        // own refresh, which clears `_editingPair` first).
+        if (this._editingPair && !focusFilter) {
+            return
+        }
         host.textContent = ""
 
         // CH-5d-1: a "single-route" focus from the RA tile sticks until
@@ -73,7 +98,13 @@ class CentralHubInventoryTile extends window.CentralHubTile {
             this._routeFilter = {hub: focusFilter.hub, dest: focusFilter.dest}
         }
 
-        const {rows} = await window.CentralInventorySummaryStore.loadAll({})
+        const accountId = (typeof currentAccountIdSync === "function")
+            ? currentAccountIdSync()
+            : (window.AesAccountKey
+                && typeof window.AesAccountKey.currentAccountIdSync === "function"
+                ? window.AesAccountKey.currentAccountIdSync()
+                : null)
+        const {rows} = await window.CentralInventorySummaryStore.loadAll({accountId})
 
         if (!rows.length) {
             const empty = document.createElement("p")
@@ -150,9 +181,12 @@ class CentralHubInventoryTile extends window.CentralHubTile {
             switch (key) {
                 case "route":     return (r.hub + r.dest)
                 case "scrapedAt": return r.scrapedAt || 0
+                case "flightNumbers": return r.flightNumberCount || 0
+                case "departures": return r.departureCount || 0
                 case "Y":         return r.loads.Y == null ? -1 : r.loads.Y
                 case "C":         return r.loads.C == null ? -1 : r.loads.C
                 case "F":         return r.loads.F == null ? -1 : r.loads.F
+                case "Cargo":     return r.loads.Cargo == null ? -1 : r.loads.Cargo
                 case "lowLoad":   return r.lowLoadFlightCount || 0
                 default:          return 0
             }
@@ -194,9 +228,12 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         const cols = [
             {key: "route",     label: "Route"},
             {key: "scrapedAt", label: "Last seen"},
+            {key: "flightNumbers", label: "FNs"},
+            {key: "departures", label: "Deps"},
             {key: "Y",         label: "Y%"},
             {key: "C",         label: "C%"},
             {key: "F",         label: "F%"},
+            {key: "Cargo",     label: "Cargo%"},
             {key: "lowLoad",   label: "Low-load"},
             {key: null,        label: "Quick price"}
         ]
@@ -251,9 +288,12 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         const cells = [
             row.hub + row.dest,
             window.CentralInventorySummaryStore.formatRelative(row.scrapedAt),
+            row.flightNumberCount > 0 ? String(row.flightNumberCount) : "—",
+            row.departureCount > 0 ? String(row.departureCount) : "—",
             CentralHubInventoryTile._formatLoad(row.loads.Y),
             CentralHubInventoryTile._formatLoad(row.loads.C),
             CentralHubInventoryTile._formatLoad(row.loads.F),
+            CentralHubInventoryTile._formatLoad(row.loads.Cargo),
             row.lowLoadFlightCount > 0 ? String(row.lowLoadFlightCount) : "—"
         ]
         for (let i = 0; i < cells.length; i++) {
@@ -269,7 +309,10 @@ class CentralHubInventoryTile extends window.CentralHubTile {
                 td.style.color = T.color.oxide
                 td.style.fontWeight = String(T.fw.display)
             }
-            if (i === 5 && row.lowLoadFlightCount > 0) {
+            if (i === 2 && row.flightNumbers && row.flightNumbers.length) {
+                td.title = row.flightNumbers.map(fn => fn.code || fn.flightNumberId).filter(Boolean).join(", ")
+            }
+            if (i === 8 && row.lowLoadFlightCount > 0) {
                 td.style.color = T.color.amber
             }
             tr.appendChild(td)
@@ -311,6 +354,7 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         ].join(";")
         setBtn.addEventListener("click", (e) => {
             e.stopPropagation()
+            this._editingPair = row.hub + "-" + row.dest
             hostTd.textContent = ""
             hostTd.appendChild(this._renderQuickPriceForm(row, ctx, T, hostTd))
         })
@@ -330,7 +374,7 @@ class CentralHubInventoryTile extends window.CentralHubTile {
             "font-family:" + T.font.mono,
             "font-size:" + T.fs.micro
         ].join(";")
-        for (const cls of ["Y", "C", "F"]) {
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
             const opt = document.createElement("option")
             opt.value = cls
             opt.textContent = cls
@@ -351,6 +395,17 @@ class CentralHubInventoryTile extends window.CentralHubTile {
             "font-family:" + T.font.mono,
             "font-size:" + T.fs.micro
         ].join(";")
+
+        const syncInputForClass = () => {
+            const isCargo = select.value === "Cargo"
+            input.step = isCargo ? "0.01" : "1"
+            input.placeholder = isCargo ? "cargo" : "price"
+            input.title = isCargo
+                ? "Cargo prices may use cents. Example: 0.85"
+                : "Passenger cabin prices are whole AS$ values."
+        }
+        select.addEventListener("change", syncInputForClass)
+        syncInputForClass()
 
         const applyBtn = document.createElement("button")
         applyBtn.type = "button"
@@ -384,6 +439,7 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         ].join(";")
         cancelBtn.addEventListener("click", (e) => {
             e.stopPropagation()
+            this._editingPair = null
             hostTd.textContent = ""
             hostTd.appendChild(this._renderQuickPriceCell(row, ctx, T, hostTd))
         })
@@ -391,9 +447,18 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         applyBtn.addEventListener("click", async (e) => {
             e.stopPropagation()
             const classKey = select.value
-            const newPrice = parseInt(input.value, 10)
+            const rawPrice = parseFloat(input.value)
+            const newPrice = classKey === "Cargo" ? Math.round(rawPrice * 100) / 100 : Math.round(rawPrice)
             if (!isFinite(newPrice) || newPrice < 0) {
-                window.RouteAssistantToast.warn("Enter a non-negative integer price.")
+                // toast-host.js declares `class RouteAssistantToast` at top
+                // level; in the content-script isolated world that is a
+                // global lexical binding (not on `window`). Accessing the
+                // bare class name here matches the rest of the codebase.
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.warn("Enter a non-negative " + (classKey === "Cargo" ? "cargo" : "integer") + " price.")
+                } else {
+                    console.warn("[AES Hub Inventory] price input invalid")
+                }
                 input.focus()
                 return
             }
@@ -413,20 +478,60 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         return form
     }
 
+    async _quickPriceGate() {
+        let settings = null
+        try {
+            if (window.AesSettings && typeof window.AesSettings.loadAll === "function") {
+                settings = await window.AesSettings.loadAll()
+            }
+        } catch (_) {
+            settings = null
+        }
+        const ra = settings && settings.routeAssistant || {}
+        const apply = ra.pricing && ra.pricing.apply || {}
+        const gate = window.RouteAssistantPricingPlumbing
+            && typeof window.RouteAssistantPricingPlumbing.resolveApplyGate === "function"
+            ? window.RouteAssistantPricingPlumbing.resolveApplyGate(apply, "manual")
+            : (function() {
+                const liveScopes = apply.liveScopes || {}
+                const manualLiveAllowed = liveScopes.manual !== false
+                const applyEnabled = apply.enabled !== false
+                const dryRunOnly = apply.dryRunOnly !== false
+                return {
+                    applyEnabled,
+                    dryRun: dryRunOnly || !applyEnabled || !manualLiveAllowed,
+                    scopeLiveAllowed: manualLiveAllowed
+                }
+            })()
+        return {
+            applyEnabled: gate.applyEnabled && gate.scopeLiveAllowed,
+            dryRunOnly: gate.dryRun,
+            manualLiveAllowed: gate.scopeLiveAllowed
+        }
+    }
+
     async _doQuickPriceApply(row, ctx, classKey, newPrice) {
         if (this._applyingPair) return
         const pairLabel = row.hub + "-" + row.dest
         this._applyingPair = pairLabel
 
-        this._applier = this._applier || new window.CentralInventoryQuickPriceApplier({applyEnabled: true})
-
-        const progress = window.RouteAssistantToast.progress(
-            "Applying " + classKey + " " + newPrice + " on " + pairLabel,
-            {progressPct: 30}
-        )
+        const progress = (typeof RouteAssistantToast !== "undefined")
+            ? RouteAssistantToast.progress(
+                "Applying " + classKey + " " + newPrice + " on " + pairLabel,
+                {progressPct: 30}
+            )
+            : null
 
         let result = null
         try {
+            if (!window.CentralInventoryQuickPriceApplier) {
+                throw new Error("CentralInventoryQuickPriceApplier is not loaded on this page.")
+            }
+            const gate = await this._quickPriceGate()
+            this._applier = new window.CentralInventoryQuickPriceApplier({
+                applyEnabled: gate.applyEnabled,
+                dryRunOnly: gate.dryRunOnly
+            })
             result = await this._applier.apply({
                 hub:       row.hub,
                 dest:      row.dest,
@@ -474,6 +579,7 @@ class CentralHubInventoryTile extends window.CentralHubTile {
         }
 
         this._applyingPair = null
+        this._editingPair = null
         await this.refresh()
     }
 }

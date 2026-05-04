@@ -46,7 +46,7 @@
                         server: ctx.server, airline: ctx.airline, weekId: "", hasSnapshot: false}
             }
             const indexKey = ctx.server + ctx.airline + "accounting:index"
-            const blob  = await chrome.storage.local.get([indexKey])
+            const blob  = await storageGet([indexKey])
             const index = Array.isArray(blob[indexKey]) ? blob[indexKey] : []
             if (!index.length) {
                 return {value: null, label: "no snapshots", kind: "muted",
@@ -56,7 +56,7 @@
             const week   = newest.weekId || newest.weekClosesAt || ""
             const keys   = ["bank", "income"].map((t) =>
                 ctx.server + ctx.airline + "accounting:" + t + ":" + week)
-            const recs   = await chrome.storage.local.get(keys)
+            const recs   = await storageGet(keys)
             const bankRec   = recs[keys[0]]
             const incomeRec = recs[keys[1]]
             const bank   = bankRec && bankRec.payload
@@ -99,6 +99,20 @@
                     scrapedAt: newestScrapedAt, hasSnapshot: false}
         }
     })
+
+    async function storageGet(keys) {
+        try {
+            if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return {}
+            return await chrome.storage.local.get(keys)
+        } catch (e) {
+            const msg = e && e.message ? e.message : String(e || "")
+            if (/Extension context invalidated/i.test(msg)) {
+                try { window.AESSiteSkin?.handleInvalidatedContext?.(e) } catch (_) {}
+                return {}
+            }
+            throw e
+        }
+    }
 
     async function pickContextAwait() {
         // Eager compute fires at content-script-load, often before the AS

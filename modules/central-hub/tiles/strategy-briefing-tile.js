@@ -9,7 +9,14 @@
  *
  * Section "operations" priority 0 — sits above World View on the
  * dashboard so it's the first thing the user sees each session.
+ *
+ * Wrapped in an IIFE because the manifest content_scripts injection model
+ * shares a single global scope across every tile file, and at least one
+ * sibling (strategy-slot-trading-tile.js) declared a top-level `function
+ * _text(T, s)` that overwrote our 1-arg `_text(s)` — turning every
+ * "no data yet" string into a TypeError. Keep helpers strictly local.
  */
+;(function () {
 class CentralHubStrategyBriefingTile extends window.CentralHubTile {
     constructor() {
         super()
@@ -22,6 +29,7 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         this._briefing       = null
         this._modalRoot      = null
         this._autoOpenChecked = false
+        this._currentDecisionOff = null
     }
 
     watchedStorageKeys() {
@@ -45,17 +53,73 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         this.subscribeBus("briefing:dismissed", () => {
             this.refresh().catch(() => {})
         })
+        // Slice 26 Phase 2 — refresh the "Engine learned" strip when the
+        // miner lands new lessons.
+        this.subscribeBus("data:strategy:lesson:mined", () => {
+            this._cachedLessons = null
+            this.refresh().catch(() => {})
+        })
+        // strategy:current-decision view: re-render summary when dispatch
+        // state changes so the "pending dispatch" hint stays live without
+        // each tile probing aesStrategy:dispatchPending storage on its own.
+        if (window.AesView && typeof window.AesView.subscribe === "function") {
+            this._currentDecisionOff = window.AesView.subscribe(
+                "strategy:current-decision",
+                () => this.refresh().catch(() => {})
+            )
+        }
         // Defer auto-open until after first refresh so the badge + body
         // render before the modal interrupts. Skipped on subsequent mounts
         // by the per-bucket guard inside _maybeAutoOpen.
         if (!this._autoOpenChecked) {
             this._autoOpenChecked = true
-            setTimeout(() => { this._maybeAutoOpen().catch(() => {}) }, 1500)
+            let scheduledActiveSection = null
+            try {
+                const got = await chrome.storage.local.get(["centralHub:settings"])
+                scheduledActiveSection = got
+                    && got["centralHub:settings"]
+                    && got["centralHub:settings"].activeSection || null
+            } catch (_) {}
+            setTimeout(() => {
+                this._maybeAutoOpen({scheduledActiveSection}).catch(() => {})
+            }, 1500)
         }
     }
 
+    dispose() {
+        try { if (this._currentDecisionOff) this._currentDecisionOff() } catch (_) {}
+        this._currentDecisionOff = null
+        if (typeof super.dispose === "function") super.dispose()
+    }
+
     openHandler() {
-        return () => this._openFullBriefing()
+        return async () => {
+            // _openFullBriefing early-returns if `_briefing` is null. When the
+            // user clicks Open before the first loadStatus() resolves (or on a
+            // page where buildBriefing() hasn't been called yet because the
+            // tile hasn't refreshed), the click would silently no-op. Compose
+            // a briefing on demand so the modal always opens.
+            if (!this._briefing && window.AesStrategyBriefing
+                    && typeof window.AesStrategyBriefing.buildBriefing === "function") {
+                try {
+                    const ctx = this._mountCtx || this.ctx || {}
+                    const accountId = (typeof window.__aesAccountId === "string" ? window.__aesAccountId : null)
+                    this._briefing = await window.AesStrategyBriefing.buildBriefing({
+                        server:    ctx.server  || null,
+                        airline:   ctx.airline || null,
+                        accountId: accountId
+                    })
+                } catch (e) {
+                    console.warn("[AES briefing tile] open buildBriefing threw", e)
+                }
+            }
+            this._openFullBriefing()
+            setTimeout(() => {
+                if (!this._modalRoot && typeof this._showOpenFallbackFeedback === "function") {
+                    this._showOpenFallbackFeedback()
+                }
+            }, 100)
+        }
     }
 
     // ── Status ──────────────────────────────────────────────────────────
@@ -80,6 +144,18 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         }
         this._briefing = report
 
+        // Slice 26 Phase 2 — fetch the most recent lessons for the in-tile
+        // strip. Fail-soft: if miner not loaded, leaves cache empty.
+        try {
+            if (window.AesStrategyLessonMiner
+                    && typeof window.AesStrategyLessonMiner.loadAll === "function") {
+                const lessons = await window.AesStrategyLessonMiner.loadAll()
+                this._cachedLessons = Array.isArray(lessons) ? lessons : []
+            } else {
+                this._cachedLessons = []
+            }
+        } catch (_) { this._cachedLessons = [] }
+
         const newCount = report.applied.length
             + report.opportunities.length
             + (report.drifted ? 1 : 0)
@@ -91,11 +167,20 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
                 ? (KIND ? KIND.WARN : "warn")
                 : (newCount > 0 ? (KIND ? KIND.OK : "ok") : (KIND ? KIND.MUTED : "muted"))
 
+        const decision = (window.AesView && window.AesView.get)
+            ? window.AesView.get("strategy:current-decision") : null
+        const dispatchHint = decision && decision.inFlight
+            ? " · pending dispatch"
+            : (decision && decision.applied
+                ? " · last applied " + _fmtRelative(decision.applied.ts)
+                : "")
+
         const summary = report.windowDays + "d window · "
             + report.applied.length + " applied · "
             + report.opportunities.length + " opportunities · "
             + (report.drifted ? "drift " + _fmtPct(report.drifted.driftPct) : "no drift")
             + (report.risk && report.risk.kind !== "none" ? " · " + report.risk.summary : "")
+            + dispatchHint
 
         return {
             badge:     newCount > 0 ? newCount + " NEW" : "NONE",
@@ -135,6 +220,13 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         grid.appendChild(this._renderRiskCard(report))
         hostEl.appendChild(grid)
 
+        // Slice 26 Phase 2 — "Engine learned" strip below the 2×2 grid.
+        // Fail-soft: silent when lesson-miner isn't loaded or no lessons exist.
+        try {
+            const lessonsCard = this._renderLessonsCardSync()
+            if (lessonsCard) hostEl.appendChild(lessonsCard)
+        } catch (e) { console.warn("[briefing] lessons card render failed", e) }
+
         const footer = document.createElement("div")
         footer.style.cssText = [
             "display:flex",
@@ -167,6 +259,44 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         cta.addEventListener("click", () => this._openFullBriefing())
         footer.appendChild(cta)
         hostEl.appendChild(footer)
+    }
+
+    /**
+     * Slice 26 Phase 2 — full-width "Engine learned" strip below the 2×2
+     * grid. Returns null when no lessons exist so the strip is invisible
+     * until lesson-miner has produced something to surface.
+     */
+    _renderLessonsCardSync() {
+        const lessons = this._cachedLessons
+        if (!Array.isArray(lessons) || !lessons.length) return null
+        const T = window.AESTokens
+        const top = lessons.slice(0, 3)
+        const card = _card(T, "Engine learned", top.length + " of " + lessons.length + " patterns")
+        for (const lesson of top) {
+            const row = document.createElement("div")
+            row.style.cssText = [
+                "display:flex",
+                "justify-content:space-between",
+                "align-items:center",
+                "gap:" + T.sp[2],
+                "padding:" + T.sp[1] + " 0",
+                "border-bottom:1px dashed " + T.color.paperRule
+            ].join(";")
+            const desc = document.createElement("div")
+            desc.style.cssText = "font:600 11px " + T.font.display + ";color:" + T.color.oxide + ";"
+                + "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;"
+            const c = lesson.attrCluster || {}
+            const parts = [c.distanceBand, c.incumbentBand]
+            if (c.hub && c.hub !== "*") parts.push(c.hub)
+            if (c.equipFamily && c.equipFamily !== "*") parts.push(c.equipFamily)
+            desc.textContent = parts.filter(Boolean).join(" · ")
+            row.appendChild(desc)
+            const tone = lesson.lift >= 0 ? "ok" : "err"
+            const sign = lesson.lift >= 0 ? "+" : ""
+            row.appendChild(_chip(T, sign + (lesson.lift * 100).toFixed(0) + "% · n=" + lesson.n, tone))
+            card.appendChild(row)
+        }
+        return card
     }
 
     _renderAppliedCard(report) {
@@ -335,7 +465,74 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
             cta.addEventListener("click", () => this._handleRiskCta(r.ctaTarget))
             card.appendChild(cta)
         }
+        // K12 — Conductor risk register (top fires + drift proposals).
+        const reg = report.riskRegister
+        if (reg && (reg.count > 0 || (reg.driftProposals && reg.driftProposals.length))) {
+            this._appendRiskRegister(card, reg, T)
+        }
         return card
+    }
+
+    _appendRiskRegister(card, reg, T) {
+        const sep = document.createElement("div")
+        sep.style.cssText = "margin-top:" + T.sp[2] + ";padding-top:" + T.sp[2]
+            + ";border-top:1px solid " + T.color.paperRule + ";"
+        const hdr = document.createElement("div")
+        hdr.style.cssText = "font:600 10.5px " + T.font.display + ";color:" + T.color.oxide2
+            + ";letter-spacing:" + T.track.caps + ";text-transform:uppercase;margin-bottom:" + T.sp[1] + ";"
+        hdr.textContent = "Active scenarios · " + reg.count
+        sep.appendChild(hdr)
+
+        if (reg.byCategory) {
+            const cats = document.createElement("div")
+            cats.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:" + T.sp[1] + ";font:10.5px " + T.font.display + ";color:" + T.color.oxide2 + ";"
+            const labels = {financial: "Fin", operational: "Ops", competitive: "Cmp", regulatory: "Reg"}
+            for (const k of Object.keys(labels)) {
+                const n = reg.byCategory[k] || 0
+                if (n === 0) continue
+                const chip = document.createElement("span")
+                chip.style.cssText = "padding:1px 6px;border-radius:3px;background:rgba(148,163,184,0.10);"
+                chip.textContent = labels[k] + " " + n
+                cats.appendChild(chip)
+            }
+            if (cats.childElementCount > 0) sep.appendChild(cats)
+        }
+
+        const top = (reg.fires || []).slice(0, 3)
+        for (const f of top) {
+            const row = document.createElement("div")
+            row.style.cssText = "font:11px " + T.font.display + ";color:" + T.color.oxide2 + ";line-height:1.35;margin-top:" + T.sp[1] + ";"
+            const dot = document.createElement("span")
+            const sev = f.severity || "info"
+            dot.style.cssText = "display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:"
+                + (sev === "alert" ? T.color.crimson : sev === "warn" ? T.color.amber : T.color.moss)
+            row.appendChild(dot)
+            row.appendChild(document.createTextNode(f.label + " — " + (f.rationale || "").slice(0, 80)))
+            if (f.openUrl) {
+                row.style.cursor = "pointer"
+                row.title = "Open " + f.openUrl
+                row.addEventListener("click", () => { try { window.open(f.openUrl, "_blank") } catch (_) {} })
+            }
+            sep.appendChild(row)
+        }
+
+        if (reg.driftProposals && reg.driftProposals.length) {
+            const dh = document.createElement("div")
+            dh.style.cssText = "font:600 10.5px " + T.font.display + ";color:" + T.color.oxide2
+                + ";letter-spacing:" + T.track.caps + ";text-transform:uppercase;margin-top:" + T.sp[2] + ";"
+            dh.textContent = "Self-tuning · " + reg.driftProposals.length
+            sep.appendChild(dh)
+            for (const p of reg.driftProposals.slice(0, 3)) {
+                const r = document.createElement("div")
+                r.style.cssText = "font:11px " + T.font.display + ";color:" + T.color.oxide2 + ";line-height:1.35;margin-top:" + T.sp[1] + ";"
+                r.textContent = p.scenarioId + "." + p.key + " · " + (p.current != null ? p.current : "—")
+                    + " → " + (p.proposed != null ? p.proposed : "—")
+                    + (p.accepted ? " · applied" : " · pending")
+                if (p.reason) r.title = p.reason
+                sep.appendChild(r)
+            }
+        }
+        card.appendChild(sep)
     }
 
     // ── Modal — full briefing ───────────────────────────────────────────
@@ -347,6 +544,9 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         if (!report) return
 
         const overlay = document.createElement("div")
+        overlay.className = "aes-briefing-modal"
+        overlay.dataset.aesStrategySurface = "briefing"
+        overlay.tabIndex = -1
         overlay.style.cssText = [
             "position:fixed", "inset:0", "z-index:2147483640",
             "background:rgba(11,18,32,0.7)",
@@ -358,6 +558,10 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         })
 
         const dialog = document.createElement("div")
+        dialog.className = "aes-briefing-dialog"
+        dialog.setAttribute("role", "dialog")
+        dialog.setAttribute("aria-modal", "true")
+        dialog.setAttribute("aria-label", "Executive briefing")
         dialog.style.cssText = [
             "background:" + T.color.bone,
             "border:" + T.geom.bw2 + " solid " + T.color.oxide,
@@ -418,6 +622,13 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         content.appendChild(this._renderModalSection("Applied · top " + report.applied.length, this._renderModalApplied(report)))
         content.appendChild(this._renderModalSection("Drifted outcome", this._renderModalDrift(report)))
         content.appendChild(this._renderModalSection("Opportunities · top " + report.opportunities.length, this._renderModalOpportunities(report)))
+        // K12 — Risk register: dedicated section per CONDUCTOR-ROADMAP §K12.
+        // Sourced from report.riskRegister (Conductor scenario fires + drift
+        // proposals, aggregated by category). Hidden when empty.
+        const reg = report.riskRegister
+        if (reg && (reg.count > 0 || (reg.driftProposals && reg.driftProposals.length))) {
+            content.appendChild(this._renderModalSection("Risk register · " + reg.count, this._renderModalRiskRegister(report)))
+        }
         content.appendChild(this._renderModalSection("Risk", this._renderModalRisk(report)))
         if (report.diagnostics && (report.diagnostics.missing.length || report.diagnostics.notes.length)) {
             content.appendChild(this._renderModalSection("Diagnostics", this._renderModalDiagnostics(report)))
@@ -459,21 +670,29 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         this._modalRoot = overlay
 
         const escHandler = (e) => {
-            if (e.key === "Escape") {
+            if (e.key === "Escape" || e.key === "Esc" || e.code === "Escape") {
+                e.preventDefault()
                 e.stopPropagation()
                 this._closeModal({reason: "escape"})
             }
         }
         document.addEventListener("keydown", escHandler, true)
+        overlay.addEventListener("keydown", escHandler, true)
         this._modalEsc = escHandler
+        setTimeout(() => {
+            try { overlay.focus({preventScroll: true}) } catch (_) {}
+        }, 0)
 
         this._emitBus("briefing:opened", {windowDays: report.windowDays})
     }
 
     _closeModal(opts) {
         if (!this._modalRoot) return
+        if (this._modalEsc) {
+            document.removeEventListener("keydown", this._modalEsc, true)
+            try { this._modalRoot.removeEventListener("keydown", this._modalEsc, true) } catch (_) {}
+        }
         try { this._modalRoot.remove() } catch (_) {}
-        if (this._modalEsc) document.removeEventListener("keydown", this._modalEsc, true)
         this._modalRoot = null
         this._modalEsc  = null
         this._emitBus("briefing:dismissed", opts || {})
@@ -745,6 +964,120 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         return card
     }
 
+    /** K12 — Risk register modal section. Renders the full fire list (not
+     *  the top-3 summary used on the Risk card), keyed by category, with
+     *  drift proposals appended below. Source: report.riskRegister built by
+     *  AesStrategyBriefing._buildRiskRegister. */
+    _renderModalRiskRegister(report) {
+        const T = window.AESTokens
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[2] + ";"
+        const reg = report.riskRegister || {}
+        const fires = Array.isArray(reg.fires) ? reg.fires : []
+
+        if (reg.byCategory) {
+            const summary = document.createElement("div")
+            summary.style.cssText = "display:flex;gap:" + T.sp[2] + ";flex-wrap:wrap;font:11px " + T.font.display
+                + ";color:" + T.color.oxide2 + ";"
+            const labels = {financial: "Financial", operational: "Operational",
+                            competitive: "Competitive", regulatory: "Regulatory"}
+            for (const k of Object.keys(labels)) {
+                const n = reg.byCategory[k] || 0
+                if (n === 0) continue
+                const chip = document.createElement("span")
+                chip.style.cssText = "padding:2px 8px;border:1px solid " + T.color.paperRule
+                    + ";border-radius:" + T.geom.radius + ";"
+                chip.textContent = labels[k] + " · " + n
+                summary.appendChild(chip)
+            }
+            if (summary.childElementCount > 0) wrap.appendChild(summary)
+        }
+
+        if (!fires.length) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "font:12px " + T.font.display + ";color:" + T.color.oxide2 + ";font-style:italic;"
+            empty.textContent = "No active scenarios. Conductor will populate this as fires arrive."
+            wrap.appendChild(empty)
+        } else {
+            const list = document.createElement("div")
+            list.style.cssText = "display:flex;flex-direction:column;gap:" + T.sp[1] + ";"
+            for (const f of fires) {
+                const row = document.createElement("div")
+                row.style.cssText = "display:grid;grid-template-columns:8px auto 1fr auto;gap:" + T.sp[2]
+                    + ";align-items:baseline;padding:" + T.sp[1] + " 0;border-bottom:1px dashed " + T.color.paperRule + ";"
+                const sev = f.severity || "info"
+                const dot = document.createElement("span")
+                dot.style.cssText = "width:8px;height:8px;border-radius:50%;background:"
+                    + (sev === "alert" ? T.color.crimson : sev === "warn" ? T.color.amber : T.color.moss) + ";"
+                row.appendChild(dot)
+                const idCell = document.createElement("span")
+                idCell.style.cssText = "font:600 12px " + T.font.display + ";color:" + T.color.oxide + ";"
+                idCell.textContent = f.label || f.scenarioId
+                row.appendChild(idCell)
+                const reason = document.createElement("span")
+                reason.style.cssText = "font:11px " + T.font.display + ";color:" + T.color.oxide2 + ";"
+                    + "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+                reason.textContent = f.rationale || ""
+                reason.title = f.rationale || ""
+                row.appendChild(reason)
+                const meta = document.createElement("span")
+                meta.style.cssText = "font:11px " + T.font.mono + ";color:" + T.color.slate + ";"
+                meta.textContent = (f.category || "operational")
+                    + (f.firedAt ? " · " + _fmtRelative(Date.now() - f.firedAt) : "")
+                row.appendChild(meta)
+                if (f.openUrl) {
+                    row.style.cursor = "pointer"
+                    row.title = "Open " + f.openUrl
+                    row.addEventListener("click", () => { try { window.open(f.openUrl, "_blank") } catch (_) {} })
+                }
+                list.appendChild(row)
+
+                // Slice E4 — K15 forecast sparkline. Looks up the scenario's
+                // forecast envelope from forecast-store; renders a 60×16 P10..P90
+                // band when the deviation is meaningful (>0.5σ either side).
+                // Safely degrades when the forecast cache or scenario isn't keyed.
+                const fc = (typeof window !== "undefined" && window.AesConductorForecastStore)
+                    ? window.AesConductorForecastStore.peek() : null
+                if (fc && f.scenarioId) {
+                    const env = _findForecastForScenario(fc, f.scenarioId)
+                    if (env) {
+                        const spark = _renderForecastSparkline(env, T)
+                        if (spark) {
+                            const sparkRow = document.createElement("div")
+                            sparkRow.style.cssText = "grid-column: 2 / 5;padding-top:" + T.sp[1] + ";"
+                            sparkRow.appendChild(spark)
+                            list.appendChild(sparkRow)
+                        }
+                    }
+                }
+            }
+            wrap.appendChild(list)
+        }
+
+        if (reg.driftProposals && reg.driftProposals.length) {
+            const dh = document.createElement("div")
+            dh.style.cssText = "margin-top:" + T.sp[2] + ";font:600 11px " + T.font.display
+                + ";color:" + T.color.oxide + ";letter-spacing:" + T.track.caps
+                + ";text-transform:uppercase;"
+            dh.textContent = "Self-tuning · " + reg.driftProposals.length + " proposal"
+                + (reg.driftProposals.length === 1 ? "" : "s")
+            wrap.appendChild(dh)
+            for (const p of reg.driftProposals.slice(0, 6)) {
+                const row = document.createElement("div")
+                row.style.cssText = "font:11px " + T.font.mono + ";color:" + T.color.oxide2
+                    + ";padding:" + T.sp[1] + " 0;border-bottom:1px dashed " + T.color.paperRule + ";"
+                row.textContent = p.scenarioId + "." + p.key + "  "
+                    + (p.current != null ? p.current : "—")
+                    + " → " + (p.proposed != null ? p.proposed : "—")
+                    + (p.accepted ? "  · applied" : "  · pending")
+                if (p.reason) row.title = p.reason
+                wrap.appendChild(row)
+            }
+        }
+
+        return wrap
+    }
+
     _renderModalDiagnostics(report) {
         const T = window.AESTokens
         const wrap = document.createElement("div")
@@ -764,9 +1097,21 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
 
     // ── Auto-open guard ─────────────────────────────────────────────────
 
-    async _maybeAutoOpen() {
+    async _maybeAutoOpen(opts) {
+        opts = opts || {}
         try {
-            const settingsGot = await chrome.storage.local.get(["settings"])
+            const settingsGot = await chrome.storage.local.get(["settings", "centralHub:settings"])
+            const hubSettings = settingsGot && settingsGot["centralHub:settings"]
+            const activeSection = hubSettings && hubSettings.activeSection
+            if (opts.scheduledActiveSection && opts.scheduledActiveSection !== this.section) return
+            if (opts.scheduledActiveSection && activeSection
+                    && activeSection !== opts.scheduledActiveSection) return
+            if (activeSection && activeSection !== this.section) return
+            const expanded = Array.isArray(hubSettings && hubSettings.expandedTiles)
+                ? hubSettings.expandedTiles.map(String)
+                : []
+            if (expanded.some(id => id !== this.id && /^strategy/.test(id))) return
+            if (document.querySelector("[data-aes-strategy-surface], .aes-strategy-modal, .aes-layered-panel")) return
             const cfg = settingsGot
                 && settingsGot.settings
                 && settingsGot.settings.strategy
@@ -837,10 +1182,13 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
         }
     }
 
-    _openStrategyPanel() {
+    _openStrategyPanel(opts) {
         try {
             if (window.AesStrategyPanel && typeof window.AesStrategyPanel.open === "function") {
-                window.AesStrategyPanel.open()
+                const ret = window.AesStrategyPanel.open(opts || {})
+                if (ret && typeof ret.catch === "function") {
+                    ret.catch(e => console.warn("[AES briefing tile] open strategy panel failed", e))
+                }
             }
         } catch (e) { console.warn("[AES briefing tile] open strategy panel threw", e) }
     }
@@ -854,9 +1202,7 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
     }
 
     _openRoutePanelToSettings() {
-        // No deep-link for settings — defer to Strategy panel which carries
-        // the apply-tier surface.  Future Slice 17 can add a deep-link.
-        this._openStrategyPanel()
+        this._openStrategyPanel({section: "settings", domain: "price"})
     }
 
     _emitBus(name, payload) {
@@ -988,6 +1334,61 @@ function _fmtRelative(ts) {
     return d + "d ago"
 }
 
+/** Slice E4 — find a forecast envelope keyed by scenarioId. The forecast
+ *  store keys on `<metric>:<scope>:<scopeId>` and stamps `scenarioId` on
+ *  each entry; we scan once. Returns null when no entry matches. */
+function _findForecastForScenario(blob, scenarioId) {
+    if (!blob || !scenarioId) return null
+    for (const k of Object.keys(blob)) {
+        const e = blob[k]
+        if (e && e.scenarioId === scenarioId && e.p50 != null) return e
+    }
+    return null
+}
+
+/** Slice E4 — 60×16 SVG sparkline of P10..P90 fan. Returns null when the
+ *  envelope lacks the trio or when min/max collapse (no spread to show).
+ *  Pure DOM construction; no animations. Tooltip on hover. */
+function _renderForecastSparkline(env, T) {
+    if (!env || env.p10 == null || env.p50 == null || env.p90 == null) return null
+    const lo = Math.min(env.p10, env.p50, env.p90)
+    const hi = Math.max(env.p10, env.p50, env.p90)
+    const span = hi - lo
+    if (!isFinite(span) || span === 0) return null
+    const W = 60, H = 16
+    const yOf = (v) => H - 2 - ((v - lo) / span) * (H - 4)
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+    svg.setAttribute("width",  W)
+    svg.setAttribute("height", H)
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H)
+    svg.style.cssText = "vertical-align:middle"
+    const fan = document.createElementNS("http://www.w3.org/2000/svg", "rect")
+    const yHi = yOf(env.p90), yLo = yOf(env.p10)
+    fan.setAttribute("x", 1)
+    fan.setAttribute("y", yHi)
+    fan.setAttribute("width",  W - 2)
+    fan.setAttribute("height", Math.max(1, yLo - yHi))
+    fan.setAttribute("fill", "rgba(96,165,250,0.18)")
+    svg.appendChild(fan)
+    const median = document.createElementNS("http://www.w3.org/2000/svg", "line")
+    median.setAttribute("x1", 1); median.setAttribute("x2", W - 1)
+    median.setAttribute("y1", yOf(env.p50)); median.setAttribute("y2", yOf(env.p50))
+    median.setAttribute("stroke", "#60a5fa"); median.setAttribute("stroke-width", "1")
+    svg.appendChild(median)
+    const wrap = document.createElement("span")
+    wrap.style.cssText = "display:inline-flex;align-items:center;gap:" + (T && T.sp ? T.sp[1] : "4px") + ";"
+    wrap.appendChild(svg)
+    const label = document.createElement("span")
+    label.style.cssText = "font:10px " + (T && T.font && T.font.mono || "monospace")
+        + ";color:" + (T && T.color && T.color.slate || "#94a3b8")
+    label.textContent = (env.model || "linear") + " " + (env.horizon ? env.horizon + "d" : "")
+        + "  " + env.p10.toFixed(1) + "/" + env.p50.toFixed(1) + "/" + env.p90.toFixed(1)
+    wrap.appendChild(label)
+    wrap.title = "Forecast " + (env.model || "linear") + " · " + (env.reason || "")
+        + " · n=" + (env.n || 0)
+    return wrap
+}
+
 window.CentralHubStrategyBriefingTile = CentralHubStrategyBriefingTile
 
 if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
@@ -998,3 +1399,4 @@ if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
         factory:  () => new CentralHubStrategyBriefingTile()
     })
 }
+})();

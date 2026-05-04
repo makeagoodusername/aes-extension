@@ -161,13 +161,17 @@
     }
 
     /**
-     * Compute column count from a container width and the current
-     * `--aes-tile-min-col` value. Pure.
+     * Compute column count from a container width and a per-column
+     * min-width threshold. Pure. `minColPx` falls back to
+     * MIN_COL_WIDTH_FALLBACK when missing/invalid so callers may
+     * pass the resolved `--aes-tile-min-col` value.
      */
-    function columnCountFor(containerWidthPx) {
+    function columnCountFor(containerWidthPx, minColPx) {
         const w = Number(containerWidthPx)
         if (!isFinite(w) || w <= 0) return 1
-        const minCol = MIN_COL_WIDTH_FALLBACK
+        const minColRaw = Number(minColPx)
+        const minCol = (isFinite(minColRaw) && minColRaw > 0)
+            ? minColRaw : MIN_COL_WIDTH_FALLBACK
         const raw = Math.floor((w + COLUMN_GAP_PX) / (minCol + COLUMN_GAP_PX))
         return Math.max(COLUMN_COUNT_MIN, Math.min(COLUMN_COUNT_MAX, raw))
     }
@@ -200,6 +204,7 @@
         host.classList.add("aes-cascade-pane")
         host.style.cssText = [
             "display:flex",
+            "flex-wrap:wrap",
             "gap:" + COLUMN_GAP_PX + "px",
             "align-items:flex-start",
             "width:100%"
@@ -226,27 +231,10 @@
         function _layout() {
             if (state.disposed) return
             const cc = state.columnCount
-            // Build column shells if count changed.
-            if (state.columnEls.length !== cc) {
-                host.innerHTML = ""
-                state.columnEls = []
-                for (let i = 0; i < cc; i++) {
-                    const col = document.createElement("div")
-                    col.className = "aes-cascade-pane__col"
-                    col.dataset.colIdx = String(i)
-                    col.style.cssText = [
-                        "flex:1 1 0",
-                        "min-width:0",
-                        "display:flex",
-                        "flex-direction:column",
-                        "gap:" + COLUMN_GAP_PX + "px"
-                    ].join(";")
-                    host.appendChild(col)
-                    state.columnEls.push(col)
-                }
-            } else {
-                for (const col of state.columnEls) col.innerHTML = ""
-            }
+            // Bands may interleave column groups with full-width banners,
+            // so we always clear the host and re-emit the entire flow.
+            host.innerHTML = ""
+            state.columnEls = []
 
             const visible = state.topicFilter
                 ? state.tiles.filter(t => _tileMatchesTopics(t, state.topicFilter))
@@ -262,25 +250,42 @@
             })
             const packed = packCascade(effective, cc, state.heights, state.fullSet)
 
-            // Render bands top→bottom.
+            // Render bands top→bottom. Each cascade band emits its own
+            // column row so a banner naturally breaks the masonry into
+            // sub-cascades stitched by full-width rows.
             for (const band of packed.bands) {
                 if (band.kind === "banner") {
-                    // Full-row banner — hosted in a dedicated full-width
-                    // sub-row that visually closes the current cascade.
                     const banner = document.createElement("div")
                     banner.className = "aes-cascade-pane__banner"
                     banner.style.cssText = [
                         "flex:0 0 100%",
-                        "width:100%",
-                        "order:" + band._order
+                        "width:100%"
                     ].join(";")
                     if (band.tile && band.tile._root) banner.appendChild(band.tile._root)
                     host.appendChild(banner)
                     continue
                 }
+                // Cascade band: one row of `cc` columns.
+                const rowEl = document.createElement("div")
+                rowEl.className = "aes-cascade-pane__row"
+                rowEl.style.cssText = [
+                    "flex:0 0 100%",
+                    "width:100%",
+                    "display:flex",
+                    "gap:" + COLUMN_GAP_PX + "px",
+                    "align-items:flex-start"
+                ].join(";")
                 for (let ci = 0; ci < band.columns.length; ci++) {
-                    const col = state.columnEls[ci]
-                    if (!col) continue
+                    const col = document.createElement("div")
+                    col.className = "aes-cascade-pane__col"
+                    col.dataset.colIdx = String(ci)
+                    col.style.cssText = [
+                        "flex:1 1 0",
+                        "min-width:0",
+                        "display:flex",
+                        "flex-direction:column",
+                        "gap:" + COLUMN_GAP_PX + "px"
+                    ].join(";")
                     for (const slot of band.columns[ci]) {
                         if (!slot.tile || !slot.tile._root) continue
                         col.appendChild(slot.tile._root)
@@ -290,7 +295,10 @@
                         // future column-spanning grid can pick it up.
                         slot.tile._root.dataset.cascadeSpan = String(slot.span || 1)
                     }
+                    rowEl.appendChild(col)
+                    state.columnEls.push(col)
                 }
+                host.appendChild(rowEl)
             }
 
             // CH-W4 — attach ResizeObserver to each visible tile so

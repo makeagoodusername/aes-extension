@@ -49,11 +49,28 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
             if (!hub || !dest) return
             const code = String(hub).toUpperCase()
             if (this._focusedHub && this._focusedHub === code) return
+            // Don't persist a hub that isn't in the current snapshot — _renderBodySafe
+            // will fall back to hubs[0] anyway, but the bad value would still pollute
+            // settings until the user picks a real hub. Defer persist to render path,
+            // which runs _resolveFocusedHub against the actual hub list.
             this._focusedHub = code
+            this._pendingPersist = code
             if (!this.expanded) this.toggle()
-            this._persistFocus(code)
             this._renderBodySafe()
         })
+    }
+
+    // F-9228-402: refresh() is invoked by the watched-storage bridge whenever
+    // worldView:settings:* changes. When we just wrote that key ourselves
+    // (hub pick, deferred bus persist) we already re-rendered, so swallow the
+    // immediate echo. The flag is one-shot — any subsequent storage change
+    // (e.g. a snapshot scrape) re-renders normally.
+    async refresh() {
+        if (this._suppressNextStorageRefresh) {
+            this._suppressNextStorageRefresh = false
+            return
+        }
+        return super.refresh()
     }
 
     async _persistFocus(hub) {
@@ -105,25 +122,69 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
         catch (_) { return null }
     }
 
+    async _loadRouteIntelFreshness(snapshot, hub) {
+        const out = {maxTs: 0, populatedCount: 0}
+        if (!snapshot || !hub) return out
+        if (typeof window.RouteAssistantMarketsPageScraper === "undefined"
+            || typeof window.RouteAssistantMarketsPageScraper.bulkLoadCache !== "function") {
+            return out
+        }
+
+        const hubU = String(hub).toUpperCase()
+        const hubRec = (snapshot.hubs || []).find(h => h && String(h.iata || "").toUpperCase() === hubU)
+        const pairs = ((hubRec && hubRec.byRoute) || [])
+            .map(r => ({hub: hubU, dest: r && r.dest}))
+            .filter(p => p.dest)
+        if (!pairs.length) return out
+
+        try {
+            const cache = await window.RouteAssistantMarketsPageScraper.bulkLoadCache(pairs, {
+                families: ["competitors", "marketShare"]
+            })
+            if (!cache || typeof cache.get !== "function") return out
+            for (const p of pairs) {
+                const rec = cache.get(hubU + "-" + String(p.dest).toUpperCase())
+                if (!rec) continue
+                const ts = Math.max(
+                    Number(rec.competitors && rec.competitors.scrapedAt) || 0,
+                    Number(rec.marketShare && rec.marketShare.scrapedAt) || 0
+                )
+                if (!ts) continue
+                out.populatedCount++
+                if (ts > out.maxTs) out.maxTs = ts
+            }
+        } catch (_) {}
+        return out
+    }
+
     async _buildOrLoadNetwork(snapshot, alliance, hub) {
         const server = (snapshot && snapshot.server) || (this.ctx && this.ctx.server)
         const airline = (snapshot && snapshot.airlineCode) || (this.ctx && this.ctx.airline)
 
         const ownIds = await this._collectOwnEnterpriseIds()
-        const partnerCache = await this._loadPartnerCache(server, ownIds)
+        const partnerCache = await this._loadPartnerCache(ownIds)
+        const routeIntelFreshness = await this._loadRouteIntelFreshness(snapshot, hub)
 
         if (window.WorldViewNetworkCache) {
             const cached = await window.WorldViewNetworkCache.get(server, airline, hub)
             if (cached) {
-                // Cache valid only if alliance + partner cache haven't moved on.
+                // Cache valid only if alliance, partner cache, and per-route
+                // market intel haven't moved on.
                 const cachedAt = (cached.sourceFreshness && cached.sourceFreshness.allianceTs) || 0
                 const allianceTs = (alliance && alliance.scrapedAt) || 0
                 const cachedPartnerCount = cached.carrierIndex
                     && Array.isArray(cached.carrierIndex.partnerByEnterpriseId)
                     ? cached.carrierIndex.partnerByEnterpriseId.length
                     : 0
+                const cachedRouteIntelTs = (cached.sourceFreshness && cached.sourceFreshness.routeIntelTs) || 0
+                const cachedRouteIntelCount = (cached.sourceFreshness && cached.sourceFreshness.routeIntelCount) || 0
+                const cachedSnapshotTs = (cached.sourceFreshness && cached.sourceFreshness.snapshotTs) || 0
+                const liveSnapshotTs = (snapshot && snapshot.ts) || 0
                 const liveSameSize = partnerCache.size === cachedPartnerCount
-                if (allianceTs <= cachedAt + 1000 && liveSameSize) return cached
+                const liveRouteIntelSame = routeIntelFreshness.maxTs <= cachedRouteIntelTs + 1000
+                    && routeIntelFreshness.populatedCount === cachedRouteIntelCount
+                const liveSnapshotSame = liveSnapshotTs <= cachedSnapshotTs + 1000
+                if (allianceTs <= cachedAt + 1000 && liveSameSize && liveRouteIntelSame && liveSnapshotSame) return cached
             }
         }
 
@@ -135,6 +196,11 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
             ownEnterpriseIds: ownIds,
             hub: hub
         })
+        if (network) {
+            network.sourceFreshness = network.sourceFreshness || {}
+            network.sourceFreshness.routeIntelTs = routeIntelFreshness.maxTs || null
+            network.sourceFreshness.routeIntelCount = routeIntelFreshness.populatedCount || 0
+        }
 
         if (window.WorldViewNetworkCache) {
             try { await window.WorldViewNetworkCache.put(server, airline, hub, network) }
@@ -155,7 +221,11 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
         return []
     }
 
-    async _loadPartnerCache(server, ownIds) {
+    // F-9228-405: dropped the `server` arg — bulkLoadCache is server-agnostic
+    // (records carry .server but the cache fetch enumerates by ownIds). The
+    // unused arg implied a contract that doesn't exist and could mislead
+    // future callers into thinking the lookup was server-scoped.
+    async _loadPartnerCache(ownIds) {
         const map = new Map()
         if (!ownIds || !ownIds.length) return map
         if (typeof window.RouteAssistantContractualPartnersScraper === "undefined") return map
@@ -229,6 +299,17 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
             const focusedHub = await this._resolveFocusedHub(snapshot)
             this._focusedHub = focusedHub
 
+            // F-9228-401: persist a bus-deferred focus only after _resolveFocusedHub
+            // confirms the requested hub exists in the snapshot. Otherwise drop it
+            // so settings storage doesn't carry hubs the user can't actually pick.
+            if (this._pendingPersist) {
+                if (this._pendingPersist === focusedHub) {
+                    this._suppressNextStorageRefresh = true
+                    this._persistFocus(focusedHub)
+                }
+                this._pendingPersist = null
+            }
+
             // Hub picker first — always visible even when there's no data.
             const pickerHost = document.createElement("div")
             host.appendChild(pickerHost)
@@ -237,6 +318,10 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
                 focused: focusedHub,
                 onPick: async (iata) => {
                     this._focusedHub = iata
+                    // F-9228-402: persist would echo back via the watched-storage
+                    // listener and trigger a duplicate refresh on top of our
+                    // direct re-render. Mark the echo so refresh() bails on it.
+                    this._suppressNextStorageRefresh = true
                     await this._persistFocus(iata)
                     this._renderBodySafe()
                 }
@@ -274,9 +359,12 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
                 const waveHost = document.createElement("div")
                 host.appendChild(waveHost)
                 try { window.WorldViewWavePane.render(waveHost, network, {
-                    onFlightClick: (flight, route) => {
-                        if (!route) return
-                        this._emitFocusRoute(focusedHub, {dest: route.destination || route.dest})
+                    onFlightClick: (flight, hubIata) => {
+                        if (!flight) return
+                        const hub = String(hubIata || focusedHub).toUpperCase()
+                        const dest = flight.destination === hub ? flight.origin : flight.destination
+                        if (!dest) return
+                        this._emitFocusRoute(hub, {dest: dest})
                     }
                 }) } catch (e) { console.warn("[AES WorldView] wave-pane render failed", e) }
             }
@@ -312,7 +400,7 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
                         })
                         : []
                     const partnerCacheMap = await this._loadPartnerCache(
-                        network.server, network.carrierIndex.ownEnterpriseIds || []
+                        network.carrierIndex.ownEnterpriseIds || []
                     )
                     const interlineRecs = window.WorldViewRecommendInterline
                         ? window.WorldViewRecommendInterline.rank({

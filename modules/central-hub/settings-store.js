@@ -15,6 +15,7 @@
  */
 class CentralHubSettings {
     static KEY = "centralHub:settings"
+    static _memory = {}
 
     static SECTIONS = ["fleet", "routes", "operations", "finance", "tools"]
 
@@ -45,8 +46,12 @@ class CentralHubSettings {
             // legacy section flow ("classic") and the salience-ranked
             // waterfall ("cascade"). Defaults to classic; cascadePromptedAt
             // gates the first-boot prompt (§4.18 — no silent default flips).
-            layoutMode:           "classic",      // "classic" | "cascade"
-            cascadePromptedAt:    0,
+            // cascadePromptDismissed is a permanent-reject flag set by the
+            // "Don't show again" CTA in the prompt — when true the prompt
+            // never re-fires regardless of cascadePromptedAt.
+            layoutMode:               "classic",      // "classic" | "cascade"
+            cascadePromptedAt:        0,
+            cascadePromptDismissed:   false,
             // CH-W1 — per-input weights for the salience scorer. Empty
             // map → CentralHubSalience.DEFAULT_WEIGHTS used. The
             // Customization → Dashboard section exposes sliders.
@@ -75,7 +80,7 @@ class CentralHubSettings {
      * Service Profile/Station Auto from "routes" to "operations").
      */
     static async load() {
-        const blob = await chrome.storage.local.get([this.KEY])
+        const blob = await this._getStorage().get([this.KEY])
         const stored = blob[this.KEY] || {}
         const merged = Object.assign(this.defaults(), stored)
         if (this.SECTIONS.indexOf(merged.activeSection) < 0) {
@@ -95,6 +100,7 @@ class CentralHubSettings {
         if (typeof merged.cubistColorBlind !== "boolean") merged.cubistColorBlind = false
         if (merged.layoutMode !== "cascade")             merged.layoutMode      = "classic"
         if (typeof merged.cascadePromptedAt !== "number") merged.cascadePromptedAt = 0
+        if (typeof merged.cascadePromptDismissed !== "boolean") merged.cascadePromptDismissed = false
         if (!merged.salienceWeights || typeof merged.salienceWeights !== "object") {
             merged.salienceWeights = {}
         }
@@ -110,7 +116,7 @@ class CentralHubSettings {
     }
 
     static async save(settings) {
-        return chrome.storage.local.set({[this.KEY]: settings})
+        return this._getStorage().set({[this.KEY]: settings})
     }
 
     static async patch(partial) {
@@ -118,6 +124,63 @@ class CentralHubSettings {
         const next = Object.assign(current, partial)
         await this.save(next)
         return next
+    }
+
+    static _getStorage() {
+        const local = typeof chrome !== "undefined"
+            && chrome.storage
+            && chrome.storage.local
+        if (local && typeof local.get === "function" && typeof local.set === "function") {
+            return {
+                get: async (keys) => {
+                    try {
+                        return await local.get(keys)
+                    } catch (err) {
+                        console.warn("[AES Hub] settings storage read failed; using in-memory fallback", err)
+                        return this._memoryGet(keys)
+                    }
+                },
+                set: async (items) => {
+                    try {
+                        await local.set(items)
+                        Object.assign(this._memory, items || {})
+                    } catch (err) {
+                        console.warn("[AES Hub] settings storage write failed; using in-memory fallback", err)
+                        Object.assign(this._memory, items || {})
+                    }
+                }
+            }
+        }
+        return {
+            get: async (keys) => this._memoryGet(keys),
+            set: async (items) => {
+                Object.assign(this._memory, items || {})
+            }
+        }
+    }
+
+    static _memoryGet(keys) {
+        if (keys === null || keys === undefined) {
+            return Object.assign({}, this._memory)
+        }
+        if (typeof keys === "string") {
+            return keys in this._memory ? {[keys]: this._memory[keys]} : {}
+        }
+        if (Array.isArray(keys)) {
+            const out = {}
+            keys.forEach((key) => {
+                if (key in this._memory) out[key] = this._memory[key]
+            })
+            return out
+        }
+        if (keys && typeof keys === "object") {
+            const out = {}
+            Object.keys(keys).forEach((key) => {
+                out[key] = key in this._memory ? this._memory[key] : keys[key]
+            })
+            return out
+        }
+        return {}
     }
 }
 

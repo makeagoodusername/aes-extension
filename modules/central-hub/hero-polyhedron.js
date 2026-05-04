@@ -410,8 +410,8 @@ class CentralHubHeroPolyhedron {
         if (this._storageListener) return
         const allPrefixes = [
             // TODAY columns
-            {kind: "today", prefix: "accounting:"},
-            {kind: "today", prefix: "aircraftFleet"},
+            {kind: "today", contains: "accounting:"},
+            {kind: "today", suffix: "aircraftFleet"},
             {kind: "today", prefix: "routeAssistant:topRoutes"}
         ]
         for (const spec of this._smallSpecs) {
@@ -424,7 +424,7 @@ class CentralHubHeroPolyhedron {
             if (area !== "local") return
             for (const k in changes) {
                 for (const entry of allPrefixes) {
-                    if (k === entry.prefix || k.indexOf(entry.prefix) === 0) {
+                    if (CentralHubHeroPolyhedron._storageEntryMatches(k, entry)) {
                         this._dirty.add(entry.kind === "today" ? "today" : entry.id)
                         break
                     }
@@ -493,15 +493,24 @@ class CentralHubHeroPolyhedron {
     async _resolveFleet() {
         if (!this.server) return {value: "—", sub: "no server"}
         const all = await chrome.storage.local.get(null)
-        let aircraft = []
+        const airline = this._airlineKey()
+        let chosen = null
         const suffix = "aircraftFleet"
         for (const key in all) {
             if (key.indexOf(this.server) !== 0) continue
             if (key.lastIndexOf(suffix) !== key.length - suffix.length) continue
             const rec = all[key]
             if (!rec || rec.type !== "aircraftFleet" || !Array.isArray(rec.fleet)) continue
-            if (rec.fleet.length > aircraft.length) aircraft = rec.fleet
+            if (airline) {
+                if (this._fleetRecordMatchesAirline(key, rec, airline)) {
+                    chosen = rec
+                    break
+                }
+                continue
+            }
+            if (!chosen || rec.fleet.length > chosen.fleet.length) chosen = rec
         }
+        const aircraft = chosen && Array.isArray(chosen.fleet) ? chosen.fleet : []
         if (!aircraft.length) return {value: "—", sub: "no fleet record"}
 
         let utilSum = 0, utilCount = 0
@@ -571,19 +580,45 @@ class CentralHubHeroPolyhedron {
     }
 
     async _resolveOrs() {
-        const all = await chrome.storage.local.get(null)
+        let records = null
+        let svc = null
+        if (typeof RouteAssistantOrsIntelligence !== "undefined"
+                && typeof RouteAssistantOrsIntelligence.listCachedRoutes === "function") {
+            svc = new RouteAssistantOrsIntelligence(this.server)
+            const map = await RouteAssistantOrsIntelligence.listCachedRoutes(this.server)
+            records = Array.from(map.values())
+        }
+        if (!records) {
+            const all = await chrome.storage.local.get(null)
+            records = []
+            for (const k in all) {
+                if (k.indexOf("routeAssistant:ors:") !== 0) continue
+                const rec = all[k]
+                if (rec && typeof rec === "object") records.push(rec)
+            }
+        }
         let total = 0, low = 0
-        for (const k in all) {
-            if (k.indexOf("routeAssistant:ors:") !== 0) continue
-            const rec = all[k]
+        for (const rec of records) {
             if (!rec || typeof rec !== "object") continue
-            const rank = Number(rec.rankAny)
+            const rank = this._orsRankFromRecord(rec, svc)
             if (!Number.isFinite(rank)) continue
             total++
             if (rank >= 4) low++
         }
         if (!total) return {value: "—", sub: "no ORS scrapes"}
         return {value: String(low), sub: "below rank 3 · of " + total}
+    }
+
+    _orsRankFromRecord(rec, svc) {
+        if (svc && rec && (rec.byClass || rec.orsByClass)) {
+            try {
+                const composite = svc.getComposite({orsByClass: rec.byClass || rec.orsByClass})
+                const rank = composite && (composite.rankAny != null ? composite.rankAny : composite.rankNonstop)
+                if (Number.isFinite(Number(rank))) return Number(rank)
+            } catch (_) { /* legacy fallback below */ }
+        }
+        const rank = rec && (rec.rankAny != null ? rec.rankAny : rec.rankNonstop)
+        return Number(rank)
     }
 
     async _resolveMaintenance() {
@@ -621,10 +656,40 @@ class CentralHubHeroPolyhedron {
 
     _airlineKey() {
         try {
+            if (typeof AES !== "undefined" && typeof AES.getAirlineIdentity === "function") {
+                const id = AES.getAirlineIdentity()
+                if (id) return id
+            }
+        } catch (_) { /* fall through */ }
+        try {
             const a = AES.getAirlineCode()
             if (a && a.code) return a.code
         } catch (_) { /* fall through */ }
         return this.airline || ""
+    }
+
+    _fleetRecordMatchesAirline(key, rec, airline) {
+        const want = CentralHubHeroPolyhedron._normaliseAirlineKey(airline)
+        if (!want) return false
+        if (CentralHubHeroPolyhedron._normaliseAirlineKey(rec && rec.airline) === want) return true
+        const suffix = "aircraftFleet"
+        const rawKeyAirline = String(key || "").slice(
+            String(this.server || "").length,
+            Math.max(String(this.server || "").length, String(key || "").length - suffix.length)
+        )
+        return CentralHubHeroPolyhedron._normaliseAirlineKey(rawKeyAirline) === want
+    }
+
+    static _normaliseAirlineKey(value) {
+        return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "")
+    }
+
+    static _storageEntryMatches(key, entry) {
+        if (!entry) return false
+        if (entry.prefix && (key === entry.prefix || key.indexOf(entry.prefix) === 0)) return true
+        if (entry.suffix && key.lastIndexOf(entry.suffix) === key.length - entry.suffix.length) return true
+        if (entry.contains && key.indexOf(entry.contains) >= 0) return true
+        return false
     }
 
     static _formatCompactAS(value) {

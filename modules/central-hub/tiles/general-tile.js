@@ -25,7 +25,24 @@ class CentralHubGeneralTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys(ctx) {
-        return [String(ctx && ctx.server || "") + ""]
+        // Watch only the two specific keys we read (schedule + personnel).
+        // The earlier `[server + ""]` form devolved to "" when ctx.server was
+        // missing, which the storage listener treats as "match every key" and
+        // triggers a refresh on every write across the whole extension —
+        // F-9223-015 in the existing audit. Returning concrete prefixes keeps
+        // the listener scoped to data this tile actually consumes.
+        const server = String(ctx && ctx.server || "")
+        if (!server) return []
+        let code = "", name = ""
+        try {
+            const a = AES.getAirlineCode()
+            code = (a && a.code) || ""
+            name = (a && a.name) || ""
+        } catch (_) { /* dashboard not yet rendered */ }
+        const out = []
+        if (code) out.push(server + code + "schedule")
+        if (name) out.push(server + name + "personelManagement")
+        return out
     }
 
     openHref() { return "/app/enterprise/dashboard" }   // self-link as no-op
@@ -99,6 +116,25 @@ class CentralHubGeneralTile extends window.CentralHubTile {
     async renderBody(ctx, host) {
         const T = window.AESTokens
         host.textContent = ""
+
+        // Greeting strip — surfaces the current server day (and time) so the
+        // tile gives the user an at-a-glance "today is Y, this scrape was N
+        // days ago" frame for the data-freshness rows below. Falls back
+        // silently when the navbar isn't rendered (cold-start, non-dashboard
+        // pages — `getServerDate` parses `.as-navbar-bottom`).
+        try {
+            const dt = AES.getServerDate()
+            if (dt && dt.date) {
+                const greeting = document.createElement("p")
+                greeting.style.cssText = "margin:0 0 " + T.sp[3] + " 0;color:"
+                    + T.color.oxide2 + ";font-family:" + T.font.display
+                    + ";font-size:" + T.fs.body + ";"
+                greeting.textContent = "Game day " + AES.formatDateString(dt.date)
+                    + (dt.time ? " · " + dt.time : "")
+                host.appendChild(greeting)
+            }
+        } catch (_) { /* navbar missing — skip greeting */ }
+
         const rows = await this._loadRows()
         const tbl = document.createElement("table")
         tbl.style.cssText = "width:100%;border-collapse:collapse;font-family:" + T.font.display

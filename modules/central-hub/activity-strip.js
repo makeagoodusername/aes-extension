@@ -103,6 +103,7 @@ class CentralHubActivityStrip {
         this.root = root
         this.sentenceEl = sentenceEl
         this._attachStorageListener()
+        this._attachAuditFencePostListener()
         this._refresh()
         return root
     }
@@ -113,6 +114,11 @@ class CentralHubActivityStrip {
             catch (_) { /* noop */ }
             this._storageListener = null
         }
+        if (this._busListener && window.CentralHubBus && typeof window.CentralHubBus.off === "function") {
+            try { window.CentralHubBus.off("data:audit:change:recorded", this._busListener) }
+            catch (_) { /* noop */ }
+            this._busListener = null
+        }
         if (this._refreshTimer) {
             clearTimeout(this._refreshTimer)
             this._refreshTimer = null
@@ -122,6 +128,25 @@ class CentralHubActivityStrip {
         }
         this.root = null
         this.sentenceEl = null
+    }
+
+    _attachAuditFencePostListener() {
+        // Slice E2 — refresh on cross-domain fence-posts so the activity
+        // strip catches pricing/service/auto-scheduler appends, not just
+        // strategy journal writes. Debounced via the same timer as the
+        // storage listener.
+        if (this._busListener) return
+        if (typeof window === "undefined" || !window.CentralHubBus
+                || typeof window.CentralHubBus.on !== "function") return
+        this._busListener = () => {
+            if (this._refreshTimer) return
+            this._refreshTimer = setTimeout(() => {
+                this._refreshTimer = null
+                this._refresh()
+            }, CentralHubActivityStrip.REFRESH_DEBOUNCE_MS)
+        }
+        try { window.CentralHubBus.on("data:audit:change:recorded", this._busListener) }
+        catch (_) { this._busListener = null }
     }
 
     _attachStorageListener() {

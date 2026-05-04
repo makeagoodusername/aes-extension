@@ -29,19 +29,32 @@ class CentralHubFamilyTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys() {
+        // The base class matches via `key.indexOf(prefix) === 0`. The
+        // per-hub topRoutes shape `routeAssistant:topRoutes:<HUB>` matches
+        // either form, but the global single-key shape `routeAssistant:topRoutes`
+        // (written by panel.js:_publishTopRoutes) would NOT match the
+        // colon-suffixed prefix. Drop the trailing colon so both writers
+        // trigger refresh.
         return [
             "aesCanopy:affiliations",
             "aesCanopy:roles",
             "aesCanopy:orgs",
-            "routeAssistant:topRoutes:",
+            "routeAssistant:topRoutes",
             "aesAccounts"
         ]
     }
 
     openHandler() {
         return async () => {
-            // M7 family briefing modal lands later; for v1 just expand the tile.
+            // F-9228-701: when collapsed, expand the tile (the body is the
+            // briefing surface today); when already expanded, scroll the
+            // tile into view so the user gets visible feedback. Without
+            // this, an expanded-tile click is a silent no-op.
             if (!this.expanded) this.toggle()
+            else if (this.root && typeof this.root.scrollIntoView === "function") {
+                try { this.root.scrollIntoView({behavior: "smooth", block: "center"}) }
+                catch (_) { /* best-effort */ }
+            }
         }
     }
 
@@ -102,6 +115,11 @@ class CentralHubFamilyTile extends window.CentralHubTile {
 
     async renderBody(_ctx, host) {
         const T = window.AESTokens
+        // Re-entrancy guard — concurrent renders from the shell's
+        // open-tile flow + storage refreshes (e.g. routeAssistant:topRoutes
+        // writes during an RA scrape session) would otherwise both clear
+        // and append, doubling the action strip + proposal cards.
+        const gen = (this._renderGen = (this._renderGen || 0) + 1)
         host.textContent = ""
 
         // Action strip — re-detect + open settings shortcut
@@ -144,6 +162,7 @@ class CentralHubFamilyTile extends window.CentralHubTile {
         host.appendChild(actions)
 
         if (!this._cache) this._cache = await this._compute()
+        if (gen !== this._renderGen) return
         const {kinCount, proposals, diagnostics} = this._cache
 
         if (kinCount < 2) {
@@ -199,6 +218,14 @@ class CentralHubFamilyTile extends window.CentralHubTile {
         headlineText.textContent = (p.kinIds[0] + " ⇄ " + p.kinIds[1]) + " · " + p.hubs[0] + " → " + p.destIata +
             (p.viaHub ? " (via " + p.viaHub + ")" : "")
         left.appendChild(headlineText)
+        // L7 — destination country chip (lazy resolve via region-resolver).
+        if (window.AesCanopyRegionResolver) {
+            const geoChip = document.createElement("span")
+            geoChip.style.cssText = "font-size:10px;color:#67e8f9;background:rgba(34,211,238,0.10);"
+                + "border:1px solid rgba(34,211,238,0.35);padding:0 4px;border-radius:3px;"
+            left.appendChild(geoChip)
+            this._attachProposalCountryChip(geoChip, p.destIata)
+        }
         // DNA-fit pill on the proposal — scores the route shape against the
         // primary kin's effective DNA. Renders async to avoid blocking the
         // synchronous tile body render path.
@@ -250,6 +277,36 @@ class CentralHubFamilyTile extends window.CentralHubTile {
         } catch (_) {}
     }
 
+    async _attachProposalCountryChip(host, destIata) {
+        if (!destIata || !host) return
+        try {
+            let server = ""
+            try { server = (typeof AES !== "undefined" && AES.getServerName) ? (AES.getServerName() || "") : "" } catch (_) { server = "" }
+            const seeder = window.AesCanopyGeographySeeder
+            const regionsStore = window.AesCanopyRegionsStore
+            const resolver = window.AesCanopyRegionResolver
+            const geoBase = window.AesGeographyBase
+            if (!resolver) return
+            const demand = (window.RouteAssistantDemandStore && typeof window.RouteAssistantDemandStore.get === "function")
+                ? await window.RouteAssistantDemandStore.get(destIata) : null
+            const countryIdMap = (server && seeder && typeof seeder.load === "function")
+                ? await seeder.load(server) : null
+            const regionsBlock = (regionsStore && typeof regionsStore.load === "function")
+                ? await regionsStore.load() : null
+            const r = resolver.resolve({iata: destIata, demand, countryIdMap, regionsBlock, geographyBase: geoBase})
+            if (!r || (!r.iso2 && r.countryId == null)) {
+                host.remove()
+                return
+            }
+            host.textContent = r.iso2 || ("c" + r.countryId)
+            const t = []
+            if (r.iso2)       t.push("ISO2: " + r.iso2)
+            if (r.continent)  t.push("Continent: " + r.continent)
+            if (r.regionName) t.push("Region: " + r.regionName)
+            host.title = t.join(" · ")
+        } catch (_) { try { host.remove() } catch (__) {} }
+    }
+
     async _kinIdToAccountId(kinId) {
         if (!kinId || !window.AesCanopyAffiliations) return null
         try {
@@ -266,6 +323,11 @@ class CentralHubFamilyTile extends window.CentralHubTile {
 if (typeof window !== "undefined") {
     window.CentralHubFamilyTile = CentralHubFamilyTile
     if (window.CentralHubTileRegistry && typeof window.CentralHubTileRegistry.register === "function") {
-        window.CentralHubTileRegistry.register(new CentralHubFamilyTile())
+        window.CentralHubTileRegistry.register({
+            id:       "family",
+            section:  "fleet",
+            priority: 4,
+            factory:  () => new CentralHubFamilyTile()
+        })
     }
 }
