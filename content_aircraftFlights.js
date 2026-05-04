@@ -108,10 +108,137 @@ function aircraftFlightsStorageKey() {
     return aircraftFlightData.server + airline + aircraftFlightData.type + aircraftFlightData.aircraftId
 }
 
+/**
+ * Mirror upstream `content_fleetManagement.js`'s `fltmng_getAirlineName()`
+ * sanitization (alphanumeric-only) so the `aircraftFleet` storage key shape
+ * here matches the writer's. Without this, syncing reads/writes the wrong
+ * blob whenever the airline name contains punctuation or whitespace —
+ * rendering the fleet HUB column stale forever.
+ */
+function aircraftFleetAirlineSegment() {
+    const raw = aircraftFlightData.airline || ""
+    return raw.replace(/[^A-Za-z0-9]/g, "")
+}
+
+function aircraftFleetStorageKey() {
+    return aircraftFlightData.server + aircraftFleetAirlineSegment() + "aircraftFleet"
+}
+
+/**
+ * Item 20 (upstream AES v0.7.6): write the per-tail HUB fields back into
+ * the airline's `aircraftFleet` storage blob so consumers that read the
+ * fleet roster (Fleet Management table, Aircraft Profitability dashboard
+ * tile) see the same `hubDetected`/`hubOverride`/`hubEffective` the
+ * Flights page derived. Without this, the fleet roster's HUB column would
+ * stay blank until a fleet rescrape — and then it would show the *fleet
+ * page's* heuristic, which doesn't have access to the per-tail flight log.
+ *
+ * Sync direction: per-tail blob is the source of truth for `hubDetected`
+ * (always overwritten) and `hubEffective` (always overwritten). For
+ * `hubOverride`, if the fleet entry already carries an override and the
+ * per-tail one is empty, the fleet entry's override is adopted back into
+ * `aircraftFlightData` so subsequent saves from this page don't clear it.
+ *
+ * No-op (silent) when the fleet blob doesn't exist yet, or when no entry
+ * matches this aircraftId — both are normal states (e.g. visiting the
+ * Flights page before ever extracting Fleet Management).
+ *
+ * Returns a Promise that resolves once the fleet blob has been written
+ * (or immediately if no write was necessary).
+ */
+async function syncFleetHubData() {
+    const key = aircraftFleetStorageKey()
+    let blob = null
+    try {
+        const result = await chrome.storage.local.get(key)
+        blob = result && result[key]
+    } catch (e) {
+        console.warn("[AES /1 aircraft-flights] fleet hub read failed", e && e.message || e)
+        return
+    }
+    if (!blob || !Array.isArray(blob.fleet) || !blob.fleet.length) return
+
+    const aircraftId = aircraftFlightData.aircraftId
+    let entry = null
+    for (const item of blob.fleet) {
+        // Loose-equality match preserves parity with fleet-management's
+        // `fltmng_isSameAircraft` (item.aircraftId may be string from the
+        // DOM, aircraftFlightData.aircraftId may be the parsed integer).
+        if (item && item.aircraftId != null && item.aircraftId == aircraftId) {
+            entry = item
+            break
+        }
+    }
+    if (!entry) return
+
+    const detected = aircraftFlightData.hubDetected || ""
+    const localOverride = aircraftFlightData.hubOverride || ""
+    const fleetOverride = entry.hubOverride || ""
+
+    // Adopt fleet-side override when local is empty so the user's
+    // previously-saved override survives a fresh load that hasn't yet
+    // re-read it from the per-tail blob (defense in depth — the per-tail
+    // blob is also consulted in `loadPriorHubOverride`).
+    let adopted = false
+    if (!localOverride && fleetOverride) {
+        aircraftFlightData.hubOverride = fleetOverride
+        aircraftFlightData.hubEffective = fleetOverride
+        adopted = true
+    }
+
+    const effective = aircraftFlightData.hubEffective
+        || aircraftFlightData.hubOverride
+        || detected
+        || ""
+
+    let dirty = false
+    if ((entry.hubDetected || "") !== detected) {
+        entry.hubDetected = detected
+        dirty = true
+    }
+    if ((entry.hubEffective || "") !== effective) {
+        entry.hubEffective = effective
+        dirty = true
+    }
+    // Mirror local override into the fleet entry (and clear it there if
+    // we've cleared it locally) — keep the two stores symmetric.
+    if ((entry.hubOverride || "") !== (aircraftFlightData.hubOverride || "")) {
+        entry.hubOverride = aircraftFlightData.hubOverride || ""
+        dirty = true
+    }
+
+    if (adopted) {
+        // We changed `aircraftFlightData` itself; refresh the panel so the
+        // user sees the recovered override, and rewrite the per-tail blob
+        // so it stays the source of truth.
+        if (typeof updateAircraftInfoPanel === "function") {
+            try { updateAircraftInfoPanel() } catch (_) {}
+        }
+        try { saveData() } catch (_) {}
+    }
+
+    if (!dirty) return
+
+    return new Promise(resolve => {
+        chrome.storage.local.set({[key]: blob}, () => {
+            const err = chrome.runtime && chrome.runtime.lastError
+            if (err) console.warn("[AES /1 aircraft-flights] fleet hub write failed", err.message || err)
+            resolve()
+        })
+    })
+}
+
 function processData() {
     addFlightInfoToAircarftData()
     getTotalProfit()
     saveData()
+    // Item 20 (upstream AES v0.7.6): mirror HUB fields into the
+    // aircraftFleet blob so Fleet Management + Aircraft Profitability
+    // tiles read consistent HUB metadata. Fire-and-forget — failures are
+    // logged but don't block the panel render. We deliberately schedule
+    // this after `saveData()` so the per-aircraft blob is the source of
+    // truth and the fleet entry follows.
+    syncFleetHubData().catch(e => console.warn("[AES /1 aircraft-flights] hub sync failed", e && e.message || e))
 }
 
 function displayData() {
@@ -190,6 +317,10 @@ function updateHubOverride(value) {
     saveData()
     updateAircraftInfoPanel()
     aircraftFlightToast('HUB override saved', 'success')
+    // Item 20: keep the aircraftFleet blob in lock-step with the per-tail
+    // override so Fleet Management / Aircraft Profitability reflect the
+    // change without requiring a fresh fleet rescrape.
+    syncFleetHubData().catch(e => console.warn("[AES /1 aircraft-flights] hub sync (override) failed", e && e.message || e))
 }
 
 function resetHubOverride() {
@@ -198,11 +329,17 @@ function resetHubOverride() {
     saveData()
     updateAircraftInfoPanel()
     aircraftFlightToast('Reset to detected HUB', 'success')
+    syncFleetHubData().catch(e => console.warn("[AES /1 aircraft-flights] hub sync (reset) failed", e && e.message || e))
 }
 
 function aircraftFlightToast(message, level) {
     if (window.AesNotifications && typeof window.AesNotifications.toast === "function") {
-        window.AesNotifications.toast(message, { level })
+        // F-9228 / item 21: route through `modules/_shared/notifications.js`
+        // toast API for auto-dismiss (5s default). The Notifications class
+        // expects `{type}` (notifications.js:33), not `{level}` — passing
+        // the fork's older `level` key silently defaulted every banner to
+        // "success" styling regardless of severity.
+        window.AesNotifications.toast(message, { type: level })
     } else {
         try { console.info("[AES /1 aircraft-flights]", level || "info", message) } catch (_) {}
     }
