@@ -2,7 +2,7 @@
 
 **Companion to HANDOVER.md.** HANDOVER captures session state and "where we are"; this MANUAL is the reference for *how the system works* — every formula, every storage key, every interaction. Read top to bottom or skip to the section you need.
 
-Repo root: `/Users/jihwan/Downloads/AES.v0.6.9-beta/`. Tech: Chrome MV3 extension, vanilla JS + jQuery 3.4.1, no build step. Target site: `https://*.airlinesim.aero/*` and `https://www.flightsfrom.com/*`.
+Repo root: `/Users/jihwan/Downloads/AIRLINESIMMOD/AES.v0.6.9/` (canonical); compatibility symlink `/Users/jihwan/Downloads/AES.v0.6.9` → canonical also resolves for legacy tooling. Tech: Chrome MV3 extension, vanilla JS + jQuery 3.4.1, no build step. Target site: `https://*.airlinesim.aero/*` and `https://www.flightsfrom.com/*`.
 
 ---
 
@@ -1043,7 +1043,7 @@ For each tail in the user's fleet, look at its `aircraftFlights` cumulative `pro
 
 ### Limits (slice 1)
 
-- Snapshots only see routes whose ticket-price record has been scraped (run "Sync route data" first).
+- Snapshots only see routes whose ticket-price record has been scraped (run "Sync live route data" first).
 - Tails the user hasn't visited via `/app/fleets/aircraft/<id>/1` won't have profit data.
 - Profits are *cumulative* per tail — v1 stores cumulative averages.
 

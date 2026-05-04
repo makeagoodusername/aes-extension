@@ -876,7 +876,7 @@ A few brainstorm items map onto existing slices rather than new ones — recorde
 
 ---
 
-### Slice 25 ⬜ Network Graph & Time-Scrubber View
+### Slice 25 ✅ Network Graph & Time-Scrubber View
 
 **Goal:** a force-directed full-network visualisation — nodes = airports sized by $/wk, edges = routes thickened by frequency, coloured by LF — with a time-scrubber along the top that re-renders every panel against any prior snapshot. Strategic comprehension at a glance.
 
@@ -894,13 +894,13 @@ A few brainstorm items map onto existing slices rather than new ones — recorde
 
 ---
 
-### Slice 26 — Strategy Journal & Lessons Mining (Phase 1 ✅; Phases 2/3 ⬜)
+### Slice 26 — Strategy Journal & Lessons Mining (Phase 1 ✅; Phase 2 ✅; Phase 3 ⬜)
 
 **Goal:** auto-log every override, opening, pricing change, and rule fire, with the user's typed reason if any. After a few months of play, mine the journal for patterns: "of your 14 CDG openings, the 5 that died early all had >3 incumbents AND distance <800 km — flagging this candidate."
 
 **Phase 1 ✅ (this session):** `journal-store.js` + `journal-panel.js` shipped — single per-account ring `aesStrategy:journal:acct:<id>` (cap 750), hybrid passive/active subscriber, panel section at the bottom of the strategy modal with click-to-edit reason cells. Five action types: `override-save`, `note-save`, `watchlist-toggle`, `apply-decision`, `weight-change`. Phase 2 + 3 reserve `outcomeRef`, `tags`, `voiceMemoId` slots so they don't migrate.
 
-**Phase 2 ⬜ — Lesson miner.** `modules/strategy/lesson-miner.js` reads `journal × outcomes` joined via `outcomeRef`, clusters by route attributes (incumbent count, distance band, hub, equipment family), correlates with "alive at +8 weeks" outcome bit, surfaces top patterns as `strategy:lesson-mined` events for the executive briefing.
+**Phase 2 ✅ — Lesson miner.** `modules/strategy/lesson-miner.js` reads `journal × outcomes` joined via `outcomeRef`, buckets by route attributes (distance band, incumbent band, hub, equipment family), ranks by `|lift| × √n`, surfaces top patterns as `data:strategy:lesson:mined` events for the executive briefing's "Engine learned" card and the standalone Lessons tile.
 
 **Phase 3 ⬜ — Voice memos.** Browser MediaRecorder + Web Speech API; entry's reserved `voiceMemoId` slot points to a separate `aesStrategy:journal:voice:<id>` keyed blob (kept out of the entry to avoid bloating the ring).
 
@@ -908,11 +908,12 @@ A few brainstorm items map onto existing slices rather than new ones — recorde
 
 - ✅ `modules/strategy/journal-store.js`
 - ✅ `modules/strategy/journal-panel.js`
-- ⬜ `modules/strategy/lesson-miner.js`
+- ✅ `modules/strategy/lesson-miner.js`
+- ✅ `modules/central-hub/tiles/lessons-tile.js`
 
 ---
 
-### Slice 27 ⬜ Markets Gossip Feed
+### Slice 27 ✅ Markets Gossip Feed
 
 **Goal:** a chronological "anomaly events" feed across the whole airline — incumbent drops 30% price on FRA-GRU, new entrant on JFK-LHR, hub gets a slot expansion announcement, sister airline opens a route into your territory. Feeds into Slice 24 rules and Slice 16 briefing.
 
@@ -928,9 +929,10 @@ A few brainstorm items map onto existing slices rather than new ones — recorde
 
 **Files:**
 
-- new `modules/strategy/gossip-detectors.js`
-- new `modules/strategy/gossip-store.js`
-- extends `modules/route-assistant/notification-center.js`
+- ✅ `modules/strategy/gossip-detectors.js`
+- ✅ `modules/strategy/gossip-store.js`
+- ✅ `modules/strategy/gossip-driver.js`
+- ✅ `modules/central-hub/tiles/gossip-feed-tile.js` (replaces the planned `notification-center.js` extension — that module does not exist in the current tree)
 
 ---
 
