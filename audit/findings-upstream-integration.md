@@ -15,7 +15,7 @@ mutates AS state (none expected for slices 1–6).
 
 | # | Slice | Disposition | Touches | Commit |
 |---|---|---|---|---|
-| 1 | Settings save/load race fix | [FIXED] | settings-bridge.js, content_inventory.js, content_settings.js | (pending) |
+| 1 | Settings save/load race fix | [FIXED] | settings-bridge.js, content_inventory.js, content_settings.js | 447e7ca |
 | 2 | Grouped inventory tables (Group by flight) | (pending) |  |  |
 | 3 | Inventory pricing reference recommendations (opt-in) | (pending) |  |  |
 | 4 | HUB override controls + auto-detection | (pending) |  |  |
