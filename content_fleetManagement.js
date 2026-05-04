@@ -48,8 +48,15 @@ function fltmng_getData(){
   let table = $('.as-page-fleet-management > .row > .col-md-9 > .as-panel:eq(0) table');
   let fleet = $('.as-page-fleet-management > .row > .col-md-9 > h2:eq(0)').text();
   $('tbody tr',table).each(function(){
-    let aircraftId = fltmng_getAircraftId($('td:eq(6) > div > div:eq(1) > a:eq(0)',this).attr('href'));
-    if(!fltmng_isValidAircraftId(aircraftId)) return;
+    // Use the row-level fallback so undelivered tails (no Flights/FlightPlanning
+    // links yet) still produce an id where one exists. Tails without any id are
+    // kept and persisted by registration via fltmng_isSameAircraft (item 19).
+    let aircraftId = fltmng_getAircraftIdFromRow(this);
+    if (aircraftId !== null && !fltmng_isValidAircraftId(aircraftId)) return;
+    let seatsY = fltmng_getInt($('td:eq(5) > span:eq(0)',this).text());
+    let seatsC = fltmng_getInt($('td:eq(5) > span:eq(1)',this).text());
+    let seatsF = fltmng_getInt($('td:eq(5) > span:eq(2)',this).text());
+    let pilotAssigned = fltmng_hasPilots(this);
     let data = {
       registration: $('td:eq(1) > span:eq(0)',this).text(),
       nickname: fltmng_getNickname($('td:eq(1) > div:eq(0)',this).text()),
@@ -57,15 +64,34 @@ function fltmng_getData(){
       typeId:fltmng_getTypeId($('td:eq(2) > a:eq(0)',this).attr('href')),
       age:fltmng_getAge($('td:eq(4) > span:eq(0)',this).text()),
       maintanance:fltmng_getMaintanance($('td:eq(4) > div > span:eq(1)',this).text()),
-      seatsY:fltmng_getInt($('td:eq(5) > span:eq(0)',this).text()),
-      seatsC:fltmng_getInt($('td:eq(5) > span:eq(1)',this).text()),
-      seatsF:fltmng_getInt($('td:eq(5) > span:eq(2)',this).text()),
+      seatsY:seatsY,
+      seatsC:seatsC,
+      seatsF:seatsF,
+      // Upstream v0.7.6 alias names (alongside fork's seatsY/C/F). Both shapes
+      // coexist so dashboards consuming either schema keep working.
+      seatY:seatsY,
+      seatC:seatsC,
+      seatF:seatsF,
       aircraftId:aircraftId,
       note:fltmng_getNickname($('td:eq(7) > span > span',this).text()),
       // Home-base IATA from any /app/info/airports/<IATA> link in the row.
       // Source for ScrapeOrchestratorEnumerators.enumerateHubs — without it
       // the per-hub and per-route phases skip on a fresh install.
       location:fltmng_getLocation($('a[href*="/app/info/airports/"]:eq(0)',this).attr('href')),
+      // Upstream v0.7.6 richer-extraction additions (CHANGELOG 0.7.6 / 0.7.7):
+      delivered:fltmng_isDelivered(this),
+      owned:fltmng_isOwned(this),
+      pilotAssigned:pilotAssigned,
+      pilotAssignedLabel: pilotAssigned ? 'Yes' : 'No',
+      seatConfig:fltmng_getSeatConfig(this),
+      totalSeats:fltmng_getTotalSeats(this),
+      pureCargo:fltmng_isPureCargo(this),
+      scheduleState:fltmng_getScheduleState(this),
+      scheduleStateLabel:fltmng_getScheduleStateLabel(this),
+      // Upstream alias for `maintanance` — keep both spellings so consumers of
+      // either field (existing fork code uses `maintanance`; upstream uses
+      // `maintenance`) work. Don't drop the legacy spelling.
+      maintenance:fltmng_getMaintanance($('td:eq(4) > div > span:eq(1)',this).text()),
       fleet:fleet,
       date:date.date,
       time:date.time
@@ -152,17 +178,112 @@ function fltmng_getAircraftIdFromRow(row){
 function fltmng_isValidAircraftId(value){
     return Number.isFinite(value) && value > 0;
 }
+// Relaxed in upstream v0.7.6: undelivered tails carry no aircraftId yet but
+// must still survive in storage so the merge against later scrapes (when AS
+// assigns the id) finds them by registration. A record is valid if it has a
+// usable aircraftId OR a non-empty registration.
 function fltmng_isValidAircraftRecord(value){
-    return !!(value && fltmng_isValidAircraftId(Number(value.aircraftId)));
+    if (!value) return false;
+    if (fltmng_isValidAircraftId(Number(value.aircraftId))) return true;
+    return typeof value.registration === 'string' && value.registration.trim().length > 0;
 }
 function fltmng_getLocation(href){
     if (!href) return "";
     const m = /\/app\/info\/airports\/([A-Za-z]{3,4})/.exec(href);
     return m ? m[1].toUpperCase() : "";
 }
+// Backport of upstream v0.7.6 richer-extraction helpers (CHANGELOG 0.7.6).
+// `delivered/owned/pilotAssigned/seatConfig/totalSeats/pureCargo/scheduleState`
+// expose per-tail facets the fork's table lacked. Pure DOM reads, no I/O.
+function fltmng_isDelivered(row){
+    return $('td:eq(4)', row).text().indexOf('Delivery:') == -1;
+}
+function fltmng_getSeatConfig(row){
+    return [
+        fltmng_getInt($('td:eq(5) > span:eq(0)', row).text()),
+        fltmng_getInt($('td:eq(5) > span:eq(1)', row).text()),
+        fltmng_getInt($('td:eq(5) > span:eq(2)', row).text())
+    ].join('/');
+}
+function fltmng_getTotalSeats(row){
+    return fltmng_getInt($('td:eq(5) > span:eq(0)', row).text()) +
+        fltmng_getInt($('td:eq(5) > span:eq(1)', row).text()) +
+        fltmng_getInt($('td:eq(5) > span:eq(2)', row).text());
+}
+function fltmng_isPureCargo(row){
+    return fltmng_getTotalSeats(row) === 0;
+}
+function fltmng_hasPilots(row){
+    return $('td:eq(5) .subrow', row).text().trim().toLowerCase() == 'yes';
+}
+function fltmng_isOwned(row){
+    let owned = '';
+    $('.btn-group-contract .dropdown-menu li div', row).each(function(){
+        let text = $(this).text().replace(/\s+/g, ' ').trim();
+        if (text.indexOf('Owned:') == 0) {
+            owned = $('span:last', this).text().trim();
+            return false;
+        }
+    });
+    return owned == 'yes';
+}
+function fltmng_getScheduleState(row){
+    let flightPlanningBtn = $('a[title="Flight Planning"]', row);
+    if (!flightPlanningBtn.length) {
+        return fltmng_isDelivered(row) ? 'empty' : 'undelivered';
+    }
+    if (flightPlanningBtn.hasClass('btn-danger'))  return 'conflict';
+    if (flightPlanningBtn.hasClass('btn-warning')) return 'pending';
+    if (flightPlanningBtn.hasClass('btn-success')) return 'active';
+    return 'empty';
+}
+// Human-readable label paired with `scheduleState`. Consumers (e.g. the
+// Aircraft Profitability dashboard tile) map the label to a CSS color
+// class via existing fork conventions: Active=good, Locked=warning,
+// Conflict=bad, Empty/Undelivered=neutral.
+function fltmng_getScheduleStateLabel(row){
+    switch (fltmng_getScheduleState(row)) {
+        case 'active':      return 'Active';
+        case 'pending':     return 'Locked';
+        case 'conflict':    return 'Conflict';
+        case 'undelivered': return 'Undelivered';
+        default:            return 'Empty';
+    }
+}
+// Match by aircraftId OR registration so undelivered tails (no aircraftId
+// yet) survive across scrapes keyed by their tail registration.
+// Backport of upstream v0.7.6 `fltmng_isSameAircraft` (CHANGELOG 0.7.6).
+function fltmng_isSameAircraft(storedAircraft, aircraft){
+    if (!storedAircraft || !aircraft) return false;
+    let storedId = storedAircraft.aircraftId || null;
+    let aircraftId = typeof aircraft === 'object' ? (aircraft.aircraftId || null) : aircraft;
+    if (storedId && aircraftId && String(storedId) === String(aircraftId)) {
+        return true;
+    }
+    let storedRegistration = (storedAircraft.registration || '').trim();
+    let aircraftRegistration = typeof aircraft === 'object' ? ((aircraft.registration || '').trim()) : '';
+    if (storedRegistration && aircraftRegistration && storedRegistration === aircraftRegistration) {
+        return true;
+    }
+    return false;
+}
+function fltmng_getStoredAircraft(data, aircraft){
+    if (!data || !Array.isArray(data.fleet)) return null;
+    for (let i = 0; i < data.fleet.length; i++) {
+        if (fltmng_isSameAircraft(data.fleet[i], aircraft)) {
+            return data.fleet[i];
+        }
+    }
+    return null;
+}
 function fltmng_getStorageData(){
   let keys = [];
   aircraftData.forEach(function(value){
+    // Skip undelivered tails — they have no aircraftId yet so there's no
+    // `<server>aircraftFlights<id>` blob to look up. Avoids a bogus
+    // `aircraftFlightsnull` key (which would otherwise fingerprint Chrome
+    // storage and produce a phantom hit).
+    if (!value.aircraftId) return;
     let key = server + 'aircraftFlights' + value.aircraftId;
     keys.push(key);
   });
@@ -218,23 +339,43 @@ function fltmng_updateAircraftFleetStorageData(data){
     //Push all new aircrafts
     aircraftData.forEach(function(newvalue){
       if(!fltmng_isValidAircraftRecord(newvalue)) return;
-      newfleet.push({
+      // Look up any existing stored record by aircraftId OR registration so
+      // an undelivered tail (id null) carrying prior nickname/note/HUB
+      // metadata is preserved across the rewrite. Backport of upstream v0.7.6
+      // fltmng_getStoredAircraft (CHANGELOG 0.7.6 / 0.7.7).
+      let storedAircraft = fltmng_getStoredAircraft(data, newvalue);
+      newfleet.push(Object.assign({}, storedAircraft || {}, {
         age:newvalue.age,
-        aircraftId:newvalue.aircraftId,
+        aircraftId:newvalue.aircraftId || (storedAircraft && storedAircraft.aircraftId ? storedAircraft.aircraftId : null),
         date:newvalue.date,
+        delivered:newvalue.delivered,
         equipment:newvalue.equipment,
-        typeId:newvalue.typeId,
+        typeId:newvalue.typeId || (storedAircraft && storedAircraft.typeId ? storedAircraft.typeId : null),
         fleet:newvalue.fleet,
-        location:newvalue.location,
+        location:newvalue.location || (storedAircraft && storedAircraft.location ? storedAircraft.location : ''),
         maintanance:newvalue.maintanance,
+        // Upstream alias kept alongside fork's `maintanance` spelling.
+        maintenance:newvalue.maintenance,
         nickname:newvalue.nickname,
         note:newvalue.note,
+        owned:newvalue.owned,
+        pilotAssigned:newvalue.pilotAssigned,
+        pilotAssignedLabel:newvalue.pilotAssignedLabel,
+        pureCargo:newvalue.pureCargo,
         registration:newvalue.registration,
-        seatsY:newvalue.seatsY,
-        seatsC:newvalue.seatsC,
-        seatsF:newvalue.seatsF,
+        scheduleState:newvalue.scheduleState,
+        scheduleStateLabel:newvalue.scheduleStateLabel,
+        // Persist both shapes (legacy fork seatsY/C/F + upstream seatY/C/F).
+        seatsY:(newvalue.seatsY != null ? newvalue.seatsY : (storedAircraft ? storedAircraft.seatsY : undefined)),
+        seatsC:(newvalue.seatsC != null ? newvalue.seatsC : (storedAircraft ? storedAircraft.seatsC : undefined)),
+        seatsF:(newvalue.seatsF != null ? newvalue.seatsF : (storedAircraft ? storedAircraft.seatsF : undefined)),
+        seatY:newvalue.seatY,
+        seatC:newvalue.seatC,
+        seatF:newvalue.seatF,
+        seatConfig:newvalue.seatConfig,
+        totalSeats:newvalue.totalSeats,
         time:newvalue.time
-      });
+      }));
     });
 
     //push all old aircrafts that dont have new data
@@ -242,16 +383,9 @@ function fltmng_updateAircraftFleetStorageData(data){
       if(!fltmng_isValidAircraftRecord(value)) return;
       let found = 0;
       newfleet.forEach(function(newValue){
-        if(value.aircraftId == newValue.aircraftId){
-          //Preserve typeId on aircraft we re-saw — earlier scrapes (pre-Phase 2)
-          //didn't capture it, so backfill from the live page when available.
-          if(!newValue.typeId && value.typeId) newValue.typeId = value.typeId;
-          //Same backfill for the per-tail seats columns when the live page
-          //didn't render them (e.g. unconfigured aircraft).
-          if(newValue.seatsY == null && value.seatsY != null) newValue.seatsY = value.seatsY;
-          if(newValue.seatsC == null && value.seatsC != null) newValue.seatsC = value.seatsC;
-          if(newValue.seatsF == null && value.seatsF != null) newValue.seatsF = value.seatsF;
-          if(!newValue.location && value.location) newValue.location = value.location;
+        // Match by aircraftId OR registration so undelivered tails (no id yet)
+        // remain merged across scrapes.
+        if(fltmng_isSameAircraft(value, newValue)){
           found = 1;
         }
       });
@@ -288,40 +422,76 @@ function fltmng_display(){
   let h = $('<h3></h3>').text('AES Fleet Management');
   let div = $('<div></div>').append(h,panel);
   $('.as-page-fleet-management > h1:eq(0)').after(div);
+  // TODO(upstream-item-12): port `fltmng_buildFilterPanel` (Model/HUB/Seats/
+  // Delivery/Ownership/Schedule selects) and `fltmng_bindNativeSelectionLinks`
+  // from upstream content_fleetManagement.js (lines 567-650 + 663-725). Needs
+  // a `row` ref on every aircraftData entry plus a MutationObserver scaffold
+  // (fltmng_watchFleetTable / fltmng_syncTableRows / fltmng_isFleetTableNode /
+  // fltmng_refreshFleetTableEnhancements) that the fork lacks. Deferred so
+  // this slice stays focused on items 13/16/17/19/22 — see
+  // audit/findings-upstream-integration.md.
 }
 function fltmng_displayAircraftProfit(){
   let table = $('.as-page-fleet-management > .row > .col-md-9 > .as-panel:eq(0) table');
-  //Head
-  let th = ['<th rowspan="2" class="aes-text-right">Profit/Loss</th>','<th rowspan="2">Extract date</th>'];
+  if (!table.length) return;
+  //Head — upstream v0.7.6 rename "Aircraft model" -> "Model" + HUB column
+  //insert (CHANGELOG 0.7.6). Previously rendered headers stay; we only edit
+  //the equipment-column text and add the new HUB/Profit/Extract-date <th>s.
+  let modelHeader = $('thead tr:eq(0) th:eq(2)', table);
+  if (modelHeader.length && modelHeader.html()) {
+    modelHeader.html(modelHeader.html().replace('Aircraft model', 'Model'));
+  }
+  modelHeader.after('<th rowspan="2" class="aes-fleet-extra-header text-center">HUB</th>');
+  //Profit / Extract-date headers — centered per upstream pattern.
+  let th = [
+    '<th rowspan="2" class="aes-fleet-extra-header text-center aes-text-right">Profit/Loss</th>',
+    '<th rowspan="2" class="aes-fleet-extra-header text-center">Extract date</th>'
+  ];
   $('thead tr:eq(0)',table).append(th);
   //Body
   $('tbody tr',table).each(function(){
-    let id  = fltmng_getAircraftId($('td:eq(6) > div > div:eq(1) > a:eq(0)',this).attr('href'));
+    let id = fltmng_getAircraftIdFromRow(this);
+    let registration = $('td:eq(1) > span:eq(0)', this).text().trim();
+    let hub = '';
     let profit,date,time;
     aircraftData.forEach(function(value){
-      if(value.aircraftId == id){
-        if(value.profit){
-          if(value.profit.profitFlights){
-            profit = value.profit.profit;
-            date = value.profit.date;
-            time = value.profit.time;
-          }
+      let matches = (id && value.aircraftId == id) ||
+        (!id && registration && value.registration === registration);
+      if (matches) {
+        hub = value.location || '';
+        if (value.profit && value.profit.profitFlights) {
+          profit = value.profit.profit;
+          date = value.profit.date;
+          time = value.profit.time;
         }
       }
     });
+    //HUB column inserted after the equipment column (matches new <th> order).
+    $('td:eq(2)', this).after(
+      $('<td class="aes-fleet-extra-cell text-center"></td>').text(hub || '--')
+    );
     let td = [];
     if(date){
       td.push(fltmng_formatMoney(profit));
-      td.push($('<td></td>').html(AES.formatDateString(date)+'<br>'+time));
+      td.push($('<td class="aes-fleet-extra-cell"></td>').html(AES.formatDateString(date)+'<br>'+time));
     } else {
-      td.push('<td></td>','<td></td>');
+      //Upstream v0.7.6 table-presentation polish: centered "--" placeholder
+      //instead of empty <td></td> (CHANGELOG 0.7.6).
+      td.push('<td class="aes-fleet-extra-cell text-center">--</td>',
+              '<td class="aes-fleet-extra-cell text-center">--</td>');
     }
     $(this).append(td);
 
   });
 }
 function fltmng_displaySavedAircrafts(){
-  return 'Currently '+aircraftFleetStorageData.fleet.length+' aircrafts stored in memory.';
+  let text = 'Currently '+aircraftFleetStorageData.fleet.length+' aircrafts stored in memory.';
+  // Surface the new behaviour from item 19: undelivered tails (no aircraftId
+  // yet) are kept by registration and merged once AS assigns the id.
+  if (aircraftData.some(function(value){ return !value.aircraftId; })) {
+    text += ' Undelivered aircraft are stored by registration and will be merged once AirlineSim assigns an aircraft ID.';
+  }
+  return text;
 }
 function fltmng_displayNewUpdates(){
   if(!aircraftData.length){

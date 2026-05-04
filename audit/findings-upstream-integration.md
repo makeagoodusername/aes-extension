@@ -17,7 +17,7 @@ mutates AS state (none expected for slices 1–6).
 |---|---|---|---|---|
 | 1 | Settings save/load race fix | [FIXED] | settings-bridge.js, content_inventory.js, content_settings.js | 447e7ca |
 | 2 | Grouped inventory tables (Group by flight) | [FIXED] | content_inventory.js | 199ceee |
-| 3 | Inventory pricing reference recommendations (opt-in) | [FIXED] | content_inventory.js (toggle: 2dcb2cd) | (this commit) |
+| 3 | Inventory pricing reference recommendations (opt-in) | [FIXED] | content_inventory.js (toggle: 2dcb2cd) | 91c42c4 |
 | 4 | HUB override controls + auto-detection | (pending) |  |  |
 | 5 | Richer Fleet Management extraction | (pending) |  |  |
 | 6 | Aircraft Profitability new columns | (pending) |  |  |
@@ -297,5 +297,110 @@ rows", which is the case CHANGELOG 0.7.8 calls out.
   `generateReferenceRecommendation`, analysis `displayReferenceRec` method,
   `displayAnalysis` conditional column + footer colspan
 - (toggle UI + defaults: already committed as `2dcb2cd`)
+
+**Territory:** Agent 7 (content scripts).
+
+---
+
+## Slice 5 — Fleet Management richer extraction + table polish (v0.7.6 / v0.7.7)
+
+**Disposition:** [FIXED] (items 13, 16, 17, 19, 22) / [DEFERRED] (item 12)
+
+**Origin:** Upstream CHANGELOG 0.7.6 + 0.7.7 — richer per-tail extraction,
+schedule-state labels, HUB column, undelivered-tail persistence, and table
+presentation polish in `content_fleetManagement.js`. See
+`audit/integration-delta-matrix.md` rows 12, 13, 16, 17, 19, 22 for the diff.
+
+**Items shipped this commit:**
+
+- **Item 13** — Augmented `fltmng_getData` extraction with new fields
+  (`delivered`, `owned`, `pilotAssigned`, `pilotAssignedLabel`, `seatConfig`,
+  `totalSeats`, `pureCargo`, `scheduleState`, `scheduleStateLabel`,
+  `seatY/C/F` aliases, `maintenance` alias). Fork's existing fields
+  (`typeId`, `note`, `nickname`, `location`, `seatsY/C/F`, `maintanance`)
+  preserved verbatim — both shapes coexist. New helpers added:
+  `fltmng_isDelivered`, `fltmng_isOwned`, `fltmng_hasPilots`,
+  `fltmng_getSeatConfig`, `fltmng_getTotalSeats`, `fltmng_isPureCargo`,
+  `fltmng_getScheduleState`.
+- **Item 16** — `<th>Aircraft model</th>` renamed to `<th>Model</th>`;
+  `<th>HUB</th>` inserted after the model column; profit/extract-date headers
+  centered.
+- **Item 17** — `fltmng_getScheduleStateLabel` returns
+  `Active|Locked|Conflict|Empty|Undelivered`; consumers map label -> CSS class
+  via existing fork conventions (`good`/`warning`/`bad`/neutral) — same
+  vocabulary upstream's `content_dashboard.js:241` already uses for the
+  Aircraft Profitability tile.
+- **Item 19** — Replaced strict `aircraftId == newValue.aircraftId`
+  matching in `fltmng_updateAircraftFleetStorageData` with
+  `fltmng_isSameAircraft(stored, aircraft)` (matches by id OR registration).
+  Added `fltmng_getStoredAircraft(data, aircraft)` for the find-and-merge
+  step. Relaxed `fltmng_isValidAircraftRecord` so undelivered tails (null
+  aircraftId) survive in storage when keyed by registration. Relaxed the
+  `if(!fltmng_isValidAircraftId(aircraftId)) return;` early discard in
+  `fltmng_getData` so null-id rows enter `aircraftData`. Skipped
+  `serveraircraftFlightsnull` lookups in `fltmng_getStorageData`.
+- **Item 22** — `<td></td>` placeholders in the profit/extract-date columns
+  replaced with `<td class="text-center">--</td>`.
+
+**Item 12 disposition: [DEFERRED]**
+
+`fltmng_buildFilterPanel` (Model/HUB/Seats/Delivery/Ownership/Schedule
+selects) and `fltmng_bindNativeSelectionLinks` from upstream
+content_fleetManagement.js (lines 567-650 + 663-725) require:
+
+1. A `row` reference attached to every `aircraftData` entry so the filter's
+   `.toggle(visible)` call has an element to hide.
+2. A MutationObserver scaffold (`fltmng_watchFleetTable`,
+   `fltmng_syncTableRows`, `fltmng_isFleetTableNode`,
+   `fltmng_refreshFleetTableEnhancements`) so the filter survives
+   AS-side table re-renders (the per-fleet sub-pagination triggers a partial
+   table swap that the fork's renderer doesn't currently watch).
+3. A `fltmng_refreshNativeSelectionState` helper that re-fires `change`
+   events on AS's checkboxes.
+
+That stack is ~150 lines and changes the boot/render lifecycle. Deferring
+to a follow-up slice keeps this commit focused on items 13/16/17/19/22 and
+avoids a double touch of the renderer when the filter UI lands. A TODO marker
+in `fltmng_display` flags the intended port.
+
+**Storage envelope check:**
+
+- `<server><airline>aircraftFleet` blob — additive only. New fields written:
+  `delivered`, `owned`, `pilotAssigned`, `pilotAssignedLabel`, `pureCargo`,
+  `scheduleState`, `scheduleStateLabel`, `seatY/C/F`, `seatConfig`,
+  `totalSeats`, `maintenance`. Existing fields (`age`, `aircraftId`, `date`,
+  `equipment`, `typeId`, `fleet`, `location`, `maintanance`, `nickname`,
+  `note`, `registration`, `seatsY/C/F`, `time`) preserved.
+- `<server>aircraftFlights<id>` blob — unchanged shape; only the read path
+  was hardened to skip null-id keys.
+
+**Inviolable rules check:**
+
+- §1 no new POSTs: pure DOM extraction + chrome.storage writes. No new AS
+  request paths.
+- §2 storage contracts: additive fields only on
+  `<server><airline>aircraftFleet`; key shape and prefix unchanged.
+- §3 AFP form-driver: untouched.
+- §7 no silent default flips: not applicable; this is a presentation +
+  storage-shape additive change with no gate flips.
+
+**Verification:**
+
+- Static: `node --check content_fleetManagement.js` clean.
+- Behavioral (run in browser, no live writes needed): open
+  `/app/fleets/`; the AES Fleet Management panel should show the centered
+  HUB column, `--` placeholders on rows with no profit history, and the
+  "Aircraft model" column renamed to "Model". Per-tail `scheduleState` and
+  derived metadata available via `chrome.storage.local.get` against the
+  `<server><airline>aircraftFleet` key.
+- Cross-territory: dashboard (`content_dashboard.js`) consumes
+  `scheduleStateLabel` for the Aircraft Profitability tile per upstream
+  v0.7.6; the field is now populated. (Dashboard wiring of the label is
+  scope of items 6/17 follow-up — not this slice.)
+
+**Files changed:**
+
+- `content_fleetManagement.js` — extraction + storage envelope + table polish
+  + new helpers + item 12 deferral comment.
 
 **Territory:** Agent 7 (content scripts).
