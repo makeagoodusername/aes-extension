@@ -22,59 +22,90 @@ const URLS = [
 ]
 
 test("AES content scripts load without page crashes across matched pages", async () => {
-    test.setTimeout(90000)
+    test.setTimeout(120000)
 
     const extPath = path.resolve(__dirname, "..", "..")
-    const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "aes-load-sweep-"))
-
-    const ctx = await chromium.launchPersistentContext(profileDir, {
-        headless: false,
-        args: [
-            `--disable-extensions-except=${extPath}`,
-            `--load-extension=${extPath}`,
-        ],
-    })
-
-    try {
-        const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent("serviceworker", {timeout: 10000})
-        await worker.evaluate(async () => {
-            await chrome.storage.local.set({
+    const scenarios = [
+        {
+            name: "fresh profile / missing settings",
+            seedStorage: null,
+            urls: URLS,
+        },
+        {
+            name: "corrupted shared caches",
+            seedStorage: {
                 settings: "corrupt-settings-blob",
                 "free1CFLAIRflightInfo12345": null,
                 "free1flightInfo12345": "old-corrupt-flight-info",
-            })
+            },
+            urls: URLS,
+        },
+    ]
+
+    for (const scenario of scenarios) {
+        const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "aes-load-sweep-"))
+        const ctx = await chromium.launchPersistentContext(profileDir, {
+            headless: false,
+            args: [
+                `--disable-extensions-except=${extPath}`,
+                `--load-extension=${extPath}`,
+            ],
         })
 
-        await ctx.route("https://free1.airlinesim.aero/**", route => route.fulfill({
-            status: 200,
-            contentType: "text/html",
-            body: fixturePage(),
-        }))
-
-        const failures: string[] = []
-        for (const url of URLS) {
-            const page = await ctx.newPage()
-            const errors: string[] = []
-            page.on("pageerror", err => errors.push(`pageerror: ${err.message}`))
-            page.on("console", msg => {
-                if (msg.type() === "error") {
-                    errors.push(`console.error: ${msg.text()}`)
-                }
-            })
-
-            await page.goto(url, {waitUntil: "domcontentloaded"})
-            await page.waitForTimeout(1500)
-
-            if (errors.length) {
-                failures.push(`${url}\n${errors.map(err => `  ${err}`).join("\n")}`)
+        try {
+            if (scenario.seedStorage) {
+                const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent("serviceworker", {timeout: 10000})
+                await worker.evaluate(async (items) => {
+                    await chrome.storage.local.set(items)
+                }, scenario.seedStorage)
             }
-            await page.close()
-        }
 
-        expect(failures, failures.join("\n\n")).toEqual([])
-    } finally {
-        await ctx.close().catch(() => {})
-        fs.rmSync(profileDir, {recursive: true, force: true, maxRetries: 5, retryDelay: 100})
+            await ctx.route("https://free1.airlinesim.aero/**", route => route.fulfill({
+                status: 200,
+                contentType: "text/html",
+                body: fixturePage(),
+            }))
+
+            const failures: string[] = []
+            for (const url of scenario.urls) {
+                const page = await ctx.newPage()
+                const errors: string[] = []
+                page.on("pageerror", err => errors.push(`pageerror: ${err.message}`))
+                page.on("console", msg => {
+                    if (msg.type() === "error") {
+                        errors.push(`console.error: ${msg.text()}`)
+                    }
+                })
+
+                await page.goto(url, {waitUntil: "domcontentloaded"})
+                await page.waitForSelector(".aes-menu__trigger", {timeout: 10000})
+
+                if (url.includes("/app/enterprise/dashboard")) {
+                    await page.waitForSelector("#aes-central-hub", {timeout: 10000})
+                }
+
+                const status = await getAesBootStatus(page)
+
+                const failed = status && Array.isArray(status.failed) ? status.failed : []
+                const skippedAnchors = status && Array.isArray(status.skippedAnchors) ? status.skippedAnchors : []
+                if (failed.length) {
+                    errors.push(`AesBoot failed: ${failed.map((row: any) => `${row.id}:${row.reason || row.error || ""}`).join(", ")}`)
+                }
+                if (!skippedAnchors.some((row: any) => row.id === "test-intentional-missing-anchor")) {
+                    errors.push("AesBoot skippedAnchors did not include intentional missing anchor")
+                }
+
+                if (errors.length) {
+                    failures.push(`${scenario.name}: ${url}\n${errors.map(err => `  ${err}`).join("\n")}`)
+                }
+                await page.close()
+            }
+
+            expect(failures, failures.join("\n\n")).toEqual([])
+        } finally {
+            await ctx.close().catch(() => {})
+            fs.rmSync(profileDir, {recursive: true, force: true, maxRetries: 5, retryDelay: 100})
+        }
     }
 })
 
@@ -113,4 +144,57 @@ function fixturePage() {
   </main>
 </body>
 </html>`
+}
+
+async function getAesBootStatus(page: any) {
+    const session = await page.context().newCDPSession(page)
+    const contexts: any[] = []
+    session.on("Runtime.executionContextCreated", (event: any) => {
+        contexts.push(event.context)
+    })
+    await session.send("Runtime.enable")
+    await page.waitForTimeout(100)
+
+    try {
+        for (const context of contexts) {
+            const probe = await session.send("Runtime.evaluate", {
+                contextId: context.id,
+                expression: "typeof AesBoot !== 'undefined' && !!AesBoot.__aesBoot",
+                returnByValue: true,
+            }).catch(() => null)
+            if (!probe || !probe.result || !probe.result.value) continue
+
+            const evaluated = await session.send("Runtime.evaluate", {
+                contextId: context.id,
+                awaitPromise: true,
+                returnByValue: true,
+                expression: `;(async function(){
+                    AesBoot.register({
+                        id: "test-intentional-missing-anchor",
+                        matches: function(){ return true },
+                        anchor: "#aes-intentional-missing-anchor",
+                        anchorTimeoutMs: 50,
+                        init: function(){
+                            throw new Error("intentional missing anchor should skip before init")
+                        }
+                    });
+                    var deadline = Date.now() + 1500;
+                    while (Date.now() < deadline) {
+                        var current = AesBoot.status();
+                        if (current.skippedAnchors.some(function(row){
+                            return row.id === "test-intentional-missing-anchor";
+                        })) {
+                            return current;
+                        }
+                        await new Promise(function(resolve){ setTimeout(resolve, 50); });
+                    }
+                    return AesBoot.status();
+                })()`,
+            })
+            return evaluated.result.value
+        }
+        return null
+    } finally {
+        await session.detach().catch(() => {})
+    }
 }

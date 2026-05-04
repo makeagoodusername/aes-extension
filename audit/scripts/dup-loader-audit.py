@@ -126,38 +126,30 @@ def static_top_level_violations(filepath):
 def block_url_set(block):
     return [matches_urls(m) for m in block.get('matches', [])]
 
-# Sample test URLs for each block
+def sample_from_match(pattern):
+    """Build a representative URL for the exact manifest match pattern.
+
+    This avoids stale block-index samples when content_scripts entries are
+    inserted or reordered.
+    """
+    if pattern.startswith('https://'):
+        scheme = 'https://'
+        rest = pattern[8:]
+    elif pattern.startswith('http://'):
+        scheme = 'http://'
+        rest = pattern[7:]
+    else:
+        scheme = 'https://'
+        rest = pattern
+    parts = rest.split('/', 1)
+    host = parts[0].replace('*.', 'x.').replace('*', 'x')
+    path = '/' + parts[1] if len(parts) > 1 else '/'
+    path = path.replace('*', 'sample')
+    return scheme + host + path
+
 sample_urls = {
-    0: ['https://x.airlinesim.aero/app/com/scheduling/JFKLAX', 'https://x.airlinesim.aero/action/foo'],
-    1: ['https://x.airlinesim.aero/app/foo', 'https://x.airlinesim.aero/action/foo'],
-    2: ['https://x.airlinesim.aero/app/com/inventory/JFKLAX'],
-    3: ['https://x.airlinesim.aero/app/info/enterprises/123?tab=3'],
-    4: ['https://x.airlinesim.aero/app/enterprise/settings'],
-    5: ['https://x.airlinesim.aero/app/enterprise/dashboard'],
-    6: ['https://x.airlinesim.aero/app/aircraft/market'],
-    7: ['https://x.airlinesim.aero/app/alliance'],
-    8: ['https://www.flightsfrom.com/JFK'],
-    9: ['https://x.airlinesim.aero/app/com/scheduling'],
-    10: ['https://x.airlinesim.aero/app/com/markets/JFKLAX'],
-    11: ['https://x.airlinesim.aero/app/com/numbers/123'],
-    12: ['https://x.airlinesim.aero/app/info/airports/JFK', 'https://x.airlinesim.aero/app/ops/stations'],
-    13: ['https://x.airlinesim.aero/action/enterprise/staffOverview'],
-    14: ['https://x.airlinesim.aero/action/enterprise/staffOverview'],
-    15: ['https://x.airlinesim.aero/app/enterprise/marketing'],
-    16: ['https://x.airlinesim.aero/action/enterprise/staffPilots'],
-    17: ['https://x.airlinesim.aero/app/info/enterprises/123'],
-    18: ['https://x.airlinesim.aero/action/info/flight'],
-    19: ['https://x.airlinesim.aero/app/fleets/aircraft/123/1'],
-    20: ['https://x.airlinesim.aero/app/fleets/aircraft/123/0'],
-    21: ['https://x.airlinesim.aero/app/fleets/aircraft/123/0'],
-    22: ['https://x.airlinesim.aero/app/finance/accounting'],
-    23: ['https://x.airlinesim.aero/app/finance/leasing'],
-    24: ['https://x.airlinesim.aero/app/finance/capital'],
-    25: ['https://x.airlinesim.aero/app/finance/assets'],
-    26: ['https://x.airlinesim.aero/action/enterprise/schedule'],
-    27: ['https://x.airlinesim.aero/app/fleets'],
-    28: ['https://x.airlinesim.aero/app/info/airports/JFK'],
-    29: ['https://x.airlinesim.aero/app/info/enterprises/123'],
+    i: [sample_from_match(m) for m in block.get('matches', [])]
+    for i, block in enumerate(blocks)
 }
 
 def block_matches_url(block_idx, url):

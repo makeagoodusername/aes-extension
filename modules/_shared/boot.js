@@ -28,7 +28,6 @@
     let contextPromise = null
     let contextValue = null
     let runScheduled = false
-    let lastRunPromise = Promise.resolve()
 
     function nowIso() {
         try { return new Date().toISOString() } catch (_) { return "" }
@@ -394,15 +393,11 @@
     }
 
     function runPage() {
-        lastRunPromise = lastRunPromise
-            .catch(() => {})
-            .then(async () => {
-                const ctx = await prepareContext()
-                const runnable = Array.from(registry.values()).filter(rec => rec.state === "pending")
-                await Promise.all(runnable.map(rec => startRecord(rec, ctx)))
-                return status()
-            })
-        return lastRunPromise
+        return prepareContext().then(async (ctx) => {
+            const runnable = Array.from(registry.values()).filter(rec => rec.state === "pending")
+            await Promise.all(runnable.map(rec => startRecord(rec, ctx)))
+            return status()
+        })
     }
 
     function once(id, fn) {

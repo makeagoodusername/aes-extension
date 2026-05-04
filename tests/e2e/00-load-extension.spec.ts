@@ -15,6 +15,8 @@ import { installMockAirlineSimRoutes } from "../support/airlinesim-fixtures"
  * Set AES_TEST_LIVE=1 to point the same smoke at a logged-in AS profile.
  */
 test("AES extension loads on AirlineSim dashboard", async () => {
+    test.setTimeout(90000)
+
     const extPath = path.resolve(__dirname, "..", "..")
     const live = process.env.AES_TEST_LIVE === "1"
     const tmpProfile = live ? "" : fs.mkdtempSync(path.join(os.tmpdir(), "aes-e2e-profile-"))
