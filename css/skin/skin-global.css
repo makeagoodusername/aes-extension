@@ -880,8 +880,42 @@ html[data-aes-density="compact"] body.aes-skin .table > tbody > tr > td {
     padding: 2px var(--aes-sp-2);
     line-height: var(--aes-lh-tight);
 }
-html[data-aes-density="compact"] body.aes-skin .form-control { padding: 2px var(--aes-sp-1); }
-html[data-aes-density="compact"] body.aes-skin .btn { padding: 2px var(--aes-sp-2); }
+html[data-aes-density="compact"] body.aes-skin .form-control {
+    padding: 2px var(--aes-sp-1);
+    font-size: var(--aes-fs-small);
+    line-height: 1.3;
+}
+html[data-aes-density="compact"] body.aes-skin .btn {
+    padding: 2px var(--aes-sp-2);
+    border-width: var(--aes-bw-1);
+    font-weight: var(--aes-fw-medium);
+    text-transform: none;
+    letter-spacing: 0;
+}
+html[data-aes-density="compact"] body.aes-skin .panel-heading {
+    box-shadow: none;
+}
+html[data-aes-density="compact"] body.aes-skin .panel-title {
+    font-size: var(--aes-fs-body);
+    font-weight: var(--aes-fw-bold);
+    text-transform: none;
+    letter-spacing: 0;
+}
+html[data-aes-density="compact"] body.aes-skin label,
+html[data-aes-density="compact"] body.aes-skin .control-label {
+    font-size: var(--aes-fs-micro);
+    font-weight: var(--aes-fw-medium);
+    text-transform: none;
+    letter-spacing: 0;
+    margin-bottom: 2px;
+}
+html[data-aes-density="compact"] body.aes-skin .nav-tabs > li > a {
+    padding: 2px var(--aes-sp-2);
+    border-width: var(--aes-bw-1);
+    font-weight: var(--aes-fw-medium);
+    text-transform: none;
+    letter-spacing: 0;
+}
 
 
 /* ===========================================================

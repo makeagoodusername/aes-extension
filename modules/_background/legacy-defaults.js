@@ -16,6 +16,13 @@
  * service worker's onInstalled listener.
  */
 
+if (typeof globalThis !== 'undefined'
+    && typeof globalThis.AesSettings === 'undefined'
+    && typeof importScripts === 'function') {
+  try { importScripts('modules/_shared/settings-bridge.js'); }
+  catch (e) { console.warn('[bg] legacy-defaults failed to import settings-bridge', e); }
+}
+
 function setDefaultScheduleSettings() {
   return { autoExtract: 0 };
 }
@@ -23,8 +30,15 @@ function setDefaultScheduleSettings() {
 function setDefaultStationAutomationSettings() {
   const thresholds = [0, 1000, 5000, 10000, 50000, 100000, 500000, 1000000];
   return {
+    defaultFilterMode: 'minimum',
     defaultPaxThreshold: 0,
     defaultCargoThreshold: 0,
+    defaultPaxMin: 1,
+    defaultPaxMax: 9,
+    defaultCargoMin: 2,
+    defaultCargoMax: 10,
+    defaultSizeMin: 1,
+    defaultSizeMax: 8,
     thresholds,
     countriesCache: {}
   };
@@ -85,8 +99,13 @@ function setDefaultSettings() {
     usedAircraftScanner: setDefaultUsedAircraftScannerSettings()
   };
   chrome.storage.local.get(['settings'], function(result) {
-    if (!result.settings) {
-      chrome.storage.local.set({ settings: aesSettings }, function() {});
-    }
+    if (result.settings) return;
+    const api = (typeof globalThis !== 'undefined') ? globalThis.AesSettings : null;
+    if (!api || typeof api.saveArea !== 'function') return;
+    Object.keys(aesSettings).reduce((chain, area) => {
+      return chain.then(() => api.saveArea(area, aesSettings[area]));
+    }, Promise.resolve()).catch(function(err) {
+      console.warn('[bg] legacy-defaults failed to seed settings', err);
+    });
   });
 }

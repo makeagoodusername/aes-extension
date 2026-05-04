@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>AES Dashboard Harness — Terminal 1 owned tiles</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../css/design-tokens.css">
+<link rel="stylesheet" href="../css/cubist.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/content.css">
+<style>body { font-family: sans-serif; padding: 16px; }</style>
+</head>
+<body>
+<script>
+// ── Stub chrome.* APIs ────────────────────────────────────────────────
+(function(){
+  const _store = new Map();
+  const _listeners = [];
+  function getValue(key){ return _store.has(key) ? JSON.parse(JSON.stringify(_store.get(key))) : undefined; }
+  function makeArea() {
+    return {
+      get: (keys) => new Promise(res => {
+        if (keys === null || keys === undefined) {
+          const out = {};
+          for (const [k,v] of _store) out[k] = JSON.parse(JSON.stringify(v));
+          res(out); return;
+        }
+        if (typeof keys === "string") keys = [keys];
+        if (Array.isArray(keys)) { const out = {}; for (const k of keys) { if (_store.has(k)) out[k] = getValue(k); } res(out); return; }
+        if (typeof keys === "object") { const out = {}; for (const k in keys) { out[k] = _store.has(k) ? getValue(k) : keys[k]; } res(out); return; }
+        res({});
+      }),
+      set: (items) => new Promise(res => {
+        const changes = {};
+        for (const k in items) {
+          changes[k] = {oldValue: getValue(k), newValue: JSON.parse(JSON.stringify(items[k]))};
+          _store.set(k, JSON.parse(JSON.stringify(items[k])));
+        }
+        for (const lst of _listeners) { try { lst(changes, "local"); } catch (e) {} }
+        res();
+      }),
+      remove: (keys) => new Promise(res => {
+        if (typeof keys === "string") keys = [keys];
+        const changes = {};
+        for (const k of keys) { if (_store.has(k)) { changes[k] = {oldValue: getValue(k)}; _store.delete(k); } }
+        for (const lst of _listeners) { try { lst(changes, "local"); } catch (e) {} }
+        res();
+      }),
+      clear: () => new Promise(res => { _store.clear(); res(); })
+    };
+  }
+  window.chrome = window.chrome || {};
+  window.chrome.storage = {
+    local: makeArea(), sync: makeArea(),
+    onChanged: { addListener: (fn) => _listeners.push(fn), removeListener: (fn) => { const i=_listeners.indexOf(fn); if (i>=0) _listeners.splice(i,1); } }
+  };
+  window.chrome.runtime = window.chrome.runtime || {
+    id: "harness",
+    getManifest: () => ({version: "0.6.12-harness", manifest_version: 3}),
+    getURL: (p) => "file://" + p,
+    sendMessage: () => Promise.resolve(),
+    onMessage: { addListener:()=>{} }, onInstalled: { addListener:()=>{} }, onStartup: { addListener:()=>{} }
+  };
+  window.chrome.tabs = window.chrome.tabs || {
+    query: () => Promise.resolve([]), create: () => Promise.resolve({}),
+    sendMessage: () => Promise.resolve(),
+    onUpdated: { addListener:()=>{} }, onRemoved: { addListener:()=>{} }
+  };
+  window.chrome.alarms = window.chrome.alarms || { create: ()=>{}, clear: ()=>Promise.resolve(true), getAll: ()=>Promise.resolve([]), onAlarm: { addListener:()=>{} } };
+  window.chrome.notifications = window.chrome.notifications || { create: ()=>{}, clear: ()=>{}, onClicked: { addListener:()=>{} }, onButtonClicked: { addListener:()=>{} } };
+})();
+window.AES = window.AES || {};
+AES.getServerName = function() { return "zb"; };
+AES.getAirlineCode = function() { return {code: "HARN", name: "Harness Airlines"}; };
+AES.getAirlineIdentity = function() { return "HARN"; };
+window.__aesHarness = { errors: [], log: [] };
+window.addEventListener("error", e => {
+  window.__aesHarness.errors.push({ msg: e.message, src: (e.filename||"").split("/").slice(-2).join("/"), line: e.lineno });
+});
+window.addEventListener("unhandledrejection", e => {
+  window.__aesHarness.errors.push({ msg: "[reject] " + (e.reason && (e.reason.stack||e.reason.message||e.reason) || "?") });
+});
+const _origWarn = console.warn.bind(console);
+console.warn = (...a) => { window.__aesHarness.log.push({lvl:"warn", text: a.map(x => x && x.message || String(x)).join(" ")}); _origWarn(...a); };
+const _origError = console.error.bind(console);
+console.error = (...a) => { window.__aesHarness.log.push({lvl:"error", text: a.map(x => x && x.message || String(x)).join(" ")}); _origError(...a); };
+</script>
+<script src="../modules/_shared/storage-fallback.js"></script>
+
+<!-- AS-equivalent dashboard markup the central-hub host expects -->
+<div id="main-content">
+  <div class="row">
+    <div id="enterprise-dashboard">Synthetic dashboard root</div>
+  </div>
+  <table class="facts">
+    <tr><td>Airline:</td><td>HARN</td></tr>
+    <tr><td>Server:</td><td>zb</td></tr>
+  </table>
+</div>
+
+<!-- Foundations -->
+<script src="../js/jquery-3.4.1.min.js"></script>
+<script src="../helpers.js"></script>
+<script src="../modules/_shared/utils.js"></script>
+<script src="../modules/_shared/data-bus.js"></script>
+<script src="../modules/_shared/data-bus-topics.js"></script>
+<script src="../modules/_shared/settings-bridge.js"></script>
+<script src="../modules/_shared/prefix-store.js"></script>
+<script src="../modules/_shared/ttl-cache.js"></script>
+<script src="../modules/_shared/store-cache.js"></script>
+<script src="../modules/_shared/cleanup-registry.js"></script>
+<script src="../modules/_shared/fleet-roster.js"></script>
+<script src="../modules/_shared/aircraft-spec.js"></script>
+<script src="../modules/_shared/account-registry.js"></script>
+<script src="../modules/_shared/account-scoped-key.js"></script>
+
+<!-- Design tokens -->
+<script src="../js/design-tokens.js"></script>
+
+<!-- Canopy stack (family-tile depends on these) -->
+<script src="../modules/canopy/role-store.js"></script>
+<script src="../modules/canopy/role-detector.js"></script>
+<script src="../modules/canopy/affiliations-store.js"></script>
+<script src="../modules/canopy/roles-settings-page.js"></script>
+<script src="../modules/canopy/orgs-store.js"></script>
+<script src="../modules/canopy/geography-base.js"></script>
+<script src="../modules/canopy/region-resolver.js"></script>
+<script src="../modules/canopy/regions-store.js"></script>
+<script src="../modules/canopy/dna-store.js"></script>
+<script src="../modules/canopy/dna-fit-scorer.js"></script>
+<script src="../modules/canopy/dna-drift-detector.js"></script>
+
+<!-- Hub feed (tiles can subscribe) -->
+<script src="../modules/_shared/hub-feed.js"></script>
+<script src="../modules/central-hub/feed/index.js"></script>
+
+<!-- Used Aircraft Scanner stores -->
+<script src="../modules/used-aircraft-scanner/type-family-map.js"></script>
+<script src="../modules/used-aircraft-scanner/scan-session-store.js"></script>
+<script src="../modules/used-aircraft-scanner/scan-diff-store.js"></script>
+<script src="../modules/used-aircraft-scanner/bid-intent-store.js"></script>
+<script src="../modules/used-aircraft-scanner/presets-store.js"></script>
+
+<!-- Aircraft flight plan store (afp tile) -->
+<script src="../modules/aircraft-flight-plan/active-draft-store.js"></script>
+
+<!-- Strategy bits the fleet-optimizer + family tiles call into -->
+<script src="../modules/strategy/fleet-optimizer-settings.js"></script>
+<script src="../modules/strategy/fleet-utilization.js"></script>
+<script src="../modules/strategy/fleet-command.js"></script>
+<script src="../modules/strategy/fleet-command-bulk-apply.js"></script>
+<script src="../modules/strategy/fleet-command-panel.js"></script>
+<script src="../modules/strategy/default-settings.js"></script>
+<script src="../modules/canopy/interline-gap-detector.js"></script>
+<script src="../modules/strategy/kin-handoff-moves.js"></script>
+
+<!-- Fleet Hub overlay drilldown -->
+<script src="../modules/fleet-hub/optimizer-drilldown.js"></script>
+
+<!-- Central hub core -->
+<script src="../modules/central-hub/settings-store.js"></script>
+<script src="../modules/central-hub/status-badges.js"></script>
+<script src="../modules/central-hub/legacy-bridge.js"></script>
+<script src="../modules/central-hub/bus.js"></script>
+<script src="../modules/central-hub/tile.js"></script>
+<script src="../modules/central-hub/tile-registry.js"></script>
+<script src="../modules/central-hub/pin-affordance.js"></script>
+
+<!-- The seven owned tiles -->
+<script src="../modules/central-hub/tiles/fleet-hub-tile.js"></script>
+<script src="../modules/central-hub/tiles/fleet-command-tile.js"></script>
+<script src="../modules/central-hub/tiles/fleet-optimizer-tile.js"></script>
+<script src="../modules/central-hub/tiles/aircraft-flight-plan-tile.js"></script>
+<script src="../modules/central-hub/tiles/aircraft-profitability-tile.js"></script>
+<script src="../modules/central-hub/tiles/used-aircraft-scanner-tile.js"></script>
+<script src="../modules/central-hub/tiles/family-tile.js"></script>
+
+<script>
+// Mount tiles directly (skip CentralHubShell — its mount path requires
+// many sibling modules we don't load). We instantiate each owned tile
+// and exercise mount/expand/load to surface runtime errors.
+window.__aesHarnessReady = false;
+(async function () {
+  try {
+    const ctx = {server: "zb", airline: "HARN"};
+    const root = document.createElement("div");
+    root.id = "harness-tiles";
+    root.style.cssText = "background:#fff;display:flex;flex-direction:column;gap:8px;padding:8px;border:1px dashed #999;margin:12px 0;";
+    document.body.appendChild(root);
+    const ids = ["fleet-hub","fleet-command","fleet-optimizer","aircraft-flight-plan","aircraft-profitability","used-aircraft-scanner","family"];
+    const all = window.CentralHubTileRegistry.all().filter(spec => ids.includes(spec.id));
+    window.__aesHarnessTiles = {};
+    for (const spec of all) {
+      const tile = spec.factory();
+      window.__aesHarnessTiles[spec.id] = tile;
+      const mountSlot = document.createElement("div");
+      mountSlot.id = "slot-" + spec.id;
+      root.appendChild(mountSlot);
+      try {
+        await tile.mount(mountSlot, ctx, {expanded: true});
+      } catch (e) {
+        window.__aesHarness.errors.push({msg: "MOUNT FAIL " + spec.id + ": " + (e && e.stack || e)});
+      }
+    }
+    window.__aesHarnessReady = true;
+  } catch (err) {
+    window.__aesHarness.errors.push({msg: "harness bootstrap: " + (err && err.stack || err)});
+  }
+})();
+</script>
+</body>
+</html>

@@ -5,15 +5,26 @@ market-sample.html
 # Local Playwright harness for live AFP testing — never part of the .crx
 node_modules/
 package-lock.json
-audit/playwright/.profile/
+audit/playwright/.profile*/
 audit/playwright/screenshots/
 audit/playwright/traces/
+audit/playwright/out/
+audit/playwright/run-*.log
 
 # AS login credentials for the 8-Chrome audit runner. Real email/password
 # never committed; the template at audit/credentials.json starts empty.
 audit/credentials.json
 audit/.pids/
+audit/.route-builder-*.pid
 audit/scripts/__pycache__/
+
+# Live test reports — short-lived, regenerated on every test run.
+audit/live-*report*.json
+audit/pw-rb-*.json
+audit/pw-rb-shots/
+debug-artifacts/
+test-results/
+.playwright-artifacts/
 
 # Local scratch fixtures — saved AS pages used for parser development.
 # Stay on disk for the user's reference; never ship in the .crx.

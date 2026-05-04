@@ -2,8 +2,12 @@
    skin-schedule.css — /app/com/scheduling/<HUB> and enterprise schedule tab.
 
    The Route Assistant panel mounts on these pages with its own dark theme
-   under #aes-route-assistant. Every rule in this file must NOT cascade
+   under #aes-route-assistant. Every rule in this file MUST NOT cascade
    into that root — we explicitly exclude it.
+
+   Brings the AS scheduling form, day-of-week chips, and inventory table
+   up to skin-info.css depth: header rhythm, tabular-nums, density-aware
+   spacing, and clearer active states.
    =========================================================== */
 
 body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .table > tbody > tr > td {
@@ -23,4 +27,78 @@ body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .btn-group 
 body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) textarea.form-control {
     font-family: var(--aes-font-mono);
     line-height: var(--aes-lh-tight);
+}
+
+/* ---- Table header rhythm — caps tracking, mono numerals ------------ */
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .table > thead > tr > th {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-oxide);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    background: var(--aes-bone-2);
+}
+
+/* ---- Zebra stripes for inventory + schedule listings ---------------- */
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .table-striped > tbody > tr:nth-of-type(odd),
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .table > tbody > tr:nth-of-type(odd) {
+    background: var(--aes-bone-2);
+}
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .table > tbody > tr:hover {
+    background: var(--aes-rust-soft);
+}
+
+/* ---- Day-of-week chip rhythm — uppercase mono ----------------------- */
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .btn-group .btn {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+    border-radius: var(--aes-radius);
+    border-width: var(--aes-bw-1);
+}
+
+/* ---- Right-align numeric form inputs (price, frequency, capacity) -- */
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) input.form-control[type="number"],
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) input.form-control[name*="price" i],
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) input.form-control[name*="frequency" i] {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* ---- Density-aware row padding -------------------------------------- */
+body.aes-skin[data-aes-page="scheduling"][data-aes-density="compact"] :not(#aes-route-assistant) .table > tbody > tr > td,
+body.aes-skin[data-aes-page="scheduling"][data-aes-density="compact"] :not(#aes-route-assistant) .table > thead > tr > th {
+    padding-top: var(--aes-sp-1);
+    padding-bottom: var(--aes-sp-1);
+    font-size: var(--aes-fs-small);
+    line-height: var(--aes-lh-tight);
+}
+
+/* ---- Form section headings — caps tracking, oxide rule -------------- */
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .panel > .panel-heading,
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) legend {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    color: var(--aes-oxide);
+}
+
+/* ---- Submit-button cluster — primary CTA on rust -------------------- */
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .btn-primary {
+    background: var(--aes-rust);
+    border-color: var(--aes-rust-deep);
+    color: var(--aes-rust-fg);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-weight: var(--aes-fw-display);
+}
+body.aes-skin[data-aes-page="scheduling"] :not(#aes-route-assistant) .btn-primary:hover {
+    background: var(--aes-rust-deep);
 }

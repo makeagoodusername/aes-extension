@@ -1,0 +1,248 @@
+/* ===========================================================
+   AES Fleet Command Center — Compact "Flight Board" view
+   Scoped under [data-aes-fleet-cc][data-view-mode="compact"] so
+   standard mode is untouched (no selector matches when the
+   attribute is absent). Consumes only design tokens declared in
+   css/design-tokens.css — no new colours, no new fonts.
+   ----------------------------------------------------------
+   Aesthetic: airport split-flap departure board. Mono digits,
+   sharp corners, hairline rules, rust accent, semantic status
+   pills (crimson=BLOCKED, amber=DRAFT, moss=LIVE, slate=IDLE).
+   =========================================================== */
+
+[data-aes-fleet-cc][data-view-mode="compact"] {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Board container ────────────────────────────────────── */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb {
+    display: grid;
+    /* HUB | STATUS | AC | WAVE/PRESET | DRAFT | UPDATED */
+    grid-template-columns: 64px 96px 56px 1fr 96px 104px;
+    background: var(--aes-bone);
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+}
+
+/* display:contents lets each row's children participate in the
+   parent's grid track flow — one row = six cells in a single
+   continuous grid, with full-width expand panels via column
+   span 1 / -1 below. */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-head,
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row {
+    display: contents;
+}
+
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell {
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    font-size: var(--aes-fs-body);
+    line-height: var(--aes-lh-tight);
+    color: var(--aes-oxide);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Header strip — caps, slate text, rust seam at bottom */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-head .aes-fb-cell {
+    font-size: var(--aes-fs-micro);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-slate);
+    background: var(--aes-bone-3);
+    border-bottom: var(--aes-bw-2) solid var(--aes-rust);
+    font-weight: var(--aes-fw-bold);
+}
+
+/* Per-column treatment */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-col="hub"] {
+    font-size: var(--aes-fs-lead);
+    font-weight: var(--aes-fw-bold);
+    color: var(--aes-oxide);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-col="status"] {
+    text-align: center;
+    font-weight: var(--aes-fw-bold);
+    letter-spacing: 0.06em;
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-col="slots"],
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-col="legs"],
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-col="warn"],
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-col="waves"],
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-col="draft"] {
+    text-align: right;
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-col="updated"] {
+    text-align: right;
+    color: var(--aes-slate);
+    font-size: var(--aes-fs-small);
+}
+
+/* Schedules-board adopts a slightly different column shape (no
+   "AC" col, replaced by status; "Legs" + "Warn" replace draft).
+   The same selectors above already cover the new column codes. */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-section .aes-fb {
+    /* HUB | STATUS | PRESET | LEGS | WARN | UPDATED */
+    grid-template-columns: 64px 96px 1fr 64px 56px 104px;
+}
+
+/* ── Status pills — semantic tokens ─────────────────────── */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row[data-status="crimson"] .aes-fb-cell[data-col="status"] {
+    background: var(--aes-crimson);
+    color: var(--aes-bone-fg);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row[data-status="amber"] .aes-fb-cell[data-col="status"] {
+    background: var(--aes-amber);
+    color: var(--aes-bone-fg);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row[data-status="moss"] .aes-fb-cell[data-col="status"] {
+    background: var(--aes-moss);
+    color: var(--aes-bone-fg);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row[data-status="slate"] .aes-fb-cell[data-col="status"] {
+    background: transparent;
+    color: var(--aes-slate);
+    border-bottom-color: var(--aes-paper-rule);
+}
+
+/* ── Hover + expand state ───────────────────────────────── */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row[role="button"] {
+    cursor: pointer;
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row:hover .aes-fb-cell {
+    background-color: var(--aes-rust-soft);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row:focus-visible .aes-fb-cell {
+    outline: var(--aes-bw-2) solid var(--aes-rust);
+    outline-offset: -2px;
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row[data-expanded="true"] .aes-fb-cell {
+    background: var(--aes-bone-3);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row[data-unassigned="1"] .aes-fb-cell {
+    color: var(--aes-slate);
+    font-style: italic;
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-row[data-unassigned="1"] .aes-fb-cell[data-col="hub"] {
+    font-style: normal;
+}
+
+/* ── Inline expand panel ────────────────────────────────── */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-expand {
+    grid-column: 1 / -1;
+    padding: var(--aes-sp-2) var(--aes-sp-3) var(--aes-sp-3);
+    background: var(--aes-bone-2);
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    border-left: var(--aes-tile-bleed) solid var(--aes-rust);
+    display: flex;
+    flex-direction: column;
+    gap: var(--aes-sp-2);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-expand-meta {
+    font-size: var(--aes-fs-small);
+    color: var(--aes-oxide-2);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-expand-actions {
+    display: flex;
+    gap: var(--aes-sp-2);
+    flex-wrap: wrap;
+}
+
+/* ── Empty-state sub-row ───────────────────────────────── */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-empty {
+    grid-column: 1 / -1;
+    padding: var(--aes-sp-3);
+    color: var(--aes-slate);
+    font-size: var(--aes-fs-small);
+    font-style: italic;
+    text-align: center;
+}
+
+/* ── Schedules: per-hub generate strip above the board ── */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-genstrip {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: var(--aes-sp-3);
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+    background: var(--aes-bone-2);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-section-label {
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    background: var(--aes-bone-3);
+    color: var(--aes-slate);
+    font-size: var(--aes-fs-micro);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-weight: var(--aes-fw-bold);
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-genrow {
+    display: flex;
+    align-items: center;
+    gap: var(--aes-sp-2);
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    font-size: var(--aes-fs-small);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-genrow:last-child {
+    border-bottom: 0;
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-genrow-hub {
+    flex: 0 0 auto;
+    min-width: 48px;
+    font-weight: var(--aes-fw-bold);
+    color: var(--aes-oxide);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-genrow-meta {
+    flex: 1 1 auto;
+    color: var(--aes-slate);
+    font-size: var(--aes-fs-micro);
+}
+
+/* ── Aircraft Plans tab — keep table, remap fonts ───────── */
+[data-aes-fleet-cc][data-view-mode="compact"] table {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--aes-fs-body);
+}
+[data-aes-fleet-cc][data-view-mode="compact"] thead th {
+    font-size: var(--aes-fs-micro);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-slate);
+    background: var(--aes-bone-3);
+    border-bottom: var(--aes-bw-2) solid var(--aes-rust) !important;
+}
+
+/* ── Bulk-ops bar (Overview) — collapse to thin strip ───── */
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb + * {
+    margin-top: var(--aes-sp-3);
+}
+
+/* ── Split-flap "flip" — fired from JS for ~420 ms when a
+       hub's status changes between repaints. One-shot via
+       data-flip="true"; the JS removes the attribute on
+       timeout so the next change can re-fire. ────────── */
+@keyframes aes-fb-flip {
+    0%   { transform: rotateX(0deg); }
+    49%  { transform: rotateX(-90deg); }
+    50%  { transform: rotateX(90deg); }
+    100% { transform: rotateX(0deg); }
+}
+[data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-flip="true"] {
+    animation: aes-fb-flip 420ms cubic-bezier(.55,.06,.4,.97);
+    transform-origin: center;
+    transform-style: preserve-3d;
+    backface-visibility: hidden;
+}
+
+/* Reduced-motion users opt out of the flip — the colour change
+   alone communicates the status update. */
+@media (prefers-reduced-motion: reduce) {
+    [data-aes-fleet-cc][data-view-mode="compact"] .aes-fb-cell[data-flip="true"] {
+        animation: none;
+    }
+}

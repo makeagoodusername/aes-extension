@@ -100,6 +100,7 @@
         },
 
         sp: {
+            0: "0",
             1: v("--aes-sp-1"),
             2: v("--aes-sp-2"),
             3: v("--aes-sp-3"),
@@ -128,6 +129,12 @@
         tr: {
             fast:   v("--aes-tr-fast"),
             medium: v("--aes-tr-medium")
+        },
+
+        shadow: {
+            panel:    v("--aes-shadow-panel"),
+            modal:    v("--aes-shadow-modal"),
+            backdrop: v("--aes-shadow-backdrop")
         }
     };
 

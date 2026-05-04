@@ -14,22 +14,60 @@
  *     persisted `silentAutoLastTickAt` and skips if another tab already
  *     ticked within ~0.9× tickMin.
  *
- * The alarm is created when `settings.routeAssistant.pricing
- * .silentAutoEnabled === true` and cleared when it flips off. Period
- * follows `silentAutoTickMin` (clamped 5–240 min, matching the panel).
+ * The alarm is created when any legacy or account-scoped
+ * `routeAssistant.pricing.silentAutoEnabled === true` and cleared when
+ * they are all off. Period follows the shortest enabled
+ * `silentAutoTickMin` (clamped 5–240 min, matching the panel). The
+ * receiving page still re-reads its own account-scoped settings before
+ * running, so a global alarm cannot write for an account whose local gate
+ * is off.
  */
 
 const _AES_SILENT_AUTO_ALARM = 'aes:silent-auto:tick';
 
+function _aesPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function _aesRouteAssistantBlocks(settings) {
+  const out = [];
+  if (!_aesPlainObject(settings)) return out;
+  if (_aesPlainObject(settings.routeAssistant)) out.push(settings.routeAssistant);
+  if (_aesPlainObject(settings.acct)) {
+    for (const id of Object.keys(settings.acct)) {
+      const slot = settings.acct[id];
+      if (_aesPlainObject(slot) && _aesPlainObject(slot.routeAssistant)) {
+        out.push(slot.routeAssistant);
+      }
+    }
+  }
+  return out;
+}
+
+function _aesSilentAutoConfigFromSettings(settings) {
+  const blocks = _aesRouteAssistantBlocks(settings);
+  let enabled = false;
+  let tickMin = 30;
+  let sawEnabled = false;
+  for (const ra of blocks) {
+    const pr = _aesPlainObject(ra.pricing) ? ra.pricing : {};
+    const rawTick = (typeof pr.silentAutoTickMin === 'number' && isFinite(pr.silentAutoTickMin))
+      ? pr.silentAutoTickMin
+      : 30;
+    const clampedTick = Math.max(5, Math.min(240, rawTick));
+    if (pr.silentAutoEnabled) {
+      enabled = true;
+      tickMin = sawEnabled ? Math.min(tickMin, clampedTick) : clampedTick;
+      sawEnabled = true;
+    }
+  }
+  return { enabled, tickMin };
+}
+
 async function _aesReadSilentAutoConfig() {
   try {
     const got = await chrome.storage.local.get('settings');
-    const ra  = (got && got.settings && got.settings.routeAssistant) || {};
-    const pr  = ra.pricing || {};
-    const tickMin = (typeof pr.silentAutoTickMin === 'number' && isFinite(pr.silentAutoTickMin))
-      ? Math.max(5, Math.min(240, pr.silentAutoTickMin))
-      : 30;
-    return { enabled: !!pr.silentAutoEnabled, tickMin };
+    return _aesSilentAutoConfigFromSettings(got && got.settings);
   } catch (_) {
     return { enabled: false, tickMin: 30 };
   }
@@ -64,30 +102,33 @@ if (chrome.runtime.onStartup) {
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
   if (!changes.settings) return;
-  const oldS = changes.settings.oldValue, newS = changes.settings.newValue;
-  const oldP = (oldS && oldS.routeAssistant && oldS.routeAssistant.pricing) || {};
-  const newP = (newS && newS.routeAssistant && newS.routeAssistant.pricing) || {};
-  if (oldP.silentAutoEnabled === newP.silentAutoEnabled
-      && oldP.silentAutoTickMin === newP.silentAutoTickMin) return;
+  const oldCfg = _aesSilentAutoConfigFromSettings(changes.settings.oldValue);
+  const newCfg = _aesSilentAutoConfigFromSettings(changes.settings.newValue);
+  if (oldCfg.enabled === newCfg.enabled && oldCfg.tickMin === newCfg.tickMin) return;
   _aesSyncSilentAutoAlarm();
 });
 
 if (chrome.alarms && chrome.alarms.onAlarm) {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (!alarm || alarm.name !== _AES_SILENT_AUTO_ALARM) return;
-    // Broadcast to ONE scheduling tab only — sending to every tab races
-    // on the per-tick dedup read (each panel reads `silentAutoLastTickAt`
-    // before the others' write has landed). Picking the most-recently-
-    // active tab matches the user's attention; falls back to the first
-    // match. The chosen panel's own setInterval covers the rare case
-    // where the picked tab is unresponsive.
+    // Broadcast to ONE capable AS tab only — sending to every tab races
+    // on the per-tick dedup read (each surface reads `silentAutoLastTickAt`
+    // before the others' write has landed). Scheduling tabs run the Route
+    // Assistant panel path; dashboard tabs run the Central Hub cached-route
+    // automator. Picking the most-recently-active capable tab matches the
+    // user's attention; falls back to the first match.
     chrome.tabs.query(
-      { url: 'https://*.airlinesim.aero/app/com/scheduling/*' },
+      { url: 'https://*.airlinesim.aero/*' },
       (tabs) => {
         const lastErr = chrome.runtime.lastError;
         if (lastErr) { void lastErr; return; }
         if (!tabs || !tabs.length) return;
-        const sorted = tabs.slice().sort(
+        const capable = tabs.filter((t) =>
+          /\/app\/com\/scheduling(?:\/|$)/.test(t.url || '')
+          || /\/app\/enterprise\/dashboard/.test(t.url || '')
+        );
+        if (!capable.length) return;
+        const sorted = capable.slice().sort(
           (a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0)
         );
         const target = sorted[0];

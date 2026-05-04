@@ -665,3 +665,233 @@
     color: var(--aes-oxide);  /* re-bound to bone via dark theme */
     background: var(--aes-bone);  /* re-bound to oxide-bg */
 }
+
+/*
+ * Central-hub tile containment.
+ * Tiles render in fixed-width columns (~295px). Tile bodies are populated by
+ * many different modules — some render tables, some wide pre blocks, some
+ * long unbreakable strings. Without containment, that content overflows the
+ * column and either visually escapes into the next column or pushes itself
+ * wider than the dashboard expects. The rules below enforce a single
+ * contract: nothing inside a tile body extends past the tile root. Tables
+ * and other inherently-wide content fall back to horizontal scrolling inside
+ * the body (overflow-x:auto on the body itself, set inline). Long text wraps
+ * via overflow-wrap. Images and SVGs shrink with their container.
+ */
+.aes-central-hub-tile,
+.aes-central-hub-tile * {
+    box-sizing: border-box;
+}
+.aes-central-hub-tile__body img,
+.aes-central-hub-tile__body svg,
+.aes-central-hub-tile__body canvas,
+.aes-central-hub-tile__body video,
+.aes-central-hub-tile__body iframe {
+    max-width: 100%;
+    height: auto;
+}
+.aes-central-hub-tile__body table {
+    max-width: 100%;
+}
+.aes-central-hub-tile__body pre,
+.aes-central-hub-tile__body code {
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.aes-central-hub-tile__body p,
+.aes-central-hub-tile__body span,
+.aes-central-hub-tile__body div,
+.aes-central-hub-tile__body li,
+.aes-central-hub-tile__body td,
+.aes-central-hub-tile__body th {
+    overflow-wrap: anywhere;
+    /* Several legacy tiles set inline `white-space: nowrap` on long status
+     * lines. We can't edit every one, so we relax it here for tile bodies
+     * specifically — the column needs to allow wrap to fit. Tiles that
+     * truly need nowrap (numeric tabular columns, code) use <pre> / <code>
+     * which retain their own whitespace handling. */
+    white-space: normal;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Fleet Schedule Grid — Day Overlay row mode.
+ *
+ * In dayOverlay mode the grid renders one row per day-of-week with all
+ * aircraft's flights for that day overlaid in the same lane. Bars use
+ * mix-blend-mode: multiply so overlap appears as darker shades — the
+ * intentional density signal. Lane height grows to absorb the saturation.
+ * ───────────────────────────────────────────────────────────────── */
+.aes-fsg-day-row {
+    /* Row container; layout comes from inline styles on the lane. */
+}
+.aes-fsg-block.aes-fsg-block--overlay {
+    opacity: 0.55;
+    mix-blend-mode: multiply;
+}
+.aes-fsg-block.aes-fsg-block--overlay:hover {
+    opacity: 0.95;
+    mix-blend-mode: normal;
+    z-index: 5;
+}
+
+/* Color picker popover — anchored from the bar context menu. */
+.aes-color-popover button:focus-visible,
+.aes-color-popover input:focus-visible {
+    outline: 2px solid var(--aes-oxide, #2B2520);
+    outline-offset: 1px;
+}
+
+/* Context menu spawned from a flight bar. */
+.aes-fsg-ctx-menu button:focus-visible {
+    outline: 2px solid var(--aes-oxide, #2B2520);
+    outline-offset: -2px;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * AS flightsPrices?adjust=true — AES recommendations panel.
+ *
+ * Sidebar UI mounted into the page's empty `.col-md-9` slot beside the
+ * native AS bulk-adjustment form. Surfaces the strategy formula's
+ * per-route per-class recommendations with selection + Apply UX, and
+ * tags rows that hit the AS-stated minimum-price floor. Theme tokens
+ * pulled from design-tokens.css; no new colours introduced.
+ * ───────────────────────────────────────────────────────────────── */
+.aes-fp-host { width: 100%; }
+
+.aes-fp-panel { padding: 16px 18px 20px; }
+.aes-fp-panel-title {
+    margin: 0 0 6px;
+    font-family: var(--aes-font-display, inherit);
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--aes-oxide, inherit);
+}
+.aes-fp-blurb {
+    margin: 0 0 12px;
+    color: var(--aes-slate, #7A6F66);
+    font-size: 12.5px;
+    line-height: 1.45;
+}
+.aes-fp-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 10px;
+    align-items: center;
+    font-size: 12.5px;
+}
+.aes-fp-stat { color: var(--aes-oxide-2, #4A413B); }
+.aes-fp-mode {
+    padding: 2px 8px;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.aes-fp-mode.muted  { color: var(--aes-slate,  #7A6F66); }
+.aes-fp-mode.good   { color: var(--aes-moss,   #2F5F3F); }
+.aes-fp-mode.bad    { color: var(--aes-crimson,#8B2727); }
+.aes-fp-mode.warn   { color: var(--aes-amber,  #B8861F); }
+
+.aes-fp-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin: 0 0 12px;
+}
+.aes-fp-actions .btn { font-size: 12.5px; }
+.aes-fp-status {
+    margin-left: auto;
+    font-size: 12px;
+}
+.aes-fp-status.good  { color: var(--aes-moss,   #2F5F3F); }
+.aes-fp-status.bad   { color: var(--aes-crimson,#8B2727); }
+.aes-fp-status.muted { color: var(--aes-slate,  #7A6F66); }
+.aes-fp-status.warn  { color: var(--aes-amber,  #B8861F); }
+
+.aes-fp-empty {
+    margin: 16px 0;
+    color: var(--aes-slate, #7A6F66);
+    font-style: italic;
+    font-size: 13px;
+}
+
+.aes-fp-table { margin: 0; font-size: 12.5px; }
+.aes-fp-table thead th {
+    background: var(--aes-bone-2, #ECE7DC);
+    font-weight: 600;
+    border-bottom: 1px solid var(--aes-paper-rule, #C9C0B0);
+}
+.aes-fp-table tbody td,
+.aes-fp-table tbody th { vertical-align: middle; }
+.aes-fp-row.clamped td { background: var(--aes-amber-soft, rgba(184,134,31,0.14)); }
+.aes-fp-row .text-right { text-align: right; font-variant-numeric: tabular-nums; }
+.aes-fp-rationale {
+    color: var(--aes-slate, #7A6F66);
+    font-size: 11.5px;
+    line-height: 1.4;
+    max-width: 360px;
+}
+.aes-fp-tag {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 1px 6px;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    line-height: 1.2;
+}
+.aes-fp-tag.warn  { color: var(--aes-amber,  #B8861F); }
+.aes-fp-tag.bad   { color: var(--aes-crimson,#8B2727); }
+.aes-fp-tag.muted { color: var(--aes-slate,  #7A6F66); }
+
+.aes-fp-row .good   { color: var(--aes-moss,   #2F5F3F); }
+.aes-fp-row .bad    { color: var(--aes-crimson,#8B2727); }
+.aes-fp-row .muted  { color: var(--aes-slate,  #7A6F66); }
+.aes-fp-row .warn   { color: var(--aes-amber,  #B8861F); }
+
+/* Confirm modal — gates live writes. Mirrors Bootstrap modal weight;
+   sized to fit a route summary + per-route preview without scrolling
+   for typical scopes (≤30 routes). */
+.aes-fp-confirm-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(26, 22, 18, 0.45);
+    z-index: 10500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.aes-fp-confirm-modal {
+    background: var(--aes-bone, #F4F1EA);
+    color: var(--aes-oxide, #2B2520);
+    border: 1px solid var(--aes-paper-rule, #C9C0B0);
+    border-radius: 8px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+    width: min(540px, 92vw);
+    max-height: 80vh;
+    overflow: auto;
+    padding: 18px 22px 16px;
+}
+.aes-fp-confirm-modal h4 {
+    margin: 0 0 8px;
+    font-family: var(--aes-font-display, inherit);
+    font-size: 17px;
+    font-weight: 600;
+}
+.aes-fp-confirm-modal p  { margin: 0 0 8px; font-size: 13px; }
+.aes-fp-confirm-modal ul { margin: 0 0 12px 20px; font-size: 12.5px; }
+.aes-fp-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
