@@ -17,6 +17,15 @@ function dashboardControlPanelStateKey(title) {
     return activeDashboard + ":" + title;
 }
 
+function getNumber(value) {
+    if (value == null) return 0;
+    if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+    let str = String(value).replace(/[^\d.\-]/g, "");
+    if (str === "" || str === "-" || str === ".") return 0;
+    let num = parseFloat(str);
+    return Number.isFinite(num) ? num : 0;
+}
+
 function bindClosableDashboardPanel(stateKey, panelEl) {
     if (dashboardControlPanelExpanded[stateKey] !== undefined) {
         if (dashboardControlPanelExpanded[stateKey]) {
@@ -3085,7 +3094,6 @@ function displayAircraftProfitability() {
                         hideColumn: settings.aircraftProfitability.hideColumn,
                         tableSettingStorage: 'aircraftProfitability'
                     });
-                    appendAircraftProfitabilitySummary(tableDiv, data, columns);
                 } else {
                     //Never happens or only when fleet = 0 because of updated script this output is copied bellow
                     tableDiv = $('<p class="warning"></p>').text('No aircraft data in memory. Open fleet management to extract aircraft data.')
@@ -3162,32 +3170,6 @@ function displayAircraftProfitability() {
             });
         });
         return data;
-    }
-
-    // Item 30 (upstream v0.7.5) — average aircraft age in the AP summary row.
-    // Fork's generateTable has no built-in summary infrastructure, so we
-    // append a tfoot post-hoc here. Aligned to visible columns + leading
-    // checkbox cell (tableSettings: 1 above). Skipped when Age is hidden
-    // via column-chooser.
-    function appendAircraftProfitabilitySummary(tableDiv, rows, cols) {
-        const ageValues = rows
-            .map(function(r) { return parseFloat(r.age); })
-            .filter(function(v) { return Number.isFinite(v); });
-        if (!ageValues.length) return;
-        const ageColVisible = cols.some(function(c) { return c.visible && c.data === 'age'; });
-        if (!ageColVisible) return;
-        const avgLabel = (ageValues.reduce(function(s, v) { return s + v; }, 0) / ageValues.length).toFixed(1);
-        const cells = ['<td class="text-center">--</td>'];
-        cols.forEach(function(col) {
-            if (!col.visible) return;
-            if (col.data === 'age') {
-                cells.push('<td class="text-center"><strong>Avg ' + avgLabel + '</strong></td>');
-            } else {
-                cells.push('<td class="text-center">--</td>');
-            }
-        });
-        const tfoot = $('<tfoot></tfoot>').append($('<tr></tr>').html(cells.join('')));
-        tableDiv.find('table').first().append(tfoot);
     }
 }
 
@@ -4825,12 +4807,7 @@ function SortTable(collumn, number, tableId, collumnPrefix) {
     let indexes = [];
     tableRows.each(function() {
         if (number) {
-            let value = parseInt($(this).find("." + collumnPrefix + collumn).text(), 10);
-            if (value) {
-                indexes.push(value);
-            } else {
-                indexes.push(0);
-            }
+            indexes.push(getNumber($(this).find("." + collumnPrefix + collumn).text()));
         } else {
             indexes.push($(this).find("." + collumnPrefix + collumn).text());
         }
