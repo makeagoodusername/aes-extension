@@ -30,6 +30,62 @@ function bindClosableDashboardPanel(stateKey, panelEl) {
         dashboardControlPanelExpanded[stateKey] = panelEl.is(":visible");
     };
 }
+
+function getDashboardFilterScopeKey() {
+    let airlineKey = "";
+    if (airline) {
+        airlineKey = airline.id || airline.code || airline.displayName || airline.name || "";
+    }
+    let accountId = (window.AesAccountKey && typeof window.AesAccountKey.currentAccountIdSync === "function")
+        ? window.AesAccountKey.currentAccountIdSync()
+        : null;
+    return (server || "") + ":" + (accountId || "") + ":" + airlineKey;
+}
+
+function normalizeDashboardFilterScope() {
+    if (!settings || !settings.general) {
+        return [];
+    }
+    let currentScope = getDashboardFilterScopeKey();
+    let previousScope = settings.general.dashboardFilterScopeKey;
+    let areasToSave = [];
+
+    if (!settings.routeManagement) {
+        setDefaultRouteManagementSettings();
+        areasToSave.push("routeManagement");
+    }
+    if (!settings.competitorMonitoring) {
+        setDefaultCompetitorMonitoringSettings();
+        areasToSave.push("competitorMonitoring");
+    }
+    if (!settings.aircraftProfitability) {
+        settings.aircraftProfitability = {};
+        areasToSave.push("aircraftProfitability");
+    }
+
+    if (previousScope && previousScope !== currentScope) {
+        if (Array.isArray(settings.routeManagement.filter) && settings.routeManagement.filter.length) {
+            settings.routeManagement.filter = [];
+            if (areasToSave.indexOf("routeManagement") === -1) areasToSave.push("routeManagement");
+        }
+        if (Array.isArray(settings.competitorMonitoring.filter) && settings.competitorMonitoring.filter.length) {
+            settings.competitorMonitoring.filter = [];
+            if (areasToSave.indexOf("competitorMonitoring") === -1) areasToSave.push("competitorMonitoring");
+        }
+        if (Array.isArray(settings.aircraftProfitability.filter) && settings.aircraftProfitability.filter.length) {
+            settings.aircraftProfitability.filter = [];
+            if (areasToSave.indexOf("aircraftProfitability") === -1) areasToSave.push("aircraftProfitability");
+        }
+    }
+
+    if (previousScope !== currentScope) {
+        settings.general.dashboardFilterScopeKey = currentScope;
+        if (areasToSave.indexOf("general") === -1) areasToSave.push("general");
+    }
+
+    return areasToSave;
+}
+
 function initLegacyDashboard(ctx) {
     if (!document.querySelector("#enterprise-dashboard")) {
         console.warn("[AES dashboard] #enterprise-dashboard missing; skipping legacy dashboard mount");
@@ -45,6 +101,11 @@ function initLegacyDashboard(ctx) {
     server = AES.getServerName();
     saveCompanyReputationFromDashboard();
     settings = ctx && ctx.settings ? ctx.settings : AES.normalizeSettings();
+
+    let dirtyAreas = normalizeDashboardFilterScope();
+    dirtyAreas.forEach(function(area) {
+        saveDashboardArea(area);
+    });
 
     displayDashboard();
     dashboardHandle();
