@@ -3,8 +3,8 @@
     "name": "AirlineSim Enhancement Suite",
     "short_name": "AES",
     "description": "Great quality of live improvements for AirlineSim",
-    "version": "0.6.12",
-    "version_name": "0.6.12-beta",
+    "version": "0.6.13",
+    "version_name": "0.6.13-beta",
     "author": "aes@hello.moiety.me",
     "homepage_url": "https://github.com/ZoeBijl/airlinesim-enhancement-suite/",
     "update_url": "https://github.com/ZoeBijl/airlinesim-enhancement-suite/releases",
@@ -103,6 +103,7 @@
                 "modules/_shared/schedule-color-overrides.js",
                 "modules/_shared/freshness-pill.js",
                 "modules/_shared/cleanup-registry.js",
+                "modules/_shared/feedback-toast.js",
                 "modules/strategy/game-time-watcher.js",
                 "modules/canopy/role-store.js",
                 "modules/canopy/role-detector.js",
@@ -155,6 +156,7 @@
                 "modules/unified-settings/tab-modules.js",
                 "modules/unified-settings/tab-account.js",
                 "modules/unified-settings/tab-data.js",
+                "modules/unified-settings/backup-restore-section.js",
                 "modules/unified-settings/tab-coverage.js",
                 "modules/unified-settings/tab-about.js",
                 "modules/unified-settings/shell.js",
@@ -170,6 +172,7 @@
                 "modules/aes-menu.js",
                 "modules/command-bridge/menu-installer.js",
                 "modules/about-dialog.js",
+                "modules/release-notes/release-notes.js",
                 "modules/site-skin/keyboard-shortcuts.js",
                 "modules/site-skin/density-toggle.js",
                 "modules/site-skin/density-toggle-button.js",
@@ -191,6 +194,14 @@
             ],
             "matches": [
                 "https://*.airlinesim.aero/app/com/inventory/*"
+            ]
+        },
+        {
+            "js": [
+                "modules/online-reservation-system/online-reservation-system.js"
+            ],
+            "matches": [
+                "https://*.airlinesim.aero/app/info/ors*"
             ]
         },
         {
