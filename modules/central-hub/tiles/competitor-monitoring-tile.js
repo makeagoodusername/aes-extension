@@ -84,6 +84,12 @@ class CentralHubCompetitorMonitoringTile extends window.CentralHubTile {
             if (typeof offDiff === "function") this._busDisposers.push(offDiff)
             if (typeof offUpd === "function")  this._busDisposers.push(offUpd)
         }
+        if (window.AesRelay && window.AesDataBus) {
+            const off = window.AesRelay.subscribeWithReplay(window.AesDataBus, "data:account:bootstrapped", () => {
+                this.refresh().catch(() => {})
+            })
+            if (typeof off === "function") this._busDisposers.push(off)
+        }
     }
 
     async _loadCompetitors() {

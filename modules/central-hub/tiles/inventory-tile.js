@@ -29,6 +29,16 @@ class CentralHubInventoryTile extends window.CentralHubTile {
 
     watchedStorageKeys() { return ["routeAssistant:inventory:"] }
 
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        if (window.AesRelay && window.AesDataBus) {
+            const off = window.AesRelay.subscribeWithReplay(window.AesDataBus, "data:account:bootstrapped", () => {
+                this.refresh().catch(() => {})
+            })
+            if (typeof off === "function") this._busDisposers.push(off)
+        }
+    }
+
     openHandler(ctx) {
         return () => {
             // F-9228-007: when no inventory is cached, /app/com/markets is

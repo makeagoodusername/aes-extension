@@ -786,6 +786,13 @@ class FleetHubCommandCenter {
         // ignore malformed payloads.
         sub("focus-aircraft", (payload) => this._handleFocusAircraft(payload))
         sub("focus-route",    (payload) => this._handleFocusRoute(payload))
+
+        if (window.AesRelay && window.AesDataBus) {
+            const offBoot = window.AesRelay.subscribeWithReplay(window.AesDataBus, "data:account:bootstrapped", () => {
+                this._scheduleRepaint()
+            })
+            if (typeof offBoot === "function") this._busDisposers.push(offBoot)
+        }
     }
 
     async _handleFocusAircraft(payload) {

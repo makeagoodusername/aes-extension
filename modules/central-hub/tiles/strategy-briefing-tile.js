@@ -68,6 +68,12 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
                 this._maybeAutoOpen({scheduledActiveSection}).catch(() => {})
             }, 1500)
         }
+        if (window.AesRelay && window.AesDataBus) {
+            const off = window.AesRelay.subscribeWithReplay(window.AesDataBus, "data:account:bootstrapped", () => {
+                this.refresh().catch(() => {})
+            })
+            if (typeof off === "function") this._busDisposers.push(off)
+        }
     }
 
     openHandler() {

@@ -148,10 +148,9 @@
     if (typeof window.AesDataBus !== "undefined" && typeof window.AesDataBus.on === "function") {
         try {
             window.AesDataBus.on("data:account:bootstrapped", function () {
-                // Best-effort: nothing to do unless an account-scoped reader sees stale entries.
-                // The factory's per-call resolver re-reads window.__aesAccountId so scoped reads
-                // are correct; we only need to drop pre-bootstrap entries that won't be revisited.
-                // This is a no-op for now; future per-namespace partitioning lands in cached-store.
+                invalidatePrefix("aesStrategy:")
+                invalidatePrefix("routeAssistant:")
+                invalidatePrefix("aircraftFleet")
             })
         } catch (_) { /* noop */ }
     }

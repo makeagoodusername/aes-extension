@@ -69,6 +69,12 @@ class CentralHubStrategyTile extends window.CentralHubTile {
         this.subscribeBus("strategy:service-experiment-started",      onExpt)
         this.subscribeBus("strategy:service-experiment-concluded",    onExpt)
         this.subscribeBus("strategy:service-experiment-consolidated", onExpt)
+        if (window.AesRelay && window.AesDataBus) {
+            const off = window.AesRelay.subscribeWithReplay(window.AesDataBus, "data:account:bootstrapped", () => {
+                this.refresh().catch(() => {})
+            })
+            if (typeof off === "function") this._busDisposers.push(off)
+        }
     }
 
     openHandler() {
