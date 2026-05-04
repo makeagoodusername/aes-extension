@@ -1329,12 +1329,7 @@ function routeManagementSortTable(collumn, number) {
     let indexes = [];
     tableRows.each(function() {
         if (number) {
-            let value = parseInt($(this).find("." + collumn).text(), 10);
-            if (value) {
-                indexes.push(value);
-            } else {
-                indexes.push(0);
-            }
+            indexes.push(getNumber($(this).find("." + collumn).text()));
         } else {
             indexes.push($(this).find("." + collumn).text());
         }
@@ -1370,10 +1365,7 @@ function routeManagementSortTable(collumn, number) {
     for (let i = 0; i < sorted.length; i++) {
         for (let j = tableRows.length - 1; j >= 0; j--) {
             if (number) {
-                let value = parseInt($(tableRows[j]).find("." + collumn).text(), 10);
-                if (!value) {
-                    value = 0;
-                }
+                let value = getNumber($(tableRows[j]).find("." + collumn).text());
                 if (value == sorted[i]) {
                     tableBody.append($(tableRows[j]));
                     tableRows.splice(j, 1);
@@ -2302,12 +2294,7 @@ function CompetitorMonitoringSortTable(collumn, number) {
     let indexes = [];
     tableRows.each(function() {
         if (number) {
-            let value = parseInt($(this).find(".aes-" + collumn).text(), 10);
-            if (value) {
-                indexes.push(value);
-            } else {
-                indexes.push(0);
-            }
+            indexes.push(getNumber($(this).find(".aes-" + collumn).text()));
         } else {
             indexes.push($(this).find(".aes-" + collumn).text());
         }
@@ -2343,10 +2330,7 @@ function CompetitorMonitoringSortTable(collumn, number) {
     for (let i = 0; i < sorted.length; i++) {
         for (let j = tableRows.length - 1; j >= 0; j--) {
             if (number) {
-                let value = parseInt($(tableRows[j]).find(".aes-" + collumn).text(), 10);
-                if (!value) {
-                    value = 0;
-                }
+                let value = getNumber($(tableRows[j]).find(".aes-" + collumn).text());
                 if (value == sorted[i]) {
                     tableBody.append($(tableRows[j]));
                     tableRows.splice(j, 1);
@@ -3325,12 +3309,7 @@ function generateTable(tableOptionsRule) {
         let indexes = [];
         tableRows.each(function() {
             if (number) {
-                let value = parseInt($(this).find("." + collumnPrefix + collumn).text(), 10);
-                if (value) {
-                    indexes.push(value);
-                } else {
-                    indexes.push(0);
-                }
+                indexes.push(getNumber($(this).find("." + collumnPrefix + collumn).text()));
             } else {
                 indexes.push($(this).find("." + collumnPrefix + collumn).text());
             }
@@ -3366,10 +3345,7 @@ function generateTable(tableOptionsRule) {
         for (let i = 0; i < sorted.length; i++) {
             for (let j = tableRows.length - 1; j >= 0; j--) {
                 if (number) {
-                    let value = parseInt($(tableRows[j]).find("." + collumnPrefix + collumn).text(), 10);
-                    if (!value) {
-                        value = 0;
-                    }
+                    let value = getNumber($(tableRows[j]).find("." + collumnPrefix + collumn).text());
                     if (value == sorted[i]) {
                         tableBody.append($(tableRows[j]));
                         tableRows.splice(j, 1);
@@ -4843,10 +4819,7 @@ function SortTable(collumn, number, tableId, collumnPrefix) {
     for (let i = 0; i < sorted.length; i++) {
         for (let j = tableRows.length - 1; j >= 0; j--) {
             if (number) {
-                let value = parseInt($(tableRows[j]).find("." + collumnPrefix + collumn).text(), 10);
-                if (!value) {
-                    value = 0;
-                }
+                let value = getNumber($(tableRows[j]).find("." + collumnPrefix + collumn).text());
                 if (value == sorted[i]) {
                     tableBody.append($(tableRows[j]));
                     tableRows.splice(j, 1);
