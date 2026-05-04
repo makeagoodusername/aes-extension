@@ -96,64 +96,57 @@ function displayPersonelManagement(){
     }
   });
 }
-function priceUpdate(span){
-  savePersonelManagementSettings(function(){
-    let value = settings.personelManagement.value;
-    let type = settings.personelManagement.type;
-    let found = 0;
-    $('.container-fluid:eq(2) table:eq(1) tbody tr').each(function(){
-      if(!$(this).find('th').length){
-        let index = $(this).parent('tbody').index()+$(this).index();
-        if(settings.personelManagement.alreadyUpdated.includes(index)){
-          return true;
-        }
-
-        let salaryInput = $(this).find('form input:eq(2)');
-        let salary = AES.cleanInteger(salaryInput.val());
-        let average = AES.cleanInteger($(this).find('td:eq(9)').text());
-        let salaryBtn = $(this).find('td:eq(8) > form .input-group-btn input');
-        let newSalary;
-        switch(type) {
-          case 'absolute':
-            newSalary = average + value;
-            break;
-          case 'perc':
-            newSalary = Math.round((average * (1+value*0.01)));
-            break;
-          default:
-            newSalary = salary;
-        }
-        if(newSalary != salary){
-          settings.personelManagement.alreadyUpdated.push(index);
-          savePersonelManagementSettings();
-          salaryInput.val(newSalary);
-          salaryBtn.click();
-          found = 1;
-          return false;
-        }
-      }
-    });
-    if(!found){
-      settings.personelManagement.auto = 0;
-      settings.personelManagement.alreadyUpdated = [];
-      savePersonelManagementSettings(function(){
-
-        //Save into memory
-
-        let today = AES.getServerDate()
-        let key = server + airline + 'personelManagement';
-        let personelManagementData = {
-          server:server,
-          airline:airline,
-          type:'personelManagement',
-          date: today.date,
-          time: today.time
-        }
-        chrome.storage.local.set({[key]: personelManagementData}, function(){
-          span.removeClass().addClass('good').text(' all salaries at set level!');
-        });
-      });
+// Upstream v0.7.0 backport: iterate every adjustable row in one pass with
+// per-row form-submit + 100ms debounce, instead of the legacy "click one,
+// require a full page refresh, re-enter via settings.auto" loop. Eliminates
+// the recurring "needs another refresh" UX from CHANGELOG 0.7.0.
+async function priceUpdate(span){
+  await window.AesSettings.mutateArea('personelManagement', function(block){
+    block.auto = 1;
+    if (!Array.isArray(block.alreadyUpdated)) block.alreadyUpdated = [];
+  });
+  const value = settings.personelManagement.value;
+  const type = settings.personelManagement.type;
+  const rows = $('.container-fluid:eq(2) table:eq(1) tbody tr').toArray();
+  let updatedRows = 0;
+  for (const row of rows) {
+    const $row = $(row);
+    if ($row.find('th').length) continue;
+    const salaryInput = $row.find('form input:eq(2)');
+    const salary = AES.cleanInteger(salaryInput.val());
+    const averageText = $row.find('td:eq(9)').text().replace(/\(.*?\)/g, '').trim();
+    const average = AES.cleanInteger(averageText);
+    const salaryBtn = $row.find('td:eq(8) > form .input-group-btn input');
+    let newSalary = salary;
+    if (type === 'absolute') {
+      newSalary = average + value;
+    } else if (type === 'perc') {
+      newSalary = Math.round(average * (1 + value * 0.01));
     }
+    if (newSalary !== salary) {
+      salaryInput.val(newSalary).trigger('input');
+      const form = salaryBtn.closest('form')[0];
+      if (form) form.submit();
+      else salaryBtn.click();
+      updatedRows++;
+      await new Promise(function(resolve){ setTimeout(resolve, 100); });
+    }
+  }
+  await window.AesSettings.mutateArea('personelManagement', function(block){
+    block.auto = 0;
+    block.alreadyUpdated = [];
+  });
+  const today = AES.getServerDate();
+  const key = server + airline + 'personelManagement';
+  const personelManagementData = {
+    server:server,
+    airline:airline,
+    type:'personelManagement',
+    date: today.date,
+    time: today.time
+  };
+  chrome.storage.local.set({[key]: personelManagementData}, function(){
+    span.removeClass().addClass('good').text(updatedRows ? ' all salaries at set level!' : ' all salaries already at set level.');
   });
 }
 function getAirline(){
