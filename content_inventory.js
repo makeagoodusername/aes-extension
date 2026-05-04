@@ -1190,26 +1190,30 @@ function displayHistory(analysis) {
 
         //Change events
         $("#aes-check-inventory-history-showNow").change(function() {
-            if (this.checked) {
-                settings.invPricing.historyTable.showNow = 1;
-            } else {
-                settings.invPricing.historyTable.showNow = 0;
-            }
-            saveInvPricingSettings();
+            const value = this.checked ? 1 : 0;
+            settings.invPricing.historyTable.showNow = value;
+            window.AesSettings.mutateArea("invPricing", function(block) {
+                if (!block.historyTable) block.historyTable = {};
+                block.historyTable.showNow = value;
+            });
             buildHistoryTable();
         });
         $("#aes-check-inventory-history-showOnlyPricing").change(function() {
             buildHistoryTable();
-            if (this.checked) {
-                settings.invPricing.historyTable.showOnlyPricing = 1;
-            } else {
-                settings.invPricing.historyTable.showOnlyPricing = 0;
-            }
-            saveInvPricingSettings();
+            const value = this.checked ? 1 : 0;
+            settings.invPricing.historyTable.showOnlyPricing = value;
+            window.AesSettings.mutateArea("invPricing", function(block) {
+                if (!block.historyTable) block.historyTable = {};
+                block.historyTable.showOnlyPricing = value;
+            });
         });
         $("#aes-select-inventory-history-numberPastDates").change(function() {
-            settings.invPricing.historyTable.numberOfDates = $('#aes-select-inventory-history-numberPastDates').val();
-            saveInvPricingSettings();
+            const value = $('#aes-select-inventory-history-numberPastDates').val();
+            settings.invPricing.historyTable.numberOfDates = value;
+            window.AesSettings.mutateArea("invPricing", function(block) {
+                if (!block.historyTable) block.historyTable = {};
+                block.historyTable.numberOfDates = value;
+            });
             buildHistoryTable();
         });
 

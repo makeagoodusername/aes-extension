@@ -141,6 +141,59 @@
         }
 
         /**
+         * Field-level read-modify-write for one area. Reads the freshest stored
+         * block, applies `mutator(block)` in place, writes back. Use this
+         * instead of saveArea() whenever a caller is changing only a subset of
+         * an area's fields and another realm (a different tab on a different
+         * AS page) might be editing sibling fields concurrently — saveArea()
+         * would overwrite the sibling fields with the caller's stale snapshot.
+         *
+         * Resolves with the new block (parallel to saveArea's return).
+         *
+         * Backport of upstream AES v0.7.8's `AES.updateSettings(mutator, cb)`
+         * fix for "settings toggles overwritten by stale snapshots from other
+         * pages" (see CHANGELOG 0.7.8).
+         */
+        static async mutateArea(area, mutator) {
+            if (!area) return null
+            return AesSettings._enqueueWrite((settings) => {
+                const block = AesSettings._isPlainObject(settings[area]) ? settings[area] : {}
+                if (typeof mutator === "function") mutator(block)
+                settings[area] = block
+                return block
+            }, {
+                area:      area,
+                accountId: null,
+                scoped:    false,
+                sections:  null
+            })
+        }
+
+        /**
+         * Scoped variant of mutateArea(): operates on `settings.acct.<id>.<area>`
+         * when an account id is available, falls back to legacy top-level slot
+         * otherwise. Same race-narrowing semantics as mutateArea().
+         */
+        static async mutateAreaScoped(area, mutator, accountId) {
+            if (!area) return null
+            const id = AesSettings._resolveAccountId(accountId)
+            if (!id) return AesSettings.mutateArea(area, mutator)
+            return AesSettings._enqueueWrite((settings) => {
+                settings.acct = AesSettings._isPlainObject(settings.acct) ? settings.acct : {}
+                settings.acct[id] = AesSettings._isPlainObject(settings.acct[id]) ? settings.acct[id] : {}
+                const block = AesSettings._isPlainObject(settings.acct[id][area]) ? settings.acct[id][area] : {}
+                if (typeof mutator === "function") mutator(block)
+                settings.acct[id][area] = block
+                return block
+            }, {
+                area:      area,
+                accountId: id,
+                scoped:    true,
+                sections:  null
+            })
+        }
+
+        /**
          * Write to `settings.acct.<id>.<area>` when an account id is available,
          * otherwise fall back to the legacy top-level slot. Shares the same
          * queue as saveArea() so mixed legacy/scoped writes remain ordered.
