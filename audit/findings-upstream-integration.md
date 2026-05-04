@@ -16,7 +16,7 @@ mutates AS state (none expected for slices 1–6).
 | # | Slice | Disposition | Touches | Commit |
 |---|---|---|---|---|
 | 1 | Settings save/load race fix | [FIXED] | settings-bridge.js, content_inventory.js, content_settings.js | 447e7ca |
-| 2 | Grouped inventory tables (Group by flight) | (pending) |  |  |
+| 2 | Grouped inventory tables (Group by flight) | [FIXED] | content_inventory.js | (this commit) |
 | 3 | Inventory pricing reference recommendations (opt-in) | (pending) |  |  |
 | 4 | HUB override controls + auto-detection | (pending) |  |  |
 | 5 | Richer Fleet Management extraction | (pending) |  |  |
@@ -103,3 +103,97 @@ full-block replacement use cases.
 
 **Territory:** Spans Agent 6 (substrate) and Agent 7 (content scripts). Done as
 one commit because the API addition and call-site migration are tightly coupled.
+
+---
+
+## Slice 2 — Grouped inventory tables, "Group by flight" (v0.7.8)
+
+**Disposition:** [FIXED]
+
+**Origin:** Upstream CHANGELOG 0.7.8:
+- *"Added support for grouped inventory tables so AES analysis can read `Group
+  by flight` layouts without forcing players back to the classic table."*
+- *"Fixed Inventory Pricing so AES reloads automatically after toggling `Group
+  by flight`, without requiring a full page refresh."*
+
+**Diagnosis (current fork):**
+
+`content_inventory.js:getFlights()` looked only for `#inventory-table` (the
+classic flat layout) and threw `"Group by flight" needs to be unchecked` when
+the user toggled the AS-native Group by flight control. There was no observer
+to notice layout changes, so even after the user satisfied the message and
+toggled back, AES would not re-mount until the user manually refreshed the
+page.
+
+**Fix:**
+
+1. Added a layout-aware `getFlights()` that detects the grouped layout via
+   `#inventory-grouped-table tbody` and dispatches to the new
+   `getGroupedFlights()` parser; falls back to the classic `#inventory-table`
+   path otherwise. Error message rewritten to "Unable to read inventory data.
+   The inventory page layout might have changed." (no longer instructs the user
+   to undo their layout choice).
+
+2. Ported `getGroupedFlights(groupedTableBodies)` from upstream v0.7.8. Each
+   `<tbody>` represents one flight (one date for one numbered flight): the
+   first row carries the flight number, date, and status alongside the first
+   compartment's data; subsequent rows carry only per-compartment data starting
+   at cell[0]. Adapted to current's parsers (`getCompCode`,
+   `parseInventoryPrice`) for cmp-aware Cargo decimals; added null-safe filters
+   so partial rows mid-AS-render don't throw.
+
+3. Added the rerender machinery from upstream:
+   - `getInventorySignature()` — `[groupedBodies count]:[classicRows count]`
+     so the observer can tell whether a mutation is a real layout change.
+   - `cleanupInventoryDisplay()` — removes the AES-injected DOM
+     (`#aes-h3-analysis`, `#aes-div-analysis`, `#aes-h3-history`,
+     `#aes-div-invPricing-historicalData`, `#aes-h3-validation`,
+     `#aes-panel-validation`).
+   - `watchInventoryLayout()` — installs one `MutationObserver` on
+     `.container-fluid .row .col-md-10`, debounced 150ms, that calls
+     `rerenderInventoryModule(false)` on every change.
+   - `rerenderInventoryModule(force)` — signature gate, cleanup, re-fetch
+     settings, re-validate, re-render `displayInventory()`. Force-mode bypasses
+     the signature gate for the initial mount.
+4. Added IDs to existing `<h3>` elements that were previously
+   ID-less (analysis, history, validation) so the cleanup selector works.
+
+5. Updated the `AesBoot.register({ ... })` anchor from the bare string
+   `"#inventory-table"` to a function returning either
+   `#inventory-table` or `#inventory-grouped-table`, so the boot also fires
+   when the user has already chosen the grouped layout.
+
+6. `initInventory(ctx)` now resets the signature, starts the observer once,
+   and force-renders the initial frame; subsequent renders flow through the
+   observer. The observer is idempotent (`if (inventoryObserver) return`).
+
+**Inviolable rules check:**
+- §1 no new POSTs: pure DOM scraping; no new request paths added.
+- §2 storage contracts: no storage key change.
+- §5 bus integration: no new bus topics; the rerender uses the existing
+  in-process state.
+- §7 no silent default flips: not applicable; behavior is additive.
+
+**Self-stabilization sanity:**
+
+The MutationObserver fires on AES's own DOM injection (the analysis/history
+divs land inside the observed area). The 150ms debounce coalesces the
+injection burst, and the signature gate (`getInventorySignature`) returns
+identical values before and after AES injects, so the rerender is a no-op.
+Confirmed by tracing: AES inject → observer → 150ms wait → rerender → signature
+match → return before re-rendering.
+
+**Verification:**
+
+- Static: `node --check content_inventory.js` clean.
+- Behavioral (run in browser): open `/app/com/inventory/<route>`; toggle
+  `Group by flight` ON via the native AS control; AES analysis + history
+  panels regroup without page refresh; toggle OFF; classic layout returns;
+  filter rows down to 0 then back; no DevTools errors.
+
+**Files changed:**
+
+- `content_inventory.js` — grouped-mode parser + observer + signature
+  rerender + AesBoot anchor function + H3 IDs
+
+**Territory:** Agent 7 (content scripts).

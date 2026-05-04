@@ -3,6 +3,9 @@
 //Global vars
 var settings, pricingData, todayDate, analysis;
 var aesmodule = { valid: true, error: [] };
+var inventoryObserver = null;
+var inventoryRefreshTimer = 0;
+var inventoryRenderSignature = "";
 const INVENTORY_CLASS_ORDER = ["Y", "C", "F", "Cargo"];
 const INVENTORY_DEFAULT_RECOMMENDATION_STEPS = [
     { min:  0, max:  40, name: "Drop High",   step: -8 },
@@ -90,13 +93,9 @@ async function setInventoryStorage(items) {
 
 async function initInventory(ctx) {
     settings = ctx && ctx.settings ? ctx.settings : await getSettings()
-    aesmodule = new Validation()
-
-    if (!aesmodule.valid) {
-        displayValidationError()
-        return
-    }
-    await displayInventory()
+    inventoryRenderSignature = ""
+    watchInventoryLayout()
+    await rerenderInventoryModule(true)
 }
 
 AesBoot.register({
@@ -106,9 +105,67 @@ AesBoot.register({
         "AesSettings",
         function inventoryValidationReady(){ return typeof Validation !== "undefined" }
     ],
-    anchor: "#inventory-table",
+    anchor: function inventoryAnchor() {
+        return document.querySelector("#inventory-table")
+            || document.querySelector("#inventory-grouped-table")
+    },
     init: initInventory
 })
+
+/**
+ * Track the table layout so the MutationObserver can detect when the user
+ * toggles "Group by flight" — the classic and grouped tables have distinct
+ * IDs, and the row count signature also changes when filters are applied.
+ */
+function getInventorySignature() {
+    const groupedBodies = document.querySelectorAll("#inventory-grouped-table tbody").length
+    const classicRows = document.querySelectorAll("#inventory-table tbody tr").length
+    return [groupedBodies, classicRows].join(":")
+}
+
+function cleanupInventoryDisplay() {
+    $("#aes-h3-analysis, #aes-div-analysis, #aes-h3-history, #aes-div-invPricing-historicalData, #aes-h3-validation, #aes-panel-validation").remove()
+}
+
+/**
+ * Watch the AS inventory area for layout changes (Group by flight toggle,
+ * filter apply, native re-render after a price update) so AES can rerender
+ * without forcing a full page refresh. Backport of upstream v0.7.8 behavior.
+ */
+function watchInventoryLayout() {
+    if (inventoryObserver) return
+    const target = document.querySelector(".container-fluid .row .col-md-10") || document.body
+    inventoryObserver = new MutationObserver(function() {
+        clearTimeout(inventoryRefreshTimer)
+        inventoryRefreshTimer = window.setTimeout(function() {
+            rerenderInventoryModule(false)
+        }, 150)
+    })
+    inventoryObserver.observe(target, { childList: true, subtree: true })
+}
+
+async function rerenderInventoryModule(force) {
+    const nextSignature = getInventorySignature()
+    if (!force && nextSignature === inventoryRenderSignature) return
+    inventoryRenderSignature = nextSignature
+
+    cleanupInventoryDisplay()
+    settings = await getSettings()
+    aesmodule = new Validation()
+
+    if (!aesmodule.valid) {
+        displayValidationError()
+        return
+    }
+    try {
+        await displayInventory()
+    } catch (error) {
+        if (error && /Unable to read inventory data/.test(String(error.message || error))) {
+            return
+        }
+        throw error
+    }
+}
 
 /**
  * Get settings from local storage
@@ -192,23 +249,91 @@ async function displayInventory() {
 }
 
 /**
- * Get Flights
+ * Get Flights — supports both the classic flat inventory table and the
+ * "Group by flight" layout introduced in upstream AES v0.7.8.
  * @returns {array} flights - array of flight objects
  */
 function getFlights() {
+    const groupedTableBodies = document.querySelectorAll("#inventory-grouped-table tbody")
+    if (groupedTableBodies.length) {
+        return getGroupedFlights(groupedTableBodies)
+    }
+
     const flights = []
     const flightTable = document.querySelector("#inventory-table")
 
     if (!flightTable) {
-        throw new Error("\"Group by flight\" needs to be unchecked")
+        throw new Error("Unable to read inventory data. The inventory page layout might have changed.")
     }
 
     const flightRows = flightTable.querySelectorAll("tbody tr")
-    
+
     for (const row of flightRows) {
         const flight = getFlight(row)
         if (flight) {
             flights.push(flight)
+        }
+    }
+
+    return flights
+}
+
+/**
+ * Get flights from the "Group by flight" layout. Each `<tbody>` represents
+ * one flight (one date for one numbered flight): the first row carries the
+ * flight number, date, and status alongside the first compartment's data;
+ * subsequent rows carry only per-compartment data starting at cell[0].
+ *
+ * Backport of upstream AES v0.7.8 `getGroupedFlights`. Adapted to current
+ * fork's parsers (`getCompCode`, `parseInventoryPrice`) for cmp-aware Cargo
+ * decimals and null-safe row filtering.
+ * @param {NodeListOf<HTMLTableSectionElement>} groupedTableBodies
+ * @returns {array} flights
+ */
+function getGroupedFlights(groupedTableBodies) {
+    const flights = []
+
+    for (const tbody of groupedTableBodies) {
+        const rows = tbody.querySelectorAll("tr")
+        if (!rows.length) continue
+
+        const sharedCells = rows[0].querySelectorAll("td")
+        if (sharedCells.length < 11) continue
+
+        const flightLink = sharedCells[1].querySelector("a[href*='numbers']")
+        if (!flightLink) continue
+        const flightNumber = flightLink.innerText
+        const date = sharedCells[2].innerText
+        const status = sharedCells[10].innerText.replace(/\s+/g, "")
+
+        for (const row of rows) {
+            const cells = row.querySelectorAll("td")
+            if (cells.length < 5) continue
+
+            const groupedCells = row === rows[0] ? {
+                compCell: cells[5],
+                capCell: cells[6],
+                bkdCell: cells[7],
+                priceCell: cells[9]
+            } : {
+                compCell: cells[0],
+                capCell: cells[1],
+                bkdCell: cells[2],
+                priceCell: cells[4]
+            }
+
+            const compCode = getCompCode(groupedCells.compCell.innerText)
+            if (!compCode) continue
+
+            flights.push({
+                fltNr: flightNumber,
+                date: date,
+                cmp: compCode,
+                cap: AES.cleanInteger(groupedCells.capCell.innerText),
+                bkd: AES.cleanInteger(groupedCells.bkdCell.innerText),
+                price: parseInventoryPrice(groupedCells.priceCell.innerText, compCode),
+                status: status
+            })
         }
     }
 
@@ -948,7 +1073,7 @@ function displayAnalysis(analysis, prices) {
     let mainDiv = $(".container-fluid .row .col-md-10 div .as-panel:eq(0)");
     mainDiv.after(
         `
-    <h3>Analysis (today's snapshot)</h3>
+    <h3 id="aes-h3-analysis">Analysis (today's snapshot)</h3>
     <div id="aes-div-analysis" >
       <div class="as-panel">
         <div class="as-table-well">
@@ -1164,7 +1289,7 @@ function displayHistory(analysis) {
     if (dates.length) {
         //Build Div
         let mainDiv = $("#aes-div-analysis");
-        mainDiv.after('<h3>Historical Data</h3><div id="aes-div-invPricing-historicalData" class="as-panel"></div>');
+        mainDiv.after('<h3 id="aes-h3-history">Historical Data</h3><div id="aes-div-invPricing-historicalData" class="as-panel"></div>');
 
         //History Options
         let fieldset = $('<fieldset></fieldset>').html('<legend>History Options</legend>');
@@ -1406,10 +1531,9 @@ function displayValidationError() {
         p.push($('<p class="bad"></p>').html('<b>' + error + '</b>'));
     });
     p.push($('<p class="warning"></p>').html('Refresh the page after making adjustments.'));
-    let panel = $('<div class="as-panel"></div>').append(p);
-    let h2 = $('<h3></h3>').text('AES Inventory Pricing Module');
-    let div = $('<div></div>').append(h2, panel);
-    $('h1:eq(0)').after(h2, panel)
+    let panel = $('<div id="aes-panel-validation" class="as-panel"></div>').append(p);
+    let h3 = $('<h3 id="aes-h3-validation"></h3>').text('AES Inventory Pricing Module');
+    $('h1:eq(0)').after(h3, panel)
 }
 
 //History Table functions
