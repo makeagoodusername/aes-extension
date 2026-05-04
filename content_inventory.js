@@ -1490,7 +1490,7 @@ function buildHistoryTable() {
         let th1 = ['<th>SC</th>'];
         if (showNow) {
             //Now
-            th.push($('<th colspan="4"></th>').text('Now'));
+            th.push($('<th colspan="5"></th>').text('Now'));
             th1.push('<th class="text-nowrap aes-text-right">Price</th>');
             th1.push('<th class="text-nowrap">&Delta; %</th>');
             th1.push('<th class="text-nowrap">Load</th>');
@@ -1499,8 +1499,9 @@ function buildHistoryTable() {
             th1.push('<th class="text-nowrap aes-text-right">Index</th>');
         }
         for (let i = 0; i < dates.length; i++) {
+            const isOldest = i === dates.length - 1;
             let date = dates[i];
-            if (i) {
+            if (!isOldest) {
                 th.push($('<th colspan="5"></th>').text(AES.formatDateString(date)));
                 th1.push('<th class="text-nowrap aes-text-right">Price</th>');
                 th1.push('<th class="text-nowrap text-right">&Delta; %</th>');
@@ -1530,9 +1531,9 @@ function buildHistoryTable() {
             let td = [];
             td.push($('<td></td>').text(cmp));
             if (showNow) {
-                //Now TDs
+                //Now TDs — comparison anchor is the most-recent historical date (dates[0])
                 let data = inventoryHistoryClassData(analysis, cmp);
-                let prevData = inventoryHistoryClassData(pricingData.date[dates[dates.length - 1]], cmp);
+                let prevData = inventoryHistoryClassData(pricingData.date[dates[0]], cmp);
                 td.push($('<td class="text-nowrap text-right"></td>').html(displayHistoryPrice(data)));
                 td.push($('<td class="text-nowrap text-right"></td>').html(displayDifference(data, prevData).price));
                 td.push($('<td class="text-nowrap text-right"></td>').html(displayHistoryLoad(data)));
@@ -1540,13 +1541,13 @@ function buildHistoryTable() {
                 //Index
                 td.push($('<td class="text-nowrap text-right"></td>').html(historyDisplayIndex(data, 0)));
             }
-            //Historical tds
+            //Historical tds — for each column, the previous-period anchor is the next-older date (dates[i + 1])
             for (let i = 0; i < dates.length; i++) {
+                const isOldest = i === dates.length - 1;
                 let date = dates[i];
                 let data = inventoryHistoryClassData(pricingData.date[date], cmp);
-                if (i) {
-                    let prevData = inventoryHistoryClassData(pricingData.date[dates[i - 1]], cmp);
-                    //Not first data point
+                if (!isOldest) {
+                    let prevData = inventoryHistoryClassData(pricingData.date[dates[i + 1]], cmp);
                     td.push($('<td class="text-nowrap text-right"></td>').html(displayHistoryPrice(data)));
                     td.push($('<td class="text-nowrap text-right"></td>').html(displayDifference(data, prevData).price));
                     td.push($('<td class="text-nowrap text-right"></td>').html(displayHistoryLoad(data)));
@@ -1554,7 +1555,7 @@ function buildHistoryTable() {
                     //index
                     td.push($('<td class="text-nowrap text-right"></td>').html(historyDisplayIndex(data, 0)));
                 } else {
-                    //First data point
+                    //Oldest sample — no comparison
                     td.push($('<td class="text-nowrap text-right"></td>').html(displayHistoryPrice(data)));
                     td.push($('<td class="text-nowrap text-right"></td>').html(displayHistoryLoad(data)));
                     //index
@@ -1586,9 +1587,10 @@ function buildHistoryTable() {
                 tf.push($('<td class="aes-text-right"></td>').html(historyDisplayIndex(data, type)));
             }
             for (let i = 0; i < dates.length; i++) {
+                const isOldest = i === dates.length - 1;
                 let date = dates[i];
                 let data = (pricingData.date[date] && pricingData.date[date].data) || {};
-                if (i) {
+                if (!isOldest) {
                     tf.push('<td colspan="2"></td>');
                     tf.push($('<td></td>').html(historyDisplayTotal(data, type)));
                     tf.push('<td></td>');

@@ -3079,6 +3079,7 @@ function displayAircraftProfitability() {
                         hideColumn: settings.aircraftProfitability.hideColumn,
                         tableSettingStorage: 'aircraftProfitability'
                     });
+                    appendAircraftProfitabilitySummary(tableDiv, data, columns);
                 } else {
                     //Never happens or only when fleet = 0 because of updated script this output is copied bellow
                     tableDiv = $('<p class="warning"></p>').text('No aircraft data in memory. Open fleet management to extract aircraft data.')
@@ -3155,6 +3156,32 @@ function displayAircraftProfitability() {
             });
         });
         return data;
+    }
+
+    // Item 30 (upstream v0.7.5) — average aircraft age in the AP summary row.
+    // Fork's generateTable has no built-in summary infrastructure, so we
+    // append a tfoot post-hoc here. Aligned to visible columns + leading
+    // checkbox cell (tableSettings: 1 above). Skipped when Age is hidden
+    // via column-chooser.
+    function appendAircraftProfitabilitySummary(tableDiv, rows, cols) {
+        const ageValues = rows
+            .map(function(r) { return parseFloat(r.age); })
+            .filter(function(v) { return Number.isFinite(v); });
+        if (!ageValues.length) return;
+        const ageColVisible = cols.some(function(c) { return c.visible && c.data === 'age'; });
+        if (!ageColVisible) return;
+        const avgLabel = (ageValues.reduce(function(s, v) { return s + v; }, 0) / ageValues.length).toFixed(1);
+        const cells = ['<td class="text-center">--</td>'];
+        cols.forEach(function(col) {
+            if (!col.visible) return;
+            if (col.data === 'age') {
+                cells.push('<td class="text-center"><strong>Avg ' + avgLabel + '</strong></td>');
+            } else {
+                cells.push('<td class="text-center">--</td>');
+            }
+        });
+        const tfoot = $('<tfoot></tfoot>').append($('<tr></tr>').html(cells.join('')));
+        tableDiv.find('table').first().append(tfoot);
     }
 }
 
