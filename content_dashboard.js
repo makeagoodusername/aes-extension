@@ -2074,8 +2074,15 @@ function displayCompetitorMonitoringAirlinesTable(div) {
 
         //Options — always rendered so the user can flip column visibility
         //and reload the table even when no competitors are tracked yet.
-        let divRow = $('<div class="row"></div>').append(displayCompetitorMonitoringAirlinesTableOptions(), displayCompetitorMonitoringAirlinesTableCollumns());
+        let divRow = $('<div class="row"></div>').append(
+            displayCompetitorMonitoringAirlinesTableOptions(),
+            displayCompetitorMonitoringAirlinesTableFilters(),
+            displayCompetitorMonitoringAirlinesTableCollumns()
+        );
         div.append(divRow, tableWell);
+        if (Array.isArray(settings.competitorMonitoring.filter) && settings.competitorMonitoring.filter.length) {
+            competitorMonitoringApplyFilter();
+        }
         }); // end loadSchedules
     }); // end loadCompAirlines
 }
@@ -2664,8 +2671,144 @@ function setDefaultCompetitorMonitoringSettings() {
     }
   ];
     settings.competitorMonitoring = {
-        tableColumns: columns
+        tableColumns: columns,
+        filter: []
     };
+}
+
+function competitorMonitoringApplyFilter() {
+    if (!settings.competitorMonitoring || !Array.isArray(settings.competitorMonitoring.filter)) {
+        return;
+    }
+    let columnByField = {};
+    settings.competitorMonitoring.tableColumns.forEach(function(col) {
+        columnByField[col.field] = col;
+    });
+    $('#aes-table-competitorMonitoring tbody tr').show();
+    $('#aes-table-competitorMonitoring tbody tr').each(function() {
+        let row = this;
+        for (let i = 0; i < settings.competitorMonitoring.filter.length; i++) {
+            let filter = settings.competitorMonitoring.filter[i];
+            let col = columnByField[filter.collumnCode];
+            if (!col) continue;
+            let cell = $(row).find(".aes-" + filter.collumnCode).text();
+            let value = filter.value;
+            let isNumber = !!col.number;
+            if (isNumber) {
+                cell = cell ? parseInt(cell, 10) : 0;
+                value = value ? parseInt(value, 10) : 0;
+            }
+            let drop = false;
+            switch (filter.operation) {
+                case '=':
+                    drop = cell != value;
+                    break;
+                case '!=':
+                    drop = cell == value;
+                    break;
+                case '>':
+                    drop = cell <= value;
+                    break;
+                case '<':
+                    drop = cell >= value;
+                    break;
+                case 'contains':
+                    drop = String(cell).toLowerCase().indexOf(String(value).toLowerCase()) === -1;
+                    break;
+            }
+            if (drop) {
+                $(row).hide();
+                break;
+            }
+        }
+    });
+}
+
+function displayCompetitorMonitoringAirlinesTableFilters() {
+    let th = [];
+    th.push('<th>Column</th>');
+    th.push('<th>Operation</th>');
+    th.push('<th>Value</th>');
+    th.push('<th></th>');
+    let thead = $('<thead></thead>').append($('<tr></tr>').append(th));
+    let tbody = $('<tbody></tbody>');
+    (settings.competitorMonitoring.filter || []).forEach(function(fil) {
+        let td = [];
+        td.push('<td><input type="hidden" value="' + fil.collumnCode + '">' + fil.collumn + '</td>');
+        td.push('<td>' + fil.operation + '</td>');
+        td.push('<td>' + fil.value + '</td>');
+        td.push('<td><a class="aes-a-competitorMonitoring-filter-delete-row" ><span class="fa fa-trash" title="Delete row"></span></a></td>');
+        tbody.append($('<tr></tr>').append(td));
+    });
+    let option1 = [];
+    settings.competitorMonitoring.tableColumns.forEach(function(col) {
+        if (col.headGroup === 'Actions') return;
+        option1.push('<option value="' + col.field + '">' + col.text + '</option>');
+    });
+    let select1 = $('<select id="aes-select-competitorMonitoring-filter-column" class="form-control"></select>').append(option1);
+    let option = [];
+    option.push('<option>=</option>');
+    option.push('<option>!=</option>');
+    option.push('<option>></option>');
+    option.push('<option><</option>');
+    option.push('<option>contains</option>');
+    let select = $('<select id="aes-select-competitorMonitoring-filter-operation" class="form-control"></select>').append(option);
+    let btn = $('<button class="btn btn-default"></button>').text('Add Row');
+    btn.click(function() {
+        let columnVal = $('option:selected', select1).val();
+        let columnTxt = $('option:selected', select1).text();
+        let operation = $('option:selected', select).text();
+        let value = $('#aes-select-competitorMonitoring-filter-value').val();
+        let td = [];
+        td.push('<td><input type="hidden" value="' + columnVal + '">' + columnTxt + '</td>');
+        td.push('<td>' + operation + '</td>');
+        td.push('<td>' + value + '</td>');
+        td.push('<td><a class="aes-a-competitorMonitoring-filter-delete-row" ><span class="fa fa-trash" title="Delete row"></span></a></td>');
+        tbody.append($('<tr></tr>').append(td));
+    });
+    let tf = [];
+    tf.push($('<td></td>').html(select1));
+    tf.push($('<td></td>').html(select));
+    tf.push('<td><input id="aes-select-competitorMonitoring-filter-value" type="text" class="form-control" style="min-width: 50px;"></td>');
+    tf.push($('<td></td>').append(btn));
+    let tfoot = $('<tfoot></tfoot>').append($('<tr></tr>').append(tf));
+    let table = $('<table class="table table-bordered table-striped table-hover" id="aes-table-competitorMonitoring-filter"></table>').append(thead, tbody, tfoot);
+    let divTable = $('<div id="aes-div-competitorMonitoring-filter" class="as-table-well"></div>').append(table);
+
+    let saveBtn = $('<button class="btn btn-default">apply filter</button>');
+    let saveSpan = $('<span></span>');
+
+    let link = $('<a style="cursor: pointer;"></a>').text('Filters');
+    let legend = $('<legend></legend>').html(link);
+    let divForAll = $('<div style="display: none;"></div>').append(divTable, saveBtn, saveSpan);
+    link.click(bindClosableDashboardPanel(dashboardControlPanelStateKey('Filters'), divForAll));
+    let fieldset = $('<fieldset></fieldset>').append(legend, divForAll);
+    let div = $('<div class="col-md-4"></div>').append(fieldset);
+
+    table.on("click", ".aes-a-competitorMonitoring-filter-delete-row", function() {
+        $(this).closest("tr").remove();
+    });
+
+    saveBtn.click(function() {
+        saveSpan.removeClass().addClass('warning').text(' saving...');
+        let filter = [];
+        $('#aes-table-competitorMonitoring-filter tbody tr').each(function() {
+            filter.push({
+                collumnCode: $(this).find('input').val(),
+                collumn: $(this).find('td:eq(0)').text(),
+                operation: $(this).find('td:eq(1)').text(),
+                value: $(this).find('td:eq(2)').text()
+            });
+        });
+        settings.competitorMonitoring.filter = filter;
+        saveDashboardArea('competitorMonitoring', function() {
+            saveSpan.removeClass().addClass('warning').text(' filtering...');
+            competitorMonitoringApplyFilter();
+            saveSpan.removeClass().addClass('good').text(' done!');
+        });
+    });
+
+    return div;
 }
 
 function getRatingNr(rating) {
