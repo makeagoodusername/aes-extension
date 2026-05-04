@@ -3,6 +3,11 @@
 //Global vars
 var aircraftData = [];
 var server,aircraftFleetKey,aircraftFleetStorageData,airlineName;
+// Set by fltmng_buildFilterPanel.applyFilters whenever any filter select has
+// a non-empty value. Read by fltmng_bindNativeSelectionLinks to decide
+// whether to intercept AS's "select all/none/inverse" anchors.
+var fltmngFilterActive = false;
+var fltmngFleetTableObserver = null;
 ;(function fltmng_bootWhenReady(attempt){
   attempt = attempt || 0;
   const hasJquery = typeof window !== "undefined" && typeof window.$ === "function";
@@ -94,7 +99,11 @@ function fltmng_getData(){
       maintenance:fltmng_getMaintanance($('td:eq(4) > div > span:eq(1)',this).text()),
       fleet:fleet,
       date:date.date,
-      time:date.time
+      time:date.time,
+      // In-memory only — the storage envelope's Object.assign in
+      // fltmng_updateAircraftFleetStorageData enumerates fields explicitly
+      // and excludes `row`, so this stays out of chrome.storage.
+      row: this
     }
     aircraftData.push(data);
   });
@@ -416,24 +425,29 @@ function fltmng_display(){
   let p = [];
   p.push($('<p></p>').html(fltmng_displaySavedAircrafts()));
   p.push($('<p></p>').html(fltmng_displayNewUpdates()));
+  // Item 12 wire-up: filter panel from upstream v0.7.7 (content_fleetManagement
+  // .js lines 567-650). Native selection-link interception runs separately
+  // since the link targets live outside the panel.
+  p.push(fltmng_buildFilterPanel());
 
   let panel = $('<div class="as-panel"></div>').append(p);
   //Header
   let h = $('<h3></h3>').text('AES Fleet Management');
   let div = $('<div></div>').append(h,panel);
   $('.as-page-fleet-management > h1:eq(0)').after(div);
-  // TODO(upstream-item-12): port `fltmng_buildFilterPanel` (Model/HUB/Seats/
-  // Delivery/Ownership/Schedule selects) and `fltmng_bindNativeSelectionLinks`
-  // from upstream content_fleetManagement.js (lines 567-650 + 663-725). Needs
-  // a `row` ref on every aircraftData entry plus a MutationObserver scaffold
-  // (fltmng_watchFleetTable / fltmng_syncTableRows / fltmng_isFleetTableNode /
-  // fltmng_refreshFleetTableEnhancements) that the fork lacks. Deferred so
-  // this slice stays focused on items 13/16/17/19/22 — see
-  // audit/findings-upstream-integration.md.
+
+  fltmng_bindNativeSelectionLinks();
+  fltmng_watchFleetTable();
 }
 function fltmng_displayAircraftProfit(){
   let table = $('.as-page-fleet-management > .row > .col-md-9 > .as-panel:eq(0) table');
   if (!table.length) return;
+  // Idempotency: when the MutationObserver re-fires displayAircraftProfit
+  // after AS rerenders the fleet table, strip any prior AES-added headers /
+  // cells before re-adding. Otherwise each rerender would duplicate the HUB
+  // column and trailing Profit/Extract-date columns.
+  $('.aes-fleet-extra-header', table).remove();
+  $('.aes-fleet-extra-cell', table).remove();
   //Head — upstream v0.7.6 rename "Aircraft model" -> "Model" + HUB column
   //insert (CHANGELOG 0.7.6). Previously rendered headers stay; we only edit
   //the equipment-column text and add the new HUB/Profit/Extract-date <th>s.
@@ -530,4 +544,239 @@ function fltmng_formatMoney(value){
   container.append(indicatorEl, valueEl, currencyEl)
   
   return container
+}
+
+// ---------------------------------------------------------------------------
+// Item 12 (upstream v0.7.7) — Fleet filter panel + native-selection-link
+// integration + MutationObserver scaffold. Backports
+// `/AirlineSim-Enhancement-Suite-main/extension/content_fleetManagement.js`
+// lines 567-725 + 748-774 with one fork-friendly tweak: `fltmng_getResolvedHub`
+// also falls back to fork's `value.location` (the per-row IATA scrape from
+// `/app/info/airports/...`) so the HUB filter has values before the per-tail
+// content_aircraftFlights HUB-detect/override pass populates the
+// hubDetected/hubEffective/hubOverride fields.
+
+function fltmng_buildFilterPanel(){
+  let equipmentSelect = fltmng_buildFilterSelect('All models', fltmng_getUniqueAircraftValues('equipment'));
+  let hubSelect = fltmng_buildFilterSelect('All HUBs', fltmng_getUniqueAircraftHubValues());
+  let seatConfigSelect = fltmng_buildFilterSelect('All seat configs', fltmng_getUniqueAircraftValues('seatConfig'));
+  let deliverySelect = fltmng_buildFilterSelect('All delivery states', [
+    { value: 'delivered', label: 'Delivered' },
+    { value: 'undelivered', label: 'Undelivered' }
+  ]);
+  let ownershipSelect = fltmng_buildFilterSelect('All ownership', [
+    { value: 'owned', label: 'Owned' },
+    { value: 'leased', label: 'Leased' }
+  ]);
+  let scheduleSelect = fltmng_buildFilterSelect('All schedules', [
+    { value: 'active', label: 'Active' },
+    { value: 'empty', label: 'Empty' },
+    { value: 'pending', label: 'Locked' },
+    { value: 'conflict', label: 'Conflict' },
+    { value: 'undelivered', label: 'Undelivered' }
+  ]);
+  let resetBtn = $('<button type="button" class="btn btn-default"></button>').text('Reset filters');
+  let status = $('<span class="text-muted"></span>');
+
+  let form = $('<div class="row"></div>').append(
+    fltmng_wrapFilterControl('Model', equipmentSelect),
+    fltmng_wrapFilterControl('HUB', hubSelect),
+    fltmng_wrapFilterControl('Seats (Y/C/F)', seatConfigSelect),
+    fltmng_wrapFilterControl('Delivery', deliverySelect),
+    fltmng_wrapFilterControl('Ownership', ownershipSelect),
+    fltmng_wrapFilterControl('Schedule', scheduleSelect),
+    $('<div class="col-md-12" style="margin-top: 8px;"></div>').append(resetBtn, ' ', status)
+  );
+
+  [equipmentSelect, hubSelect, seatConfigSelect, deliverySelect, ownershipSelect, scheduleSelect].forEach(function(select){
+    select.change(applyFilters);
+  });
+  resetBtn.click(function(){
+    equipmentSelect.val('');
+    hubSelect.val('');
+    seatConfigSelect.val('');
+    deliverySelect.val('');
+    ownershipSelect.val('');
+    scheduleSelect.val('');
+    applyFilters();
+  });
+
+  applyFilters();
+  return $('<div></div>').append(
+    $('<p><strong>AES filters</strong></p>'),
+    form
+  );
+
+  function applyFilters(){
+    let visibleCount = 0;
+    let selectionStateChanged = false;
+    let refreshCheckbox = null;
+    aircraftData.forEach(function(value){
+      let visible =
+        (!equipmentSelect.val() || value.equipment == equipmentSelect.val()) &&
+        (!hubSelect.val() || fltmng_getResolvedHub(value) == hubSelect.val()) &&
+        (!seatConfigSelect.val() || value.seatConfig == seatConfigSelect.val()) &&
+        (!deliverySelect.val() || (deliverySelect.val() == 'delivered' ? value.delivered : !value.delivered)) &&
+        (!ownershipSelect.val() || (ownershipSelect.val() == 'owned' ? value.owned : !value.owned)) &&
+        (!scheduleSelect.val() || value.scheduleState == scheduleSelect.val());
+      if (value.row) {
+        $(value.row).toggle(visible);
+        if (!visible) {
+          let rowCheckbox = $('input[type="checkbox"][name="aircraftsContainer"]', value.row).get(0);
+          if (rowCheckbox && rowCheckbox.checked) {
+            rowCheckbox.checked = false;
+            selectionStateChanged = true;
+            refreshCheckbox = refreshCheckbox || rowCheckbox;
+          }
+        }
+      }
+      if (visible) visibleCount++;
+    });
+    fltmngFilterActive = !!(equipmentSelect.val() || hubSelect.val() || seatConfigSelect.val() || deliverySelect.val() || ownershipSelect.val() || scheduleSelect.val());
+    status.text('Showing ' + visibleCount + ' of ' + aircraftData.length + ' aircraft' + (fltmngFilterActive ? '. Selection links apply to visible aircraft only.' : ''));
+    if (selectionStateChanged) fltmng_refreshNativeSelectionState(refreshCheckbox);
+  }
+}
+
+function fltmng_wrapFilterControl(label, control){
+  return $('<div class="col-md-2 col-sm-4" style="margin-top: 8px;"></div>').append(
+    $('<label class="control-label"></label>').text(label),
+    control
+  );
+}
+
+function fltmng_buildFilterSelect(placeholder, values){
+  let select = $('<select class="form-control"></select>').append(
+    $('<option value=""></option>').text(placeholder)
+  );
+  values.forEach(function(value){
+    if (typeof value == 'string') {
+      select.append($('<option></option>').val(value).text(value));
+    } else {
+      select.append($('<option></option>').val(value.value).text(value.label));
+    }
+  });
+  return select;
+}
+
+function fltmng_getUniqueAircraftValues(key){
+  let values = aircraftData.map(function(value){ return value[key]; }).filter(function(value){
+    return value !== undefined && value !== null && value !== '';
+  });
+  values = values.filter(function(value, index){ return values.indexOf(value) == index; });
+  values.sort();
+  return values;
+}
+
+function fltmng_getUniqueAircraftHubValues(){
+  let values = aircraftData.map(function(value){ return fltmng_getResolvedHub(value); }).filter(function(value){
+    return value !== undefined && value !== null && value !== '';
+  });
+  values = values.filter(function(value, index){ return values.indexOf(value) == index; });
+  values.sort();
+  return values;
+}
+
+// Resolution priority: explicit override > flights-page-detected effective hub
+// > flights-page-detected raw hub > profit envelope's stored hubs > per-row
+// IATA scrape (fork-only). The trailing `location` fallback is a fork
+// extension of upstream's chain so the HUB filter has data before the
+// per-tail aircraftFlights pass populates hubDetected.
+function fltmng_getResolvedHub(value){
+  if (!value) return '';
+  if (value.hubOverride) return value.hubOverride;
+  if (value.hubEffective) return value.hubEffective;
+  if (value.hubDetected) return value.hubDetected;
+  if (value.profit) {
+    let p = value.profit.hubOverride || value.profit.hubEffective || value.profit.hubDetected;
+    if (p) return p;
+  }
+  if (value.location) return value.location;
+  return '';
+}
+
+function fltmng_refreshNativeSelectionState(checkbox){
+  let target = checkbox || document.querySelector('.as-page-fleet-management input[type="checkbox"][name="aircraftsContainer"]');
+  if (!target) return;
+  target.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function fltmng_bindNativeSelectionLinks(){
+  let selectionLinks = document.querySelectorAll(
+    '.as-page-fleet-management a[href*="select~all"], ' +
+    '.as-page-fleet-management a[href*="select~none"], ' +
+    '.as-page-fleet-management a[href*="select~inverse"]'
+  );
+  selectionLinks.forEach(function(link){
+    if (link.dataset.aesFleetSelectionBound === '1') return;
+    link.dataset.aesFleetSelectionBound = '1';
+    link.addEventListener('click', function(event){
+      if (!fltmngFilterActive) return;
+      let fleetTable = $('.as-page-fleet-management > .row > .col-md-9 > .as-panel:eq(0) table');
+      if (!fleetTable.length) return;
+      let href = String(link.getAttribute('href') || '');
+      let action = '';
+      if (href.indexOf('select~all') != -1) action = 'all';
+      else if (href.indexOf('select~none') != -1) action = 'none';
+      else if (href.indexOf('select~inverse') != -1) action = 'invert';
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      let visibleCheckboxes = $('tbody tr:visible input[type="checkbox"][name="aircraftsContainer"]', fleetTable);
+      let refreshCheckbox = visibleCheckboxes.get(0) || document.querySelector('.as-page-fleet-management input[type="checkbox"][name="aircraftsContainer"]');
+      switch (action) {
+        case 'all':    visibleCheckboxes.prop('checked', true);  break;
+        case 'none':   visibleCheckboxes.prop('checked', false); break;
+        case 'invert': visibleCheckboxes.each(function(){ $(this).prop('checked', !$(this).prop('checked')); }); break;
+      }
+      fltmng_refreshNativeSelectionState(refreshCheckbox);
+    }, true);
+  });
+}
+
+// MutationObserver scaffold: AS occasionally rerenders the fleet table (sort,
+// pagination, refresh button). Re-apply AES filter + extra columns + selection
+// link bindings after each rerender. Loop-guard via observer disconnect-
+// reconnect (upstream pattern) so AES's own DOM mutations don't retrigger.
+function fltmng_watchFleetTable(){
+  if (fltmngFleetTableObserver) {
+    try { fltmngFleetTableObserver.disconnect(); } catch (_) {}
+    fltmngFleetTableObserver = null;
+  }
+  let target = document.querySelector('.as-page-fleet-management') || document.body;
+  if (!target) return;
+  fltmngFleetTableObserver = new MutationObserver(function(mutations){
+    let needsRefresh = mutations.some(function(m){
+      for (let i = 0; i < m.addedNodes.length; i++) {
+        let node = m.addedNodes[i];
+        if (fltmng_isFleetTableNode(node)) return true;
+      }
+      return false;
+    });
+    if (!needsRefresh) return;
+    fltmngFleetTableObserver.disconnect();
+    try {
+      // Re-extract row→aircraftData refs (rows may be new objects), then
+      // refresh the AES presentation overlay and selection bindings.
+      aircraftData = [];
+      fltmng_getData();
+      fltmng_displayAircraftProfit();
+      fltmng_bindNativeSelectionLinks();
+    } catch (err) {
+      console.warn('[AES fleetManagement] table-refresh re-apply failed', err);
+    }
+    // Reattach observer after AES mutations settle.
+    setTimeout(function(){
+      if (fltmngFleetTableObserver) fltmngFleetTableObserver.observe(target, { childList: true, subtree: true });
+    }, 0);
+  });
+  fltmngFleetTableObserver.observe(target, { childList: true, subtree: true });
+}
+
+function fltmng_isFleetTableNode(node){
+  if (!node || node.nodeType !== 1) return false;
+  if (node.matches && node.matches('table, tbody, tr')) return true;
+  if (node.querySelector && node.querySelector('input[name="aircraftsContainer"]')) return true;
+  return false;
 }
