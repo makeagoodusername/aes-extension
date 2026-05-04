@@ -2567,6 +2567,68 @@ function displayAircraftProfitability() {
             sortable: 1,
             visible: 1
     },
+        // New profitability columns from upstream AES v0.7.6: delivery
+        // status, ownership, pilot assignment, seat totals, pure cargo flag,
+        // seat configuration, schedule state, HUB. Default visible so the
+        // user sees the richer info on first paint; they can hide via the
+        // existing column-chooser (settings.aircraftProfitability.hideColumn).
+        {
+            category: 'Aircraft',
+            title: 'HUB',
+            data: 'hub',
+            sortable: 1,
+            visible: 1
+    },
+        {
+            category: 'Aircraft',
+            title: 'Delivered',
+            data: 'deliveredLabel',
+            sortable: 1,
+            visible: 1
+    },
+        {
+            category: 'Aircraft',
+            title: 'Owned',
+            data: 'ownedLabel',
+            sortable: 1,
+            visible: 1
+    },
+        {
+            category: 'Aircraft',
+            title: 'Pilot',
+            data: 'pilotAssignedLabel',
+            sortable: 1,
+            visible: 1
+    },
+        {
+            category: 'Aircraft',
+            title: 'Total seats',
+            data: 'totalSeats',
+            sortable: 1,
+            visible: 1,
+            number: 1
+    },
+        {
+            category: 'Aircraft',
+            title: 'Seat config',
+            data: 'seatConfig',
+            sortable: 1,
+            visible: 1
+    },
+        {
+            category: 'Aircraft',
+            title: 'Pure cargo',
+            data: 'pureCargoLabel',
+            sortable: 1,
+            visible: 1
+    },
+        {
+            category: 'Aircraft',
+            title: 'Schedule',
+            data: 'scheduleStateLabel',
+            sortable: 1,
+            visible: 1
+    },
         {
             category: 'Profit',
             title: 'Total flights',
@@ -2693,6 +2755,14 @@ function displayAircraftProfitability() {
                 profit.profit = value.profit.profit;
                 profit.dateProfit = AES.formatDateString(value.profit.date) + ' ' + value.profit.time;
             }
+            // Upstream v0.7.6 profitability columns. Booleans get *Label
+            // companions so the table can sort by display string. `hub`
+            // mirrors the fleet `location` field (same source the
+            // Fleet Management table uses for the HUB column added in
+            // commit 57c8807).
+            const deliveredLabel = value.delivered === true ? 'Yes' : (value.delivered === false ? 'No' : '--');
+            const ownedLabel = value.owned === true ? 'Yes' : (value.owned === false ? 'No' : '--');
+            const pureCargoLabel = value.pureCargo === true ? 'Yes' : (value.pureCargo === false ? 'No' : '--');
             data.push({
                 aircraftId: value.aircraftId,
                 registration: value.registration,
@@ -2703,6 +2773,19 @@ function displayAircraftProfitability() {
                 age: value.age,
                 maintenance: value.maintanance,
                 dateAircraft: AES.formatDateString(value.date) + ' ' + value.time,
+                hub: value.location || '',
+                delivered: value.delivered,
+                deliveredLabel: deliveredLabel,
+                owned: value.owned,
+                ownedLabel: ownedLabel,
+                pilotAssigned: value.pilotAssigned,
+                pilotAssignedLabel: value.pilotAssignedLabel || (value.pilotAssigned === true ? 'Yes' : (value.pilotAssigned === false ? 'No' : '--')),
+                totalSeats: value.totalSeats != null ? value.totalSeats : '',
+                seatConfig: value.seatConfig || '',
+                pureCargo: value.pureCargo,
+                pureCargoLabel: pureCargoLabel,
+                scheduleState: value.scheduleState,
+                scheduleStateLabel: value.scheduleStateLabel || '--',
                 totalFlights: profit.totalFlights,
                 finishedFlights: profit.finishedFlights,
                 profitFlights: profit.profitFlights,

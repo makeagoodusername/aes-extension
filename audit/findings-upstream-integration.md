@@ -18,9 +18,9 @@ mutates AS state (none expected for slices 1–6).
 | 1 | Settings save/load race fix | [FIXED] | settings-bridge.js, content_inventory.js, content_settings.js | 447e7ca |
 | 2 | Grouped inventory tables (Group by flight) | [FIXED] | content_inventory.js | 199ceee |
 | 3 | Inventory pricing reference recommendations (opt-in) | [FIXED] | content_inventory.js (toggle: 2dcb2cd) | 91c42c4 |
-| 4 | HUB override controls + auto-detection | [FIXED] | content_aircraftFlights.js, modules/aircraft-flights/info-panel.js | (this commit) |
-| 5 | Richer Fleet Management extraction | (pending) |  |  |
-| 6 | Aircraft Profitability new columns | (pending) |  |  |
+| 4 | HUB override controls + auto-detection | [FIXED] | content_aircraftFlights.js, modules/aircraft-flights/info-panel.js | 0d85fb1 |
+| 5 | Richer Fleet Management extraction | [FIXED] (items 13/16/17/19/22) / [DEFERRED] (item 12) | content_fleetManagement.js | 57c8807 (+60960d3) |
+| 6 | Aircraft Profitability new columns | [FIXED] | content_dashboard.js | (this commit) |
 
 ---
 
@@ -405,6 +405,74 @@ slice. The override still works in isolation on the Flights page.
   `HubOverrideRow` class
 
 **Territory:** Agent 4 (Fleet Hub / AFP / aircraft-flights surfaces).
+
+---
+
+## Slice 6 — Aircraft Profitability new columns (v0.7.6)
+
+**Disposition:** [FIXED]
+
+**Origin:** Upstream CHANGELOG 0.7.6: *"Added new Aircraft Profitability
+columns for delivery status, ownership, pilot assignment, seat totals,
+pure cargo status, seat configuration, schedule state, and HUB."*
+
+**Diagnosis (current fork):**
+
+`content_dashboard.js:displayAircraftProfitability()` defined 14 columns
+but none of the v0.7.6 enrichment fields. Upstream's CHANGELOG 0.7.6 batch
+(committed for the Fleet Management surface in `57c8807`) made these
+fields available on the `aircraftFleet` storage record, but
+`prepareAircraftProfitabilityData()` was not yet passing them through to
+the dashboard table renderer, and the column list had no entries for them.
+
+**Fix:**
+
+1. Added eight new columns to the `displayAircraftProfitability()`
+   `columns` array, all under the `Aircraft` category, inserted between
+   `Date` and the `Profit` group so the layout reads identity → state →
+   profit:
+   - `HUB` (`data: 'hub'`)
+   - `Delivered` (`data: 'deliveredLabel'`)
+   - `Owned` (`data: 'ownedLabel'`)
+   - `Pilot` (`data: 'pilotAssignedLabel'`)
+   - `Total seats` (`data: 'totalSeats'`, numeric)
+   - `Seat config` (`data: 'seatConfig'`)
+   - `Pure cargo` (`data: 'pureCargoLabel'`)
+   - `Schedule` (`data: 'scheduleStateLabel'`)
+   All sortable, all `visible: 1` by default; users can hide via the
+   existing column chooser (`settings.aircraftProfitability.hideColumn`).
+
+2. Extended `prepareAircraftProfitabilityData(storage)` to pass through
+   the new fields. Booleans (`delivered`, `owned`, `pureCargo`) get
+   `*Label` companions (`Yes` / `No` / `--`) so the table sorts by display
+   string. `pilotAssignedLabel` is read from the fleet record when
+   present (set by `57c8807`) with a derived fallback. `hub` mirrors the
+   fleet `location` field, the same source the Fleet Management HUB
+   column uses post-`57c8807`.
+
+**Inviolable rules check:**
+- §1 no new POSTs: read-only rendering off existing fleet storage.
+- §2 storage contracts: no key shape change. The new columns surface
+  fields that `57c8807` already added to the `aircraftFleet` record.
+- §7 no silent default flips: the new columns default to `visible: 1`,
+  which is purely additive UI; existing column-hiding state under
+  `settings.aircraftProfitability.hideColumn` continues to work.
+
+**Verification:**
+
+- Static: `node --check content_dashboard.js` clean.
+- Behavioral: open the dashboard, switch to Aircraft Profitability; the
+  table shows the eight new columns with values from the fleet record.
+  Tails extracted before `57c8807` will show `--` for the new fields
+  until Fleet Management is opened to refresh; new tails extracted after
+  `57c8807` show the full enrichment immediately.
+
+**Files changed:**
+
+- `content_dashboard.js` — eight new columns +
+  `prepareAircraftProfitabilityData` field passthrough
+
+**Territory:** Agent 5 (dashboard tiles / `content_dashboard.js`).
 
 ---
 
