@@ -26,6 +26,7 @@
 
     let panelEl = null;
     let canvasEl = null;
+    let closeTimer = null;
     let activeSectionId = "theme";
     let storeUnsub = null;
     let scopeUnsub = null;
@@ -35,13 +36,13 @@
         { id: "color",       num: "02",  label: "Colour",       active: true },
         { id: "typography",  num: "03",  label: "Typography",   active: true },
         { id: "spacing",     num: "04",  label: "Spacing",      active: true },
-        { id: "components",  num: "05",  label: "Components",   active: false },
+        { id: "components",  num: "05",  label: "Components",   active: false, comingSoon: true },
         { id: "motion",      num: "06",  label: "Motion",       active: true },
         { id: "ornament",    num: "06b", label: "Ornament",     active: true },
         { id: "keybindings", num: "07",  label: "Keybindings",  active: true },
         { id: "dashboard",   num: "08",  label: "Dashboard",    active: true  },
-        { id: "scopes",      num: "09",  label: "Scopes",       active: false },
-        { id: "backup",      num: "10",  label: "Backup",       active: false },
+        { id: "scopes",      num: "09",  label: "Scopes",       active: false, comingSoon: true },
+        { id: "backup",      num: "10",  label: "Backup",       active: true },
         { id: "numerals",    num: "11",  label: "Numerals",     active: true }
     ];
 
@@ -55,6 +56,37 @@
                         "#" + PANEL_ID + " * { box-sizing: border-box; }\n" +
                         "#" + PANEL_ID + " button:focus-visible { outline: 3px solid var(--aes-rust); outline-offset: 2px; }";
         document.head.appendChild(s);
+    }
+
+    function cancelCloseTimer() {
+        if (!closeTimer) return;
+        clearTimeout(closeTimer);
+        closeTimer = null;
+    }
+
+    function removePanelNode(root) {
+        if (!root) return;
+        if (root.parentNode) root.parentNode.removeChild(root);
+        if (panelEl === root) {
+            panelEl = null;
+            canvasEl = null;
+        }
+    }
+
+    function dedupePanels(keepRoot) {
+        const nodes = document.querySelectorAll("#" + PANEL_ID);
+        Array.from(nodes).forEach(function (node) {
+            if (node !== keepRoot && node.parentNode) node.parentNode.removeChild(node);
+        });
+    }
+
+    function revealPanel(root) {
+        if (!root) return;
+        root.dataset.closing = "0";
+        // Force the hidden start state to commit before revealing. This
+        // keeps the panel functional even when rAF is throttled.
+        void root.offsetWidth;
+        root.style.transform = "translateX(0)";
     }
 
     function build() {
@@ -81,18 +113,16 @@
             "font-family:" + T.font.display,
             "transform:translateX(100%)",
             "transition:transform 220ms cubic-bezier(.2,.8,.2,1)",
-            "box-shadow:-8px 0 0 rgba(26,22,18,0.12)"
+            "box-shadow:" + T.shadow.panel
         ].join(";");
+        root.dataset.closing = "0";
 
         root.appendChild(buildMasthead(T));
         root.appendChild(buildScopeRibbon(T));
         root.appendChild(buildSplit(T));
 
         document.body.appendChild(root);
-        // Animate in next tick so the initial transform applies.
-        requestAnimationFrame(function () {
-            root.style.transform = "translateX(0)";
-        });
+        revealPanel(root);
 
         document.addEventListener("keydown", onEscape, true);
 
@@ -218,9 +248,13 @@
             item.append(num, lbl);
             if (!sec.active) {
                 const tag = document.createElement("span");
-                tag.textContent = "  P2";
+                tag.textContent = sec.comingSoon ? "  SOON" : "  P2";
                 tag.style.cssText = "margin-left:auto;font-family:" + T.font.mono + ";font-size:" + T.fs.micro + ";color:" + T.color.slate;
                 item.appendChild(tag);
+                if (sec.comingSoon) {
+                    item.title = sec.label + " — coming soon, not yet wired";
+                    item.setAttribute("aria-disabled", "true");
+                }
             }
             item.addEventListener("click", function (e) {
                 e.preventDefault();
@@ -312,7 +346,8 @@
             ornament:    window.AESStudioOrnamentSection,
             keybindings: window.AESStudioKeybindingsSection,
             numerals:    window.AESStudioNumeralsSection,
-            dashboard:   window.AESStudioDashboardSection
+            dashboard:   window.AESStudioDashboardSection,
+            backup:      window.AESStudioBackupSection
         };
         const r = renderers[activeSectionId];
         if (r && typeof r.render === "function") {
@@ -340,20 +375,47 @@
     }
 
     function open() {
-        if (panelEl) return;
+        if (panelEl && panelEl.parentNode && panelEl.dataset.closing !== "1") {
+            dedupePanels(panelEl);
+            revealPanel(panelEl);
+            document.addEventListener("keydown", onEscape, true);
+            return;
+        }
+        if (panelEl && panelEl.dataset.closing === "1") {
+            cancelCloseTimer();
+            removePanelNode(panelEl);
+        } else if (panelEl && !panelEl.parentNode) {
+            panelEl = null;
+            canvasEl = null;
+        }
+        dedupePanels(null);
         panelEl = build();
     }
 
     function close_() {
-        if (!panelEl) return;
+        if (!panelEl) {
+            dedupePanels(null);
+            return;
+        }
         const root = panelEl;
+        cancelCloseTimer();
         document.removeEventListener("keydown", onEscape, true);
         if (storeUnsub) { try { storeUnsub(); } catch (_) {} storeUnsub = null; }
         if (scopeUnsub) { try { scopeUnsub(); } catch (_) {} scopeUnsub = null; }
+        root.dataset.closing = "1";
         root.style.transform = "translateX(100%)";
-        setTimeout(function () { if (root.parentNode) root.parentNode.removeChild(root); }, 240);
-        panelEl = null;
-        canvasEl = null;
+        const finalize = function () {
+            root.removeEventListener("transitionend", finalize);
+            cancelCloseTimer();
+            removePanelNode(root);
+            dedupePanels(panelEl);
+        };
+        root.addEventListener("transitionend", finalize, {once: true});
+        if (document.visibilityState !== "visible") {
+            finalize();
+            return;
+        }
+        closeTimer = setTimeout(finalize, 280);
     }
 
     function toggle() {

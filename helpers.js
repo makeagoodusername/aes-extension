@@ -6,12 +6,22 @@ class AES {
      */
     static getAirlineCode() {
         const factsTable = document.querySelector(".facts table")
-        const nameElement = factsTable.querySelector("tr:nth-child(1) td:last-child")
-        const codeElement = factsTable.querySelector("tr:nth-child(2) td:last-child")
+        const nameElement = factsTable?.querySelector("tr:nth-child(1) td:last-child")
+        const codeElement = factsTable?.querySelector("tr:nth-child(2) td:last-child")
+        const name = (nameElement?.innerText || "").trim()
+        const code = (codeElement?.innerText || "").trim()
+
+        if (!name && !code) {
+            const identity = AES.getAirlineIdentity()
+            return {
+                name: identity,
+                code: identity
+            }
+        }
 
         return {
-            name: nameElement.innerText,
-            code: codeElement.innerText
+            name: name || code,
+            code: code || name
         }
     }
 
@@ -153,18 +163,34 @@ class AES {
      * @returns {object} datetime - { date: "20240607", time: "16:24 UTC" }
      */
     static getServerDate() {
-        const source = document.querySelector(".as-navbar-bottom span:has(.fa-clock-o)").innerText.trim()
-        const sourceAsNumbers = source.toString().replace(/\D/g, "")
-        
-        // The source always consists of 12 numbers
-        const expectedLength = 12
-        if (sourceAsNumbers.length != expectedLength) {
-            throw new Error(`Unexpected length for source (${sourceAsNumbers.length}). There might’ve been a UI update. Check AES.getServerDate()`)
+        const fallbackDate = new Date()
+        const fallback = {
+            date: fallbackDate.getUTCFullYear().toString()
+                + String(fallbackDate.getUTCMonth() + 1).padStart(2, "0")
+                + String(fallbackDate.getUTCDate()).padStart(2, "0"),
+            time: String(fallbackDate.getUTCHours()).padStart(2, "0")
+                + ":" + String(fallbackDate.getUTCMinutes()).padStart(2, "0") + " UTC"
         }
-        
+
+        const sourceEl = document.querySelector(".as-navbar-bottom span:has(.fa-clock-o)")
+            || document.querySelector(".as-navbar-bottom span")
+            || document.querySelector(".as-navbar-bottom")
+        const source = sourceEl ? (sourceEl.innerText || sourceEl.textContent || "").trim() : ""
+        if (!source) return fallback
+
+        const sourceAsNumbers = source.toString().replace(/\D/g, "")
+
         // Splits the date component from the data,
         // then splits that into an array for the year, month, and day
-        let dateArray = source.split(" ")[0].split(/\D+/)
+        let dateArray = source.split(" ")[0].split(/\D+/).filter(Boolean)
+        if (dateArray.length < 3 && sourceAsNumbers.length >= 8) {
+            dateArray = [
+                sourceAsNumbers.substring(0, 4),
+                sourceAsNumbers.substring(4, 6),
+                sourceAsNumbers.substring(6, 8)
+            ]
+        }
+        if (dateArray.length < 3) return fallback
         if (dateArray[0].length === 2) {
             dateArray.reverse()
         }
@@ -172,7 +198,8 @@ class AES {
         
         // Strip the date component from the data
         // leaving only the time
-        let time = source.replace(/.{10}\s/, "")
+        let timeMatch = source.match(/\b\d{1,2}:\d{2}(?:\s*[A-Z]{2,4})?\b/)
+        let time = timeMatch ? timeMatch[0] : fallback.time
         
         const datetime = {
             date: date,
@@ -294,6 +321,10 @@ class AES {
             await AES.sleep(200)
         }
     }
+}
+
+if (typeof window !== "undefined") {
+    window.AES = AES
 }
 
 /**

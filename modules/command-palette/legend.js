@@ -29,44 +29,56 @@
         style.id = STYLE_ID;
         style.textContent =
             "#" + HOST_ID + "-backdrop {" +
-                "position:fixed;inset:0;background:rgba(0,0,0,0.55);" +
-                "z-index:2147483646;opacity:0;transition:opacity 120ms ease;" +
+                "position:fixed;inset:0;background:var(--aes-shadow-backdrop);" +
+                "z-index:calc(var(--aes-z-modal) - 1);opacity:0;transition:opacity var(--aes-tr-medium);" +
             "}" +
             "#" + HOST_ID + "-backdrop.open { opacity:1; }" +
             "#" + HOST_ID + " {" +
                 "position:fixed;top:12vh;left:50%;transform:translateX(-50%);" +
                 "width:min(720px, calc(100vw - 32px));max-height:76vh;" +
-                "background:#181a1f;color:#d8dde6;border:1px solid #2c313a;" +
-                "border-radius:10px;box-shadow:0 20px 50px -12px rgba(0,0,0,0.55);" +
-                "font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif;" +
-                "font-size:13px;line-height:1.4;z-index:2147483647;overflow:hidden;" +
+                "background:var(--aes-bone);color:var(--aes-oxide);" +
+                "border:var(--aes-bw-2) solid var(--aes-oxide);" +
+                "border-radius:var(--aes-radius);box-shadow:var(--aes-shadow-modal);" +
+                "font-family:var(--aes-font-display);" +
+                "font-size:var(--aes-fs-body);line-height:var(--aes-lh-body);" +
+                "z-index:var(--aes-z-modal);overflow:hidden;" +
                 "display:flex;flex-direction:column;" +
             "}" +
             "#" + HOST_ID + " header {" +
-                "padding:14px 18px;border-bottom:1px solid #2c313a;" +
-                "font-weight:600;color:#f1f3f7;display:flex;justify-content:space-between;align-items:center;" +
+                "padding:var(--aes-sp-3) var(--aes-sp-4);" +
+                "border-bottom:var(--aes-bw-1) solid var(--aes-paper-rule);" +
+                "font-family:var(--aes-font-display);font-weight:var(--aes-fw-display);" +
+                "font-size:var(--aes-fs-lead);text-transform:uppercase;" +
+                "letter-spacing:var(--aes-tracking-caps);" +
+                "color:var(--aes-oxide);display:flex;justify-content:space-between;align-items:center;" +
             "}" +
             "#" + HOST_ID + " header button {" +
-                "background:transparent;border:none;color:#8a93a3;cursor:pointer;font-size:18px;" +
+                "background:transparent;border:none;color:var(--aes-oxide);" +
+                "cursor:pointer;font-size:var(--aes-fs-h3);font-family:inherit;" +
             "}" +
             "#" + HOST_ID + " .scroll {" +
-                "overflow-y:auto;padding:8px 0;" +
+                "overflow-y:auto;padding:var(--aes-sp-2) 0;" +
             "}" +
             "#" + HOST_ID + " section {" +
-                "padding:8px 18px;" +
+                "padding:var(--aes-sp-2) var(--aes-sp-4);" +
             "}" +
             "#" + HOST_ID + " section h3 {" +
-                "margin:8px 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#8a93a3;" +
+                "margin:var(--aes-sp-2) 0 var(--aes-sp-1);font-family:var(--aes-font-display);" +
+                "font-size:var(--aes-fs-micro);font-weight:var(--aes-fw-display);" +
+                "text-transform:uppercase;letter-spacing:var(--aes-tracking-caps);" +
+                "color:var(--aes-slate);" +
             "}" +
             "#" + HOST_ID + " section .entry {" +
-                "display:flex;justify-content:space-between;gap:16px;padding:5px 0;" +
-                "border-bottom:1px solid rgba(255,255,255,0.04);" +
+                "display:flex;justify-content:space-between;gap:var(--aes-sp-4);padding:var(--aes-sp-1) 0;" +
+                "border-bottom:var(--aes-bw-1) solid var(--aes-paper-rule);" +
             "}" +
             "#" + HOST_ID + " section .entry:last-child { border-bottom:none; }" +
-            "#" + HOST_ID + " section .entry .desc { color:#d8dde6;flex:1 1 auto;min-width:0; }" +
+            "#" + HOST_ID + " section .entry .desc { color:var(--aes-oxide);flex:1 1 auto;min-width:0; }" +
             "#" + HOST_ID + " section .entry .keys {" +
-                "color:#5fa8ff;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;" +
-                "background:rgba(95,168,255,0.1);padding:2px 8px;border-radius:6px;flex:0 0 auto;" +
+                "color:var(--aes-rust);font-family:var(--aes-font-mono);" +
+                "font-size:var(--aes-fs-small);" +
+                "background:var(--aes-rust-soft);padding:2px var(--aes-sp-2);" +
+                "border-radius:var(--aes-radius);flex:0 0 auto;" +
             "}";
         document.head.appendChild(style);
     }
@@ -101,7 +113,7 @@
         if (!sectionIds.length) {
             const empty = document.createElement("section");
             empty.textContent = "No hotkeys registered yet.";
-            empty.style.cssText = "padding:24px;color:#6a7280;text-align:center;font-style:italic";
+            empty.style.cssText = "padding:var(--aes-sp-5);color:var(--aes-slate);text-align:center;font-style:italic";
             scroll.appendChild(empty);
         } else {
             for (const sectionId of sectionIds) {

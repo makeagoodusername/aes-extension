@@ -22,6 +22,7 @@
  *   label      "Open Strategy"                    short imperative
  *   hint       "Strategy modal — decisions, …"    one-line subtitle (optional)
  *   keywords   ["strat", "decisions", "plan"]     extra match terms (optional)
+ *   priority   0                                  optional ranking boost
  *   run        () => void | Promise<void>         the action
  *   available  () => boolean                      gate (defaults to () => true)
  *
@@ -78,6 +79,7 @@
             keywords:  Array.isArray(cmd.keywords)
                 ? cmd.keywords.filter(k => typeof k === "string")
                 : [],
+            priority:  Number.isFinite(Number(cmd.priority)) ? Number(cmd.priority) : 0,
             run:       cmd.run,
             available: typeof cmd.available === "function" ? cmd.available : () => true
         }
@@ -92,7 +94,7 @@
         }
     }
 
-    function _scoreCommand(cmd, queryWords) {
+    function _legacyScoreCommand(cmd, queryWords) {
         if (!queryWords.length) return 1
         const haystack = (cmd.label + " " + cmd.hint + " " + cmd.keywords.join(" ")).toLowerCase()
         let score = 0
@@ -104,19 +106,36 @@
         return score
     }
 
+    // Use the shared subsequence scorer when available; fall back to the legacy
+    // substring scorer on cold paths where fuzzy.js isn't loaded yet (e.g.
+    // service-worker reuse). Either path returns a comparable scalar.
+    function _scoreCommand(cmd, query, currentScope) {
+        if (window.AESPaletteFuzzy && typeof window.AESPaletteFuzzy.score === "function") {
+            return window.AESPaletteFuzzy.score(query, null, {
+                label: cmd.label,
+                hint: cmd.hint,
+                keywords: cmd.keywords,
+                isCurrentScope: currentScope && cmd.scope !== "any" && cmd.scope === currentScope,
+                prefixBoost: true
+            })
+        }
+        const queryWords = query ? query.split(/\s+/).filter(Boolean) : []
+        return _legacyScoreCommand(cmd, queryWords)
+    }
+
     function list(opts) {
         opts = opts || {}
         const scope = opts.scope || "any"
+        const scopeBias = opts.scopeBias !== false   // default true: bias to current scope
         const query = (opts.query || "").trim().toLowerCase()
-        const queryWords = query ? query.split(/\s+/).filter(Boolean) : []
         const out = []
         for (const cmd of byId.values()) {
             if (cmd.scope !== "any" && scope !== "any" && cmd.scope !== scope) continue
             try { if (!cmd.available()) continue }
             catch (e) { console.warn("[AES command-registry] available() threw", cmd.id, e); continue }
-            const score = _scoreCommand(cmd, queryWords)
+            const score = _scoreCommand(cmd, query, scopeBias ? scope : null)
             if (!score) continue
-            out.push({cmd, score})
+            out.push({cmd, score: score + cmd.priority})
         }
         const recentRanks = new Map()
         const recentIds = recentCache.map(r => r.id)

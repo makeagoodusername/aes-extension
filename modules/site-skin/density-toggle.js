@@ -6,7 +6,9 @@
 // re-applies the data attribute so the CSS rules pick it up immediately.
 
 (function () {
-    if (window.AESSiteSkin && !window.AESSiteSkin.isEnabled()) return;
+    if (window.AESSiteSkin
+        && typeof window.AESSiteSkin.isEnabled === "function"
+        && !window.AESSiteSkin.isEnabled()) return;
 
     function isTypingTarget(el) {
         if (!el) return false;

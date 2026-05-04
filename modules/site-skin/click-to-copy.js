@@ -12,7 +12,9 @@
 // inside an AES-injected panel that has its own click semantics.
 
 (function () {
-    if (window.AESSiteSkin && !window.AESSiteSkin.isEnabled()) return;
+    if (window.AESSiteSkin
+        && typeof window.AESSiteSkin.isEnabled === "function"
+        && !window.AESSiteSkin.isEnabled()) return;
 
     // Currency: optional sign, optional currency prefix (AS$/$/€/£), and
     // then either thousand-grouped digits or 3+ ungrouped digits. "5" or

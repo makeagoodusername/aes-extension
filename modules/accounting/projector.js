@@ -170,3 +170,7 @@ class AccountingProjector {
     }
 
 }
+
+if (typeof window !== "undefined") {
+    window.AccountingProjector = AccountingProjector
+}

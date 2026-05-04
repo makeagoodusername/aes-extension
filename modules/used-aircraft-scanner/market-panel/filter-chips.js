@@ -102,14 +102,18 @@ class MarketPanelFilterChips {
             )
         )))
 
-        // Large-dimension multi-selects sourced from TypeFamilyMap so every
-        // option is offered even when no scan row uses it.
-        const allFamilies      = (typeof TypeFamilyMap !== "undefined")
-            ? TypeFamilyMap.allFamilies(overrides) : []
-        const allManufacturers = (typeof TypeFamilyMap !== "undefined")
-            ? TypeFamilyMap.allManufacturers() : []
-        const allTypes         = (typeof TypeFamilyMap !== "undefined")
-            ? TypeFamilyMap.allTypes(overrides) : []
+        // Only narrow to the live type dropdown when AS's family filter is
+        // "any"; otherwise the type dropdown is family-scoped and would hide
+        // the rest of the catalog. `marketDimensions` reads AS's <select>s once.
+        const dim = TypeFamilyMap.marketDimensions(overrides)
+        const allFamilies      = dim.familyOptions
+        const allManufacturers = TypeFamilyMap.allManufacturers()
+        const liveTypes        = dim.liveTypeSet
+        const selectedTypes    = state.types instanceof Set ? state.types : null
+        const allTypes         = liveTypes
+            ? dim.typeOptions.filter(e => liveTypes.has(e.type)
+                || (selectedTypes && selectedTypes.has(e.type)))
+            : dim.typeOptions
 
         // Per-option live counts. Each map is computed against state with
         // its own dimension cleared, so the count reads as "rows that match

@@ -1,0 +1,115 @@
+/* ===========================================================
+   skin-marketing.css — /app/enterprise/marketing/*
+
+   New page family in v0.6.9 — bootstrap.js classifies this path as
+   "marketing". The marketing module contributes budget tables and
+   spend-by-region charts; this skin brings them up to skin-info.css
+   parity (header rhythm, tabular-nums, density spacing).
+   =========================================================== */
+
+body.aes-skin[data-aes-page="marketing"] .table {
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---- Header rhythm -------------------------------------------------- */
+body.aes-skin[data-aes-page="marketing"] .table > thead > tr > th {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-oxide);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    background: var(--aes-bone-2);
+}
+
+/* ---- Zebra stripes -------------------------------------------------- */
+body.aes-skin[data-aes-page="marketing"] .table-striped > tbody > tr:nth-of-type(odd),
+body.aes-skin[data-aes-page="marketing"] .table > tbody > tr:nth-of-type(odd) {
+    background: var(--aes-bone-2);
+}
+body.aes-skin[data-aes-page="marketing"] .table > tbody > tr:hover {
+    background: var(--aes-rust-soft);
+}
+
+/* ---- Region / IATA codes: mono ------------------------------------- */
+body.aes-skin[data-aes-page="marketing"] .table .region-code,
+body.aes-skin[data-aes-page="marketing"] .table .iata,
+body.aes-skin[data-aes-page="marketing"] td.aes-mono {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+}
+
+/* ---- Right-align numeric (budget, spend, ROI, share) --------------- */
+body.aes-skin[data-aes-page="marketing"] .table .text-right,
+body.aes-skin[data-aes-page="marketing"] .table .text-end,
+body.aes-skin[data-aes-page="marketing"] .table td.numeric,
+body.aes-skin[data-aes-page="marketing"] .table td.budget,
+body.aes-skin[data-aes-page="marketing"] .table td.spend {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* ---- Budget input fields — mono right-aligned ---------------------- */
+body.aes-skin[data-aes-page="marketing"] input.form-control[type="number"],
+body.aes-skin[data-aes-page="marketing"] input.form-control[name*="budget" i],
+body.aes-skin[data-aes-page="marketing"] input.form-control[name*="spend" i] {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* ---- Density-aware row padding -------------------------------------- */
+body.aes-skin[data-aes-page="marketing"][data-aes-density="compact"] .table > tbody > tr > td,
+body.aes-skin[data-aes-page="marketing"][data-aes-density="compact"] .table > thead > tr > th {
+    padding-top: var(--aes-sp-1);
+    padding-bottom: var(--aes-sp-1);
+    font-size: var(--aes-fs-small);
+    line-height: var(--aes-lh-tight);
+}
+
+/* ---- Panel headings on marketing report cards ----------------------- */
+body.aes-skin[data-aes-page="marketing"] .panel > .panel-heading,
+body.aes-skin[data-aes-page="marketing"] legend {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+}
+
+/* ---- Submit button cluster — primary on rust ------------------------ */
+body.aes-skin[data-aes-page="marketing"] .btn-primary {
+    background: var(--aes-rust);
+    border-color: var(--aes-rust-deep);
+    color: var(--aes-rust-fg);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-weight: var(--aes-fw-display);
+}
+body.aes-skin[data-aes-page="marketing"] .btn-primary:hover {
+    background: var(--aes-rust-deep);
+}
+
+/* ---- Status indicators (active campaign, paused, ended) ------------- */
+body.aes-skin[data-aes-page="marketing"] .label {
+    display: inline-block;
+    padding: 2px var(--aes-sp-2);
+    border: var(--aes-bw-1) solid currentColor;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+    border-radius: var(--aes-radius);
+    background: transparent;
+}
+body.aes-skin[data-aes-page="marketing"] .label.label-success { color: var(--aes-moss); }
+body.aes-skin[data-aes-page="marketing"] .label.label-warning { color: var(--aes-amber); }
+body.aes-skin[data-aes-page="marketing"] .label.label-danger  { color: var(--aes-crimson); }

@@ -41,6 +41,9 @@
 
     const STYLE_ID  = "aes-command-palette-style"
     const HOST_ID   = "aes-command-palette"
+    const DEFAULT_SUGGESTED_IDS = new Set([
+        "strategy.fork.create"
+    ])
 
     const SCOPE = _resolveScope()
     _maybeRecordHub()
@@ -53,6 +56,7 @@
     let curResults = []
     let selectedIndex = 0
     let isOpen = false
+    let _emptyStateGroups = null   // {recentCount, suggestedCount} when input is empty
 
     /* ------------------------------------------------------------------- */
     /*  Scope detection                                                     */
@@ -141,7 +145,7 @@
         style.textContent = `
             #${HOST_ID}-backdrop {
                 position: fixed; inset: 0;
-                background: rgba(26, 22, 18, 0.55);
+                background: var(--aes-shadow-backdrop);
                 z-index: calc(var(--aes-z-modal) - 1);
                 opacity: 0; transition: opacity var(--aes-tr-medium);
             }
@@ -154,7 +158,7 @@
                 background: var(--aes-bone); color: var(--aes-oxide);
                 border: var(--aes-bw-2) solid var(--aes-oxide);
                 border-radius: var(--aes-radius);
-                box-shadow: 6px 6px 0 0 var(--aes-oxide);
+                box-shadow: var(--aes-shadow-modal);
                 font-family: var(--aes-font-display);
                 font-size: var(--aes-fs-body); line-height: var(--aes-lh-body);
                 z-index: var(--aes-z-modal);
@@ -308,6 +312,7 @@
     function _refresh() {
         const query = (inputEl && inputEl.value) || ""
         curResults = reg.list({scope: SCOPE, query})
+        _emptyStateGroups = null
         if (!query.trim()) {
             const recentIds = reg.recent().map(r => r.id)
             const recentSet = new Set(recentIds)
@@ -318,10 +323,45 @@
                 else others.push(c)
             }
             recentCmds.sort((a, b) => recentIds.indexOf(a.id) - recentIds.indexOf(b.id))
-            curResults = recentCmds.concat(others)
+            // Cap suggested at 8 so the empty-state palette feels curated, not
+            // overwhelming. Focus commands are still searchable, but they are
+            // noisy as defaults because every dashboard tile emits one.
+            const pinned = others.filter(c => DEFAULT_SUGGESTED_IDS.has(c.id))
+            const pinnedIds = new Set(pinned.map(c => c.id))
+            const primary = others.filter(c => !pinnedIds.has(c.id) && !/^tile\.focus\./.test(c.id))
+            const focusFallback = others.filter(c => !pinnedIds.has(c.id) && /^tile\.focus\./.test(c.id))
+            const suggested = pinned.concat(primary, focusFallback).slice(0, 8)
+            curResults = recentCmds.concat(suggested)
+            if (recentCmds.length || suggested.length) {
+                _emptyStateGroups = {
+                    recentCount: recentCmds.length,
+                    suggestedCount: suggested.length
+                }
+            }
         }
         selectedIndex = 0
         _renderList()
+    }
+
+    function _makeSectionHeader(text) {
+        const h = document.createElement("li")
+        h.className = "section-header"
+        h.setAttribute("role", "presentation")
+        h.textContent = text
+        h.style.cssText = [
+            "padding:var(--aes-sp-2) var(--aes-sp-4)",
+            "font-family:var(--aes-font-display)",
+            "font-size:var(--aes-fs-micro)",
+            "font-weight:var(--aes-fw-display)",
+            "letter-spacing:var(--aes-tracking-caps)",
+            "text-transform:uppercase",
+            "color:var(--aes-slate)",
+            "border-top:var(--aes-bw-1) solid var(--aes-paper-rule)",
+            "list-style:none",
+            "pointer-events:none",
+            "user-select:none"
+        ].join(";")
+        return h
     }
 
     function _renderList() {
@@ -339,7 +379,17 @@
         }
         const recentIds = new Set(reg.recent().map(r => r.id))
         const showingRecent = !((inputEl && inputEl.value) || "").trim()
+        const groups = _emptyStateGroups
+        function _maybeInjectHeader(i) {
+            if (!groups || !showingRecent) return
+            if (i === 0 && groups.recentCount > 0) {
+                listEl.append(_makeSectionHeader("Recent"))
+            } else if (i === groups.recentCount && groups.suggestedCount > 0) {
+                listEl.append(_makeSectionHeader("Suggested"))
+            }
+        }
         for (let i = 0; i < curResults.length; i++) {
+            _maybeInjectHeader(i)
             const cmd = curResults[i]
             const row = document.createElement("li")
             row.id = HOST_ID + "-row-" + i
@@ -386,7 +436,8 @@
 
     function _syncActiveDescendant() {
         if (!inputEl) return
-        const cur = listEl && listEl.children && listEl.children[selectedIndex]
+        const rows = listEl && listEl.querySelectorAll(".row")
+        const cur = rows && rows[selectedIndex]
         if (cur && cur.id) inputEl.setAttribute("aria-activedescendant", cur.id)
         else inputEl.removeAttribute("aria-activedescendant")
     }

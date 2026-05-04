@@ -27,6 +27,7 @@
         { id: "modules",       label: "Modules" },
         { id: "account",       label: "Account" },
         { id: "data",          label: "Data" },
+        { id: "coverage",      label: "Coverage" },
         { id: "about",         label: "About" }
     ];
 
@@ -44,7 +45,7 @@
         style.id = STYLE_ID;
         style.textContent =
             "#" + HOST_ID + "-backdrop {" +
-                "position:fixed;inset:0;background:rgba(26,22,18,0.55);" +
+                "position:fixed;inset:0;background:var(--aes-shadow-backdrop);" +
                 "z-index:calc(var(--aes-z-modal) - 1);" +
                 "opacity:0;transition:opacity var(--aes-tr-medium);" +
             "}" +
@@ -54,7 +55,7 @@
                 "width:min(960px, calc(100vw - 32px));max-height:84vh;" +
                 "background:var(--aes-bone);color:var(--aes-oxide);" +
                 "border:var(--aes-bw-2) solid var(--aes-oxide);" +
-                "box-shadow:6px 6px 0 var(--aes-oxide);" +
+                "box-shadow:var(--aes-shadow-modal);" +
                 "z-index:var(--aes-z-modal);display:flex;flex-direction:column;overflow:hidden;" +
                 "font-family:var(--aes-font-display);font-size:var(--aes-fs-body);" +
             "}" +
@@ -108,6 +109,7 @@
         modal = document.createElement("div");
         modal.id = HOST_ID;
         modal.setAttribute("role", "dialog");
+        modal.setAttribute("aria-modal", "true");
         modal.setAttribute("aria-label", "AES — settings");
 
         const head = document.createElement("header");
@@ -129,17 +131,26 @@
 
         railEl = document.createElement("nav");
         railEl.className = "us-rail";
+        railEl.setAttribute("role", "tablist");
+        railEl.setAttribute("aria-label", "Settings sections");
         for (const t of TABS) {
             const b = document.createElement("button");
             b.type = "button";
             b.dataset.tabId = t.id;
             b.textContent = t.label;
+            b.id = HOST_ID + "-tab-" + t.id;
+            b.setAttribute("role", "tab");
+            b.setAttribute("aria-selected", "false");
+            b.setAttribute("aria-controls", HOST_ID + "-canvas");
+            b.tabIndex = -1;
             b.addEventListener("click", function () { setActiveTab(t.id); });
             railEl.appendChild(b);
         }
 
         canvasEl = document.createElement("div");
         canvasEl.className = "us-canvas";
+        canvasEl.id = HOST_ID + "-canvas";
+        canvasEl.setAttribute("role", "tabpanel");
 
         modal.append(head, railEl, canvasEl);
     }
@@ -193,8 +204,12 @@
     function renderActiveTab() {
         if (!railEl || !canvasEl) return;
         Array.from(railEl.children).forEach(function (b) {
-            b.classList.toggle("active", b.dataset.tabId === activeTabId);
+            const isActive = b.dataset.tabId === activeTabId;
+            b.classList.toggle("active", isActive);
+            b.setAttribute("aria-selected", isActive ? "true" : "false");
+            b.tabIndex = isActive ? 0 : -1;
         });
+        canvasEl.setAttribute("aria-labelledby", HOST_ID + "-tab-" + activeTabId);
         canvasEl.textContent = "";
         const renderers = window.AesUnifiedSettingsTabs || {};
         const r = renderers[activeTabId];

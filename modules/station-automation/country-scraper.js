@@ -3,8 +3,8 @@
  *
  * Populates two things for the dashboard + worker:
  *   1. The list of countries (id / code / name) from /action/info/countries.
- *   2. The list of airports in a selected country, with pax and cargo demand
- *      scored 0–10 from AS's bar-graph cells. Sources:
+ *   2. The list of airports in a selected country, with size/capacity plus
+ *      pax and cargo demand scored 0–10 from AS's bar-graph cells. Sources:
  *        - /action/info/country?id=<id> (airports listed directly)
  *        - /action/info/county?id=<id>  (region listing inside a larger
  *          country like the USA — AS spells the URL "county")
@@ -85,13 +85,41 @@ class CountryScraper {
         const whitelist = entry.airportWhitelist && entry.airportWhitelist.length
             ? new Set(entry.airportWhitelist.map(s => String(s).toUpperCase()))
             : null
+        const ranges = CountryScraper._normaliseStationFilter(entry)
         return airports.filter(a => {
             const iata = a.iata.toUpperCase()
             if (exceptions.has(iata)) return false
             if (whitelist) return whitelist.has(iata)
-            return (a.paxScore || 0) >= (entry.paxThreshold || 0)
-                && (a.cargoScore || 0) >= (entry.cargoThreshold || 0)
+            return CountryScraper._scoreInRange(a.paxScore, ranges.paxMin, ranges.paxMax)
+                && CountryScraper._scoreInRange(a.cargoScore, ranges.cargoMin, ranges.cargoMax)
+                && CountryScraper._scoreInRange(a.sizeScore, ranges.sizeMin, ranges.sizeMax)
         })
+    }
+
+    static _normaliseStationFilter(entry) {
+        const legacyPax = CountryScraper._scoreOrDefault(entry && entry.paxThreshold, 0)
+        const legacyCargo = CountryScraper._scoreOrDefault(entry && entry.cargoThreshold, 0)
+        return {
+            paxMin:   CountryScraper._scoreOrDefault(entry && entry.paxMin, legacyPax),
+            paxMax:   CountryScraper._scoreOrDefault(entry && entry.paxMax, 10),
+            cargoMin: CountryScraper._scoreOrDefault(entry && entry.cargoMin, legacyCargo),
+            cargoMax: CountryScraper._scoreOrDefault(entry && entry.cargoMax, 10),
+            sizeMin:  CountryScraper._scoreOrDefault(entry && entry.sizeMin, 0),
+            sizeMax:  CountryScraper._scoreOrDefault(entry && entry.sizeMax, 10),
+        }
+    }
+
+    static _scoreOrDefault(value, fallback) {
+        const n = Number(value)
+        return Number.isFinite(n) ? clampScore(Math.round(n)) : fallback
+    }
+
+    static _scoreInRange(value, min, max) {
+        const n = Number(value)
+        if (!Number.isFinite(n)) return min <= 0 && max >= 10
+        const lo = Math.min(min, max)
+        const hi = Math.max(min, max)
+        return n >= lo && n <= hi
     }
 
     /**
@@ -213,6 +241,7 @@ class CountryScraper {
             const airportId = airportIdMatch ? (airportIdMatch[1] || airportIdMatch[2]) : null
             airports.push({
                 iata, name, airportId,
+                sizeScore: CountryScraper._readDemandBars(cells[idx.size]),
                 paxScore: CountryScraper._readDemandBars(cells[idx.pax]),
                 cargoScore: CountryScraper._readDemandBars(cells[idx.cargo]),
             })

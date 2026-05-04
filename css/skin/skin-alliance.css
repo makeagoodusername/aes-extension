@@ -1,0 +1,112 @@
+/* ===========================================================
+   skin-alliance.css — /app/alliance/* (alliance overview, members,
+   activity, hubs, kinship matrices).
+
+   New page family in v0.6.9 — bootstrap.js classifies this path as
+   "alliance". Brings tables to the same depth as skin-info.css with
+   member/role rhythm and alliance-specific status pills.
+
+   Token-only (no literal hex). Density-aware row padding mirrors the
+   other skin-*.css files.
+   =========================================================== */
+
+body.aes-skin[data-aes-page="alliance"] .table {
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---- Header rhythm -------------------------------------------------- */
+body.aes-skin[data-aes-page="alliance"] .table > thead > tr > th {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-oxide);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    background: var(--aes-bone-2);
+}
+
+/* ---- Zebra stripes -------------------------------------------------- */
+body.aes-skin[data-aes-page="alliance"] .table-striped > tbody > tr:nth-of-type(odd),
+body.aes-skin[data-aes-page="alliance"] .table > tbody > tr:nth-of-type(odd) {
+    background: var(--aes-bone-2);
+}
+body.aes-skin[data-aes-page="alliance"] .table > tbody > tr:hover {
+    background: var(--aes-rust-soft);
+}
+
+/* ---- Member airline name + airline code: mono ---------------------- */
+body.aes-skin[data-aes-page="alliance"] .table a[href*="/info/enterprises/"],
+body.aes-skin[data-aes-page="alliance"] td.airline-code,
+body.aes-skin[data-aes-page="alliance"] td.aes-mono {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+}
+
+/* ---- Right-align numeric (members, hubs, fleet count, contributions) */
+body.aes-skin[data-aes-page="alliance"] .table .text-right,
+body.aes-skin[data-aes-page="alliance"] .table .text-end,
+body.aes-skin[data-aes-page="alliance"] .table td.numeric {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* ---- Alliance role badges (Leader / Senior / Member / Probation) --- */
+body.aes-skin[data-aes-page="alliance"] .table .label,
+body.aes-skin[data-aes-page="alliance"] .alliance-role,
+body.aes-skin[data-aes-page="alliance"] .alliance-status {
+    display: inline-block;
+    padding: 2px var(--aes-sp-2);
+    border: var(--aes-bw-1) solid currentColor;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+    border-radius: var(--aes-radius);
+    background: transparent;
+}
+body.aes-skin[data-aes-page="alliance"] .label.label-success,
+body.aes-skin[data-aes-page="alliance"] .alliance-role-leader { color: var(--aes-rust); }
+body.aes-skin[data-aes-page="alliance"] .label.label-info,
+body.aes-skin[data-aes-page="alliance"] .alliance-role-senior { color: var(--aes-cobalt); }
+body.aes-skin[data-aes-page="alliance"] .label.label-warning,
+body.aes-skin[data-aes-page="alliance"] .alliance-status-probation { color: var(--aes-amber); }
+body.aes-skin[data-aes-page="alliance"] .label.label-danger { color: var(--aes-crimson); }
+
+/* ---- Density-aware row padding -------------------------------------- */
+body.aes-skin[data-aes-page="alliance"][data-aes-density="compact"] .table > tbody > tr > td,
+body.aes-skin[data-aes-page="alliance"][data-aes-density="compact"] .table > thead > tr > th {
+    padding-top: var(--aes-sp-1);
+    padding-bottom: var(--aes-sp-1);
+    font-size: var(--aes-fs-small);
+    line-height: var(--aes-lh-tight);
+}
+
+/* ---- Panel headings on the alliance overview cards ------------------ */
+body.aes-skin[data-aes-page="alliance"] .panel > .panel-heading {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+}
+
+/* ---- Tab strip on alliance pages (members / activity / settings) --- */
+body.aes-skin[data-aes-page="alliance"] .nav-tabs > li > a {
+    border-radius: var(--aes-radius);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-display);
+}
+body.aes-skin[data-aes-page="alliance"] .nav-tabs > li.active > a {
+    border-color: var(--aes-oxide) var(--aes-oxide) transparent;
+    color: var(--aes-oxide);
+    background: var(--aes-bone);
+}

@@ -67,13 +67,9 @@ class AesRouteLauncherController {
         // base and launchTo posts an impossible leg.
         const prev = this.active || {}
         const sameAircraft = String(prev.aircraftId || "") === String(payload.aircraftId)
-        const next = sameAircraft ? Object.assign({}, prev, payload) : Object.assign({}, payload)
-        if (!next.hub && window.AesAfpActiveDraftStore) {
-            try {
-                const draft = await window.AesAfpActiveDraftStore.load(this.server, next.aircraftId)
-                if (draft && draft.hub) next.hub = draft.hub
-            } catch (_) { /* fall through */ }
-        }
+        let next = sameAircraft ? Object.assign({}, prev, payload) : Object.assign({}, payload)
+        if (!next.hub) next.hub = await this._resolveHubForAircraft(next.aircraftId)
+        next = await this._hydrateActiveDetails(next)
         this.active = next
         await this._persistActive(next)
         this._fireActive(next)
@@ -94,13 +90,24 @@ class AesRouteLauncherController {
         }
 
         const defaults = await window.AesRouteLauncherDefaults.load()
-        const flightMin = (payload && Number.isFinite(payload.flightMin)) ? payload.flightMin : 60
+        const hasFlightMin = !!(payload && Number.isFinite(payload.flightMin))
+        const flightMin = hasFlightMin ? payload.flightMin : null
         const depTime = await window.AesRouteLauncherSlotFinder.findSlot(this.server, this.active.aircraftId, {
             strategy:             defaults.slotStrategy,
             defaultDepartureTime: defaults.defaultDepartureTime,
             turnaroundMin:        defaults.defaultTurnaroundMin,
-            flightMin
+            flightMin,
+            originIata:           this.active.hub,
+            requireConflictFree:  defaults.slotStrategy === "earliest-gap",
+            requireKnownDuration: defaults.slotStrategy === "earliest-gap"
         })
+        if (!depTime) {
+            return await this._recordPreflightFailure({
+                dest,
+                error: "No conflict-free departure slot found from " + this.active.hub
+                    + ". Open the aircraft Flight Plan page and choose a time manually."
+            })
+        }
 
         return await this.dispatcher.launch({
             aircraftId:   this.active.aircraftId,
@@ -111,6 +118,29 @@ class AesRouteLauncherController {
             pricePct:     defaults.defaultPricePct,
             service:      defaults.defaultService
         })
+    }
+
+    async _recordPreflightFailure(opts) {
+        const o = opts || {}
+        const error = String(o.error || "Route Launcher preflight failed.")
+        if (window.AesRouteLauncherLog && this.server && this.active && this.active.aircraftId) {
+            const record = await window.AesRouteLauncherLog.append({
+                server:       this.server,
+                airline:      this.airlineCode,
+                aircraftId:   String(this.active.aircraftId),
+                registration: this.active.registration || null,
+                hub:          this.active.hub || null,
+                dest:         o.dest || null,
+                depTime:      null,
+                pricePct:     null,
+                service:      null,
+                status:       "failed",
+                error
+            })
+            this._fireStatus({phase: "failed", record})
+            return {ok: false, logId: record && record.id, error}
+        }
+        return {ok: false, error}
     }
 
     async retry(record) {
@@ -146,12 +176,61 @@ class AesRouteLauncherController {
         return AesRouteLauncherController.ACTIVE_KEY_PREFIX + this.server
     }
 
+    async _resolveHubForAircraft(aircraftId) {
+        if (!aircraftId) return null
+        const asIata = v => /^[A-Z]{3}$/.test(String(v || "").toUpperCase())
+            ? String(v).toUpperCase() : null
+
+        if (window.AesAfpActiveDraftStore) {
+            try {
+                const draft = await window.AesAfpActiveDraftStore.load(this.server, aircraftId)
+                const hub = asIata(draft && draft.hub)
+                if (hub) return hub
+            } catch (_) { /* fall through */ }
+        }
+
+        if (window.AesAfpStateStore) {
+            try {
+                const state = await window.AesAfpStateStore.load(this.server, aircraftId)
+                const hub = asIata(state && state.currentLocationIata)
+                if (hub) return hub
+            } catch (_) { /* fall through */ }
+        }
+
+        if (window.AesFleetRoster) {
+            try {
+                const fleet = await window.AesFleetRoster.load(this.server, this.airlineCode || null)
+                const aircraft = window.AesFleetRoster.findByAircraftId(fleet, aircraftId)
+                const hub = asIata(aircraft && aircraft.location)
+                if (hub) return hub
+            } catch (_) { /* fall through */ }
+        }
+        return null
+    }
+
+    async _hydrateActiveDetails(active) {
+        if (!active || !active.aircraftId || !window.AesFleetRoster) return active
+        if (active.registration && active.equipment && active.typeId) return active
+        try {
+            const fleet = await window.AesFleetRoster.load(this.server, this.airlineCode || null)
+            const aircraft = window.AesFleetRoster.findByAircraftId(fleet, active.aircraftId)
+            if (!aircraft) return active
+            const next = Object.assign({}, active)
+            if (!next.registration && aircraft.registration) next.registration = aircraft.registration
+            if (!next.equipment && aircraft.equipment) next.equipment = aircraft.equipment
+            if (!next.typeId && aircraft.typeId) next.typeId = aircraft.typeId
+            return next
+        } catch (_) {
+            return active
+        }
+    }
+
     async _loadPersistedActive() {
         if (!this.server) return null
         const key = this._activeKey()
         const out = await chrome.storage.local.get([key])
         const rec = out[key]
-        return (rec && rec.aircraftId) ? rec : null
+        return (rec && rec.aircraftId) ? this._hydrateActiveDetails(rec) : null
     }
 
     async _persistActive(active) {

@@ -1,6 +1,12 @@
 "use strict";
 //MAIN
 var settings;
+
+function saveSettingsArea(area, done){
+  Promise.resolve(window.AesSettings.saveArea(area, settings[area]))
+    .then(function(){ if(typeof done === 'function') done(); });
+}
+
 $(function(){
   chrome.storage.local.get(['settings'], function(result) {
     settings = result.settings;
@@ -69,7 +75,7 @@ function displayFlightInfoSettings(){
     } else {
       settings.flightInfo.autoClose = 0;
     }
-    chrome.storage.local.set({settings: settings}, function() {});
+    saveSettingsArea('flightInfo');
   });
   let span = $('<span></span>').text('Automatically close flight information page after extracting financial information.');
   let label =$('<label></label>').append(input,span);
@@ -153,7 +159,7 @@ function invPricingAutoPricingHandle(){
     } else {
       settings.invPricing.autoAnalysisSave = 0;
     }
-    chrome.storage.local.set({settings: settings}, function() {});
+    saveSettingsArea('invPricing');
   });
   $("#aes-input-automateInvPricing").click(function(){
     if(this.checked) {
@@ -161,7 +167,7 @@ function invPricingAutoPricingHandle(){
     } else {
       settings.invPricing.autoPriceUpdate = 0;
     }
-    chrome.storage.local.set({settings: settings}, function() {});
+    saveSettingsArea('invPricing');
   });
   $("#aes-input-inventory-automateCloseTab").click(function(){
     if(this.checked) {
@@ -169,7 +175,7 @@ function invPricingAutoPricingHandle(){
     } else {
       settings.invPricing.autoClose = 0;
     }
-    chrome.storage.local.set({settings: settings}, function() {});
+    saveSettingsArea('invPricing');
   });
 
 
@@ -283,7 +289,7 @@ function invPricingRecStepHandle(){
     //Validate Steps
     if(validInvPriSteps(newCmpSettings)){
       settings.invPricing.recommendation[cmp] = newCmpSettings;
-      chrome.storage.local.set({settings: settings}, function() {
+      saveSettingsArea('invPricing', function() {
             $("#aes-span-invPricing").removeClass().addClass("good").text('Inventory pricing settings for '+cmp+' saved!')
         });
     }

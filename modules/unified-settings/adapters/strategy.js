@@ -127,10 +127,20 @@
         const a = H.actions();
         a.appendChild(H.actionBtn("Open Strategy panel →", function () {
             H.closeModalThen(function () {
-                if (window.AesStrategyTuningPanel && typeof window.AesStrategyTuningPanel.open === "function") {
-                    window.AesStrategyTuningPanel.open();
-                } else if (window.AesFleetCommandPanel && typeof window.AesFleetCommandPanel.open === "function") {
-                    window.AesFleetCommandPanel.open();
+                if (window.AesStrategyPanel && typeof window.AesStrategyPanel.open === "function") {
+                    const ret = window.AesStrategyPanel.open({section: "settings"});
+                    if (ret && typeof ret.catch === "function") {
+                        ret.catch(function (e) {
+                            console && console.warn && console.warn("[unified-settings strategy adapter] panel open", e);
+                        });
+                    }
+                } else if (window.CentralHubBus && typeof window.CentralHubBus.emit === "function") {
+                    window.CentralHubBus.emit("open-tile", {
+                        tileId: "strategy",
+                        expand: true,
+                        scrollIntoView: true,
+                        source: "unified-settings:strategy"
+                    });
                 }
             });
         }, { primary: true }));

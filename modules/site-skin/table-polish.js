@@ -14,7 +14,12 @@
 // their own filtering UI), and tables inside hidden tab panes.
 
 (function () {
-    if (window.AESSiteSkin && !window.AESSiteSkin.isEnabled()) return;
+    if (window.AESSiteSkin
+        && typeof window.AESSiteSkin.isEnabled === "function"
+        && !window.AESSiteSkin.isEnabled()) return;
+    if (window.AESSiteSkin
+        && typeof window.AESSiteSkin.getPageKind === "function"
+        && window.AESSiteSkin.getPageKind() === "scheduling") return;
 
     const MIN_ROWS_STICKY = 8;
     const MIN_ROWS_FILTER = 12;
@@ -33,6 +38,48 @@
         let total = 0;
         for (const tbody of table.tBodies) total += tbody.rows.length;
         return total;
+    }
+
+    function bindFilter(table, input, count) {
+        if (!table || !input || !count || input.dataset.aesSkinFilterBound === "1") return;
+        input.dataset.aesSkinFilterBound = "1";
+
+        let scheduled = false;
+        let lastQuery = input.value.trim();
+
+        function applyFilter() {
+            scheduled = false;
+            const q = lastQuery.toLowerCase();
+            let visible = 0;
+            for (const tbody of table.tBodies) {
+                for (const row of tbody.rows) {
+                    const match = !q || row.textContent.toLowerCase().includes(q);
+                    row.style.display = match ? "" : "none";
+                    if (match) visible++;
+                }
+            }
+            count.textContent = q
+                ? `${visible}/${rowCount(table)} ROWS`
+                : `${rowCount(table)} ROWS`;
+        }
+
+        input.addEventListener("input", function () {
+            lastQuery = input.value.trim();
+            if (!scheduled) {
+                scheduled = true;
+                setTimeout(applyFilter, 0);
+            }
+        });
+    }
+
+    function ensureFilterBinding(table) {
+        const wrap = table && table.previousElementSibling;
+        if (!wrap || !wrap.classList || !wrap.classList.contains("aes-skin-filter-wrap")) return;
+        bindFilter(
+            table,
+            wrap.querySelector('input[data-aes-skin-filter="1"]'),
+            wrap.querySelector(".aes-skin-filter-wrap__count")
+        );
     }
 
     function injectFilter(table) {
@@ -55,35 +102,14 @@
         wrap.append(label, input, count);
         table.parentNode.insertBefore(wrap, table);
 
-        let scheduled = false;
-        let lastQuery = "";
-
-        function applyFilter() {
-            scheduled = false;
-            const q = lastQuery.toLowerCase();
-            let visible = 0;
-            for (const tbody of table.tBodies) {
-                for (const row of tbody.rows) {
-                    const match = !q || row.textContent.toLowerCase().includes(q);
-                    row.style.display = match ? "" : "none";
-                    if (match) visible++;
-                }
-            }
-            count.textContent = q
-                ? `${visible}/${rowCount(table)} ROWS`
-                : `${rowCount(table)} ROWS`;
-        }
-
-        input.addEventListener("input", function () {
-            lastQuery = input.value.trim();
-            if (!scheduled) {
-                scheduled = true;
-                requestAnimationFrame(applyFilter);
-            }
-        });
+        bindFilter(table, input, count);
     }
 
     function polishTable(table) {
+        if (table && table.dataset && table.dataset.aesSkinPolished === "1") {
+            ensureFilterBinding(table);
+            return;
+        }
         if (isSkippableTable(table)) return;
         const rows = rowCount(table);
         if (rows < MIN_ROWS_STICKY) return;

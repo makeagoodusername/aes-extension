@@ -49,11 +49,11 @@
             if (registered.has(spec.id)) continue;
 
             const tileId = spec.id;
-            const label = "Open " + tileLabel(tileId);
-            const unreg = reg.register({
+            const labelStem = tileLabel(tileId);
+            const openUnreg = reg.register({
                 id: "tile.open." + tileId,
                 scope: "dashboard",
-                label: label,
+                label: "Open " + labelStem + " tile",
                 hint: "Activates section " + (spec.section || "—") + " and expands the tile.",
                 keywords: [tileId, spec.section || "", "open", "tile"],
                 run: function () {
@@ -65,7 +65,22 @@
                     });
                 }
             });
-            registered.set(tileId, unreg);
+            const focusUnreg = reg.register({
+                id: "tile.focus." + tileId,
+                scope: "dashboard",
+                label: "Focus " + labelStem + " tile",
+                hint: "Scrolls the tile into view without expanding it.",
+                keywords: [tileId, spec.section || "", "focus", "scroll", "tile"],
+                run: function () {
+                    bus.emit("open-tile", {
+                        tileId: tileId,
+                        expand: false,
+                        scrollIntoView: true,
+                        source: "command-palette"
+                    });
+                }
+            });
+            registered.set(tileId, function () { try { openUnreg(); } catch (_) {} try { focusUnreg(); } catch (_) {} });
         }
 
         // Drop registrations for tiles no longer present
@@ -79,20 +94,17 @@
 
     /* Initial sync: run after a short tick so any post-load tile
        registrations have a chance to land. Future tile registrations
-       trigger another sync via the registry subscription below. */
+       trigger another sync via the tile registry subscription below. */
     setTimeout(syncCommands, 0);
 
-    /* The tile registry has no subscribe method, so we re-run on
-       palette open via the registry subscription instead. */
-    if (typeof reg.subscribe === "function") {
-        reg.subscribe(function (evt) {
-            if (evt && evt.kind === "registered") return;
-            // Re-sync only on opens — cheap walk over current tiles.
+    if (typeof tileReg.subscribe === "function") {
+        tileReg.subscribe(function () {
+            syncCommands();
         });
     }
 
-    /* Re-derive when CentralHubBus emits a tile-mounted hint, if any
-       module ever publishes one. Harmless if never fired. */
+    /* Back-compat for older tile registry builds, and harmless when the
+       registry subscription above is available. */
     if (typeof bus.on === "function") {
         bus.on("tile-registered", syncCommands);
     }

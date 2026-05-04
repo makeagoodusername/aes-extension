@@ -2,12 +2,139 @@
 //MAIN
 //Global vars
 var settings, airline, server, todayDate;
+
+function normaliseDashboardSettings(raw) {
+    let next = (raw && typeof raw === "object" && !Array.isArray(raw)) ? raw : {};
+    if (!next.general || typeof next.general !== "object" || Array.isArray(next.general)) {
+        next.general = {};
+    }
+    if (typeof next.general.defaultDashboard !== "string" || !next.general.defaultDashboard) {
+        next.general.defaultDashboard = "general";
+    }
+    return next;
+}
+
+function saveDashboardArea(area, done) {
+    settings = normaliseDashboardSettings(settings);
+    let block = (settings[area] && typeof settings[area] === "object" && !Array.isArray(settings[area]))
+        ? settings[area]
+        : {};
+    settings[area] = block;
+    let savePromise;
+    if (window.AesSettings && typeof window.AesSettings.saveArea === "function") {
+        savePromise = window.AesSettings.saveArea(area, block);
+    } else {
+        let local = getChromeLocalStorage();
+        if (local && typeof local.set === "function") {
+            savePromise = new Promise(function(resolve, reject) {
+                local.set({settings: settings}, function() {
+                    let err = chrome.runtime && chrome.runtime.lastError;
+                    if (err) reject(err);
+                    else resolve(block);
+                });
+            });
+        } else {
+            savePromise = Promise.resolve(block);
+        }
+    }
+    return Promise.resolve(savePromise)
+        .then(function(result) {
+            if (typeof done === "function") done(result);
+            return result;
+        })
+        .catch(function(err) {
+            console.warn("[AES dashboard] settings save failed for " + area, err);
+            if (typeof done === "function") done(null);
+            return null;
+        });
+}
+
+function getChromeLocalStorage() {
+    return (typeof chrome !== "undefined"
+        && chrome.storage
+        && chrome.storage.local
+        && typeof chrome.storage.local.get === "function")
+        ? chrome.storage.local
+        : null;
+}
+
+function loadDashboardSettings(done) {
+    let local = getChromeLocalStorage();
+    let settled = false;
+    let finish = function(result) {
+        if (settled) return;
+        settled = true;
+        done(result || {});
+    };
+    if (!local) {
+        finish({});
+        return;
+    }
+    try {
+        let maybePromise = local.get(["settings"], function(result) {
+            finish(result);
+        });
+        if (maybePromise && typeof maybePromise.then === "function") {
+            maybePromise.then(function(result) {
+                finish(result);
+            }).catch(function(err) {
+                console.warn("[AES dashboard] settings load failed; using defaults", err);
+                finish({});
+            });
+        }
+    } catch (err) {
+        console.warn("[AES dashboard] settings load failed; using defaults", err);
+        finish({});
+    }
+}
+
+function fallbackDashboardDate() {
+    let iso = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    return {date: iso, time: ""};
+}
+
+function resolveDashboardIdentity() {
+    let resolvedAirline = {name: "", code: ""};
+    let resolvedServer = "";
+    try {
+        resolvedAirline = AES.getAirlineCode() || resolvedAirline;
+    } catch (err) {
+        console.warn("[AES dashboard] getAirlineCode failed; using fallback identity", err);
+    }
+    if (!resolvedAirline.code && !resolvedAirline.name) {
+        try {
+            let identity = AES.getAirlineIdentity && AES.getAirlineIdentity();
+            if (identity) resolvedAirline = {name: identity, code: identity};
+        } catch (_) { /* noop */ }
+    }
+    try {
+        resolvedServer = AES.getServerName() || "";
+    } catch (err) {
+        console.warn("[AES dashboard] getServerName failed; using empty server", err);
+    }
+    return {airline: resolvedAirline, server: resolvedServer};
+}
+
 $(function() {
-    todayDate = AES.getServerDate();
-    airline = AES.getAirlineCode();
-    server = AES.getServerName();
-    chrome.storage.local.get(['settings'], function(result) {
-        settings = result.settings;
+    if (!document.querySelector("#enterprise-dashboard")) {
+        console.warn("[AES dashboard] #enterprise-dashboard missing; skipping legacy dashboard mount");
+        return;
+    }
+    try {
+        todayDate = AES.getServerDate();
+    } catch (err) {
+        todayDate = fallbackDashboardDate();
+        console.warn("[AES dashboard] getServerDate failed; using current-date fallback", err);
+    }
+    if (!todayDate || !todayDate.date) {
+        todayDate = fallbackDashboardDate();
+    }
+    let identity = resolveDashboardIdentity();
+    airline = identity.airline;
+    server = identity.server;
+    saveCompanyReputationFromDashboard();
+    loadDashboardSettings(function(result) {
+        settings = normaliseDashboardSettings(result && result.settings);
 
         displayDashboard();
         dashboardHandle();
@@ -16,6 +143,18 @@ $(function() {
         });
     });
 });
+
+function saveCompanyReputationFromDashboard() {
+    if (!window.AesCompanyReputationStore) return;
+    window.AesCompanyReputationStore.saveFromDocument(document, {
+        source:      "enterprise-dashboard",
+        server:      server,
+        displayName: airline && airline.name,
+        airlineCode: airline && airline.code
+    }).catch(function(err) {
+        console.warn("[AES dashboard] company reputation save failed", err);
+    });
+}
 
 function displayDashboard() {
     let mainDiv = $("#enterprise-dashboard");
@@ -29,13 +168,13 @@ function displayDashboard() {
         </label>
         <select class="form-control" id="aes-select-dashboard-main">
           <option value="general" selected="selected">General</option>
-          <option value="routeManagement">Route Management</option>
+          <option value="routeManagement">Route Management (current schedule)</option>
           <option value="competitorMonitoring">Competitor Monitoring</option>
           <option value="aircraftProfitability">Aircraft Profitability</option>
           <option value="stationAutomation">Station Automation</option>
           <option value="usedAircraftScanner">Used Aircraft Scanner</option>
-          <option value="scheduleManagement">Schedule Management</option>
-          <option value="flightsFrom">Flights From (real-world demand)</option>
+          <option value="scheduleManagement">Schedule Builder</option>
+          <option value="flightsFrom">Flights From (demand reference)</option>
           <option value="other">None</option>
         </select>
       </div>
@@ -45,184 +184,733 @@ function displayDashboard() {
     `
     );
     $("#aes-select-dashboard-main").val(settings.general.defaultDashboard);
+    if (!$("#aes-select-dashboard-main").val()) {
+        $("#aes-select-dashboard-main").val("general");
+        settings.general.defaultDashboard = "general";
+    }
+
+    // F-9228-100: external affordances (e.g. station-automation status-strip
+    // mounted in another panel, or a hub Open button) can request a specific
+    // pane via `#aes-section=<value>` on the URL. Override the user's
+    // `defaultDashboard` setting in that case so the click lands on the
+    // promised pane instead of whatever they last picked.
+    var hash = (window.location.hash || "").replace(/^#/, "");
+    var match = /(?:^|&)aes-section=([^&]+)/.exec(hash);
+    if (match && match[1]) {
+        var requested = decodeURIComponent(match[1]);
+        if ($("#aes-select-dashboard-main option[value='" + requested + "']").length) {
+            $("#aes-select-dashboard-main").val(requested);
+        }
+    }
 }
 
 function dashboardHandle() {
-    let value = $("#aes-select-dashboard-main").val();
+    settings = normaliseDashboardSettings(settings);
+    let value = $("#aes-select-dashboard-main").val() || "general";
+    if (!$("#aes-select-dashboard-main option[value='" + value + "']").length) {
+        value = "general";
+        $("#aes-select-dashboard-main").val(value);
+    }
     settings.general.defaultDashboard = value;
-    chrome.storage.local.set({ settings: settings }, function() {});
+    saveDashboardArea('general');
+    let handler;
     switch (value) {
         case 'general':
-            displayGeneral();
+            handler = displayGeneral;
             break;
         case 'routeManagement':
-            displayRouteManagement();
+            handler = displayRouteManagement;
             break;
         case 'competitorMonitoring':
-            displayCompetitorMonitoring();
+            handler = displayCompetitorMonitoring;
             break;
         case 'hr':
-            displayHr();
+            handler = (typeof displayHr === "function") ? displayHr : displayDefault;
             break;
         case 'aircraftProfitability':
-            displayAircraftProfitability();
+            handler = displayAircraftProfitability;
             break;
         case 'stationAutomation':
-            displayStationAutomation();
+            handler = displayStationAutomation;
             break;
         case 'usedAircraftScanner':
-            displayUsedAircraftScanner();
+            handler = displayUsedAircraftScanner;
             break;
         case 'scheduleManagement':
-            displayScheduleManagement();
+            handler = displayScheduleManagement;
             break;
         case 'flightsFrom':
-            displayFlightsFrom();
+            handler = displayFlightsFrom;
             break;
         default:
-            displayDefault();
+            handler = displayDefault;
     }
+    runDashboardSection(value, handler);
+}
+
+function runDashboardSection(value, handler) {
+    try {
+        let result = typeof handler === "function" ? handler() : null;
+        if (result && typeof result.catch === "function") {
+            result.catch(function(err) {
+                displayDashboardError(value, err);
+            });
+        }
+    } catch (err) {
+        displayDashboardError(value, err);
+    }
+}
+
+function displayDashboardError(value, err) {
+    console.warn("[AES dashboard] section failed:", value, err);
+    let mainDiv = $("#aes-div-dashboard");
+    if (!mainDiv.length) return;
+    mainDiv.empty();
+    let title = $('<h3></h3>').text('Dashboard section unavailable');
+    let panel = $('<div class="as-panel"></div>');
+    panel.append($('<p></p>').text('AES could not load the "' + (value || 'selected') + '" dashboard section.'));
+    if (err) {
+        panel.append($('<pre style="white-space:pre-wrap;"></pre>').text((err && err.message) || String(err)));
+    }
+    panel.append($('<button type="button" class="btn btn-default"></button>')
+        .text('Show General')
+        .click(function() {
+            $("#aes-select-dashboard-main").val("general");
+            dashboardHandle();
+        }));
+    mainDiv.append(title, panel);
 }
 //Route Management Dashbord
 function displayRouteManagement() {
     //Check ROute Managemetn seetings
-    if (!settings.routeManagement) {
-        setDefaultRouteManagementSettings();
-    }
+    ensureRouteManagementSettings();
 
     let mainDiv = $("#aes-div-dashboard");
     //Build layout
     mainDiv.empty();
-    let title = $('<h3></h3>').text('Route Management');
+    let title = $('<h3></h3>').text('Route Management - current schedule');
     let div = $('<div id="aes-div-dashboard-routeManagement" class="as-panel"></div>');
     mainDiv.append(title, div);
     //Get schedule
     let scheduleKey = server + airline.code + 'schedule';
     chrome.storage.local.get([scheduleKey], function(result) {
-        let scheduleData = result[scheduleKey];
-        if (scheduleData) {
-            // Table
-            generateRouteManagementTable(scheduleData);
-
-            // Option buttons
-            let fieldsetEl = document.createElement("fieldset")
-            let legendEl = document.createElement("legend")
-            let buttonGroupEl = document.createElement("div")
-
-            let buttonElements = {
-                "selectFirstTen": {
-                    "label": "select first 10"
-                },
-                "hideChecked": {
-                    "label": "hide checked"
-                },
-                "openInventory": {
-                    "label": "open inventory (max 10)"
-                },
-                "reloadTable": {
-                    "label": "reload table"
-                }
-            }
-
-            for (let key in buttonElements) {
-                let buttonObj = buttonElements[key]
-                let buttonEl = document.createElement("button")
-                let buttonClassNames = buttonObj?.classNames
-                let buttonType = buttonObj?.type
-                let buttonDefaultClassNames = "btn btn-default"
-                buttonEl.innerText = buttonObj.label
-
-                if (buttonType) {
-                    buttonEl.setAttribute("type", buttonType)
-                } else {
-                    buttonEl.setAttribute("type", "button")
+        try {
+            let scheduleData = result[scheduleKey];
+            let scheduleRows = getRouteManagementScheduleRows(scheduleData);
+            if (scheduleRows.length) {
+                try {
+                    div.append(buildRoutePlannerPanel(scheduleData));
+                } catch (err) {
+                    console.warn("[AES dashboard] route planner panel failed", err);
+                    div.append(routePlannerFallbackPanel(err));
                 }
 
-                if (buttonClassNames) {
-                    buttonEl.className = buttonClassNames
-                } else {
-                    buttonEl.className = buttonDefaultClassNames
-                }
-
-                buttonObj.element = buttonEl
-                buttonGroupEl.append(buttonEl)
-            }
-
-            legendEl.innerText = "Options"
-            buttonGroupEl.classList.add("btn-group")
-
-            fieldsetEl.append(legendEl, buttonGroupEl)
-
-            let optionsDiv = $('<div class="col-md-4"></div>').append(fieldsetEl);
-
-            // Button actions
-
-            // Select first ten
-            buttonElements["selectFirstTen"].element.addEventListener("click", function() {
-                let count = 0
-                $('#aes-table-routeManagement tbody tr').each(function() {
-                    $(this).find("input").prop('checked', true);
-                    count++;
-                    if (count > 10) {
-                        return false;
-                    }
-                })
-            });
-
-            // Remove checked
-            buttonElements["hideChecked"].element.addEventListener("click", function() {
-                $('#aes-table-routeManagement tbody tr').has('input:checked').remove();
-            });
-
-            // Open Inventory
-            buttonElements["openInventory"].element.addEventListener("click", function() {
-                //Get checked collumns
-                let pages = $('#aes-table-routeManagement tbody tr').has('input:checked').map(function() {
-                    let orgdest = $(this).attr('id');
-                    orgdest = orgdest.split("-");
-                    orgdest = orgdest[2];
-                    //let orgdest = $(this).find("td:eq(1)").text() + $(this).find("td:eq(2)").text();
-                    let url = 'https://' + server + '.airlinesim.aero/app/com/inventory/' + orgdest;
-                    return url;
-                }).toArray();
-
-                //Open new tabs
-                for (let i = 0; i < pages.length; i++) {
-                    window.open(pages[i], '_blank');
-                    if (i == 10) {
-                        break;
-                    }
-                }
-            });
-
-            // Reload table reloadTable
-            buttonElements["reloadTable"].element.addEventListener("click", function() {
+                // Table
                 generateRouteManagementTable(scheduleData);
-            });
-            let divRow = $('<div class="row"></div>').append(optionsDiv, displayRouteManagementFilters(), displayRouteManagementCollumns())
-            div.prepend(divRow);
-            //Collumns selector Checkbox listener
-            $('#aes-table-routeManagement-collumns input').change(function() {
-                let show;
-                if (this.checked) {
-                    show = 1;
-                } else {
-                    show = 0;
+
+                // Option buttons
+                let fieldsetEl = document.createElement("fieldset")
+                let legendEl = document.createElement("legend")
+                let buttonGroupEl = document.createElement("div")
+
+                let buttonElements = {
+                    "selectFirstTen": {
+                        "label": "select first 10"
+                    },
+                    "hideChecked": {
+                        "label": "hide checked"
+                    },
+                    "openInventory": {
+                        "label": "open inventory (max 10)"
+                    },
+                    "reloadTable": {
+                        "label": "reload table"
+                    }
                 }
-                let value = $(this).val();
-                settings.routeManagement.tableCollumns.forEach(function(col) {
-                    if (col.class == value) {
-                        col.show = show;
+
+                for (let key in buttonElements) {
+                    let buttonObj = buttonElements[key]
+                    let buttonEl = document.createElement("button")
+                    let buttonClassNames = buttonObj?.classNames
+                    let buttonType = buttonObj?.type
+                    let buttonDefaultClassNames = "btn btn-default"
+                    buttonEl.innerText = buttonObj.label
+
+                    if (buttonType) {
+                        buttonEl.setAttribute("type", buttonType)
+                    } else {
+                        buttonEl.setAttribute("type", "button")
+                    }
+
+                    if (buttonClassNames) {
+                        buttonEl.className = buttonClassNames
+                    } else {
+                        buttonEl.className = buttonDefaultClassNames
+                    }
+
+                    buttonObj.element = buttonEl
+                    buttonGroupEl.append(buttonEl)
+                }
+
+                legendEl.innerText = "Options"
+                buttonGroupEl.classList.add("btn-group")
+
+                fieldsetEl.append(legendEl, buttonGroupEl)
+
+                let optionsDiv = $('<div class="col-md-4"></div>').append(fieldsetEl);
+
+                // Button actions
+
+                // Select first ten
+                buttonElements["selectFirstTen"].element.addEventListener("click", function() {
+                    let count = 0
+                    $('#aes-table-routeManagement tbody tr').each(function() {
+                        if (count >= 10) return false;
+                        $(this).find("input").prop('checked', true);
+                        count++;
+                    })
+                });
+
+                // Remove checked
+                buttonElements["hideChecked"].element.addEventListener("click", function() {
+                    $('#aes-table-routeManagement tbody tr').has('input:checked').remove();
+                });
+
+                // Open Inventory
+                buttonElements["openInventory"].element.addEventListener("click", function() {
+                    //Get checked collumns
+                    let pages = $('#aes-table-routeManagement tbody tr').has('input:checked').map(function() {
+                        let orgdest = $(this).attr('id');
+                        orgdest = orgdest.split("-");
+                        orgdest = orgdest[2];
+                        //let orgdest = $(this).find("td:eq(1)").text() + $(this).find("td:eq(2)").text();
+                        let url = 'https://' + server + '.airlinesim.aero/app/com/inventory/' + orgdest;
+                        return url;
+                    }).toArray();
+
+                    //Open new tabs
+                    for (let i = 0; i < pages.length; i++) {
+                        window.open(pages[i], '_blank');
+                        if (i == 10) {
+                            break;
+                        }
                     }
                 });
-                chrome.storage.local.set({ settings: settings }, function() {});
-            });
 
-        } else {
-            //no schedule
-            div.append("Need schedule info to show this section. Change Dashboard to General -> Schedule -> Extract Schedule.")
+                // Reload table reloadTable
+                buttonElements["reloadTable"].element.addEventListener("click", function() {
+                    generateRouteManagementTable(scheduleData);
+                });
+                let divRow = $('<div class="row"></div>').append(optionsDiv, displayRouteManagementFilters(), displayRouteManagementCollumns())
+                div.prepend(divRow);
+                //Collumns selector Checkbox listener
+                $('#aes-table-routeManagement-collumns input').change(function() {
+                    let show;
+                    if (this.checked) {
+                        show = 1;
+                    } else {
+                        show = 0;
+                    }
+                    let value = $(this).val();
+                    settings.routeManagement.tableCollumns.forEach(function(col) {
+                        if (col.class == value) {
+                            col.show = show;
+                        }
+                    });
+                    saveDashboardArea('routeManagement');
+                });
+
+            } else {
+                displayRouteManagementMissingSchedule(div);
+            }
+        } catch (err) {
+            displayDashboardError("routeManagement", err);
         }
     });
+}
+
+function displayRouteManagementMissingSchedule(div) {
+    let scheduleHref = $('#enterprise-dashboard table:eq(0) tfoot td a:eq(2)').attr('href')
+        || '/app/info/enterprises/me?tab=3';
+    let msg = $('<span></span>').text('Need current schedule info to show this section. Open Flight schedule and run Extract Schedule.');
+    let link = $('<a class="btn btn-xs btn-default"></a>').attr('href', scheduleHref).text('Open Flight schedule');
+    div.append(msg, ' ', link);
+}
+
+function ensureRouteManagementSettings() {
+    if (!settings.routeManagement) {
+        setDefaultRouteManagementSettings();
+        return settings.routeManagement;
+    }
+
+    let existingFilter = Array.isArray(settings.routeManagement.filter)
+        ? settings.routeManagement.filter : [];
+    if (!Array.isArray(settings.routeManagement.tableCollumns) || !settings.routeManagement.tableCollumns.length) {
+        setDefaultRouteManagementSettings();
+        settings.routeManagement.filter = existingFilter;
+    } else {
+        settings.routeManagement.filter = existingFilter;
+    }
+    return settings.routeManagement;
+}
+
+function routePlannerFallbackPanel(err) {
+    let panel = $('<div class="aes-route-planner__empty as-panel"></div>');
+    panel.append($('<strong></strong>').text('Route Planner unavailable'));
+    if (err) panel.append(' ', $('<span></span>').text((err && err.message) || String(err)));
+    return panel;
+}
+
+function buildRoutePlannerPanel(scheduleData) {
+    let panel = $('<div id="aes-route-planner" class="aes-route-planner"></div>');
+    let planner = window.AesRoutePlanner;
+    let status = $('<span class="aes-route-planner__status"></span>').text('Ready');
+    let summary = $('<div class="aes-route-planner__summary"></div>').text('No live schedule plan generated.');
+    let previewBody = $('<tbody></tbody>');
+    let currentPlan = null;
+    let fleetAircraft = [];
+    let storageKey = getRoutePlannerStorageKey();
+
+    panel.append(
+        $('<div class="aes-route-planner__header"></div>').append(
+            $('<h4></h4>').text('Route Planner'),
+            status
+        )
+    );
+
+    if (!planner) {
+        panel.append($('<div class="aes-route-planner__empty"></div>').text('Route planner module is not loaded.'));
+        return panel;
+    }
+
+    let airports = getRoutePlannerAirportOptions(scheduleData);
+    let hubSelect = $('<select class="form-control aes-rp-hub"></select>');
+    airports.forEach(function(iata) {
+        hubSelect.append($('<option></option>').val(iata).text(iata));
+    });
+    if (!airports.length) {
+        hubSelect.append($('<option></option>').val('').text(''));
+    }
+
+    let airportSelect = $('<select class="form-control aes-rp-airports" multiple size="8"></select>');
+    airports.forEach(function(iata) {
+        airportSelect.append($('<option></option>').val(iata).text(iata));
+    });
+    airportSelect.val(airports.slice(0, Math.min(airports.length, 8)));
+
+    let customAirports = $('<textarea class="form-control aes-rp-custom-airports" rows="2" placeholder="Custom IATA list"></textarea>');
+    let aircraftSelect = $('<select class="form-control aes-rp-aircraft" multiple size="8"></select>');
+    let aircraftText = $('<textarea class="form-control aes-rp-aircraft-text" rows="2" placeholder="Aircraft IDs if not in fleet cache"></textarea>');
+
+    let patternSelect = $('<select class="form-control aes-rp-pattern"></select>').append(
+        $('<option></option>').val('out-and-back').text('Out and back'),
+        $('<option></option>').val('chain').text('Chain'),
+        $('<option></option>').val('hub-spokes').text('Hub spokes')
+    );
+    let startFlightNumber = $('<input class="form-control aes-rp-start-flight-number" type="number" min="1" max="9999">')
+        .val(planner.suggestNextFlightNumber(scheduleData) || '');
+    let flightCount = $('<input class="form-control aes-rp-flight-count" type="number" min="1" max="200">').val('6');
+    let startTime = $('<input class="form-control aes-rp-start-time" type="time">').val('09:00');
+    let turnMin = $('<input class="form-control aes-rp-turn-min" type="number" min="0" max="240">').val('45');
+    let waveSpacing = $('<input class="form-control aes-rp-wave-spacing" type="number" min="0" max="720">').val('30');
+    let defaultBlock = $('<input class="form-control aes-rp-default-block" type="number" min="45" max="1440">').val('120');
+    let longFlightMin = $('<input class="form-control aes-rp-long-flight-min" type="number" min="120" max="1440">').val('300');
+    let pricePct = $('<input class="form-control aes-rp-price-pct" type="number" min="50" max="200">').val('100');
+    let service = $('<input class="form-control aes-rp-service" type="text" placeholder="Service code">');
+    let applyDelay = $('<input class="form-control aes-rp-apply-delay" type="number" min="0" max="60000">').val('2500');
+
+    let generateBtn = $('<button class="btn btn-default" type="button"></button>').text('Generate live schedule plan');
+    let saveBtn = $('<button class="btn btn-default" type="button" disabled></button>').text('Save live plan');
+    let applyBtn = $('<button class="btn btn-primary" type="button" disabled></button>').text('Apply selected in AirlineSim');
+
+    let controls = $('<div class="aes-route-planner__controls"></div>').append(
+        routePlannerField('Hub', hubSelect),
+        routePlannerField('Airports', airportSelect),
+        routePlannerField('Custom airports', customAirports),
+        routePlannerField('Aircraft', aircraftSelect),
+        routePlannerField('Aircraft IDs', aircraftText),
+        routePlannerField('Flights', flightCount),
+        routePlannerField('Pattern', patternSelect),
+        routePlannerField('Start flight #', startFlightNumber),
+        routePlannerField('First departure', startTime),
+        routePlannerField('Turn minutes', turnMin),
+        routePlannerField('Wave spacing', waveSpacing),
+        routePlannerField('Fallback block', defaultBlock),
+        routePlannerField('Long flight min', longFlightMin),
+        routePlannerField('Price %', pricePct),
+        routePlannerField('Service', service),
+        routePlannerField('Apply delay ms', applyDelay)
+    );
+
+    let actions = $('<div class="aes-route-planner__actions"></div>').append(generateBtn, saveBtn, applyBtn);
+    let preview = $('<div class="aes-route-planner__preview as-table-well"></div>').append(
+        $('<table class="table table-bordered table-striped table-hover aes-route-planner__table"></table>').append(
+            $('<thead><tr>'
+                + '<th>Use</th><th>#</th><th>Flight #</th><th>Aircraft</th>'
+                + '<th>Route</th><th>Day</th><th>Dep</th><th>Arr</th>'
+                + '<th>Block</th><th>Note</th><th>Status</th>'
+                + '</tr></thead>'),
+            previewBody
+        )
+    );
+
+    panel.append(controls, actions, summary, preview);
+    routePlannerRenderPreview(previewBody, currentPlan);
+
+    hubSelect.change(function() {
+        let hub = $(this).val();
+        let selected = airportSelect.val() || [];
+        if (hub && selected.indexOf(hub) === -1) {
+            selected.unshift(hub);
+            airportSelect.val(selected);
+        }
+    });
+
+    routePlannerLoadFleet(aircraftSelect, status).then(function(list) {
+        fleetAircraft = list;
+        if (list.length && !(aircraftSelect.val() || []).length) {
+            aircraftSelect.val([String(list[0].aircraftId)]);
+        }
+        routePlannerSetStatus(status, list.length ? 'Fleet loaded: ' + list.length + ' aircraft' : 'Fleet cache empty', list.length ? 'ok' : 'warn');
+    }).catch(function(err) {
+        routePlannerSetStatus(status, 'Fleet load failed: ' + ((err && err.message) || err), 'error');
+    });
+
+    chrome.storage.local.get([storageKey], function(result) {
+        let saved = result && result[storageKey];
+        let plan = saved && saved.plan ? saved.plan : saved;
+        if (!plan || !Array.isArray(plan.flights) || !plan.flights.length) return;
+        currentPlan = plan;
+        routePlannerHydrateInputs(panel, plan);
+        routePlannerRenderPreview(previewBody, currentPlan);
+        routePlannerRenderSummary(summary, currentPlan);
+        saveBtn.prop('disabled', false);
+        applyBtn.prop('disabled', false);
+        routePlannerSetStatus(status, 'Loaded saved live schedule plan', 'ok');
+    });
+
+    generateBtn.click(async function() {
+        routePlannerSetStatus(status, 'Building route metadata...', 'warn');
+        generateBtn.prop('disabled', true);
+        try {
+            let seedAirports = planner.normalizeIataList((airportSelect.val() || []).concat([
+                hubSelect.val(),
+                customAirports.val()
+            ]).join(' '));
+            let routeMeta = await routePlannerLoadRouteMeta(seedAirports);
+            let options = routePlannerReadOptions(panel, fleetAircraft, scheduleData, routeMeta);
+            currentPlan = planner.generatePlan(options);
+            routePlannerRenderPreview(previewBody, currentPlan);
+            routePlannerRenderSummary(summary, currentPlan);
+            saveBtn.prop('disabled', !currentPlan.ok);
+            applyBtn.prop('disabled', !currentPlan.ok);
+            if (!currentPlan.ok) {
+                routePlannerSetStatus(status, 'Cannot generate: ' + (currentPlan.errors || []).join(', '), 'error');
+            } else {
+                let metaCount = Object.keys(routeMeta || {}).length;
+                routePlannerSetStatus(status, 'Generated ' + currentPlan.flights.length + ' flights' + (metaCount ? ' with demand cache' : ' with fallback blocks'), metaCount ? 'ok' : 'warn');
+            }
+        } catch (err) {
+            routePlannerSetStatus(status, 'Generate failed: ' + ((err && err.message) || err), 'error');
+        } finally {
+            generateBtn.prop('disabled', false);
+        }
+    });
+
+    saveBtn.click(function() {
+        if (!currentPlan) {
+            routePlannerSetStatus(status, 'Nothing to save', 'warn');
+            return;
+        }
+        currentPlan = routePlannerReadPreviewPlan(currentPlan, previewBody);
+        routePlannerRenderSummary(summary, currentPlan);
+        let rec = {savedAt: Date.now(), plan: currentPlan};
+        chrome.storage.local.set({[storageKey]: rec}, function() {
+            routePlannerSetStatus(status, 'Saved live schedule plan', 'ok');
+        });
+    });
+
+    applyBtn.click(async function() {
+        if (!currentPlan) {
+            routePlannerSetStatus(status, 'Nothing to apply', 'warn');
+            return;
+        }
+        currentPlan = routePlannerReadPreviewPlan(currentPlan, previewBody);
+        routePlannerRenderPreview(previewBody, currentPlan);
+        routePlannerRenderSummary(summary, currentPlan);
+        let selected = (currentPlan.flights || []).filter(function(f) { return f && f.selected !== false; });
+        if (!selected.length) {
+            routePlannerSetStatus(status, 'No preview rows selected', 'warn');
+            return;
+        }
+        if (!confirm('Apply ' + selected.length + ' selected route planner flights in AirlineSim?')) return;
+
+        applyBtn.prop('disabled', true);
+        generateBtn.prop('disabled', true);
+        saveBtn.prop('disabled', true);
+        routePlannerSetStatus(status, 'Applying ' + selected.length + ' selected flights...', 'warn');
+        try {
+            let delay = parseInt(panel.find('.aes-rp-apply-delay').val(), 10);
+            let result = await planner.applyPlan(currentPlan, {
+                server:       server,
+                applyDelayMs: Number.isFinite(delay) ? delay : planner.DEFAULTS.applyDelayMs,
+                stopOnError:  true,
+                onProgress:   function(evt) {
+                    let seq = evt && evt.flight && evt.flight.seq;
+                    if (!seq) return;
+                    if (evt.phase === 'submitting') {
+                        routePlannerSetRowStatus(previewBody, seq, 'Submitting', 'warn');
+                    } else if (evt.phase === 'submitted') {
+                        let response = evt.response || {};
+                        routePlannerSetRowStatus(previewBody, seq, response.ok ? 'Applied' : (response.error || 'Failed'), response.ok ? 'ok' : 'error');
+                    }
+                }
+            });
+            routePlannerSetStatus(status, result.ok ? 'Applied all selected flights' : 'Apply stopped before completion', result.ok ? 'ok' : 'error');
+        } catch (err) {
+            routePlannerSetStatus(status, 'Apply failed: ' + ((err && err.message) || err), 'error');
+        } finally {
+            applyBtn.prop('disabled', !currentPlan.ok);
+            generateBtn.prop('disabled', false);
+            saveBtn.prop('disabled', !currentPlan.ok);
+        }
+    });
+
+    return panel;
+}
+
+function getRoutePlannerStorageKey() {
+    let airlineKey = airline && (airline.code || airline.name) ? (airline.code || airline.name) : 'current';
+    return 'routePlanner:live:' + server + ':' + airlineKey;
+}
+
+function getRoutePlannerAirportOptions(scheduleData) {
+    let planner = window.AesRoutePlanner;
+    if (!planner) return [];
+    return planner.airportsFromSchedule(scheduleData);
+}
+
+function routePlannerField(label, control) {
+    return $('<label class="aes-route-planner__field"></label>').append(
+        $('<span></span>').text(label),
+        control
+    );
+}
+
+function routePlannerReadOptions(panel, fleetAircraft, scheduleData, routeMeta) {
+    let planner = window.AesRoutePlanner;
+    let hub = String(panel.find('.aes-rp-hub').val() || '').trim().toUpperCase();
+    let selectedAirports = panel.find('.aes-rp-airports').val() || [];
+    let airports = planner.normalizeIataList(selectedAirports.concat([
+        hub,
+        panel.find('.aes-rp-custom-airports').val()
+    ]).join(' '));
+    if (hub && airports.indexOf(hub) === -1) airports.unshift(hub);
+
+    let selectedAircraftIds = panel.find('.aes-rp-aircraft').val() || [];
+    let byId = {};
+    (fleetAircraft || []).forEach(function(a) {
+        if (a && a.aircraftId != null) byId[String(a.aircraftId)] = a;
+    });
+    let aircraft = selectedAircraftIds.map(function(id) {
+        let a = byId[String(id)] || {};
+        return {
+            aircraftId:   String(id),
+            registration: a.registration || '',
+            hub:          a.location || a.hubIata || a.hub || ''
+        };
+    });
+    planner.normalizeAircraftList(panel.find('.aes-rp-aircraft-text').val()).forEach(function(a) {
+        if (!aircraft.some(function(existing) { return existing.aircraftId === a.aircraftId; })) aircraft.push(a);
+    });
+
+    return {
+        hub:                hub,
+        airports:           airports,
+        aircraft:           aircraft,
+        flightCount:        panel.find('.aes-rp-flight-count').val(),
+        pattern:            panel.find('.aes-rp-pattern').val(),
+        startFlightNumber:  panel.find('.aes-rp-start-flight-number').val(),
+        startTime:          panel.find('.aes-rp-start-time').val(),
+        turnMin:            panel.find('.aes-rp-turn-min').val(),
+        waveSpacingMin:     panel.find('.aes-rp-wave-spacing').val(),
+        defaultBlockMin:    panel.find('.aes-rp-default-block').val(),
+        longFlightMin:      panel.find('.aes-rp-long-flight-min').val(),
+        pricePct:           panel.find('.aes-rp-price-pct').val(),
+        service:            panel.find('.aes-rp-service').val(),
+        routeMeta:          routeMeta || {},
+        scheduleData:       scheduleData
+    };
+}
+
+function routePlannerHydrateInputs(panel, plan) {
+    if (!plan || !plan.options) return;
+    let opts = plan.options;
+    if (opts.hub) panel.find('.aes-rp-hub').val(opts.hub);
+    if (Array.isArray(opts.airports)) panel.find('.aes-rp-airports').val(opts.airports);
+    if (opts.pattern) panel.find('.aes-rp-pattern').val(opts.pattern);
+    if (opts.flightCount) panel.find('.aes-rp-flight-count').val(opts.flightCount);
+    if (opts.startFlightNumber) panel.find('.aes-rp-start-flight-number').val(opts.startFlightNumber);
+    if (opts.startTime) panel.find('.aes-rp-start-time').val(opts.startTime);
+    if (opts.turnMin != null) panel.find('.aes-rp-turn-min').val(opts.turnMin);
+    if (opts.waveSpacingMin != null) panel.find('.aes-rp-wave-spacing').val(opts.waveSpacingMin);
+    if (opts.defaultBlockMin != null) panel.find('.aes-rp-default-block').val(opts.defaultBlockMin);
+    if (opts.longFlightMin != null) panel.find('.aes-rp-long-flight-min').val(opts.longFlightMin);
+    if (opts.pricePct != null) panel.find('.aes-rp-price-pct').val(opts.pricePct);
+    if (opts.service != null) panel.find('.aes-rp-service').val(opts.service);
+}
+
+function routePlannerRenderPreview(tbody, plan) {
+    tbody.empty();
+    if (!plan || !Array.isArray(plan.flights) || !plan.flights.length) {
+        tbody.append($('<tr></tr>').append($('<td colspan="11" class="aes-route-planner__empty"></td>').text('No live schedule plan generated.')));
+        return;
+    }
+    plan.flights.forEach(function(flight) {
+        let row = $('<tr></tr>').attr('data-seq', flight.seq);
+        let selected = $('<input type="checkbox" class="aes-rp-row-selected">').prop('checked', flight.selected !== false);
+        let flightNumber = $('<input type="text" class="form-control input-sm aes-rp-row-flight-number" maxlength="4">').val(flight.flightNumberText || '');
+        let aircraftId = $('<input type="text" class="form-control input-sm aes-rp-row-aircraft" required>').val(flight.aircraftId || '');
+        let day = $('<select class="form-control input-sm aes-rp-row-day"></select>');
+        window.AesRoutePlanner.DAY_NAMES.forEach(function(name, idx) {
+            day.append($('<option></option>').val(idx).text(name));
+        });
+        day.val(String(flight.dayIdx || 0));
+        let dep = $('<input type="time" class="form-control input-sm aes-rp-row-dep">').val(flight.depTimeLocal || '');
+
+        row.append(
+            $('<td></td>').append(selected),
+            $('<td></td>').text(flight.seq),
+            $('<td></td>').append(flightNumber),
+            $('<td></td>').append(aircraftId),
+            $('<td class="aes-route-planner__route"></td>').text((flight.origin || '') + ' -> ' + (flight.destination || '')),
+            $('<td></td>').append(day),
+            $('<td></td>').append(dep),
+            $('<td></td>').text(flight.arrTimeLocal || ''),
+            $('<td class="aes-text-right"></td>').text(flight.blockMin ? flight.blockMin + 'm' : ''),
+            $('<td></td>').text(flight.note || ''),
+            $('<td class="aes-rp-row-status"></td>').text('')
+        );
+        tbody.append(row);
+    });
+}
+
+function routePlannerReadPreviewPlan(plan, tbody) {
+    if (!plan) return plan;
+    let edits = [];
+    tbody.find('tr[data-seq]').each(function() {
+        let row = $(this);
+        edits.push({
+            seq:              parseInt(row.attr('data-seq'), 10),
+            selected:         row.find('.aes-rp-row-selected').prop('checked'),
+            flightNumberText: row.find('.aes-rp-row-flight-number').val(),
+            aircraftId:       row.find('.aes-rp-row-aircraft').val(),
+            dayIdx:           row.find('.aes-rp-row-day').val(),
+            depTimeLocal:     row.find('.aes-rp-row-dep').val()
+        });
+    });
+    return window.AesRoutePlanner.applyEdits(plan, edits);
+}
+
+function routePlannerRenderSummary(el, plan) {
+    if (!plan || !plan.summary) {
+        el.text('No live schedule plan generated.');
+        return;
+    }
+    let s = plan.summary;
+    let warnings = Array.isArray(plan.warnings) && plan.warnings.length ? ' - ' + plan.warnings.join(' ') : '';
+    el.text(s.flightCount + ' flights, ' + s.aircraftCount + ' aircraft, ' + s.airportCount + ' airports, ' + s.longFlights + ' long legs' + warnings);
+}
+
+async function routePlannerLoadFleet(select, status) {
+    select.empty().append($('<option disabled></option>').text('Loading fleet cache...'));
+    if (!window.AesFleetRoster || typeof window.AesFleetRoster.loadCurrent !== 'function') {
+        select.empty();
+        routePlannerSetStatus(status, 'Fleet roster module unavailable', 'warn');
+        return [];
+    }
+    let fleet = await window.AesFleetRoster.loadCurrent();
+    let list = (fleet && Array.isArray(fleet.aircraft)) ? fleet.aircraft : [];
+    select.empty();
+    list.forEach(function(a) {
+        if (!a || a.aircraftId == null) return;
+        let text = [
+            a.registration || a.aircraftId,
+            a.equipment || '',
+            a.location || a.hubIata || ''
+        ].filter(Boolean).join(' - ');
+        select.append(
+            $('<option></option>')
+                .val(String(a.aircraftId))
+                .text(text)
+                .attr('data-registration', a.registration || '')
+                .attr('data-location', a.location || a.hubIata || '')
+        );
+    });
+    return list;
+}
+
+async function routePlannerLoadRouteMeta(airports) {
+    let planner = window.AesRoutePlanner;
+    let list = planner ? planner.normalizeIataList(airports) : [];
+    let wanted = new Set(list);
+    let meta = {};
+    if (!window.FlightsFromStore || typeof window.FlightsFromStore.loadAirport !== 'function') return meta;
+
+    for (let i = 0; i < list.length; i++) {
+        let origin = list[i];
+        let rec = null;
+        try { rec = await window.FlightsFromStore.loadAirport(origin); }
+        catch (_) { rec = null; }
+        let routes = rec && Array.isArray(rec.routes) ? rec.routes : [];
+        let ctx = (window.FlightsFromStore.buildDemandContext && routes.length)
+            ? window.FlightsFromStore.buildDemandContext(routes) : null;
+        for (let j = 0; j < routes.length; j++) {
+            let route = routes[j] || {};
+            let dest = String(route.destIata || '').toUpperCase();
+            if (!wanted.has(dest) || dest === origin) continue;
+            let weekly = Number(route.weeklyFlights) || 0;
+            let seats = Number(route.seatsPerWeek) || 0;
+            let demand = null;
+            if (window.FlightsFromStore.demandForRoute) {
+                try { demand = window.FlightsFromStore.demandForRoute(route, ctx); }
+                catch (_) { demand = null; }
+            }
+            let demandScore = demand && demand.paxScore != null ? Number(demand.paxScore) * 10 : 0;
+            meta[origin + '-' + dest] = {
+                distanceKm:    Number(route.distanceKm) || null,
+                weeklyFlights: weekly || null,
+                seatsPerWeek:  seats || null,
+                score:         demandScore + weekly + Math.sqrt(seats || 0)
+            };
+        }
+    }
+    return meta;
+}
+
+function routePlannerSetStatus(el, text, tone) {
+    el.removeClass('is-ok is-warn is-error')
+        .addClass(tone === 'ok' ? 'is-ok' : tone === 'error' ? 'is-error' : tone === 'warn' ? 'is-warn' : '')
+        .text(text || '');
+}
+
+function routePlannerSetRowStatus(tbody, seq, text, tone) {
+    tbody.find('tr[data-seq="' + seq + '"] .aes-rp-row-status')
+        .removeClass('is-ok is-warn is-error')
+        .addClass(tone === 'ok' ? 'is-ok' : tone === 'error' ? 'is-error' : tone === 'warn' ? 'is-warn' : '')
+        .text(text || '');
+}
+
+function getRouteManagementScheduleRows(scheduleData) {
+    if (!scheduleData || !scheduleData.date || typeof scheduleData.date !== "object") return [];
+    let dates = Object.keys(scheduleData.date)
+        .filter(function(date) { return Number.isInteger(parseInt(date, 10)); })
+        .sort(function(a, b) { return parseInt(b, 10) - parseInt(a, 10); });
+    for (let i = 0; i < dates.length; i++) {
+        let day = scheduleData.date[dates[i]];
+        if (day && Array.isArray(day.schedule)) return day.schedule;
+    }
+    return [];
 }
 
 function setDefaultRouteManagementSettings() {
@@ -406,15 +1094,16 @@ function setDefaultRouteManagementSettings() {
 }
 
 function routeManagementApplyFilter() {
+    let routeSettings = ensureRouteManagementSettings();
     $('#aes-table-routeManagement tbody tr').each(function() {
         let row = this;
-        settings.routeManagement.filter.forEach(function(filter) {
+        routeSettings.filter.forEach(function(filter) {
             let cell = $(row).find("." + filter.collumnCode).text();
             //if(cell){
             //Get collumn info if number or not
             let number;
-            for (let i = 0; i < settings.routeManagement.tableCollumns.length; i++) {
-                let collumn = settings.routeManagement.tableCollumns[i];
+            for (let i = 0; i < routeSettings.tableCollumns.length; i++) {
+                let collumn = routeSettings.tableCollumns[i];
                 if (filter.collumnCode == collumn.class) {
                     number = collumn.number;
                     break;
@@ -455,6 +1144,7 @@ function routeManagementApplyFilter() {
 }
 
 function displayRouteManagementFilters() {
+    let routeSettings = ensureRouteManagementSettings();
     //Table head
     let th = [];
     th.push('<th>Column</th>');
@@ -465,7 +1155,7 @@ function displayRouteManagementFilters() {
 
     //Table body
     let tbody = $('<tbody></tbody>');
-    settings.routeManagement.filter.forEach(function(fil) {
+    routeSettings.filter.forEach(function(fil) {
         let td = [];
         td.push('<td><input type="hidden" value="' + fil.collumnCode + '">' + fil.collumn + '</td>');
         td.push('<td>' + fil.operation + '</td>');
@@ -477,7 +1167,7 @@ function displayRouteManagementFilters() {
     //Table foot
     //select collumn
     let option1 = [];
-    settings.routeManagement.tableCollumns.forEach(function(col) {
+    routeSettings.tableCollumns.forEach(function(col) {
         option1.push('<option value="' + col.class + '">' + col.name + '</option>');
     });
     let select1 = $('<select id="aes-select-routeManagement-filter-collumn" class="form-control"></select>').append(option1);
@@ -551,7 +1241,7 @@ function displayRouteManagementFilters() {
             });
         });
         settings.routeManagement.filter = filter;
-        chrome.storage.local.set({ settings: settings }, function() {
+        saveDashboardArea('routeManagement', function() {
             saveSpan.removeClass().addClass('warning').text(' filtering...');
             routeManagementApplyFilter()
             saveSpan.removeClass().addClass('good').text(' done!');
@@ -562,6 +1252,7 @@ function displayRouteManagementFilters() {
 }
 
 function displayRouteManagementCollumns() {
+    let routeSettings = ensureRouteManagementSettings();
     //Table Head
     let th = [];
     th.push('<th>Show</th>');
@@ -570,7 +1261,7 @@ function displayRouteManagementCollumns() {
     //Table body
     let tbody = $('<tbody></tbody>');
 
-    settings.routeManagement.tableCollumns.forEach(function(col) {
+    routeSettings.tableCollumns.forEach(function(col) {
         let td = [];
         //Checkbox
         if (col.show) {
@@ -599,21 +1290,20 @@ function displayRouteManagementCollumns() {
 }
 
 function generateRouteManagementTable(scheduleData) {
+    let routeSettings = ensureRouteManagementSettings();
     //Remove table
     $('#aes-div-routeManagement').remove();
-    //Dates
-    let dates = [];
-    for (let date in scheduleData.date) {
-        if (Number.isInteger(parseInt(date))) {
-            dates.push(date);
-        }
+    let schedule = getRouteManagementScheduleRows(scheduleData);
+    if (!schedule.length) {
+        $('#aes-div-dashboard-routeManagement').append(
+            $('<div id="aes-div-routeManagement" class="as-table-well"></div>')
+                .append($('<p></p>').text('No valid schedule rows are cached. Re-run Extract Schedule from Flight schedule.'))
+        );
+        return;
     }
-    dates.reverse();
-    //LatestSchedule
-    let schedule = scheduleData.date[dates[0]].schedule;
     //Generate top
     //Table headers
-    let collumns = settings.routeManagement.tableCollumns;
+    let collumns = routeSettings.tableCollumns;
 
     //Generate table head
     let thead = $('<thead></thead>');
@@ -649,24 +1339,30 @@ function generateRouteManagementTable(scheduleData) {
     let tbody = $('<tbody></tbody>');
     let uniqueOD = [];
     schedule.forEach(function(od) {
+        if (!od || typeof od !== "object") return;
+        let origin = String(od.origin || (od.od && od.od.slice ? od.od.slice(0, 3) : '')).toUpperCase();
+        let destination = String(od.destination || (od.od && od.od.slice ? od.od.slice(3, 6) : '')).toUpperCase();
+        if (!origin || !destination) return;
+        let odName = String(od.od || (origin + destination)).toUpperCase();
         //ODs for analysis
-        uniqueOD.push(od.od);
+        uniqueOD.push(odName);
         //Get values flight numbers and total frequency
         let fltNr = 0;
         let paxFreq = 0;
         let cargoFreq = 0;
-        for (let flight in od.flightNumber) {
-            cargoFreq += od.flightNumber[flight].cargoFreq,
-                paxFreq += od.flightNumber[flight].paxFreq,
+        let flightNumbers = (od.flightNumber && typeof od.flightNumber === "object") ? od.flightNumber : {};
+        for (let flight in flightNumbers) {
+            cargoFreq += Number(flightNumbers[flight].cargoFreq) || 0,
+                paxFreq += Number(flightNumbers[flight].paxFreq) || 0,
                 fltNr++;
         }
         let totalFreq = cargoFreq + paxFreq;
         //hub
-        let hub = od.od.slice(0, 3);
+        let hub = odName.slice(0, 3);
         let cellValue = {
-            origin: od.origin,
-            destination: od.destination,
-            odName: od.od,
+            origin: origin,
+            destination: destination,
+            odName: odName,
             direction: od.direction,
             fltNr: fltNr,
             paxFreq: paxFreq,
@@ -688,7 +1384,7 @@ function generateRouteManagementTable(scheduleData) {
                 }
             }
         });
-        let rowId = od.origin + od.destination;
+        let rowId = origin + destination;
 
         //Add inventory button
         let invBtn = '<a class="btn btn-xs btn-default" href="https://' + server + '.airlinesim.aero/app/com/inventory/' + rowId + '">Inventory</a>'
@@ -1541,7 +2237,7 @@ function displayCompetitorMonitoringAirlinesTableCollumns() {
                 col.visible = show;
             }
         });
-        chrome.storage.local.set({ settings: settings }, function() {});
+        saveDashboardArea('competitorMonitoring');
     });
     //Closable legend
     let link = $('<a style="cursor: pointer;"></a>').text('Columns');
@@ -2513,7 +3209,7 @@ function generateTable(tableOptionsRule) {
                         })
                     });
                     settings[tableOptionsRule.tableSettingStorage].filter = filter;
-                    chrome.storage.local.set({ settings: settings }, function() {
+                    saveDashboardArea(tableOptionsRule.tableSettingStorage, function() {
                         $('tbody tr', table).each(function() {
                             let row = this;
                             filter.forEach(function(filter) {
@@ -2675,7 +3371,7 @@ function generateTable(tableOptionsRule) {
 
                 tableOptionsRule.hideColumn = newHideColumns;
                 settings[tableOptionsRule.tableSettingStorage].hideColumn = tableOptionsRule.hideColumn;
-                chrome.storage.local.set({ settings: settings }, function() {});
+                saveDashboardArea(tableOptionsRule.tableSettingStorage);
             })
             if (col.visible) {
                 input.prop('checked', true);
@@ -2736,7 +3432,7 @@ function generalUpdateScheduleAction(td3) {
         settings.schedule.autoExtract = 1;
         //get schedule link
         let link = $('#enterprise-dashboard table:eq(0) tfoot td a:eq(2)');
-        chrome.storage.local.set({ settings: settings }, function() {
+        saveDashboardArea('schedule', function() {
             link[0].click();
         });
     });
@@ -2801,6 +3497,8 @@ async function displayStationAutomation() {
         {value: 7, label: '≥ 7 bars'},
         {value: 10, label: '≥ 10 bars (full)'}
     ];
+    const scoreValues = [0,1,2,3,4,5,6,7,8,9,10];
+    const stationSettings = settings.stationAutomation || {};
     // Station-automation storage key must match what the worker reads on
     // /app/info/airports/* and /app/ops/stations* — those pages don't have the
     // .facts table, so use the navbar-based identity instead of airline.code.
@@ -2812,20 +3510,62 @@ async function displayStationAutomation() {
     const countryLabel = $('<label for="aes-stationAutomation-country">Country</label>').append(refreshCountriesLink);
     const countryGroup = $('<div class="form-group"></div>').append(countryLabel, countrySelect);
 
+    const filterModeSelect = $('<select id="aes-stationAutomation-filterMode" class="form-control"></select>');
+    filterModeSelect.append($('<option></option>').val('minimum').text('Hub growth — minimum scores'));
+    filterModeSelect.append($('<option></option>').val('range').text('Budget regional — score ranges'));
+    filterModeSelect.val(stationSettings.defaultFilterMode === 'range' ? 'range' : 'minimum');
+    const modeGroup = $('<div class="form-group"></div>').append(
+        $('<label for="aes-stationAutomation-filterMode">Filter mode</label>'), filterModeSelect,
+        $('<p class="warning" style="font-size:90%; margin-top:4px;">Budget regional mode lets you set lower and upper score bounds, so 10-bar mega hubs can be excluded.</p>')
+    );
+
     const paxSelect = $('<select id="aes-stationAutomation-pax" class="form-control"></select>');
     const cargoSelect = $('<select id="aes-stationAutomation-cargo" class="form-control"></select>');
     barThresholds.forEach(function(t) {
         paxSelect.append($('<option></option>').val(t.value).text(t.label));
         cargoSelect.append($('<option></option>').val(t.value).text(t.label));
     });
-    paxSelect.val(settings.stationAutomation?.defaultPaxThreshold ?? 0);
-    cargoSelect.val(settings.stationAutomation?.defaultCargoThreshold ?? 0);
+    paxSelect.val(stationSettings.defaultPaxThreshold ?? 0);
+    cargoSelect.val(stationSettings.defaultCargoThreshold ?? 0);
 
     const paxGroup = $('<div class="form-group"></div>').append(
         $('<label for="aes-stationAutomation-pax">Passenger demand</label>'), paxSelect
     );
     const cargoGroup = $('<div class="form-group"></div>').append(
         $('<label for="aes-stationAutomation-cargo">Cargo demand</label>'), cargoSelect
+    );
+
+    function scoreSelect(id, value) {
+        const sel = $('<select id="' + id + '" class="form-control input-sm" style="width:80px;"></select>');
+        scoreValues.forEach(function(v) {
+            sel.append($('<option></option>').val(v).text(v + ' bars'));
+        });
+        sel.val(value);
+        return sel;
+    }
+
+    const paxMinSelect = scoreSelect('aes-stationAutomation-paxMin', stationSettings.defaultPaxMin ?? 1);
+    const paxMaxSelect = scoreSelect('aes-stationAutomation-paxMax', stationSettings.defaultPaxMax ?? 9);
+    const cargoMinSelect = scoreSelect('aes-stationAutomation-cargoMin', stationSettings.defaultCargoMin ?? 2);
+    const cargoMaxSelect = scoreSelect('aes-stationAutomation-cargoMax', stationSettings.defaultCargoMax ?? 10);
+    const sizeMinSelect = scoreSelect('aes-stationAutomation-sizeMin', stationSettings.defaultSizeMin ?? 1);
+    const sizeMaxSelect = scoreSelect('aes-stationAutomation-sizeMax', stationSettings.defaultSizeMax ?? 8);
+
+    function rangeRow(label, minSel, maxSel) {
+        return $('<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"></div>')
+            .append(
+                $('<label style="width:150px;margin:0;"></label>').text(label),
+                minSel,
+                $('<span></span>').text('to'),
+                maxSel
+            );
+    }
+
+    const rangeGroup = $('<div class="form-group" id="aes-stationAutomation-rangeGroup"></div>').append(
+        $('<label>Budget regional ranges</label>'),
+        rangeRow('Passenger demand', paxMinSelect, paxMaxSelect),
+        rangeRow('Cargo demand', cargoMinSelect, cargoMaxSelect),
+        rangeRow('Airport size / capacity', sizeMinSelect, sizeMaxSelect)
     );
 
     const exceptionsInput = $('<input type="text" id="aes-stationAutomation-exceptions" class="form-control" placeholder="CDG, LYS, NCE">');
@@ -2848,7 +3588,7 @@ async function displayStationAutomation() {
     const actionBar = $('<div style="margin-top: 12px; display: flex; gap: 8px; align-items: center;"></div>')
         .append(confirmBtn, addAllBtn, formFeedback);
 
-    formCol.append(countryGroup, paxGroup, cargoGroup, exceptionsGroup, concGroup, actionBar);
+    formCol.append(countryGroup, modeGroup, paxGroup, cargoGroup, rangeGroup, exceptionsGroup, concGroup, actionBar);
 
     //Queue side-list
     const queueTitle = $('<h4>Queue</h4>');
@@ -2886,7 +3626,7 @@ async function displayStationAutomation() {
         }
         settings.stationAutomation = settings.stationAutomation || {};
         settings.stationAutomation.countriesCache = countries;
-        chrome.storage.local.set({settings: settings}, function() {});
+        saveDashboardArea('stationAutomation');
         populateCountrySelect();
         formFeedback.removeClass().text('');
     }
@@ -2899,6 +3639,49 @@ async function displayStationAutomation() {
         });
     }
 
+    function clampBarValue(value, fallback) {
+        const n = parseInt(value, 10);
+        if (isNaN(n)) return fallback;
+        return Math.max(0, Math.min(10, n));
+    }
+
+    function selectedBar(sel, fallback) {
+        return clampBarValue(sel.val(), fallback);
+    }
+
+    function scoreRangeText(min, max) {
+        const lo = Math.min(clampBarValue(min, 0), clampBarValue(max, 10));
+        const hi = Math.max(clampBarValue(min, 0), clampBarValue(max, 10));
+        return lo + '–' + hi;
+    }
+
+    function entryIsRange(entry) {
+        return entry && (entry.filterMode === 'range'
+            || entry.paxMax !== undefined
+            || entry.cargoMax !== undefined
+            || entry.sizeMax !== undefined);
+    }
+
+    function formatStationFilter(entry) {
+        if (entry.airportWhitelist && entry.airportWhitelist.length) {
+            return 'Selected airports (' + entry.airportWhitelist.length + ')';
+        }
+        if (entryIsRange(entry)) {
+            return 'Pax ' + scoreRangeText(entry.paxMin ?? entry.paxThreshold ?? 0, entry.paxMax ?? 10)
+                + ', Cargo ' + scoreRangeText(entry.cargoMin ?? entry.cargoThreshold ?? 0, entry.cargoMax ?? 10)
+                + ', Size ' + scoreRangeText(entry.sizeMin ?? 0, entry.sizeMax ?? 10)
+                + ' bars';
+        }
+        return 'Pax ≥ ' + entry.paxThreshold + ', Cargo ≥ ' + entry.cargoThreshold + ' bars';
+    }
+
+    function syncFilterModeUi() {
+        const rangeMode = filterModeSelect.val() === 'range';
+        paxGroup.toggle(!rangeMode);
+        cargoGroup.toggle(!rangeMode);
+        rangeGroup.toggle(rangeMode);
+    }
+
     function renderQueue() {
         queueBody.empty();
         if (!record.queue.length) {
@@ -2908,8 +3691,8 @@ async function displayStationAutomation() {
         }
         addAllBtn.prop('disabled', false);
         record.queue.forEach(function(entry, idx) {
-            const filterText = 'Pax ≥ ' + entry.paxThreshold + ', Cargo ≥ ' + entry.cargoThreshold + ' bars';
-            const exceptionsText = entry.exceptions.length ? entry.exceptions.join(', ') : '—';
+            const filterText = formatStationFilter(entry);
+            const exceptionsText = entry.exceptions && entry.exceptions.length ? entry.exceptions.join(', ') : '—';
             const removeBtn = $('<button type="button" class="btn btn-default btn-xs">remove</button>');
             removeBtn.click(async function() {
                 record = await StationAutomationStorage.removeEntry(server, airlineCode, idx);
@@ -2932,6 +3715,10 @@ async function displayStationAutomation() {
             .filter(s => s.length === 3);
     }
 
+    filterModeSelect.change(function() {
+        syncFilterModeUi();
+    });
+
     confirmBtn.click(async function() {
         const countryId = countrySelect.val();
         if (!countryId) {
@@ -2939,14 +3726,35 @@ async function displayStationAutomation() {
             return;
         }
         const selected = countries.find(c => c.id === countryId);
+        const filterMode = filterModeSelect.val() === 'range' ? 'range' : 'minimum';
         const entry = {
             countryId: countryId,
             countryCode: selected?.code || '',
             countryName: selected ? selected.name + (selected.code ? ' (' + selected.code + ')' : '') : countryId,
-            paxThreshold: parseInt(paxSelect.val(), 10) || 0,
-            cargoThreshold: parseInt(cargoSelect.val(), 10) || 0,
+            filterMode: filterMode,
+            paxThreshold: filterMode === 'range' ? selectedBar(paxMinSelect, 1) : selectedBar(paxSelect, 0),
+            cargoThreshold: filterMode === 'range' ? selectedBar(cargoMinSelect, 2) : selectedBar(cargoSelect, 0),
             exceptions: parseExceptions(exceptionsInput.val())
         };
+        if (filterMode === 'range') {
+            entry.paxMin = selectedBar(paxMinSelect, 1);
+            entry.paxMax = selectedBar(paxMaxSelect, 9);
+            entry.cargoMin = selectedBar(cargoMinSelect, 2);
+            entry.cargoMax = selectedBar(cargoMaxSelect, 10);
+            entry.sizeMin = selectedBar(sizeMinSelect, 1);
+            entry.sizeMax = selectedBar(sizeMaxSelect, 8);
+        }
+        settings.stationAutomation = settings.stationAutomation || {};
+        settings.stationAutomation.defaultFilterMode = filterMode;
+        settings.stationAutomation.defaultPaxThreshold = selectedBar(paxSelect, 0);
+        settings.stationAutomation.defaultCargoThreshold = selectedBar(cargoSelect, 0);
+        settings.stationAutomation.defaultPaxMin = selectedBar(paxMinSelect, 1);
+        settings.stationAutomation.defaultPaxMax = selectedBar(paxMaxSelect, 9);
+        settings.stationAutomation.defaultCargoMin = selectedBar(cargoMinSelect, 2);
+        settings.stationAutomation.defaultCargoMax = selectedBar(cargoMaxSelect, 10);
+        settings.stationAutomation.defaultSizeMin = selectedBar(sizeMinSelect, 1);
+        settings.stationAutomation.defaultSizeMax = selectedBar(sizeMaxSelect, 8);
+        await saveDashboardArea('stationAutomation');
         record = await StationAutomationStorage.enqueue(server, airlineCode, entry);
         formFeedback.removeClass().addClass('good').text('Added ' + entry.countryName + ' to queue.');
         countrySelect.val('');
@@ -2965,7 +3773,7 @@ async function displayStationAutomation() {
         const concurrency = parseInt(concSelect.val(), 10) || 6;
         settings.stationAutomation = settings.stationAutomation || {};
         settings.stationAutomation.defaultConcurrency = concurrency;
-        chrome.storage.local.set({settings: settings}, function() {});
+        saveDashboardArea('stationAutomation');
 
         // AS's live stations list is the source of truth for "what's already
         // open" — fetch it in parallel with the country resolutions so we
@@ -3070,10 +3878,11 @@ async function displayStationAutomation() {
         countries = [];
         settings.stationAutomation = settings.stationAutomation || {};
         settings.stationAutomation.countriesCache = [];
-        await new Promise(r => chrome.storage.local.set({settings: settings}, r));
+        await saveDashboardArea('stationAutomation');
         await ensureCountries();
     });
 
+    syncFilterModeUi();
     renderQueue();
     await ensureCountries();
 
@@ -3855,6 +4664,16 @@ function getDate(type, scheduleData) {
 // Schedule Management — preset-driven, wave-aware schedule designer.
 // Singleton panel persists across re-renders so editor state survives a tab swap.
 var aesSchedulePanel = null;
+function getScheduleManagementAirlineKey() {
+    try {
+        if (typeof AES !== "undefined" && AES.getAirlineIdentity) {
+            const identity = AES.getAirlineIdentity();
+            if (identity) return identity;
+        }
+    } catch (_) { /* fall through */ }
+    return airline && airline.code || "";
+}
+
 async function displayScheduleManagement() {
     const mainDiv = document.getElementById("aes-div-dashboard");
     mainDiv.innerHTML = "";
@@ -3862,7 +4681,7 @@ async function displayScheduleManagement() {
     mainDiv.append(root);
     aesSchedulePanel = new SchedulePanel(root, {
         server: server,
-        airlineCode: airline.code
+        airlineCode: getScheduleManagementAirlineKey()
     });
     await aesSchedulePanel.render();
 }
