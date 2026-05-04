@@ -407,3 +407,42 @@ required:
    path TBD by user (the version bump to `0.6.13-beta` already happened
    in session 2 commit `b0a13db`).
 
+
+---
+
+## Session 2 — Phase 7 follow-on (after initial slice)
+
+After the user requested continuation, the following deferred items were
+revisited and dispositioned:
+
+### Items now landed (4 more)
+
+| Commit | Item | Notes |
+|---|---|---|
+| `b873743` | 12 | Fleet filter panel + native-selection-link integration + MutationObserver re-apply. Filter state in-DOM only (no settings persistence — matches upstream choice). |
+| `48da52c` | 11 | AP "remove aircraft (permanent)" handles undelivered tails by registration. Drive-by: fleet-storage key now sanitized (was breaking for airlines with whitespace/punctuation). |
+| — | 23 | Already-shipped in fork (`displayCompetitorMonitoringAirlinesTableFilters` line 2727-2812; `competitorMonitoringApplyFilter` at 2715-2717 with case-insensitive `contains`). |
+| — | 25 | Already-shipped in fork (`dashboardControlPanelExpanded` line 5; `bindClosableDashboardPanel` line 20-32; used by 5 closable legends). |
+| `74459ef` | 30 | `generateTable` grew summary-row support via `aggregate: 'sum'\|'avg'\|'count'` per column. Aircraft Profitability columns marked: age = avg, totalFlights/finishedFlights/profitFlights/profit = sum. Other tables (Route Mgmt, Comp Mon) unaffected (they don't declare aggregates). |
+
+### Items now genuinely deferred-still (3, need user input)
+
+- **Item 9 (Dashboard filter scope normalization)** — HIGH RISK. Upstream's
+  `normalizeDashboardFilterScope` uses `server:airlineId` as the scope key
+  and wipes filters on airline switch. Fork's L2 account scoping
+  (`currentAccountIdSync()` + `settings.acct.<id>`) would conflict. Needs
+  design decision: should fork's per-account filter persistence be
+  augmented with per-airline-within-account scope, or replaced? Recommend
+  user sign-off on the scoping shape before any port.
+- **Item 10 (Sort numeric formatted values)** — LARGE. Multi-pane fix in
+  fork's hand-rolled sorters. Fork already passes `number: 1` flag into
+  `masterSortTable` which uses `parseInt(text)` — but text may be
+  `Intl.NumberFormat`'d (locale separators). Needs a numeric-coerce that
+  strips locale separators before parseInt. Bounded but touches every
+  sort comparator path; needs careful regression coverage.
+- **Item 39 (Inventory history "Now" column)** — SUBTLE. Matrix flagged a
+  potential mis-pair when `showOnlyPricing` is on, but the current
+  `dates[dates.length - 1]` slicing is defensible. Needs a unit smoke
+  exercising the four cases (showNow on/off × showOnlyPricing on/off)
+  before any change. Recommend keep-as-is until a user-reported bug
+  surfaces.

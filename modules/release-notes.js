@@ -37,7 +37,9 @@
                         "Optional reference recommendations on Inventory Pricing - turn on \"Show reference recommendation\" in Settings to see what AES would suggest when the current price has no flight results yet.",
                         "Aircraft Flights page now auto-detects the home base (HUB) from each tail's flight history, with an override input + save/reset controls when you want to force a different hub. The override syncs back into Fleet Management and Aircraft Profitability.",
                         "Fleet Management table extracts richer per-tail data: delivery status, ownership, pilot assignment, seat configuration, schedule state. New Model header and HUB column.",
+                        "Fleet Management page now has an AES filter panel above the table - filter by Model, HUB, seat config, delivery state, ownership, or schedule. The native AS \"select all/none/inverse\" links honor the filter so you operate only on visible aircraft.",
                         "Aircraft Profitability tile now shows the new columns (HUB, schedule state Active/Locked/Conflict/Empty, pilot, ownership, seat config) sourced from the richer fleet extraction.",
+                        "Aircraft Profitability table now shows a summary row at the bottom with averaged age and summed flight / profit totals across the visible fleet.",
                         "Per-controlled-airline competitor monitoring - each airline you control now keeps its own competitor list instead of sharing one server-wide list. Existing tracked competitors keep loading via dual-read fallback."
                     ]
                 },
@@ -57,7 +59,9 @@
                         "Inventory Pricing settings toggles (auto price update, auto tab close, history table options) are no longer overwritten by stale settings snapshots from another AS tab. Saves now use a read-modify-write primitive.",
                         "Fleet Management aircraft-id capture now tolerates relative paths (../aircraft/123) and other AS link variants - undelivered tails are kept in storage by registration when no aircraftId is yet assigned.",
                         "Empty profit / extract-date cells in Fleet Management render as centered \"--\" placeholders instead of empty cells, so columns don't visually collapse.",
-                        "Aircraft Flights toast banners now render with the correct success/warning/error styling (the option key was being mis-routed)."
+                        "Aircraft Flights toast banners now render with the correct success/warning/error styling (the option key was being mis-routed).",
+                        "Fleet Management filter overlay re-applies after AS rerenders the fleet table (sort, pagination, refresh) so AES extras don't disappear.",
+                        "Aircraft Profitability \"remove aircraft (permanent)\" can now remove undelivered tails too (matched by registration), and the fleet-storage key is sanitized so airlines whose names contain whitespace or punctuation can finally be removed."
                     ]
                 }
             ]
