@@ -223,6 +223,77 @@ class AES {
         const result = value.replaceAll(/[^\d-]/g, "")
         return parseInt(result, 10)
     }
+
+    /**
+     * Safely updates the global `settings` blob in chrome.storage.local.
+     * Reads the current snapshot, hands it to `mutator` for in-place
+     * editing, writes it back, then invokes `callback(latest)`. Both
+     * arguments optional. Ported from v0.7.8 helpers.js.
+     * @param {function(object): void} [mutator]
+     * @param {function(object): void} [callback]
+     */
+    static updateSettings(mutator, callback) {
+        chrome.storage.local.get(["settings"], function (result) {
+            const current = result.settings || {}
+            if (typeof mutator === "function") {
+                mutator(current)
+            }
+            chrome.storage.local.set({ settings: current }, function () {
+                if (typeof callback === "function") {
+                    callback(current)
+                }
+            })
+        })
+    }
+
+    /**
+     * Builds the storage key for a competitor-monitoring record.
+     * Owner-scoped form preferred when ownerAirlineId is present so
+     * cross-airline shared-fleet sims don't collide.
+     * @param {string} server
+     * @param {string} ownerAirlineId
+     * @param {string} competitorAirlineId
+     * @returns {string}
+     */
+    static getCompetitorMonitoringKey(server, ownerAirlineId, competitorAirlineId) {
+        if (ownerAirlineId) {
+            return `${server}${ownerAirlineId}_${competitorAirlineId}competitorMonitoring`
+        }
+        return `${server}${competitorAirlineId}competitorMonitoring`
+    }
+
+    /**
+     * Builds the storage key for the owner-scoped
+     * competitor-monitoring index.
+     * @param {string} server
+     * @param {string} ownerAirlineId
+     * @returns {string}
+     */
+    static getCompetitorMonitoringIndexKey(server, ownerAirlineId) {
+        return `${server}${ownerAirlineId}competitorMonitoringIndex`
+    }
+
+    /**
+     * Promise-resolving timeout. Useful for staggering scrapes.
+     * @param {number} ms
+     * @returns {Promise<void>}
+     */
+    static sleep(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms) })
+    }
+
+    /**
+     * Opens up to 20 URLs in new tabs, 200 ms apart, to avoid AS
+     * rate-limiting. Caps at 20 even if `pages.length` exceeds.
+     * @param {string[]} pages
+     */
+    static async openPagesWithDelay(pages) {
+        const cap = Math.min(pages.length, 20)
+        for (let i = 0; i < cap; i++) {
+            window.open(pages[i], "_blank")
+            await AES.sleep(200)
+        }
+    }
 }
 
 /**
