@@ -17,6 +17,14 @@
  * Saturation/lightness are tuned for the AS panel skin: light enough that
  * a black tail label reads on top, saturated enough that ten routes don't
  * blur into one tan smear.
+ *
+ * Override hook: `assign()` accepts an optional `overrides` blob (the
+ * shape returned by `AesScheduleColorOverrides.load()`). When present,
+ * `colorOf(routeKey)` consults `overrides.byRoute` first and falls back
+ * to the deterministic palette. Aircraft- and day-keyed palettes are
+ * exposed as static helpers for the alternate color modes the renderer
+ * supports — they share the same golden-ratio HSL machinery so the
+ * visual rhythm stays consistent across modes.
  */
 class FleetScheduleGridColoring {
     static SAT = 62
@@ -24,13 +32,16 @@ class FleetScheduleGridColoring {
 
     /**
      * @param {Map<aircraftId, Schedule>} schedules
-     * @param {object} opts - {symmetric: bool} — if true, JFK→LHR and
-     *   LHR→JFK share the same color (treats route as undirected pair).
-     *   Default false.
+     * @param {object} opts - {symmetric?: bool, overrides?: object}
+     *   - symmetric: if true, JFK→LHR and LHR→JFK share one color.
+     *   - overrides: AesScheduleColorOverrides state — read-only here;
+     *     resolvers consult `byRoute` so user picks beat the palette.
      */
     static assign(schedules, opts) {
         const o = opts || {}
         const symmetric = !!o.symmetric
+        const overrides = o.overrides || null
+        const overrideRoutes = (overrides && overrides.byRoute) || {}
 
         // First pass — count flights and aircraft per route key.
         const stats = new Map() // routeKey -> {origin, dest, count, aircraft:Set}
@@ -80,8 +91,15 @@ class FleetScheduleGridColoring {
         return {
             routes,
             symmetric,
-            colorOf(routeKey) { return colorMap.get(routeKey) || "#ddd" },
+            overrides,
+            colorOf(routeKey) {
+                if (overrideRoutes && overrideRoutes[routeKey]) return overrideRoutes[routeKey]
+                return colorMap.get(routeKey) || "#ddd"
+            },
             edgeOf(routeKey) {
+                if (overrideRoutes && overrideRoutes[routeKey]) {
+                    return FleetScheduleGridColoring._darken(overrideRoutes[routeKey])
+                }
                 const r = routes.find(rr => rr.key === routeKey)
                 return r ? r.colorEdge : "#888"
             },
@@ -91,6 +109,41 @@ class FleetScheduleGridColoring {
                     ? FleetScheduleGridColoring._symKey(leg.origin, leg.destination)
                     : leg.origin + "→" + leg.destination
             }
+        }
+    }
+
+    /**
+     * Aircraft palette — deterministic HSL per aircraftId, with override
+     * lookup against `overrides.byAircraft`. Returns {fill, edge}. The
+     * renderer calls this in `colorMode === "aircraft"`.
+     */
+    static colorOfAircraft(aircraftId, overrides) {
+        const id = String(aircraftId == null ? "" : aircraftId)
+        const ov = overrides && overrides.byAircraft && overrides.byAircraft[id]
+        if (ov) return {fill: ov, edge: FleetScheduleGridColoring._darken(ov)}
+        const hue = FleetScheduleGridColoring._hashHue(id)
+        return {
+            fill: `hsl(${hue},${FleetScheduleGridColoring.SAT}%,${FleetScheduleGridColoring.LIGHT}%)`,
+            edge: `hsl(${hue},${Math.min(80, FleetScheduleGridColoring.SAT + 10)}%,40%)`
+        }
+    }
+
+    /**
+     * Day palette — seven distinct hues (Mon..Sun) spread evenly around
+     * the wheel so adjacent days are visually distinct. Override lookup
+     * against `overrides.byDay` keyed by "0".."6".
+     */
+    static colorOfDay(dayIdx, overrides) {
+        const d = (Number.isInteger(dayIdx) && dayIdx >= 0 && dayIdx < 7) ? dayIdx : 0
+        const ov = overrides && overrides.byDay && overrides.byDay[String(d)]
+        if (ov) return {fill: ov, edge: FleetScheduleGridColoring._darken(ov)}
+        // Anchored at 18° (warm Monday) and stepping ~51° per day so the
+        // week traces a full hue rotation without two adjacent days landing
+        // on near-identical pastels.
+        const hue = (18 + d * 51) % 360
+        return {
+            fill: `hsl(${hue},${FleetScheduleGridColoring.SAT}%,${FleetScheduleGridColoring.LIGHT}%)`,
+            edge: `hsl(${hue},${Math.min(80, FleetScheduleGridColoring.SAT + 10)}%,40%)`
         }
     }
 
@@ -112,11 +165,26 @@ class FleetScheduleGridColoring {
             // 137.508 = golden angle; first 30 hues are visually distinct.
             return Math.round((index * 137.508) % 360)
         }
+        return FleetScheduleGridColoring._hashHue(routeKey)
+    }
+
+    static _hashHue(s) {
         let h = 0
-        for (let i = 0; i < routeKey.length; i++) {
-            h = (h * 31 + routeKey.charCodeAt(i)) >>> 0
+        const str = String(s)
+        for (let i = 0; i < str.length; i++) {
+            h = (h * 31 + str.charCodeAt(i)) >>> 0
         }
         return h % 360
+    }
+
+    /**
+     * Edge color for a user-picked override (hex or any CSS color). We
+     * can't easily darken arbitrary CSS, so just stamp a black-ish
+     * outline that contrasts with light fills and stays visible against
+     * dark fills too.
+     */
+    static _darken(_color) {
+        return "#1A1612"
     }
 }
 

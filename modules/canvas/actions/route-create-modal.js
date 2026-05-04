@@ -1,13 +1,12 @@
 "use strict"
 
 /**
- * CanvasRouteCreateModal — fares dialog for an empty-cell drop.
+ * CanvasRouteCreateModal — route details dialog for a schedule-canvas add.
  *
  * Triggered by the drop-bridge when the user drags a destination card onto
- * a wave cell that has no existing route on that aircraft. Collects Y / C
- * / F / Cargo prices (optional — empty fields stay at AS defaults), then
- * resolves with the fare map. Caller stages an `addRoute` edit carrying
- * both the cell coordinates and the fare hint.
+ * a wave cell, or by the empty-cell context menu. Collects fields that map
+ * directly to AirlineSim's New Flight Number form: destination, departure
+ * time, price %, service, and optional flight-number suffix.
  *
  * Pure modal: no storage writes, no network. Closes on Cancel, Esc, or
  * after the user confirms. Single-instance — opening twice closes the
@@ -20,7 +19,7 @@ class CanvasRouteCreateModal {
 
     /**
      * Open the modal and return a Promise that resolves with the user's
-     * fare map (or `null` on cancel).
+     * route details (or `null` on cancel).
      *
      * @param {object} ctx — {hub, destIata, destName, aircraftId, registration}
      */
@@ -38,7 +37,8 @@ class CanvasRouteCreateModal {
         this._resolve = resolve
         this._overlayEl = null
         this._keydownHandler = null
-        this._inputs = null
+        this._fields = null
+        this._errorEl = null
     }
 
     _mount() {
@@ -87,7 +87,7 @@ class CanvasRouteCreateModal {
         title.textContent = "Stage new route"
         const sub = document.createElement("div")
         sub.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";color:" + (T ? T.color.slate : "#7A6F66") + ";font-size:11px;"
-        sub.textContent = (this.ctx.hub || "—") + " → " + (this.ctx.destIata || "???")
+        sub.textContent = (this.ctx.hub || "—") + " → " + (this._normIata(this.ctx.destIata) || "new route")
             + (this.ctx.registration ? "  ·  " + this.ctx.registration : "")
         head.append(title, sub)
         card.appendChild(head)
@@ -97,30 +97,73 @@ class CanvasRouteCreateModal {
         body.style.cssText = "padding:14px 16px;display:flex;flex-direction:column;gap:10px;"
         const lead = document.createElement("div")
         lead.style.cssText = "color:" + (T ? T.color.oxide2 : "#4A413B") + ";font-size:11px;line-height:1.5;"
-        lead.textContent = "Optional fares — empty fields keep the AS default for that class. The leg is staged for the AFP page; you confirm the actual schedule there."
+        lead.textContent = "These values are staged into the schedule apply batch and then posted through AirlineSim's Flight Plan form."
         body.appendChild(lead)
 
         const grid = document.createElement("div")
-        grid.style.cssText = "display:grid;grid-template-columns:60px 1fr;gap:6px 10px;align-items:center;"
-        const inputs = {}
-        for (const cls of ["Y", "C", "F", "Cargo"]) {
-            const lbl = document.createElement("label")
-            lbl.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";font-weight:" + (T ? T.fw.bold : "700") + ";"
-            lbl.textContent = cls
-            const inp = document.createElement("input")
-            inp.type = "number"
-            inp.min = "0"
-            inp.step = "1"
-            inp.placeholder = "default"
-            inp.style.cssText = "padding:4px 6px;font-family:" + (T ? T.font.mono : "monospace") + ";font-size:12px;"
-                + "border:1px solid " + (T ? T.color.oxide2 : "#4A413B") + ";"
-                + "background:" + (T ? T.color.bone : "#F4F1EA") + ";"
-                + "color:" + (T ? T.color.oxide : "#2B2520") + ";"
-            inputs[cls] = inp
-            grid.append(lbl, inp)
-        }
-        this._inputs = inputs
+        grid.style.cssText = "display:grid;grid-template-columns:120px 1fr;gap:7px 10px;align-items:center;"
+        const fields = {}
+
+        const destInput = document.createElement("input")
+        destInput.type = "text"
+        destInput.maxLength = 3
+        destInput.inputMode = "text"
+        destInput.autocomplete = "off"
+        destInput.value = this._normIata(this.ctx.destIata)
+        destInput.placeholder = "IATA"
+        destInput.style.cssText = this._inputCss(T) + "text-transform:uppercase;width:80px;"
+        destInput.addEventListener("input", () => {
+            destInput.value = String(destInput.value || "").replace(/[^A-Za-z]/g, "").toUpperCase().slice(0, 3)
+        })
+        fields.destIata = destInput
+        this._addField(grid, T, "Destination", destInput)
+
+        const fnInput = document.createElement("input")
+        fnInput.type = "text"
+        fnInput.maxLength = 4
+        fnInput.inputMode = "numeric"
+        fnInput.placeholder = "auto"
+        fnInput.style.cssText = this._inputCss(T) + "width:80px;"
+        fnInput.addEventListener("input", () => {
+            fnInput.value = String(fnInput.value || "").replace(/[^0-9]/g, "").slice(0, 4)
+        })
+        fields.flightNumberText = fnInput
+        this._addField(grid, T, "Flight #", fnInput)
+
+        const depInput = document.createElement("input")
+        depInput.type = "time"
+        depInput.value = this._normTime(this.ctx.depTimeLocal || this.ctx.depTime) || ""
+        depInput.style.cssText = this._inputCss(T) + "width:110px;"
+        fields.depTimeLocal = depInput
+        this._addField(grid, T, "Departure", depInput)
+
+        const priceInput = document.createElement("input")
+        priceInput.type = "number"
+        priceInput.min = "50"
+        priceInput.max = "200"
+        priceInput.step = "5"
+        priceInput.value = String(this._normPricePct(this.ctx.pricePct) || 100)
+        priceInput.style.cssText = this._inputCss(T) + "width:90px;"
+        fields.pricePct = priceInput
+        this._addField(grid, T, "Price %", priceInput)
+
+        const serviceInput = document.createElement("input")
+        serviceInput.type = "text"
+        serviceInput.value = typeof this.ctx.service === "string" ? this.ctx.service : ""
+        serviceInput.placeholder = "default"
+        serviceInput.style.cssText = this._inputCss(T) + "width:160px;"
+        fields.service = serviceInput
+        this._addField(grid, T, "Service", serviceInput)
+
+        this._fields = fields
         body.appendChild(grid)
+
+        const err = document.createElement("div")
+        err.style.cssText = "display:none;font-size:11px;color:" + (T ? T.color.crimson : "#8B2727") + ";"
+            + "border:1px solid " + (T ? T.color.crimson : "#8B2727") + ";"
+            + "background:rgba(139,39,39,0.08);padding:6px 8px;"
+        this._errorEl = err
+        body.appendChild(err)
         card.appendChild(body)
 
         // Footer
@@ -163,21 +206,81 @@ class CanvasRouteCreateModal {
             else if (e.key === "Enter") { e.preventDefault(); this._submit() }
         }
         document.addEventListener("keydown", this._keydownHandler, true)
-        const first = inputs.Y
+        const first = this._normIata(this.ctx.destIata) ? depInput : destInput
         if (first) setTimeout(() => first.focus(), 30)
     }
 
     _submit() {
-        if (!this._inputs) return this.close(null)
-        const out = {}
-        for (const k of Object.keys(this._inputs)) {
-            const v = (this._inputs[k].value || "").trim()
-            if (!v) continue
-            const n = Number(v)
-            if (!isFinite(n) || n < 0) continue
-            out[k] = Math.round(n)
+        if (!this._fields) return this.close(null)
+        const destIata = this._normIata(this._fields.destIata.value)
+        if (!destIata) {
+            this._showError("Enter a 3-letter IATA destination.")
+            return
         }
-        this.close(Object.keys(out).length ? out : {})
+        const rawDep = String(this._fields.depTimeLocal.value || "")
+        const depTimeLocal = this._normTime(rawDep)
+        if (rawDep && !depTimeLocal) {
+            this._showError("Enter departure time as HH:MM.")
+            return
+        }
+        const rawPrice = String(this._fields.pricePct.value || "")
+        const pricePct = this._normPricePct(rawPrice)
+        if (rawPrice && pricePct == null) {
+            this._showError("Price % must be between 50 and 200.")
+            return
+        }
+        const meta = {
+            destIata,
+            destName: this.ctx.destName || destIata,
+            fares: {},
+            pricePct: pricePct != null ? pricePct : 100,
+            service: String(this._fields.service.value || "").trim(),
+            flightNumberText: String(this._fields.flightNumberText.value || "")
+                .replace(/[^0-9]/g, "").slice(0, 4),
+            depTimeLocal: depTimeLocal || ""
+        }
+        this.close(meta)
+    }
+
+    _addField(parent, T, label, input) {
+        const lbl = document.createElement("label")
+        lbl.style.cssText = "font-family:" + (T ? T.font.mono : "monospace") + ";font-weight:" + (T ? T.fw.bold : "700") + ";"
+        lbl.textContent = label
+        parent.append(lbl, input)
+    }
+
+    _inputCss(T) {
+        return "padding:4px 6px;font-family:" + (T ? T.font.mono : "monospace") + ";font-size:12px;"
+            + "border:1px solid " + (T ? T.color.oxide2 : "#4A413B") + ";"
+            + "background:" + (T ? T.color.bone : "#F4F1EA") + ";"
+            + "color:" + (T ? T.color.oxide : "#2B2520") + ";"
+    }
+
+    _showError(message) {
+        if (!this._errorEl) return
+        this._errorEl.textContent = message
+        this._errorEl.style.display = "block"
+    }
+
+    _normIata(value) {
+        const s = String(value || "").trim().toUpperCase()
+        return /^[A-Z]{3}$/.test(s) ? s : ""
+    }
+
+    _normTime(value) {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim())
+        if (!m) return ""
+        const h = Number(m[1])
+        const min = Number(m[2])
+        if (!Number.isFinite(h) || !Number.isFinite(min) || h < 0 || h > 23 || min < 0 || min > 59) return ""
+        return (h < 10 ? "0" + h : String(h)) + ":" + (min < 10 ? "0" + min : String(min))
+    }
+
+    _normPricePct(value) {
+        if (value == null || value === "") return null
+        const n = Number(value)
+        if (!Number.isFinite(n) || n < 50 || n > 200) return null
+        return Math.round(n)
     }
 
     close(result) {

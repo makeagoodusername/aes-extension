@@ -50,6 +50,20 @@ class FleetHubCommandCenter {
         this.tabBarEl    = null
         this._rows       = []
         this._activeTab  = "overview"
+        // Layout density toggle. "standard" = card grid + per-hub blocks.
+        // "compact" = single-column "flight board" rows (mono, salience-sorted,
+        // status-coded). Persisted in settings.fleetCommandCenter.viewMode and
+        // surfaced as a glyph toggle in the header. CSS hooks live in
+        // css/fleet-compact.css and key off [data-view-mode="compact"].
+        this._viewMode   = "standard"
+        // Transient (not persisted) — board rows the user has clicked open in
+        // compact mode for the Schedules and Waves tabs. Keyed by entity id
+        // ("sched:" + scheduleId, "preset:" + presetId). Cleared on dispose.
+        this._expandedBoardRows = new Set()
+        // Per-hub status string from the last board paint. Compared on the
+        // next render to fire the split-flap "flip" animation only when the
+        // status actually changed (not on every repaint).
+        this._lastBoardStatusByHub = new Map()
         this._storageListener = null
         this._repaintTimer    = null
         this._loaded     = false
@@ -60,6 +74,7 @@ class FleetHubCommandCenter {
         this._scheduleCache = new Map()  // scheduleId -> full record
         this._presetsBlock  = null    // {presets, defaultPresetId, ...}
         this._waveDrafts    = new Map()  // hub -> draft record (or null)
+        this._waveContexts  = new Map()  // hub -> AesWaveAutomationContext result
         this._aircraftDrafts = new Map()  // aircraftId -> draft record (or null)
         this._hubManagement = null       // {hiddenHubs:[], labels:{IATA:label}, ...}
         this._hubMenuDispose = null      // dismisses the open hub-card kebab menu
@@ -226,6 +241,11 @@ class FleetHubCommandCenter {
         this._hubMenuOpenFor = null
 
         this._legStatusBySeq = {}
+        // Compact-mode transient state. Persisted state (viewMode itself,
+        // _expandedPresets, _expandedAircraft) lives in chrome.storage and
+        // re-hydrates on next mount.
+        if (this._expandedBoardRows) this._expandedBoardRows.clear()
+        if (this._lastBoardStatusByHub) this._lastBoardStatusByHub.clear()
         if (this.rootEl && this.rootEl.parentElement) {
             this.rootEl.parentElement.removeChild(this.rootEl)
         }
@@ -246,6 +266,11 @@ class FleetHubCommandCenter {
             this._expandedPresets = new Set(expanded.map(s => String(s)))
             const expandedAc = Array.isArray(block.expandedAircraft) ? block.expandedAircraft : []
             this._expandedAircraft = new Set(expandedAc.map(s => String(s)))
+            // Hydrate viewMode in the same pass — additive, defaults to
+            // "standard" when absent or invalid (no migration noise for
+            // users who never flip the toggle).
+            const vm = block.viewMode
+            this._viewMode = (vm === "compact" || vm === "standard") ? vm : "standard"
             const tab = block.activeTab
             if (FleetHubCommandCenter.TABS.find(t => t.id === tab)) return tab
         } catch (_) { /* fall through */ }
@@ -276,6 +301,18 @@ class FleetHubCommandCenter {
         } catch (_) { /* non-fatal */ }
     }
 
+    /** Persist the layout-density toggle. Same read–merge–write shape. */
+    async _saveViewMode(mode) {
+        try {
+            const got = await chrome.storage.local.get([FleetHubCommandCenter.SETTINGS_KEY])
+            const settings = got[FleetHubCommandCenter.SETTINGS_KEY] || {}
+            const block = Object.assign({}, settings[FleetHubCommandCenter.SETTINGS_BLOCK] || {})
+            block.viewMode = mode
+            settings[FleetHubCommandCenter.SETTINGS_BLOCK] = block
+            await chrome.storage.local.set({[FleetHubCommandCenter.SETTINGS_KEY]: settings})
+        } catch (_) { /* non-fatal */ }
+    }
+
     /** Read auxiliary data needed by the tabs. Run on every repaint. */
     async _loadAuxData() {
         const tasks = [
@@ -290,7 +327,45 @@ class FleetHubCommandCenter {
             this._loadHubManagement()
         ]
         await Promise.all(tasks)
+        await this._loadWaveAutomationContexts()
         this._loaded = true
+    }
+
+    async _loadWaveAutomationContexts() {
+        this._waveContexts.clear()
+        if (typeof window.AesWaveAutomationContext === "undefined"
+                || typeof window.AesWaveAutomationContext.buildForHub !== "function") {
+            return
+        }
+        const hidden = this._hiddenHubSet()
+        const hubs = new Set()
+        for (const h of this._uniqueHubs()) if (h && !hidden.has(h)) hubs.add(String(h).toUpperCase())
+        for (const e of (this._scheduleIndex || [])) {
+            const h = e && e.hub ? String(e.hub).toUpperCase() : ""
+            if (h && !hidden.has(h)) hubs.add(h)
+        }
+        for (const p of ((this._presetsBlock && this._presetsBlock.presets) || [])) {
+            const h = p && p.hub ? String(p.hub).toUpperCase() : ""
+            if (h && !hidden.has(h)) hubs.add(h)
+        }
+        for (const [hub, rec] of this._waveDrafts) {
+            const h = hub ? String(hub).toUpperCase() : ""
+            if (h && rec && !hidden.has(h)) hubs.add(h)
+        }
+        await Promise.all(Array.from(hubs).map(async (hub) => {
+            try {
+                const ctx = await window.AesWaveAutomationContext.buildForHub({
+                    hub,
+                    server:      this.server,
+                    airlineCode: this.airlineCode,
+                    rows:        this._rows,
+                    presetsBlock: this._presetsBlock
+                })
+                this._waveContexts.set(hub, ctx)
+            } catch (err) {
+                console.warn("[AES Fleet CC] wave automation context failed", hub, err)
+            }
+        }))
     }
 
     /**
@@ -351,11 +426,27 @@ class FleetHubCommandCenter {
             return null
         }
         const force = !!(opts && opts.force)
+        // F-9228-501: serialise compose runs through a tail Promise so a
+        // burst of strategy storage events (apply-pipeline writes 3 keys
+        // per decision and emits per-decision bus events) coalesces into
+        // a single fresh compose against the latest data instead of
+        // racing N parallel snapshots. force:true joined the queue rather
+        // than bypassing the busy guard, which previously let two composes
+        // run concurrently and stamp this._strategyPlan in resolution order.
         if (!force && this._strategyComposing) return this._strategyPlan
         if (!force && this._strategyPlan
                 && (Date.now() - this._strategyComposedAt) < FleetHubCommandCenter.STRATEGY_FRESH_MS) {
             return this._strategyPlan
         }
+        const tail = this._strategyComposeQueue || Promise.resolve()
+        const next = tail.then(() => this._composePlanImpl())
+        this._strategyComposeQueue = next.catch(() => {})
+        return next
+    }
+
+    async _composePlanImpl() {
+        const ns = window.AesStrategy
+        if (!ns) return null
 
         this._strategyComposing = true
         this._strategyComposeError = null
@@ -493,7 +584,7 @@ class FleetHubCommandCenter {
     }
 
     /**
-     * User-managed hub overrides (hidden hubs + display labels). Single
+     * User-managed hub overrides (deleted/suppressed hubs + display labels). Single
      * read off the per-airline FleetHubHubManagement store. Empty record
      * is the safe default — every consumer treats absent fields as
      * "no overrides".
@@ -546,11 +637,30 @@ class FleetHubCommandCenter {
     }
 
     _uniqueHubs() {
+        const hidden = this._hiddenHubSet()
         const set = new Set()
         for (const r of this._rows) {
-            if (r && r.hub) set.add(r.hub)
+            const hub = r && r.hub ? String(r.hub).toUpperCase() : ""
+            if (hub && !hidden.has(hub)) set.add(hub)
         }
         return Array.from(set)
+    }
+
+    _hiddenHubSet() {
+        return new Set(
+            (this._hubManagement && Array.isArray(this._hubManagement.hiddenHubs))
+                ? this._hubManagement.hiddenHubs.map(s => String(s).toUpperCase())
+                : []
+        )
+    }
+
+    _isHubHidden(hub) {
+        if (!hub) return false
+        return this._hiddenHubSet().has(String(hub).toUpperCase())
+    }
+
+    _rowHasVisibleHub(row) {
+        return !!(row && row.hub && !this._isHubHidden(row.hub))
     }
 
     /**
@@ -560,18 +670,27 @@ class FleetHubCommandCenter {
      * and tab pill stay consistent with the grid.
      */
     _operationalHubCount() {
+        const hidden = this._hiddenHubSet()
         const set = new Set()
         for (const r of this._rows) {
-            if (r && r.hub) set.add(String(r.hub).toUpperCase())
+            if (r && r.hub && !hidden.has(String(r.hub).toUpperCase())) {
+                set.add(String(r.hub).toUpperCase())
+            }
         }
         for (const e of (this._scheduleIndex || [])) {
-            if (e && e.hub) set.add(String(e.hub).toUpperCase())
+            if (e && e.hub && !hidden.has(String(e.hub).toUpperCase())) {
+                set.add(String(e.hub).toUpperCase())
+            }
         }
         for (const p of ((this._presetsBlock && this._presetsBlock.presets) || [])) {
-            if (p && p.hub) set.add(String(p.hub).toUpperCase())
+            if (p && p.hub && !hidden.has(String(p.hub).toUpperCase())) {
+                set.add(String(p.hub).toUpperCase())
+            }
         }
         for (const [hub, rec] of this._waveDrafts) {
-            if (hub && rec) set.add(String(hub).toUpperCase())
+            if (hub && rec && !hidden.has(String(hub).toUpperCase())) {
+                set.add(String(hub).toUpperCase())
+            }
         }
         return set.size
     }
@@ -584,9 +703,10 @@ class FleetHubCommandCenter {
         const sIndex    = this.server + this.airlineCode + "scheduleManagement:index"
         const sPrefix   = this.server + this.airlineCode + "scheduleManagement:"
         const afpDraftPrefix    = "aircraftFlightPlan:draft:"    + this.server + ":"
-        const afpStatePrefix    = "aircraftFlightPlan:state:"    + this.server + ":"
-        const afpSchedulePrefix = "aircraftFlightPlan:schedule:" + this.server + ":"
+        // F-9228-502: dropped afpStatePrefix / afpSchedulePrefix — the CC
+        // doesn't read either; the host already drives row refreshes.
         const waveDraftPrefix   = "routeAssistant:waveDraft"
+        const topRoutesPrefix   = "routeAssistant:topRoutes"
         const hubMgmtKey        = "fleetHub:hubManagement:" + this.server + ":" + this.airlineCode
 
         // Strategy keys repaint the strip in place rather than the whole
@@ -612,13 +732,42 @@ class FleetHubCommandCenter {
             for (const k of Object.keys(changes)) {
                 if (k === fleetKey)                            { fullHit = true; continue }
                 if (k === sIndex)                              { fullHit = true; continue }
-                if (k === FleetHubCommandCenter.SETTINGS_KEY)  { fullHit = true; continue }
+                if (k === FleetHubCommandCenter.SETTINGS_KEY) {
+                    // F-9228-500: skip writer-echo on the CC's own settings
+                    // writes (active tab, expanded sets) — those wrote
+                    // through `_saveActiveTab` / `_saveExpandedPresets` and
+                    // already triggered a synchronous render. Compare the
+                    // CC's slice before/after; only repaint if some OTHER
+                    // module's slice changed (e.g. SchedulePresets via
+                    // `scheduleManagement`). Keep the legacy RA comparison
+                    // during the migration because older builds used
+                    // `routeAssistant.schedulePresets`.
+                    const oldS = changes[k].oldValue || {}
+                    const newS = changes[k].newValue || {}
+                    const sameCcSlice =
+                        JSON.stringify(oldS[FleetHubCommandCenter.SETTINGS_BLOCK] || null) ===
+                        JSON.stringify(newS[FleetHubCommandCenter.SETTINGS_BLOCK] || null)
+                    const sameRaSlice =
+                        JSON.stringify((oldS.routeAssistant && oldS.routeAssistant.schedulePresets) || null) ===
+                        JSON.stringify((newS.routeAssistant && newS.routeAssistant.schedulePresets) || null)
+                    const sameScheduleSlice =
+                        JSON.stringify(oldS.scheduleManagement || null) ===
+                        JSON.stringify(newS.scheduleManagement || null)
+                    if (sameCcSlice && sameRaSlice && sameScheduleSlice) continue
+                    fullHit = true
+                    continue
+                }
                 if (k === hubMgmtKey)                          { fullHit = true; continue }
                 if (k.indexOf(sPrefix)            === 0)       { fullHit = true; continue }
                 if (k.indexOf(afpDraftPrefix)     === 0)       { fullHit = true; continue }
-                if (k.indexOf(afpStatePrefix)     === 0)       { fullHit = true; continue }
-                if (k.indexOf(afpSchedulePrefix)  === 0)       { fullHit = true; continue }
+                // F-9228-502: drop afpStatePrefix / afpSchedulePrefix watches.
+                // The CC reads neither; the host owns row data and pushes it
+                // through `update(rows)` already. The previous watch caused
+                // every AFP-tab interaction to fan out to a redundant
+                // `_loadAuxData` (9 storage reads) + render here, on top of
+                // the host's own listener doing the same.
                 if (k.indexOf(waveDraftPrefix)    === 0)       { fullHit = true; continue }
+                if (k.indexOf(topRoutesPrefix)     === 0)       { fullHit = true; continue }
                 if (k === TAGS_KEY     || k.indexOf(TAGS_KEY     + ":acct:") === 0) { fullHit = true; continue }
                 if (k === ROUTINES_KEY || k.indexOf(ROUTINES_KEY + ":acct:") === 0) { fullHit = true; continue }
                 if (k === STRATEGY_APPLIED_KEY
@@ -675,13 +824,19 @@ class FleetHubCommandCenter {
         sub("focus-route",    (payload) => this._handleFocusRoute(payload))
     }
 
-    _handleFocusAircraft(payload) {
+    async _handleFocusAircraft(payload) {
         try {
             const aircraftId = payload && (payload.aircraftId || payload.id)
             if (!aircraftId) return
             this._activeTab = "aircraft"
             this._expandedAircraft.add(String(aircraftId))
             this._saveExpandedPresets()
+            // F-9228-508: reload aux data before rendering so the focused
+            // row reflects current storage (drafts, tags, presets) instead
+            // of caches that may be stale after long page lifetimes. Mirrors
+            // _scheduleRepaint's pre-render contract.
+            try { await this._loadAuxData() }
+            catch (_) { /* render with whatever cache survives */ }
             this._render()
             // Scroll the row into view on the next frame, after _render
             // has produced the DOM.
@@ -748,6 +903,12 @@ class FleetHubCommandCenter {
 
     _render() {
         if (!this.rootEl) return
+        // Surface the layout density to css/fleet-compact.css via a data
+        // attribute. Standard mode removes the attribute so no compact-only
+        // selectors match — keeps the legacy DOM untouched for users who
+        // never flip the toggle.
+        if (this._viewMode === "compact") this.rootEl.dataset.viewMode = "compact"
+        else delete this.rootEl.dataset.viewMode
         this.rootEl.textContent = ""
         this.rootEl.appendChild(this._renderHeader())
         this.rootEl.appendChild(this._renderTabBar())
@@ -756,6 +917,47 @@ class FleetHubCommandCenter {
         this.bodyEl = body
         this.rootEl.appendChild(body)
         this._renderBody()
+    }
+
+    /**
+     * Two-state glyph button (▦ Standard / ▤ Compact). Mirrors the existing
+     * tab-glyph idiom (◆ ≡ ↟ ✈) — text glyph, transparent, no border. Click
+     * flips this._viewMode, persists, and re-renders the whole CC so the
+     * header reflects new state and the body branches on the new mode.
+     */
+    _renderViewModeToggle() {
+        const T = window.AESTokens
+        const compact = this._viewMode === "compact"
+        const btn = document.createElement("button")
+        btn.type = "button"
+        btn.setAttribute("aria-pressed", compact ? "true" : "false")
+        btn.title = compact
+            ? "View: Flight Board — switch to Standard cards"
+            : "View: Standard — switch to Flight Board"
+        btn.textContent = compact ? "▤" : "▦"
+        btn.style.cssText = T
+            ? [
+                "padding:0 " + T.sp[1],
+                "background:transparent",
+                "color:" + (compact ? T.color.rust : T.color.slate),
+                "border:0",
+                "font-size:" + T.fs.h3,
+                "line-height:1",
+                "cursor:pointer"
+            ].join(";")
+            : "padding:0 4px;background:transparent;color:" + (compact ? "#b8472a" : "#7a6f66")
+                + ";border:0;font-size:18px;line-height:1;cursor:pointer;"
+        btn.addEventListener("click", (ev) => {
+            ev.preventDefault()
+            const next = compact ? "standard" : "compact"
+            this._viewMode = next
+            // Reset the flip-cache so toggling doesn't fire a flap-flap on
+            // every row. Status comparisons resume from the fresh paint.
+            this._lastBoardStatusByHub.clear()
+            this._saveViewMode(next)
+            this._render()
+        })
+        return btn
     }
 
     _renderHeader() {
@@ -803,12 +1005,16 @@ class FleetHubCommandCenter {
         const hubCount = this._operationalHubCount()
         const fleetCount = this._rows.length
         const draftedCount = this._rows.filter(r => r.hasDraftedPlan).length
-        const unassignedCount = this._rows.filter(r => !r.hub).length
+        const unassignedCount = this._rows
+            .filter(r => !r || !r.hub || this._isHubHidden(r.hub)).length
         summary.textContent = fleetCount + " aircraft · "
             + hubCount + " hub" + (hubCount === 1 ? "" : "s") + " · "
             + draftedCount + " plan" + (draftedCount === 1 ? "" : "s") + " drafted"
             + (unassignedCount > 0 ? " · " + unassignedCount + " unassigned" : "")
         titleRow.appendChild(summary)
+
+        // Layout density toggle (Standard ▦ ↔ Compact flight board ▤).
+        titleRow.appendChild(this._renderViewModeToggle())
 
         // When AesStrategy isn't loaded, the strip is omitted but the
         // single Run Strategy button stays in the title row so the user
@@ -1219,6 +1425,18 @@ class FleetHubCommandCenter {
         if (!plan) return
         const sel = new Set(this._strategySelectedDecisions)
         if (!sel.size) return
+        // F-9228-507: re-check tier at click time. The strip can repaint
+        // after a tier flip while the inline decisions block (rendered by
+        // _renderOverview) keeps its stale enabled-by-paint state. Without
+        // this guard, an in-flight apply runs against the user's PRIOR
+        // tier setting and bypasses the canApply gate the button relies on.
+        const settings = this._strategySettings
+        if (settings && settings.tier === "preview-only") {
+            console.info("[AES Fleet CC] tier flipped to preview-only — apply suppressed")
+            this._setBusy("strategyApply", false)
+            this._scheduleRepaint()
+            return
+        }
 
         this._setBusy("strategyApply", true)
         try {
@@ -1466,11 +1684,18 @@ class FleetHubCommandCenter {
             const hiddenCount = (this._hubManagement && Array.isArray(this._hubManagement.hiddenHubs))
                 ? this._hubManagement.hiddenHubs.length : 0
             this.bodyEl.appendChild(this._emptyState(hiddenCount
-                ? "All visible hubs are hidden — unhide any of the " + hiddenCount + " below to bring its card back."
+                ? "All visible hubs are deleted from this view — restore any of the " + hiddenCount + " below to bring its card back."
                 : "No hub data yet — visit each aircraft's Flight Plan tab once to capture its location."
             ))
             const stripIfAny = this._renderHiddenHubsStrip()
             if (stripIfAny) this.bodyEl.appendChild(stripIfAny)
+            return
+        }
+
+        if (this._viewMode === "compact") {
+            this.bodyEl.appendChild(this._renderOverviewBoard(hubs))
+            const hidden = this._renderHiddenHubsStrip()
+            if (hidden) this.bodyEl.appendChild(hidden)
             return
         }
 
@@ -1488,6 +1713,235 @@ class FleetHubCommandCenter {
         if (unassigned) {
             this.bodyEl.appendChild(this._renderUnassignedBlock(unassigned))
         }
+    }
+
+    /**
+     * Pure scoring fn — no I/O. Ranks a hub aggregate so the most
+     * action-worthy rows surface at the top of the flight board.
+     *
+     *   BLOCKED  (1000+) — has wave draft but no preset (can't generate)
+     *   DRAFT    (200+)  — wave draft active or per-aircraft drafts pending
+     *   LIVE     (~110)  — has preset + recent saved schedule
+     *   READY    (10)    — has preset, no churn
+     *   IDLE     (0)     — nothing wired yet
+     *
+     * Unassigned bucket is pinned to the bottom (returns negative).
+     */
+    _hubSalience(hub) {
+        if (hub.unassigned) return -10
+        let s = 0
+        if (hub.waveDraft && !hub.preset) s += 1000
+        if (hub.waveDraft) s += 500
+        if (hub.aircraftDrafts > 0) {
+            s += 200 + Math.min(Number(hub.pendingLegs) || 0, 50) * 4
+        }
+        const lsAt = hub.lastSchedule && hub.lastSchedule.generatedAt
+        if (lsAt) {
+            const ageH = (Date.now() - Number(lsAt)) / 3600000
+            if (ageH < 24) s += 100
+            else if (ageH < 168) s += 30
+        }
+        if (hub.preset && !hub.waveDraft && hub.aircraftDrafts === 0) s += 10
+        return s
+    }
+
+    /** Map a salience score (+ a few shape signals) to a board status code. */
+    _hubStatusCode(hub) {
+        if (hub.unassigned) return "slate"
+        if (hub.waveDraft && !hub.preset) return "crimson"   // BLOCKED
+        if (hub.waveDraft || hub.aircraftDrafts > 0) return "amber"   // DRAFT
+        if (hub.preset && hub.lastSchedule) return "moss"    // LIVE
+        return "slate"   // IDLE / READY-without-recent-schedule
+    }
+
+    _hubStatusLabel(code) {
+        return code === "crimson" ? "BLOCKED"
+             : code === "amber"   ? "DRAFT"
+             : code === "moss"    ? "LIVE"
+             :                      "IDLE"
+    }
+
+    /**
+     * Flight-board variant of the Overview tab. Single grid: header strip
+     * plus one row per hub, ordered by _hubSalience desc with stable ties on
+     * IATA. Click anywhere on a row opens the hub drilldown overlay (same
+     * affordance as the standard hub card). Status pill flips for ~420 ms
+     * via css/fleet-compact.css when the hub's status changes between paints.
+     */
+    _renderOverviewBoard(hubs) {
+        const wrap = document.createElement("div")
+        wrap.className = "aes-fb"
+
+        // Header strip
+        const head = document.createElement("div")
+        head.className = "aes-fb-head"
+        const headCols = [
+            ["hub",     "Hub"],
+            ["status",  "Status"],
+            ["slots",   "AC"],
+            ["wave",    "Wave / Schedule"],
+            ["draft",   "Draft"],
+            ["updated", "Updated"]
+        ]
+        for (const [col, label] of headCols) {
+            const c = document.createElement("div")
+            c.className = "aes-fb-cell"
+            c.dataset.col = col
+            c.textContent = label
+            head.appendChild(c)
+        }
+        wrap.appendChild(head)
+
+        // Sort by salience (desc), break ties on IATA (asc, stable).
+        const sorted = hubs.slice().sort((a, b) => {
+            const sa = this._hubSalience(a)
+            const sb = this._hubSalience(b)
+            if (sa !== sb) return sb - sa
+            return String(a.hub || "").localeCompare(String(b.hub || ""))
+        })
+
+        // Track which hubs we paint this cycle so the flip-cache only keeps
+        // live entries (no ghosts from deleted hubs).
+        const seenHubs = new Set()
+        const prevStatus = this._lastBoardStatusByHub
+        const nextStatus = new Map()
+
+        let unassigned = null
+        for (const h of sorted) {
+            if (h.unassigned) { unassigned = h; continue }
+            const code = this._hubStatusCode(h)
+            const flip = prevStatus.has(h.hub) && prevStatus.get(h.hub) !== code
+            wrap.appendChild(this._renderHubBoardRow(h, code, flip))
+            seenHubs.add(h.hub)
+            nextStatus.set(h.hub, code)
+        }
+
+        if (unassigned) {
+            // Render the unassigned bucket as a final muted row, no flip.
+            const code = "slate"
+            wrap.appendChild(this._renderHubBoardRow(unassigned, code, false))
+        }
+
+        this._lastBoardStatusByHub = nextStatus
+        return wrap
+    }
+
+    /**
+     * One hub row in the flight board. Six cells matching the head strip;
+     * data-status drives the pill colour from CSS. Click → open drilldown
+     * overlay (standard affordance from the card variant). Empty hubs and
+     * the unassigned bucket render without a click target.
+     */
+    _renderHubBoardRow(hub, statusCode, fireFlip) {
+        const T = window.AESTokens
+        const row = document.createElement("div")
+        row.className = "aes-fb-row"
+        row.dataset.status = statusCode
+        if (hub.hub) row.dataset.hubCard = String(hub.hub).toUpperCase()
+        if (hub.unassigned) row.dataset.unassigned = "1"
+
+        const labels = (this._hubManagement && this._hubManagement.labels) || {}
+        const customLabel = (hub.hub && labels[hub.hub]) || ""
+
+        const cell = (col, text) => {
+            const c = document.createElement("div")
+            c.className = "aes-fb-cell"
+            c.dataset.col = col
+            c.textContent = text == null ? "" : String(text)
+            return c
+        }
+
+        // HUB
+        row.appendChild(cell("hub", customLabel || hub.hub || "—"))
+
+        // STATUS — flip on change
+        const status = cell("status", this._hubStatusLabel(statusCode))
+        if (fireFlip) {
+            status.dataset.flip = "true"
+            // One-shot — release the attribute so the next status change can
+            // re-trigger. Window > keyframe duration (420 ms) for safety.
+            setTimeout(() => {
+                if (status && status.removeAttribute) status.removeAttribute("data-flip")
+            }, 480)
+        }
+        row.appendChild(status)
+
+        // AC slots — aircraft count
+        const acCount = Array.isArray(hub.aircraft) ? hub.aircraft.length : 0
+        row.appendChild(cell("slots", acCount ? String(acCount) : "—"))
+
+        // WAVE / SCHEDULE — preset name (or "no preset"), with optional
+        // schedule sub-line baked into the same cell.
+        const waveCell = document.createElement("div")
+        waveCell.className = "aes-fb-cell"
+        waveCell.dataset.col = "wave"
+        if (hub.preset) {
+            const wn = (hub.preset.waves || []).length
+            const main = document.createElement("span")
+            main.textContent = hub.preset.name + " · " + wn + "w"
+            waveCell.appendChild(main)
+            if (hub.lastSchedule) {
+                const sub = document.createElement("span")
+                sub.style.cssText = "color:" + (T ? T.color.slate : "#7a6f66") + ";margin-left:8px;"
+                sub.textContent = (hub.lastSchedule.flightCount || 0) + " legs"
+                    + (hub.lastSchedule.warningCount ? " · " + hub.lastSchedule.warningCount + "⚠" : "")
+                waveCell.appendChild(sub)
+            }
+        } else if (hub.unassigned) {
+            waveCell.textContent = "—"
+        } else {
+            const main = document.createElement("span")
+            main.style.cssText = "color:" + (T ? T.color.slate : "#7a6f66") + ";font-style:italic;"
+            main.textContent = "no preset"
+            waveCell.appendChild(main)
+        }
+        row.appendChild(waveCell)
+
+        // DRAFT — applied / pending leg counts
+        const draftCell = cell("draft",
+            hub.aircraftDrafts > 0
+                ? hub.appliedLegs + "/" + (hub.appliedLegs + hub.pendingLegs)
+                : "—")
+        if (hub.aircraftDrafts > 0 && hub.pendingLegs > 0) {
+            draftCell.title = hub.aircraftDrafts + " draft" + (hub.aircraftDrafts === 1 ? "" : "s")
+                + " · " + hub.appliedLegs + " applied / " + hub.pendingLegs + " pending"
+        }
+        row.appendChild(draftCell)
+
+        // UPDATED — most recent schedule generation
+        const ts = hub.lastSchedule && hub.lastSchedule.generatedAt
+        row.appendChild(cell("updated", ts ? this._relativeTime(ts) : "—"))
+
+        // Click → drilldown (skip for empty + unassigned).
+        if (!hub.unassigned && Array.isArray(hub.aircraft) && hub.aircraft.length) {
+            row.setAttribute("role", "button")
+            row.setAttribute("tabindex", "0")
+            row.title = "Open hub drilldown for " + hub.hub
+            const open = (ev) => {
+                if (ev && ev.target && ev.target.closest && ev.target.closest("button,a")) return
+                if (typeof window.FleetHubDrilldownPanel === "undefined") return
+                try {
+                    window.FleetHubDrilldownPanel.open({
+                        server:       this.server,
+                        airlineCode:  this.airlineCode,
+                        hub:          hub.hub,
+                        fleet:        hub.aircraft.slice(),
+                        planEnvelope: this._strategyPlan
+                    })
+                } catch (err) {
+                    console.warn("[AES Fleet CC] hub drilldown open failed", err)
+                }
+            }
+            row.addEventListener("click", open)
+            row.addEventListener("keydown", (ev) => {
+                if (ev.key === "Enter" || ev.key === " ") {
+                    ev.preventDefault()
+                    open(ev)
+                }
+            })
+        }
+
+        return row
     }
 
     /**
@@ -1524,7 +1978,7 @@ class FleetHubCommandCenter {
             && typeof window.AesAfpProxyPageFetcher  !== "undefined"
 
         // Aircraft missing a draft (and with a known hub).
-        const missing = this._rows.filter(r => r && r.hub
+        const missing = this._rows.filter(r => this._rowHasVisibleHub(r)
             && !this._aircraftDrafts.has(String(r.aircraftId)))
         // Pending leg total across all drafts.
         let pendingTotal = 0
@@ -1578,7 +2032,7 @@ class FleetHubCommandCenter {
      */
     async _bulkGenerateMissingDrafts() {
         if (this._busy.has("bulkGen")) return
-        const targets = this._rows.filter(r => r && r.hub
+        const targets = this._rows.filter(r => this._rowHasVisibleHub(r)
             && !this._aircraftDrafts.has(String(r.aircraftId)))
         if (!targets.length) return
 
@@ -1680,6 +2134,12 @@ class FleetHubCommandCenter {
 
     _renderUnassignedBlock(entry) {
         const T = window.AESTokens
+        const hiddenCounts = entry && entry.hiddenHubCounts instanceof Map
+            ? entry.hiddenHubCounts
+            : new Map()
+        let hiddenAircraft = 0
+        for (const n of hiddenCounts.values()) hiddenAircraft += Number(n) || 0
+        const unknownAircraft = Math.max(0, entry.aircraft.length - hiddenAircraft)
         const wrap = document.createElement("div")
         wrap.style.cssText = T
             ? [
@@ -1703,13 +2163,17 @@ class FleetHubCommandCenter {
         head.appendChild(title)
         const count = document.createElement("span")
         count.style.cssText = "font-size:11px;color:" + (T ? T.color.slate : "#7a6f66") + ";"
-        count.textContent = entry.aircraft.length + " aircraft · no known location yet"
+        count.textContent = entry.aircraft.length + " aircraft"
+            + (hiddenAircraft ? " · " + hiddenAircraft + " from deleted hub" + (hiddenAircraft === 1 ? "" : "s") : "")
+            + (unknownAircraft ? " · " + unknownAircraft + " no known location" : "")
         head.appendChild(count)
         wrap.appendChild(head)
 
         const note = document.createElement("p")
         note.style.cssText = "margin:0;color:" + (T ? T.color.slate : "#7a6f66") + ";font-style:italic;font-size:11px;"
-        note.textContent = "Visit each aircraft's Flight Plan tab to populate its hub."
+        note.textContent = hiddenAircraft
+            ? "Deleted hub allocations are suppressed here. Restore a hub from the Deleted hubs strip to bring its card back."
+            : "Visit each aircraft's Flight Plan tab to populate its hub."
         wrap.appendChild(note)
 
         const list = document.createElement("ul")
@@ -1725,6 +2189,9 @@ class FleetHubCommandCenter {
             eq.style.cssText = "color:" + (T ? T.color.slate : "#7a6f66") + ";font-size:11px;"
             eq.textContent = r.equipment || ""
             li.appendChild(eq)
+            if (r.hub && this._isHubHidden(r.hub)) {
+                li.appendChild(this._badge("Deleted hub " + String(r.hub).toUpperCase(), "muted"))
+            }
             const open = document.createElement("a")
             open.href = "/app/fleets/aircraft/" + r.aircraftId + "/0"
             open.target = "_blank"
@@ -1757,15 +2224,11 @@ class FleetHubCommandCenter {
      * appended at the end of the list — never silently dropped.
      */
     _buildHubAggregate() {
-        // User-hidden hubs (per-airline override) drop out of the seeding
+        // User-deleted hubs (per-airline override) drop out of the seeding
         // loops AND any aircraft tagged to them fall into UNASSIGNED. This
         // is a UI suppression — the underlying data is untouched, so an
-        // unhide flips the card back instantly.
-        const hidden = new Set(
-            (this._hubManagement && Array.isArray(this._hubManagement.hiddenHubs))
-                ? this._hubManagement.hiddenHubs.map(s => String(s).toUpperCase())
-                : []
-        )
+        // restore flips the card back instantly.
+        const hidden = this._hiddenHubSet()
 
         const byHub = new Map()
         const getOrCreate = (rawHub) => {
@@ -1811,6 +2274,7 @@ class FleetHubCommandCenter {
             hub: "(unassigned)",
             unassigned: true,
             aircraft: [],
+            hiddenHubCounts: new Map(),
             drafted: 0,
             liveSchedule: false,
             aircraftDrafts: 0,
@@ -1821,9 +2285,15 @@ class FleetHubCommandCenter {
         for (const r of this._rows) {
             // getOrCreate returns null when r.hub is in the hidden set; the
             // aircraft then falls into UNASSIGNED so the user can still see
-            // it and unhide the hub from the strip below.
-            const created = r.hub ? getOrCreate(r.hub) : null
+            // it and restore the hub from the strip below.
+            const hubKey = r.hub ? String(r.hub).toUpperCase() : null
+            const hiddenHub = hubKey && hidden.has(hubKey)
+            const created = (hubKey && !hiddenHub) ? getOrCreate(hubKey) : null
             const target = created || unassigned
+            if (hiddenHub) {
+                unassigned.hiddenHubCounts.set(hubKey,
+                    (unassigned.hiddenHubCounts.get(hubKey) || 0) + 1)
+            }
             if (target !== unassigned) target.sources.add("aircraft")
             target.aircraft.push(r)
             if (r.hasDraftedPlan) target.drafted++
@@ -1925,7 +2395,7 @@ class FleetHubCommandCenter {
         head.appendChild(acCount)
         if (hub.liveSchedule) head.appendChild(this._badge("LIVE", "moss"))
 
-        // Kebab — hide / rename / clear-drafts. Pushed against the right
+        // Kebab — delete / rename / clear-drafts. Pushed against the right
         // edge so the row reads IATA · count · LIVE · ⋯ · chevron.
         const kebab = this._renderHubCardMenu(hub, customLabel)
         if (kebab) head.appendChild(kebab)
@@ -2000,6 +2470,11 @@ class FleetHubCommandCenter {
         actions.appendChild(this._actionButton("Markets",
             "Open the route markets page for " + hub.hub,
             () => window.open("/app/com/markets/" + hub.hub, "_blank")))
+        if (typeof window.FleetHubHubManagement !== "undefined") {
+            actions.appendChild(this._actionButton("Delete hub",
+                "Remove " + hub.hub + " from Fleet Command Center. Aircraft move to Unassigned here; AS data is untouched.",
+                () => this._hubMenuDelete(hub)))
+        }
         card.appendChild(actions)
 
         // Card-level click → drilldown overlay. Skipped for empty hubs.
@@ -2044,7 +2519,7 @@ class FleetHubCommandCenter {
      * exclusive across cards (only one menu open at a time).
      *
      * Actions:
-     *   • Hide hub               — adds IATA to hiddenHubs[]
+     *   • Delete hub             — suppresses the hub card locally
      *   • Rename label…          — prompts for a display label
      *   • Clear label            — only when a custom label is set
      *   • Clear drafted plans    — bulk-removes AesAfpActiveDraftStore drafts
@@ -2153,7 +2628,7 @@ class FleetHubCommandCenter {
             return it
         }
 
-        menu.appendChild(item("Hide hub", () => this._hubMenuHide(hub)))
+        menu.appendChild(item("Delete hub", () => this._hubMenuDelete(hub)))
         menu.appendChild(item(customLabel ? "Rename label…" : "Set label…",
             () => this._hubMenuRename(hub, customLabel)))
         if (customLabel) {
@@ -2190,13 +2665,18 @@ class FleetHubCommandCenter {
         }
     }
 
-    async _hubMenuHide(hub) {
+    async _hubMenuDelete(hub) {
         if (!hub || !hub.hub) return
-        if (!window.confirm("Hide hub " + hub.hub
-                + " from the command center? You can unhide it from the strip below the hub grid.")) {
+        if (!window.confirm("Delete hub " + hub.hub
+                + " from Fleet Command Center?\n\nAircraft assigned to " + hub.hub
+                + " will move to Unassigned in this view. AirlineSim data, saved schedules, and wave presets are not deleted. You can restore the hub from the Deleted hubs strip.")) {
             return
         }
-        await window.FleetHubHubManagement.hide(this.server, this.airlineCode, hub.hub)
+        if (typeof window.FleetHubHubManagement.deleteHub === "function") {
+            await window.FleetHubHubManagement.deleteHub(this.server, this.airlineCode, hub.hub)
+        } else {
+            await window.FleetHubHubManagement.hide(this.server, this.airlineCode, hub.hub)
+        }
         // The storage onChanged listener will fire and trigger _scheduleRepaint,
         // but call it eagerly so the user sees the card disappear immediately
         // even before the listener round-trips.
@@ -2241,8 +2721,9 @@ class FleetHubCommandCenter {
     }
 
     /**
-     * Strip of "unhide" chips for any hubs the user has hidden. Renders
-     * nothing when nothing is hidden — keeps the Overview clean by default.
+     * Strip of restore chips for hubs the user deleted from this local view.
+     * Renders nothing when nothing is deleted — keeps the Overview clean by
+     * default.
      */
     _renderHiddenHubsStrip() {
         const hidden = (this._hubManagement && Array.isArray(this._hubManagement.hiddenHubs))
@@ -2269,14 +2750,14 @@ class FleetHubCommandCenter {
         title.style.cssText = "font-size:11px;font-weight:" + (T ? T.fw.bold : 700)
             + ";text-transform:uppercase;letter-spacing:" + (T ? T.track.caps : "0.08em")
             + ";color:" + (T ? T.color.oxide : "#2b2520") + ";"
-        title.textContent = "Hidden hubs"
+        title.textContent = "Deleted hubs"
         wrap.appendChild(title)
 
         for (const iata of hidden) {
             const chip = document.createElement("button")
             chip.type = "button"
-            chip.title = "Unhide " + iata
-            chip.textContent = iata + " ⤴"
+            chip.title = "Restore " + iata
+            chip.textContent = iata + " restore"
             chip.style.cssText = T
                 ? [
                     "padding:" + T.sp[1] + " " + T.sp[2],
@@ -2296,7 +2777,7 @@ class FleetHubCommandCenter {
                         this.server, this.airlineCode, iata)
                     this._scheduleRepaint()
                 } catch (err) {
-                    console.warn("[AES Fleet CC] unhide hub failed", iata, err)
+                    console.warn("[AES Fleet CC] restore hub failed", iata, err)
                 }
             })
             wrap.appendChild(chip)
@@ -2327,7 +2808,7 @@ class FleetHubCommandCenter {
         }
         const aircraftByHub = new Map()
         for (const r of this._rows) {
-            if (!r || !r.hub) continue
+            if (!this._rowHasVisibleHub(r)) continue
             const k = String(r.hub).toUpperCase()
             if (!aircraftByHub.has(k)) aircraftByHub.set(k, [])
             aircraftByHub.get(k).push(r)
@@ -2352,6 +2833,13 @@ class FleetHubCommandCenter {
             return
         }
 
+        if (this._viewMode === "compact") {
+            this.bodyEl.appendChild(this._renderSchedulesBoard(
+                idx, schedulesByHub, presetsByHub, aircraftByHub, hubList
+            ))
+            return
+        }
+
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;flex-direction:column;gap:" + (T ? T.sp[3] : "12px") + ";"
         for (const hub of hubList) {
@@ -2363,6 +2851,150 @@ class FleetHubCommandCenter {
             ))
         }
         this.bodyEl.appendChild(wrap)
+    }
+
+    /**
+     * Compact "flight board" Schedules view. Three sections:
+     *   1. Per-hub generate strip — one mini-row per hub with the existing
+     *      generate control inline (so users can build new schedules without
+     *      bouncing back to standard view).
+     *   2. Saved-schedules board — flat list across hubs, sorted by warnings
+     *      desc, then generated-at desc. Click row → expand inline action
+     *      strip with Delete and the entry's preset/leg/warn detail.
+     */
+    _renderSchedulesBoard(allEntries, schedulesByHub, presetsByHub, aircraftByHub, hubList) {
+        const T = window.AESTokens
+        const root = document.createElement("div")
+        root.className = "aes-fb-section"
+
+        // ── Generate strip — one row per hub with the inline generate ctl
+        const genWrap = document.createElement("div")
+        genWrap.className = "aes-fb-genstrip"
+        const genHead = document.createElement("div")
+        genHead.className = "aes-fb-section-label"
+        genHead.textContent = "Generate"
+        genWrap.appendChild(genHead)
+        for (const hub of hubList) {
+            const presetsForHub  = presetsByHub.get(hub) || []
+            const aircraftAtHub  = aircraftByHub.get(hub) || []
+            const row = document.createElement("div")
+            row.className = "aes-fb-genrow"
+            const lbl = document.createElement("span")
+            lbl.className = "aes-fb-genrow-hub"
+            lbl.textContent = hub
+            row.appendChild(lbl)
+            const meta = document.createElement("span")
+            meta.className = "aes-fb-genrow-meta"
+            meta.textContent = aircraftAtHub.length + "ac · " + presetsForHub.length + "p"
+            row.appendChild(meta)
+            row.appendChild(this._renderScheduleGenerateControl(hub, presetsForHub, aircraftAtHub))
+            genWrap.appendChild(row)
+        }
+        root.appendChild(genWrap)
+
+        // ── Saved schedules board
+        const board = document.createElement("div")
+        board.className = "aes-fb"
+
+        const headCols = [
+            ["hub",     "Hub"],
+            ["status",  "Status"],
+            ["wave",    "Preset"],
+            ["legs",    "Legs"],
+            ["warn",    "⚠"],
+            ["updated", "Generated"]
+        ]
+        const head = document.createElement("div")
+        head.className = "aes-fb-head"
+        for (const [col, label] of headCols) {
+            const c = document.createElement("div")
+            c.className = "aes-fb-cell"
+            c.dataset.col = col
+            c.textContent = label
+            head.appendChild(c)
+        }
+        board.appendChild(head)
+
+        const sorted = (allEntries || []).slice().sort((a, b) => {
+            const wa = Number(a && a.warningCount) || 0
+            const wb = Number(b && b.warningCount) || 0
+            if (wa !== wb) return wb - wa
+            const ta = Number(a && a.generatedAt) || 0
+            const tb = Number(b && b.generatedAt) || 0
+            return tb - ta
+        })
+
+        if (!sorted.length) {
+            const empty = document.createElement("div")
+            empty.className = "aes-fb-empty"
+            empty.textContent = "No saved schedules yet — generate one above."
+            board.appendChild(empty)
+        }
+
+        for (const entry of sorted) {
+            const hub = entry && entry.hub ? String(entry.hub).toUpperCase() : "—"
+            const statusCode = (Number(entry.warningCount) || 0) > 0 ? "amber"
+                : entry.status === "applied" ? "moss"
+                : "slate"
+            const statusLabel = (Number(entry.warningCount) || 0) > 0 ? "WARN"
+                : entry.status === "applied" ? "APPLIED"
+                : (entry.status ? String(entry.status).toUpperCase() : "SAVED")
+
+            const rowKey = "sched:" + (entry.scheduleId || (entry.presetId + ":" + entry.generatedAt))
+            const expanded = this._expandedBoardRows.has(rowKey)
+
+            const row = document.createElement("div")
+            row.className = "aes-fb-row"
+            row.dataset.status = statusCode
+            row.dataset.expanded = expanded ? "true" : "false"
+            row.title = "Click to " + (expanded ? "collapse" : "expand")
+
+            const cell = (col, text) => {
+                const c = document.createElement("div")
+                c.className = "aes-fb-cell"
+                c.dataset.col = col
+                c.textContent = text == null ? "" : String(text)
+                return c
+            }
+            row.appendChild(cell("hub", hub))
+            row.appendChild(cell("status", statusLabel))
+            row.appendChild(cell("wave", entry.presetName || "(unnamed)"))
+            row.appendChild(cell("legs", String(entry.flightCount || 0)))
+            row.appendChild(cell("warn", entry.warningCount ? String(entry.warningCount) : "—"))
+            row.appendChild(cell("updated", entry.generatedAt ? this._relativeTime(entry.generatedAt) : "—"))
+
+            row.addEventListener("click", (ev) => {
+                if (ev && ev.target && ev.target.closest && ev.target.closest("button,a,select,input")) return
+                if (this._expandedBoardRows.has(rowKey)) this._expandedBoardRows.delete(rowKey)
+                else this._expandedBoardRows.add(rowKey)
+                this._render()
+            })
+            board.appendChild(row)
+
+            if (expanded) {
+                const exp = document.createElement("div")
+                exp.className = "aes-fb-expand"
+                const meta = document.createElement("div")
+                meta.className = "aes-fb-expand-meta"
+                meta.textContent = "Schedule " + (entry.scheduleId || "(no id)")
+                    + " · " + (entry.flightCount || 0) + " legs"
+                    + (entry.warningCount ? " · " + entry.warningCount + " warn" : "")
+                    + (entry.generatedAt ? " · " + this._relativeTime(entry.generatedAt) : "")
+                exp.appendChild(meta)
+                const actions = document.createElement("div")
+                actions.className = "aes-fb-expand-actions"
+                const delBtn = this._actionButton("Delete",
+                    "Delete this saved schedule.",
+                    () => this._deleteSchedule(entry))
+                this._wireBusyDisable(delBtn, "delSched:" + entry.scheduleId)
+                actions.appendChild(delBtn)
+                exp.appendChild(actions)
+                board.appendChild(exp)
+            }
+        }
+
+        root.appendChild(board)
+        return root
     }
 
     _renderScheduleHubBlock(hub, entries, presetsForHub, aircraftAtHub) {
@@ -2502,7 +3134,11 @@ class FleetHubCommandCenter {
             this._toast("error", "AFP modules not loaded — cannot generate from this page.")
             return {ok: false, error: "noPipeline"}
         }
-        const seedAircraft = this._rows.find(r => r && r.hub
+        if (this._isHubHidden(HUB)) {
+            this._toast("error", HUB + " is deleted from Fleet Command Center. Restore it before generating schedules.")
+            return {ok: false, error: "deletedHub"}
+        }
+        const seedAircraft = this._rows.find(r => this._rowHasVisibleHub(r)
             && String(r.hub).toUpperCase() === HUB)
         if (!seedAircraft) {
             this._toast("error", "No aircraft parked at " + HUB + ".")
@@ -2599,6 +3235,7 @@ class FleetHubCommandCenter {
         }
         const opHubs = this._uniqueHubs().map(h => String(h).toUpperCase())
         const missingHubs = opHubs.filter(h => !byHub.has(h)).sort()
+        const hubSet = new Set(opHubs.concat(Array.from(byHub.keys())).concat(Array.from(this._waveContexts.keys())))
 
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;flex-direction:column;gap:" + (T ? T.sp[3] : "12px") + ";"
@@ -2612,11 +3249,142 @@ class FleetHubCommandCenter {
             wrap.appendChild(this._renderWavesCreateBlock(missingHubs, presets.length === 0))
         }
 
-        const hubs = Array.from(byHub.keys()).sort()
+        if (this._viewMode === "compact") {
+            wrap.appendChild(this._renderWavesBoard(presets, byHub))
+            this.bodyEl.appendChild(wrap)
+            return
+        }
+
+        const hubs = Array.from(hubSet).sort()
         for (const hub of hubs) {
-            wrap.appendChild(this._renderWavesHubBlock(hub, byHub.get(hub)))
+            wrap.appendChild(this._renderWavesHubBlock(hub, byHub.get(hub) || [], this._waveContexts.get(hub) || null))
         }
         this.bodyEl.appendChild(wrap)
+    }
+
+    /**
+     * Compact "flight board" Waves view. One row per preset, sorted with
+     * presets-with-active-drafts first, then by hub IATA. Click a row to
+     * expand the existing per-hub wave block inline (so the rich editor
+     * stays available without forking its internals).
+     */
+    _renderWavesBoard(presets, byHub) {
+        const board = document.createElement("div")
+        board.className = "aes-fb"
+
+        const headCols = [
+            ["hub",     "Hub"],
+            ["status",  "Status"],
+            ["wave",    "Preset"],
+            ["waves",   "Waves"],
+            ["draft",   "Draft"],
+            ["updated", "Updated"]
+        ]
+        const head = document.createElement("div")
+        head.className = "aes-fb-head"
+        for (const [col, label] of headCols) {
+            const c = document.createElement("div")
+            c.className = "aes-fb-cell"
+            c.dataset.col = col
+            c.textContent = label
+            head.appendChild(c)
+        }
+        board.appendChild(head)
+
+        const flat = []
+        for (const p of presets) {
+            const hub = (p.hub || "").toUpperCase() || "(global)"
+            const ctx = this._waveContexts.get(hub) || null
+            const draftRec = this._waveDrafts.get(hub)
+            flat.push({preset: p, hub, ctx, hasDraft: !!draftRec})
+        }
+        flat.sort((a, b) => {
+            const da = a.hasDraft ? 1 : 0
+            const db = b.hasDraft ? 1 : 0
+            if (da !== db) return db - da
+            if (a.hub !== b.hub) return a.hub.localeCompare(b.hub)
+            return String(a.preset.name || "").localeCompare(String(b.preset.name || ""))
+        })
+
+        if (!flat.length) {
+            const empty = document.createElement("div")
+            empty.className = "aes-fb-empty"
+            empty.textContent = "No wave presets yet — create one above."
+            board.appendChild(empty)
+            return board
+        }
+
+        for (const item of flat) {
+            const {preset, hub, ctx, hasDraft} = item
+            const wn = (preset.waves || []).length
+            const updatedAt = Number(preset.updatedAt) || Number(preset.createdAt) || 0
+
+            let statusCode = "slate"
+            let statusLabel = "READY"
+            if (hasDraft) {
+                statusCode = "amber"
+                statusLabel = "DRAFT"
+            } else if (ctx && ctx.readiness) {
+                if (ctx.readiness.status === "ready") {
+                    statusCode = "moss"
+                    statusLabel = "READY"
+                } else if (ctx.readiness.status === "attention") {
+                    statusCode = "amber"
+                    statusLabel = "ATTN"
+                } else if (ctx.readiness.status) {
+                    statusCode = "crimson"
+                    statusLabel = String(ctx.readiness.status).toUpperCase()
+                }
+            }
+
+            const rowKey = "preset:" + (preset.id || (hub + ":" + preset.name))
+            const expanded = this._expandedBoardRows.has(rowKey)
+
+            const row = document.createElement("div")
+            row.className = "aes-fb-row"
+            row.dataset.status = statusCode
+            row.dataset.expanded = expanded ? "true" : "false"
+            row.title = "Click to " + (expanded ? "collapse" : "expand the wave editor")
+
+            const cell = (col, text) => {
+                const c = document.createElement("div")
+                c.className = "aes-fb-cell"
+                c.dataset.col = col
+                c.textContent = text == null ? "" : String(text)
+                return c
+            }
+            row.appendChild(cell("hub", hub))
+            row.appendChild(cell("status", statusLabel))
+            row.appendChild(cell("wave", preset.name || "(unnamed)"))
+            row.appendChild(cell("waves", String(wn)))
+            row.appendChild(cell("draft", hasDraft ? "yes" : "—"))
+            row.appendChild(cell("updated", updatedAt ? this._relativeTime(updatedAt) : "—"))
+
+            row.addEventListener("click", (ev) => {
+                if (ev && ev.target && ev.target.closest && ev.target.closest("button,a,select,input")) return
+                if (this._expandedBoardRows.has(rowKey)) this._expandedBoardRows.delete(rowKey)
+                else this._expandedBoardRows.add(rowKey)
+                this._render()
+            })
+            board.appendChild(row)
+
+            if (expanded && hub !== "(global)") {
+                const exp = document.createElement("div")
+                exp.className = "aes-fb-expand"
+                // Reuse the existing per-hub wave block. It includes ALL the
+                // hub's presets + the readiness strip — fine, the user clicked
+                // the preset row to drill into the hub's wave context.
+                const block = this._renderWavesHubBlock(
+                    hub,
+                    byHub.get(hub) || [],
+                    this._waveContexts.get(hub) || null
+                )
+                exp.appendChild(block)
+                board.appendChild(exp)
+            }
+        }
+
+        return board
     }
 
     /**
@@ -2732,8 +3500,12 @@ class FleetHubCommandCenter {
         }
         try {
             await RouteAssistantWaveEditor.createStarterPreset(hub)
-            // Storage onChanged ("settings" key) triggers _scheduleRepaint
-            // — the new card lands on its own. No manual re-render needed.
+            // Storage onChanged ("settings" key) now also catches the
+            // scheduleManagement slice, but repaint immediately so the
+            // initiating button never sits on "Creating..." while waiting
+            // for the async storage event.
+            await this._loadAuxData()
+            this._render()
         } catch (err) {
             console.warn("[AES Fleet CC] create starter preset failed", err)
             if (btn) {
@@ -2743,7 +3515,7 @@ class FleetHubCommandCenter {
         }
     }
 
-    _renderWavesHubBlock(hub, presets) {
+    _renderWavesHubBlock(hub, presets, waveCtx) {
         const T = window.AESTokens
         const block = document.createElement("div")
         if (hub && hub !== "(global)") block.dataset.hubCard = String(hub).toUpperCase()
@@ -2761,18 +3533,44 @@ class FleetHubCommandCenter {
         head.appendChild(hubLbl)
         const draft = this._waveDrafts.get(hub)
         if (draft) head.appendChild(this._badge("DRAFT", "amber"))
+        if (waveCtx && waveCtx.readiness) {
+            const tone = waveCtx.readiness.status === "ready" ? "moss"
+                : waveCtx.readiness.status === "attention" ? "amber" : "crimson"
+            head.appendChild(this._badge(waveCtx.readiness.status, tone))
+            if (waveCtx.readiness.score != null && isFinite(waveCtx.readiness.score)) {
+                head.appendChild(this._badge("SCORE " + Math.round(waveCtx.readiness.score), tone))
+            }
+        }
         block.appendChild(head)
+
+        if (waveCtx) block.appendChild(this._renderWaveReadinessStrip(hub, waveCtx))
 
         const list = document.createElement("ul")
         list.style.cssText = "list-style:none;margin:0;padding:0;"
-        for (const p of presets) list.appendChild(this._renderPresetRow(p, hub))
+        if (presets.length) {
+            for (const p of presets) list.appendChild(this._renderPresetRow(p, hub, waveCtx))
+        } else if (hub !== "(global)") {
+            const empty = document.createElement("li")
+            empty.style.cssText = "display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid "
+                + (T ? T.color.paperRule : "#c9c0b0") + ";font-size:12px;color:" + (T ? T.color.slate : "#7a6f66") + ";"
+            const msg = document.createElement("span")
+            msg.style.cssText = "flex:1 1 auto;font-style:italic;"
+            msg.textContent = "No wave preset for this hub yet."
+            empty.appendChild(msg)
+            if (typeof RouteAssistantWaveEditor !== "undefined") {
+                empty.appendChild(this._renderCreateForHubButton(hub))
+            }
+            list.appendChild(empty)
+        }
         block.appendChild(list)
+
+        if (waveCtx) block.appendChild(this._renderWaveActionRow(hub, waveCtx))
 
         // Per-hub "+ another plan" affordance — same store, same starter
         // template the AFP wave-strip and RA Wave View use. Skipped for
         // the synthetic "(global)" bucket since starter presets need a
         // hub IATA.
-        if (hub !== "(global)" && typeof RouteAssistantWaveEditor !== "undefined") {
+        if (hub !== "(global)" && presets.length && typeof RouteAssistantWaveEditor !== "undefined") {
             const foot = document.createElement("div")
             foot.style.cssText = "padding:6px 12px;display:flex;justify-content:flex-end;"
             const addBtn = document.createElement("button")
@@ -2796,7 +3594,155 @@ class FleetHubCommandCenter {
         return block
     }
 
-    _renderPresetRow(preset, hub) {
+    _renderWaveReadinessStrip(hub, ctx) {
+        const T = window.AESTokens
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;"
+            + "padding:8px 12px;border-bottom:1px solid " + (T ? T.color.paperRule : "#c9c0b0") + ";"
+            + "background:" + (T ? T.color.bone : "#f4f1ea") + ";"
+        const capacity = ctx.capacity || {}
+        const routes = ctx.topRoutes || {}
+        const stations = ctx.stationSummary || {}
+        const fleet = ctx.fleetSummary || {}
+        wrap.appendChild(this._waveMetric("Capacity",
+            (capacity.usedSlots || 0) + " / " + (capacity.totalSlots || 0) + " slots",
+            capacity.totalSlots ? "moss" : "crimson"))
+        wrap.appendChild(this._waveMetric("Routes",
+            routes.count ? (routes.count + " cached" + (routes.ageMs != null ? " · " + this._compactAge(routes.ageMs) : "")) : "none",
+            routes.count ? (routes.fresh ? "moss" : "amber") : "crimson"))
+        wrap.appendChild(this._waveMetric("Aircraft",
+            fleet.total ? (fleet.drafted + " / " + fleet.total + " drafted") : "none",
+            fleet.total ? (fleet.undrafted ? "amber" : "moss") : "crimson"))
+        wrap.appendChild(this._waveMetric("Stations",
+            stations.known
+                ? (stations.open + " open · " + stations.missing + " need")
+                : (stations.unknown || routes.count || 0) + " unknown",
+            stations.known ? (stations.missing ? "amber" : "moss") : "muted"))
+        return wrap
+    }
+
+    _renderWaveActionRow(hub, ctx) {
+        const T = window.AESTokens
+        const row = document.createElement("div")
+        row.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;"
+            + "border-bottom:1px solid " + (T ? T.color.paperRule : "#c9c0b0") + ";"
+            + "background:" + (T ? T.color.bone2 : "#ece7dc") + ";"
+
+        const mk = (key, label, fn) => {
+            const action = (ctx.actions && ctx.actions[key]) || {enabled: false, reason: ""}
+            const btn = this._actionButton(label, action.reason || "", fn)
+            if (!action.enabled) this._disableButton(btn)
+            return btn
+        }
+        row.appendChild(mk("diagnose", "Diagnose", () => this._diagnoseWavePreset(hub, ctx)))
+        row.appendChild(mk("buildPreview", "Preview", () => this._previewWaveFleetApply(hub, ctx)))
+        row.appendChild(mk("openCanvas", "Open canvas", () => this._openHubCanvas({
+            hub,
+            aircraft: this._rows.filter(r => this._rowHasVisibleHub(r) && String(r.hub).toUpperCase() === hub)
+        })))
+        row.appendChild(mk("applyToFleet", "Dry-run fleet apply", () => this._dryRunWaveFleetApply(hub, ctx)))
+        return row
+    }
+
+    _renderWaveDiagnosticsPanel(ctx) {
+        const T = window.AESTokens
+        const panel = document.createElement("div")
+        panel.style.cssText = "display:grid;grid-template-columns:minmax(160px,220px) 1fr;gap:8px;"
+            + "padding:8px;background:" + (T ? T.color.bone2 : "#ece7dc") + ";"
+            + "border:1px solid " + (T ? T.color.paperRule : "#c9c0b0") + ";font-size:11px;"
+
+        const left = document.createElement("div")
+        left.style.cssText = "display:flex;flex-direction:column;gap:4px;"
+        const score = ctx.readiness && ctx.readiness.score != null && isFinite(ctx.readiness.score)
+            ? Math.round(ctx.readiness.score) + " · " + (ctx.readiness.grade || "n/a")
+            : ctx.readiness.status
+        left.appendChild(this._waveMetric("Plan", score, this._waveStatusTone(ctx.readiness.status)))
+        left.appendChild(this._waveMetric("Unplaced", String((ctx.capacity && ctx.capacity.unplaced) || 0),
+            ctx.capacity && ctx.capacity.unplaced ? "amber" : "moss"))
+        left.appendChild(this._waveMetric("Underfilled",
+            String(((ctx.capacity && ctx.capacity.underfilledWaveIds) || []).length),
+            ctx.capacity && ctx.capacity.underfilledWaveIds && ctx.capacity.underfilledWaveIds.length ? "amber" : "moss"))
+        panel.appendChild(left)
+
+        const right = document.createElement("div")
+        right.style.cssText = "display:flex;flex-direction:column;gap:4px;min-width:0;"
+        const blockers = (ctx.readiness && ctx.readiness.blockers) || []
+        const warnings = (ctx.readiness && ctx.readiness.warnings) || []
+        if (!blockers.length && !warnings.length) {
+            const ok = document.createElement("div")
+            ok.style.cssText = "color:" + (T ? T.color.moss : "#2f5f3f") + ";font-weight:" + (T ? T.fw.bold : "700") + ";"
+            ok.textContent = "Ready for automation preview."
+            right.appendChild(ok)
+        } else {
+            for (const b of blockers.slice(0, 4)) {
+                right.appendChild(this._waveMessage("Blocker", b.message, "crimson"))
+            }
+            for (const w of warnings.slice(0, Math.max(0, 5 - blockers.length))) {
+                right.appendChild(this._waveMessage("Watch", w.message, "amber"))
+            }
+        }
+        panel.appendChild(right)
+        return panel
+    }
+
+    _waveMetric(label, value, tone) {
+        const T = window.AESTokens
+        const box = document.createElement("div")
+        const color = this._toneColor(tone)
+        box.style.cssText = "min-width:0;padding:6px 8px;background:" + (T ? T.color.bone : "#f4f1ea") + ";"
+            + "border:1px solid " + (T ? T.color.paperRule : "#c9c0b0") + ";"
+        const k = document.createElement("div")
+        k.style.cssText = "color:" + (T ? T.color.slate : "#7a6f66") + ";font-size:9px;text-transform:uppercase;"
+            + "letter-spacing:" + (T ? T.track.caps : "0.06em") + ";font-weight:" + (T ? T.fw.bold : "700") + ";"
+        k.textContent = label
+        const v = document.createElement("div")
+        v.style.cssText = "margin-top:2px;color:" + color + ";font-family:" + (T ? T.font.mono : "monospace")
+            + ";font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+        v.textContent = value
+        box.append(k, v)
+        return box
+    }
+
+    _waveMessage(label, message, tone) {
+        const T = window.AESTokens
+        const row = document.createElement("div")
+        row.style.cssText = "display:flex;gap:6px;align-items:baseline;min-width:0;"
+        const tag = document.createElement("span")
+        tag.style.cssText = "color:" + this._toneColor(tone) + ";font-size:9px;text-transform:uppercase;"
+            + "letter-spacing:" + (T ? T.track.caps : "0.06em") + ";font-weight:" + (T ? T.fw.bold : "700") + ";flex:0 0 auto;"
+        tag.textContent = label
+        const text = document.createElement("span")
+        text.style.cssText = "color:" + (T ? T.color.oxide : "#2b2520") + ";min-width:0;"
+        text.textContent = message
+        row.append(tag, text)
+        return row
+    }
+
+    _waveStatusTone(status) {
+        return status === "ready" ? "moss" : status === "attention" ? "amber" : "crimson"
+    }
+
+    _toneColor(tone) {
+        const T = window.AESTokens
+        const palette = {
+            moss:    T ? T.color.moss : "#2f5f3f",
+            amber:   T ? T.color.amber : "#b8861f",
+            crimson: T ? T.color.crimson : "#8b2727",
+            cobalt:  T ? T.color.cobalt : "#3656a8",
+            muted:   T ? T.color.slate : "#7a6f66"
+        }
+        return palette[tone] || palette.muted
+    }
+
+    _compactAge(ms) {
+        const min = Math.max(0, Math.round(Number(ms) / 60000))
+        if (min < 90) return min + "m"
+        const hr = Math.round(min / 60)
+        if (hr < 48) return hr + "h"
+        return Math.round(hr / 24) + "d"
+    }
+
+    _renderPresetRow(preset, hub, waveCtx) {
         const T = window.AESTokens
         const editorAvailable = typeof window.RouteAssistantWaveEditor !== "undefined"
         const expanded = editorAvailable && this._expandedPresets.has(String(preset.id))
@@ -2840,23 +3786,33 @@ class FleetHubCommandCenter {
         meta.style.cssText = "color:" + (T ? T.color.slate : "#7a6f66") + ";font-family:" + (T ? T.font.mono : "monospace") + ";font-size:11px;"
         meta.textContent = wn + " wave" + (wn === 1 ? "" : "s")
             + (preset.tweakedFrom ? " · variant" : "")
+            + (waveCtx && waveCtx.preset && waveCtx.preset.id === preset.id
+                && waveCtx.readiness && waveCtx.readiness.score != null && isFinite(waveCtx.readiness.score)
+                ? " · score " + Math.round(waveCtx.readiness.score) : "")
         head.appendChild(meta)
 
         if (preset.tweakedFrom) head.appendChild(this._badge("VARIANT", "cobalt"))
 
-        const open = document.createElement("a")
-        open.href = "/app/com/scheduling/" + (hub === "(global)" ? "" : hub + hub)
-        open.target = "_blank"
-        open.rel = "noopener"
-        open.textContent = "Open ▸"
-        open.style.cssText = T
-            ? "color:" + T.color.rust + ";text-decoration:none;font-size:11px;font-weight:" + T.fw.bold + ";text-transform:uppercase;letter-spacing:" + T.track.caps + ";"
-            : "color:#b8472a;text-decoration:none;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;"
-        open.title = "Open Route Assistant at this hub"
-        head.appendChild(open)
+        // F-9228-509: skip the Open link for "(global)" presets — the AS
+        // scheduling page needs a HUB+DEST pair, and "/app/com/scheduling/"
+        // alone 404s. (global) presets without a hub don't have a sensible
+        // single-route landing; the inline wave editor is the right surface.
+        if (hub !== "(global)") {
+            const open = document.createElement("a")
+            open.href = "/app/com/scheduling/" + hub + hub
+            open.target = "_blank"
+            open.rel = "noopener"
+            open.textContent = "Open ▸"
+            open.style.cssText = T
+                ? "color:" + T.color.rust + ";text-decoration:none;font-size:11px;font-weight:" + T.fw.bold + ";text-transform:uppercase;letter-spacing:" + T.track.caps + ";"
+                : "color:#b8472a;text-decoration:none;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;"
+            open.title = "Open Route Assistant at this hub"
+            head.appendChild(open)
+        }
 
         li.appendChild(head)
-        if (expanded) li.appendChild(this._renderPresetEditor(preset, hub))
+        if (expanded) li.appendChild(this._renderPresetEditor(preset, hub,
+            waveCtx && waveCtx.preset && waveCtx.preset.id === preset.id ? waveCtx : null))
         return li
     }
 
@@ -2885,7 +3841,7 @@ class FleetHubCommandCenter {
      * drive repaint; we wire callbacks only for fast-path UI fixups
      * (e.g. keeping a duplicated preset expanded).
      */
-    _renderPresetEditor(preset, hub) {
+    _renderPresetEditor(preset, hub, waveCtx) {
         const T = window.AESTokens
         const wrap = document.createElement("div")
         wrap.style.cssText = "padding:10px 12px 12px;"
@@ -2915,17 +3871,21 @@ class FleetHubCommandCenter {
             onAfterDelete:   (id) => { this._expandedPresets.delete(String(id)) }
         })
         crudHost.appendChild(presetActions)
-        // "Open full editor ▸" safety valve — deep-link to RA Wave View.
-        const openLink = document.createElement("a")
-        openLink.href = "/app/com/scheduling/" + (hub === "(global)" ? "" : hub + hub)
-        openLink.target = "_blank"
-        openLink.rel = "noopener"
-        openLink.textContent = "Open full editor ▸"
-        openLink.title = "Open Route Assistant Wave View for this hub in a new tab"
-        openLink.style.cssText = "margin-left:auto;font-size:10px;"
-            + "color:" + (T ? T.color.slate : "#7a6f66") + ";"
-            + "text-decoration:none;text-transform:uppercase;letter-spacing:" + (T ? T.track.caps : "0.06em") + ";"
-        crudHost.appendChild(openLink)
+        // F-9228-509: skip the deep-link for "(global)" presets — bare
+        // "/app/com/scheduling/" 404s; the inline editor below is the only
+        // sensible surface for those.
+        if (hub !== "(global)") {
+            const openLink = document.createElement("a")
+            openLink.href = "/app/com/scheduling/" + hub + hub
+            openLink.target = "_blank"
+            openLink.rel = "noopener"
+            openLink.textContent = "Open full editor ▸"
+            openLink.title = "Open Route Assistant Wave View for this hub in a new tab"
+            openLink.style.cssText = "margin-left:auto;font-size:10px;"
+                + "color:" + (T ? T.color.slate : "#7a6f66") + ";"
+                + "text-decoration:none;text-transform:uppercase;letter-spacing:" + (T ? T.track.caps : "0.06em") + ";"
+            crudHost.appendChild(openLink)
+        }
         wrap.appendChild(crudHost)
 
         // ── Factors row (compact: slot window + day pattern) ───────────
@@ -2934,6 +3894,8 @@ class FleetHubCommandCenter {
         // ── Draft strip (active draft → promote / discard / save variant;
         //                 otherwise → fork-into-draft button) ─────────────
         wrap.appendChild(this._renderDraftStrip(preset, hub))
+
+        if (waveCtx) wrap.appendChild(this._renderWaveDiagnosticsPanel(waveCtx))
 
         // ── Wave Gantt timeline ────────────────────────────────────────
         const ganttHost = document.createElement("div")
@@ -3304,6 +4266,11 @@ class FleetHubCommandCenter {
                     + "."
                 : "No aircraft match this routine's filter.",
             () => this._handleRoutineApply(routine))
+        // F-9228-505: tag the routine's apply button so progress-label
+        // updates target it directly instead of regex-walking every
+        // "Apply…" button on the page (which collides with bulk-apply
+        // and strategy-apply buttons on Overview).
+        applyBtn.dataset.routineId = routine.id
         if (matched <= 0) this._disableButton(applyBtn)
         this._wireBusyDisable(applyBtn, "applyRoutine:" + routine.id)
         row.appendChild(applyBtn)
@@ -3409,27 +4376,16 @@ class FleetHubCommandCenter {
         }
     }
 
-    /** Find a routine's Apply button by searching the rendered body for its
-     *  busy-key marker. Best-effort — returns null if the row isn't visible. */
+    /** Find a routine's Apply button by its data-routine-id marker. */
     _setApplyRoutineLabel(routineId, label) {
-        if (!this.bodyEl) return
-        // The button has its busy key wired but no data attribute we can
-        // grep. Walk all buttons and match by title prefix + the row's
-        // strong-name proximity. Cheap because the routines panel rarely
-        // has more than a handful of rows.
-        const btns = this.bodyEl.querySelectorAll("button")
-        for (const b of btns) {
-            const t = b.textContent || ""
-            if (t.indexOf("Apply") === 0 || t.indexOf("Applying") === 0
-                    || t.indexOf("Applied") === 0) {
-                // Prefer the in-flight one (disabled + matches routine's
-                // busy key) — but we don't have the id on the DOM node.
-                // Approximation: if there's only one Apply* button in
-                // disabled state, that's it. Most users apply one routine
-                // at a time.
-                if (b.disabled) { b.textContent = label; return }
-            }
-        }
+        if (!this.bodyEl || !routineId) return
+        // F-9228-505: O(1) lookup via the data attribute set in
+        // _renderRoutineRow. The previous regex-walk would land on whatever
+        // disabled "Apply…" button it found first, corrupting bulk-apply /
+        // strategy-apply labels when more than one was in flight.
+        const btn = this.bodyEl.querySelector('[data-routine-id="'
+            + String(routineId).replace(/"/g, '\\"') + '"]')
+        if (btn) btn.textContent = label
     }
 
     /** Compact one-line description used in the row summary. */
@@ -3469,6 +4425,18 @@ class FleetHubCommandCenter {
         const isCreate = !routine
         const draft = isCreate ? this._defaultRoutineDraft() : JSON.parse(JSON.stringify(routine))
 
+        // F-9228-504: graceful degrade when AircraftTagsStore / FleetRoutinesStore
+        // failed to load (manifest reorder / future code-split). Otherwise the
+        // unguarded reads below crash the entire Aircraft Plans tab body.
+        if (typeof window.AircraftTagsStore === "undefined"
+                || typeof window.FleetRoutinesStore === "undefined") {
+            const fail = document.createElement("div")
+            fail.style.cssText = "padding:8px 10px;font-size:11px;font-style:italic;"
+                + "color:" + (T ? T.color.slate : "#888")
+            fail.textContent = "Routine editor unavailable on this page (tag/routine store not loaded)."
+            return fail
+        }
+
         const wrap = document.createElement("div")
         wrap.style.cssText = "padding:10px 12px;background:" + (T ? T.color.bone : "#f4f1ea") + ";"
             + "border:" + (T ? T.geom.bw1 : "1px") + " solid " + (T ? T.color.paperRule : "#c9c0b0") + ";"
@@ -3499,25 +4467,39 @@ class FleetHubCommandCenter {
         }))
 
         // ── Aircraft filter ───────────────────────────────────────────
-        const hubs = Array.from(new Set(this._rows.map(r => r && r.hub).filter(Boolean)
-            .map(s => String(s).toUpperCase()))).sort()
+        const hubs = Array.from(new Set(this._rows
+            .filter(r => this._rowHasVisibleHub(r))
+            .map(r => String(r.hub).toUpperCase()))).sort()
         const types = Array.from(new Set(this._rows.map(r => r && (r.typeId || r.equipment))
             .filter(Boolean).map(String))).sort()
+        // F-9228-503: live matched-count footer — was stale after every
+        // chip toggle until the next full repaint. The footer label is
+        // built later (line ~3727); refer to it via a forward-declared
+        // closure so each filter dimension's setNext can recompute it.
+        let _matchLabel = null
+        const _recomputeMatch = () => {
+            if (!_matchLabel) return
+            const n = window.AircraftTagsStore
+                ? window.AircraftTagsStore.match(this._rows,
+                    this._aircraftTags.byAircraftId, draft.aircraftFilter).length
+                : 0
+            _matchLabel.textContent = n + " aircraft would match"
+        }
         wrap.appendChild(this._editorField("Hubs", T,
             () => this._multiCheckboxList(hubs, draft.aircraftFilter.hubs, T,
-                (next) => { draft.aircraftFilter.hubs = next })))
+                (next) => { draft.aircraftFilter.hubs = next; _recomputeMatch() })))
         wrap.appendChild(this._editorField("Equipment / type", T,
             () => this._multiCheckboxList(types, draft.aircraftFilter.types, T,
-                (next) => { draft.aircraftFilter.types = next })))
+                (next) => { draft.aircraftFilter.types = next; _recomputeMatch() })))
         wrap.appendChild(this._editorField("Status", T,
             () => this._multiCheckboxList(window.AircraftTagsStore.STATUSES,
                 draft.aircraftFilter.statuses, T,
-                (next) => { draft.aircraftFilter.statuses = next },
+                (next) => { draft.aircraftFilter.statuses = next; _recomputeMatch() },
                 window.AircraftTagsStore.STATUS_LABELS)))
         wrap.appendChild(this._editorField("Roles (any-match)", T,
             () => this._multiCheckboxList(window.AircraftTagsStore.ROLES,
                 draft.aircraftFilter.roles, T,
-                (next) => { draft.aircraftFilter.roles = next },
+                (next) => { draft.aircraftFilter.roles = next; _recomputeMatch() },
                 window.AircraftTagsStore.ROLE_LABELS)))
 
         // ── Preset ────────────────────────────────────────────────────
@@ -3656,6 +4638,10 @@ class FleetHubCommandCenter {
             + ";font-size:11px;font-style:italic;"
         matchLabel.textContent = matchedCount + " aircraft would match"
         foot.appendChild(matchLabel)
+        // F-9228-503: hand the footer label to the recompute closure so
+        // chip toggles in the four aircraft-filter dimensions update it
+        // live (instead of waiting for the next full panel repaint).
+        _matchLabel = matchLabel
 
         const cancel = this._actionButton("Cancel",
             "Discard pending edits",
@@ -3742,8 +4728,9 @@ class FleetHubCommandCenter {
                 else    cur.add(oU)
                 setNext(Array.from(cur))
                 // Visual feedback without triggering full panel repaint —
-                // re-style this button only. (The matched-count footer
-                // below will be stale until next render; acceptable.)
+                // re-style this button only. Callers that need a live
+                // matched-count footer (see F-9228-503) recompute it
+                // inside their setNext closure.
                 const nowOn = cur.has(oU)
                 btn.style.background = nowOn ? (T ? T.color.cobaltSoft : "rgba(54,86,168,0.14)") : "transparent"
                 btn.style.color      = nowOn ? (T ? T.color.cobalt     : "#3656a8")              : (T ? T.color.oxide : "#2b2520")
@@ -4275,6 +5262,7 @@ class FleetHubCommandCenter {
             + "<th style=\"text-align:left;\">Dir</th>"
             + "<th style=\"text-align:left;\">Origin</th>"
             + "<th style=\"text-align:left;\">Dest</th>"
+            + "<th style=\"text-align:left;\">Flight #</th>"
             + "<th style=\"text-align:left;\">Dep</th>"
             + "<th style=\"text-align:left;\">Price%</th>"
             + "<th style=\"text-align:left;\">Status</th>"
@@ -4663,6 +5651,101 @@ class FleetHubCommandCenter {
     }
 
     // ── Actions ──────────────────────────────────────────────────────────
+
+    _diagnoseWavePreset(hub, ctx) {
+        const presetId = ctx && ctx.preset && ctx.preset.id
+        if (!presetId) return
+        this._expandedPresets.add(String(presetId))
+        this._saveExpandedPresets()
+        if (this._activeTab === "waves") this._renderBody()
+    }
+
+    async _previewWaveFleetApply(hub, ctx) {
+        const key = "wavePreview:" + hub
+        if (this._busy.has(key)) return
+        if (!ctx || !ctx.preset) {
+            this._toast("error", "No wave preset selected for " + hub + ".")
+            return
+        }
+        if (typeof window.AesFleetCommandBulkApply === "undefined"
+                || typeof window.AesFleetCommandBulkApply.preview !== "function") {
+            this._toast("error", "Bulk wave preview is not loaded on this page.")
+            return
+        }
+        this._setBusy(key, true)
+        this._scheduleRepaint()
+        try {
+            const prev = await window.AesFleetCommandBulkApply.preview({
+                tails:    this._hubRowsFor(hub),
+                presetId: ctx.preset.id,
+                ctx:      {server: this.server, airlineCode: this.airlineCode, hubIata: hub}
+            })
+            const blockers = prev.readiness && prev.readiness.blockers || []
+            const msg = "Wave preview for " + hub + ": "
+                + prev.eligible.length + " eligible aircraft, "
+                + prev.flightCount + " legs per aircraft"
+                + (prev.skipped.length ? ", " + prev.skipped.length + " skipped" : "")
+                + (blockers.length ? ". Blockers: " + blockers.join("; ") : ".")
+            if (blockers.length) this._toast("warn", msg)
+            else this._toast("info", msg)
+            try { window.alert(msg) } catch (_) {}
+            return prev
+        } catch (err) {
+            console.warn("[AES Fleet CC] wave preview failed", err)
+            this._toast("error", "Wave preview failed: " + ((err && err.message) || String(err)))
+            return null
+        } finally {
+            this._setBusy(key, false)
+            this._scheduleRepaint()
+        }
+    }
+
+    async _dryRunWaveFleetApply(hub, ctx) {
+        const key = "waveDryRun:" + hub
+        if (this._busy.has(key)) return
+        if (!ctx || !ctx.preset) return
+        if (typeof window.AesFleetCommandBulkApply === "undefined"
+                || typeof window.AesFleetCommandBulkApply.execute !== "function") {
+            this._toast("error", "Bulk wave apply is not loaded on this page.")
+            return
+        }
+        const ok = window.confirm("Run a dry-run fleet apply for "
+            + (ctx.preset.name || "this wave preset") + " at " + hub
+            + "? This records a dry-run preview only; it does not submit AirlineSim schedule changes.")
+        if (!ok) return
+        this._setBusy(key, true)
+        this._scheduleRepaint()
+        try {
+            const result = await window.AesFleetCommandBulkApply.execute({
+                tails:    this._hubRowsFor(hub),
+                presetId: ctx.preset.id,
+                ctx:      {server: this.server, airlineCode: this.airlineCode, hubIata: hub},
+                source:   "fleet-hub-waves",
+                dryRun:   true
+            })
+            const blockers = result.blockers || []
+            if (blockers.length) {
+                this._toast("warn", "Dry-run blocked: " + blockers.join("; "))
+            } else {
+                this._toast("info", "Dry-run ready: " + result.eligibleCount
+                    + " aircraft · " + ((result.preview && result.preview.flightCount) || 0) + " legs each.")
+            }
+            return result
+        } catch (err) {
+            console.warn("[AES Fleet CC] wave dry-run failed", err)
+            this._toast("error", "Dry-run failed: " + ((err && err.message) || String(err)))
+            return null
+        } finally {
+            this._setBusy(key, false)
+            this._scheduleRepaint()
+        }
+    }
+
+    _hubRowsFor(hub) {
+        const HUB = String(hub || "").toUpperCase()
+        return this._rows.filter(r => this._rowHasVisibleHub(r)
+            && String(r.hub || "").toUpperCase() === HUB)
+    }
 
     _openStrategy() {
         if (typeof window.AesStrategyPanel !== "undefined" && typeof window.AesStrategyPanel.open === "function") {

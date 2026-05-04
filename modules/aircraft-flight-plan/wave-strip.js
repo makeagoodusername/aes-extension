@@ -146,8 +146,9 @@
             + "border-radius:3px;padding:3px 10px;font-size:11px;cursor:pointer;"
         btn.addEventListener("click", async () => {
             btn.disabled = true
+            let created = null
             try {
-                const created = await RouteAssistantWaveEditor.createStarterPreset(hubIata)
+                created = await RouteAssistantWaveEditor.createStarterPreset(hubIata)
                 if (created) {
                     _activePresetId = created.id
                     const b = _bus()
@@ -157,7 +158,13 @@
                 }
             } catch (e) {
                 console.warn("[AES afp] create starter wave plan failed", e)
-                btn.disabled = false
+            } finally {
+                // F-9228-905: re-enable the button on the silent-falsy path
+                // too — `created` can be null without a throw, in which case
+                // the strip never re-renders and the button used to stay
+                // permanently disabled. The success path replaces the button
+                // wholesale so it's harmless to also re-enable here.
+                if (!created) btn.disabled = false
             }
         })
         card.append(lbl, btn)
@@ -236,6 +243,11 @@
         const wrap = document.createElement("div")
         wrap.style.cssText = "border:1px solid #1f2937;border-radius:4px;background:#0a1019;"
             + "overflow:hidden;"
+        // F-9228-900: stable selector for drag-to-schedule's _findStripRoot.
+        // The lane attribute (data-aes-wave-strip-lane="1") sits on the lane
+        // <div>s inside the strip; consumers need to address the wrapper
+        // that contains all lanes so coordsToWave can iterate them.
+        wrap.dataset.aesWaveStrip = "1"
         host.append(wrap)
 
         // Hour ruler (offset by label column).
@@ -504,6 +516,16 @@
             }}
         } catch (err) {
             console.warn("[AES afp] wave-strip persist failed", err)
+            // F-9228-902: a throw in the second updateWaveTime leaves the
+            // first edge committed (e.g. start moved, end unchanged) AND
+            // skips the _reRender() above, so the visual band stays at
+            // pendingStart/pendingEnd while storage diverges. Restore the
+            // pre-drag visuals AND force a re-render off fresh storage so
+            // the user sees what's actually persisted.
+            if (c.origLeftPct  != null) c.band.style.left  = c.origLeftPct
+            if (c.origWidthPct != null) c.band.style.width = c.origWidthPct
+            if (c.origTagText  != null) c.tag.textContent  = c.origTagText
+            try { await _reRender() } catch (_) { /* best-effort */ }
             return {ok: false, message: String(err && err.message || err)}
         }
     }

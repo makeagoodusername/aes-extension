@@ -140,12 +140,19 @@ class FleetHubScheduleOverlay {
      * jump straight to the AFP page where editing actually happens.
      */
     static async _renderAfpSummary(host, row, aircraftId) {
+        // F-9228-606: every interpolation below flows into innerHTML, and
+        // several fields originate from user-controlled inputs (preset
+        // labels, registrations, IATAs from edit dialogs). Escape every
+        // dynamic field before concat. Same pattern as optimizer-drilldown.
+        const _esc = (s) => String(s == null ? "" : s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
         const ctx = (window.AesAfp && AesAfp.ctx) || {}
         const server = ctx.server
             || (typeof AES !== "undefined" && AES.getServerName && AES.getServerName())
             || ""
         const ctaHref = "/app/fleets/aircraft/" + encodeURIComponent(aircraftId) + "/0"
-        const headline = (row.registration || aircraftId) + " · wave plan"
+        const headline = _esc(row.registration || aircraftId) + " · wave plan"
         const noStore = "<div style=\"font-size:12px;color:#666;\">"
             + "<b>" + headline + "</b><br>"
             + "Active-draft store unavailable on this page. "
@@ -178,8 +185,8 @@ class FleetHubScheduleOverlay {
             return
         }
 
-        const presetLine = (draft.presetId ? "preset " + draft.presetId : "(no preset)")
-            + (draft.hub ? " · hub " + draft.hub : "")
+        const presetLine = (draft.presetId ? "preset " + _esc(draft.presetId) : "(no preset)")
+            + (draft.hub ? " · hub " + _esc(draft.hub) : "")
             + " · " + flights.length + " leg" + (flights.length === 1 ? "" : "s")
             + " · " + applied + " applied · " + dismissed + " dismissed"
 
@@ -187,12 +194,12 @@ class FleetHubScheduleOverlay {
             const isApplied   = !!(draft.appliedLegs   && draft.appliedLegs[f.seq])
             const isDismissed = !!(draft.dismissedLegs && draft.dismissedLegs[f.seq])
             const arrow = (f.direction === "inbound") ? "←" : "→"
-            const od = (f.origin || "?") + " " + arrow + " " + (f.destination || "?")
-            const time = f.depTimeLocal || "—"
+            const od = _esc(f.origin || "?") + " " + arrow + " " + _esc(f.destination || "?")
+            const time = _esc(f.depTimeLocal || "—")
             const status = isApplied ? '<span style="color:#15803d;">applied</span>'
                           : isDismissed ? '<span style="color:#999;">dismissed</span>'
                           : '<span style="color:#666;">pending</span>'
-            return '<tr><td style="padding:2px 6px;">' + (f.waveLabel || f.waveId || "") + '</td>'
+            return '<tr><td style="padding:2px 6px;">' + _esc(f.waveLabel || f.waveId || "") + '</td>'
                 + '<td style="padding:2px 6px;font-weight:600;">' + od + '</td>'
                 + '<td style="padding:2px 6px;font-variant-numeric:tabular-nums;">' + time + '</td>'
                 + '<td style="padding:2px 6px;">' + status + '</td></tr>'

@@ -206,6 +206,7 @@
         if (typeof RouteAssistantDemandStore !== "undefined") {
             try { demand = await RouteAssistantDemandStore.get(iata) } catch (_) {}
         }
+        if (!_hasPaxDemand(demand)) demand = _flightsFromDemand(iata, hubAirport, routeRec, isHubMode)
         if (gen !== _populateGen) return
         _replaceSectionBody(refs.sectDemand, _renderDemand(demand))
 
@@ -258,10 +259,75 @@
             note.textContent = "No demand data — run the route-assistant demand scan."
             return note
         }
+        if (demand.source === "flightsfrom" || demand.demandSource === "flightsfrom") {
+            return _renderFlightsFromDemand(demand)
+        }
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;flex-direction:column;gap:4px;"
         wrap.appendChild(_demandBar("Pax",   demand.paxScore,   "#60a5fa"))
         wrap.appendChild(_demandBar("Cargo", demand.cargoScore, "#fbbf24"))
+        if (demand.scrapedAt && Date.now() - demand.scrapedAt > 7 * 86400000) {
+            const stale = document.createElement("div")
+            stale.style.cssText = "color:#fbbf24;font-size:10px;"
+            stale.textContent = "stale (>7 days)"
+            wrap.appendChild(stale)
+        }
+        return wrap
+    }
+
+    function _flightsFromDemand(iata, hubAirport, routeRec, isHubMode) {
+        if (typeof FlightsFromStore === "undefined") return null
+        if (isHubMode && typeof FlightsFromStore.demandForHub === "function") {
+            return FlightsFromStore.demandForHub(hubAirport)
+        }
+        if (!routeRec || typeof FlightsFromStore.demandForRoute !== "function") return null
+        const ctx = (hubAirport && Array.isArray(hubAirport.routes)
+                && typeof FlightsFromStore.buildDemandContext === "function")
+            ? FlightsFromStore.buildDemandContext(hubAirport.routes)
+            : null
+        const demand = FlightsFromStore.demandForRoute(routeRec, ctx)
+        if (demand) {
+            demand.iata = String(iata || demand.iata || "").toUpperCase()
+            demand.scrapedAt = hubAirport ? hubAirport.scrapedAt : null
+        }
+        return demand
+    }
+
+    function _hasPaxDemand(demand) {
+        return !!(demand && demand.paxScore !== null && demand.paxScore !== undefined
+            && isFinite(Number(demand.paxScore)))
+    }
+
+    function _renderFlightsFromDemand(demand) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:4px;"
+        const source = document.createElement("div")
+        source.style.cssText = "color:#9ca3af;font-size:10px;text-transform:uppercase;letter-spacing:0.6px;"
+        source.textContent = "FlightsFrom frequency"
+        wrap.appendChild(source)
+        wrap.appendChild(_demandBar("Pax", demand.paxScore, "#60a5fa"))
+
+        const meta = document.createElement("div")
+        meta.style.cssText = "color:#cbd5e1;font-size:11px;font-family:var(--aes-font-mono,monospace);"
+        const parts = []
+        if (demand.scope === "hub") {
+            if (demand.routeCount != null) parts.push(demand.routeCount + " routes")
+            if (demand.weeklyFlightsTotal != null) parts.push(demand.weeklyFlightsTotal + "×/wk total")
+            if (demand.topDestIata) {
+                parts.push("top " + demand.topDestIata
+                    + (demand.maxWeeklyFlights != null ? " " + demand.maxWeeklyFlights + "×/wk" : ""))
+            }
+        } else {
+            if (demand.demandBasis) parts.push(demand.demandBasis)
+            else if (demand.weeklyFlights != null) parts.push(demand.weeklyFlights + "×/wk")
+        }
+        meta.textContent = parts.length ? parts.join(" · ") : "frequency present"
+        wrap.appendChild(meta)
+
+        const cargo = document.createElement("div")
+        cargo.style.cssText = "color:#6b7280;font-size:10px;"
+        cargo.textContent = "Cargo demand unavailable from FlightsFrom."
+        wrap.appendChild(cargo)
         if (demand.scrapedAt && Date.now() - demand.scrapedAt > 7 * 86400000) {
             const stale = document.createElement("div")
             stale.style.cssText = "color:#fbbf24;font-size:10px;"

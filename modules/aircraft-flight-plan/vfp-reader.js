@@ -198,9 +198,10 @@
         }
     }
 
-    /** Walk siblings in a direction until a `.block.location` is found; return
-     *  its IATA via the matching `.outbound|.inbound` span. Skips intervening
-     *  turnaround / ready / overlap blocks. Mirrors host.js:312. */
+    /** Walk siblings in a direction until a `.block.location` with the
+     *  requested `.outbound|.inbound` span is found. AS can render overlapping
+     *  location bars around same-time blocks, so keep scanning past location
+     *  bars that only carry the opposite direction. */
     function findAdjacentIata(siblings, idx, direction, spanSelector) {
         const step = direction < 0 ? -1 : 1
         for (let j = idx + step; j >= 0 && j < siblings.length; j += step) {
@@ -215,8 +216,9 @@
                     const m = txt.match(/\b([A-Z]{3})\b/)
                     if (m) return m[1]
                 }
-                return null
+                continue
             }
+            if (sib.classList.contains("flight")) return null
         }
         return null
     }

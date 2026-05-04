@@ -37,7 +37,9 @@ class FleetHubAircraftAggregator {
     static async enrich(args) {
         const server = String(args.server || "")
         const airlineCode = String(args.airlineCode || "")
-        const fleet = Array.isArray(args.fleet) ? args.fleet : []
+        const fleet = Array.isArray(args.fleet)
+            ? args.fleet.filter(a => a && a.aircraftId != null && isFinite(Number(a.aircraftId)) && Number(a.aircraftId) > 0)
+            : []
         if (!fleet.length) return []
 
         // One storage round-trip for the whole fleet — chrome.storage.local.get

@@ -227,18 +227,41 @@ class CanvasCellContextMenu {
             aircraftId:   ctx.aircraftId,
             registration: ctx.registration
         })
-        // The modal as designed always shows the chosen IATA in its subtitle.
-        // For "add via menu" we need the IATA from the user — currently the
-        // modal locks the IATA from props. Defer empty-IATA inputs to the
-        // drag flow (which always carries an IATA); keep the menu item as
-        // a placeholder and toast the user to drag instead.
-        if (typeof window.RouteAssistantToast !== "undefined") {
-            window.RouteAssistantToast.show(
-                "Drag a destination onto this cell to stage a new route — the menu can't ask for an IATA yet.",
-                {type: "info", duration: 5000})
+        if (result == null) return
+        const destIata = String(result.destIata || result.destination || "").trim().toUpperCase()
+        if (!/^[A-Z]{3}$/.test(destIata)) {
+            if (typeof window.RouteAssistantToast !== "undefined") {
+                window.RouteAssistantToast.show("Route not staged: enter a valid 3-letter IATA.",
+                    {type: "warn", duration: 5000})
+            }
+            return
         }
-        // Discard whatever fares were collected since we didn't capture an IATA.
-        void result
+        const pricePct = Number(result.pricePct)
+        this.onStage({
+            kind:    "addRoute",
+            payload: {
+                hub:              this.hub || "",
+                aircraftId:       ctx.aircraftId,
+                waveId:           ctx.waveId,
+                destIata:         destIata,
+                destName:         result.destName || destIata,
+                fares:            result.fares || {},
+                pricePct:         Number.isFinite(pricePct) && pricePct > 0 ? pricePct : 100,
+                service:          typeof result.service === "string" ? result.service : "",
+                flightNumberText: String(result.flightNumberText || "").replace(/[^0-9]/g, "").slice(0, 4),
+                depTimeLocal:     this._normaliseHHMM(result.depTimeLocal || ""),
+                source:           "canvas-context-menu"
+            }
+        })
+    }
+
+    _normaliseHHMM(value) {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim())
+        if (!m) return ""
+        const h = Number(m[1])
+        const min = Number(m[2])
+        if (!Number.isFinite(h) || !Number.isFinite(min) || h < 0 || h > 23 || min < 0 || min > 59) return ""
+        return (h < 10 ? "0" + h : String(h)) + ":" + (min < 10 ? "0" + min : String(min))
     }
 
     _stageApplyPricing(ctx) {

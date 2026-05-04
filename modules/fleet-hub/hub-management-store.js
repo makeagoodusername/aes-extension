@@ -2,18 +2,19 @@
 
 /**
  * Per-airline hub-management preferences for the Fleet Command Center:
- * which hubs the user has hidden from the Overview tab and any custom
- * display labels.
+ * which hubs the user has deleted from the local view and any custom display
+ * labels. The persisted field is still named hiddenHubs for compatibility
+ * with older builds.
  *
  *   fleetHub:hubManagement:<server>:<airlineCode> →
  *     {server, airlineCode,
- *      hiddenHubs: ["LHR", ...],          // IATA list, hidden from FCC Overview
+ *      hiddenHubs: ["LHR", ...],          // IATA list, suppressed locally
  *      labels:     { CVG: "Cincinnati Ops" },
  *      updatedAt:  number}
  *
- * Hidden hubs disappear from the hub grid; their aircraft fall into
- * UNASSIGNED until the user unhides. Labels are display-only — the IATA
- * remains the canonical identifier for every store keyed by hub.
+ * Deleted hubs disappear from the hub grid; their aircraft fall into
+ * UNASSIGNED until the user restores them. Labels are display-only — the
+ * IATA remains the canonical identifier for every store keyed by hub.
  */
 class FleetHubHubManagement {
     static PREFIX = "fleetHub:hubManagement:"
@@ -87,6 +88,25 @@ class FleetHubHubManagement {
         return FleetHubHubManagement._save(server, airlineCode, {
             hiddenHubs: cur.hiddenHubs.concat([norm])
         })
+    }
+
+    /**
+     * User-facing delete action for Fleet Command Center hub cards.
+     * This is intentionally a local UI deletion: AirlineSim data, saved
+     * schedules, presets, and aircraft locations stay untouched. The hub is
+     * suppressed until restored, and any display label is cleared so a future
+     * restore starts from the canonical IATA.
+     */
+    static async deleteHub(server, airlineCode, iata) {
+        const norm = String(iata || "").toUpperCase()
+        if (!norm) return null
+        const cur = await FleetHubHubManagement.load(server, airlineCode)
+        const labels = {...cur.labels}
+        delete labels[norm]
+        const hiddenHubs = cur.hiddenHubs.includes(norm)
+            ? cur.hiddenHubs.slice()
+            : cur.hiddenHubs.concat([norm])
+        return FleetHubHubManagement._save(server, airlineCode, {hiddenHubs, labels})
     }
 
     static async unhide(server, airlineCode, iata) {

@@ -31,9 +31,11 @@
         settings: null,     // Phase 4 — fleet-optimizer settings incl. apply gates
         applying: new Set(),// Phase 4 — proposalIds mid-apply
         toast: null,        // Phase 4 — most-recent apply outcome for footer hint
-        filter: {org: null, hub: null, region: null, typeId: null, classification: null},
+        filter: {hub: null, region: null, classification: null},
         sort: {col: "ratioGap", dir: -1},     // descending = biggest gap first
-        focusedAircraftId: null
+        focusedAircraftId: null,
+        openSeq: 0,                            // F-9228-602
+        keydownHandler: null                   // F-9228-607
     }
 
     function _esc(s) {
@@ -71,11 +73,13 @@
         const s = _state.summary
         if (!s) return []
         const f = _state.filter
+        // F-9228-603: dropped dead `org` / `typeId` filter dimensions —
+        // _renderFilter never produced chips for them, so they can't be set
+        // through the UI. The filter ribbon and the actual filter set are
+        // now in sync (Classification / Hub / Region only).
         return s.perAircraft.filter(r => {
-            if (f.org && r.org !== f.org) return false
             if (f.hub && r.hub !== f.hub) return false
             if (f.region && r.regionId !== f.region) return false
-            if (f.typeId && Number(r.typeId) !== Number(f.typeId)) return false
             if (f.classification && r.classification !== f.classification) return false
             return true
         }).slice().sort(_sortFn)
@@ -139,9 +143,8 @@
         box.appendChild(footer)
 
         document.body.appendChild(root)
-        document.addEventListener("keydown", (e) => {
-            if (e.key === "Escape" && root.style.display !== "none") close()
-        })
+        // F-9228-607: ESC handling moved to open()/close() so the listener
+        // is only registered while the modal is visible.
         _modal = root
         return root
     }
@@ -446,8 +449,13 @@
         // Re-resolve summary so the proposals list reflects the new wave
         // shape; preserves filters/sort/focused state.
         if (result && result.status === "applied") {
-            _state.summary = null   // force recompute
-            try { _state.summary = await _resolveSummary() } catch (_) {}
+            // F-9228-605: clear proposals alongside summary so a failed
+            // recompute (e.g. AesStrategy unloaded between calls) doesn't
+            // leave stale proposal cards rendering against missing context.
+            _state.summary = null
+            _state.proposals = null
+            try { _state.summary = await _resolveSummary() }
+            catch (_) { _state.proposals = null }
         }
         _renderAll()
     }
@@ -502,14 +510,37 @@
 
     async function open(opts) {
         _ensureModal()
-        _state.summary = (opts && opts.summary) || await _resolveSummary()
-        _state.focusedAircraftId = null
+        // F-9228-602: capture an open-token before the await. If close() runs
+        // while we're still resolving the summary, the user expects the
+        // dismiss to stick; bumping `_openSeq` invalidates this open call.
+        const token = ++_state.openSeq
+        const summary = (opts && opts.summary) || await _resolveSummary()
+        if (token !== _state.openSeq) return
+        _state.summary = summary
+        _state.focusedAircraftId = opts && opts.focusedAircraftId != null
+            ? String(opts.focusedAircraftId)
+            : null
         _modal.style.display = "flex"
+        // F-9228-607: register ESC handler only while open; close() detaches.
+        if (!_state.keydownHandler) {
+            _state.keydownHandler = (e) => {
+                if (e.key === "Escape") close()
+            }
+            document.addEventListener("keydown", _state.keydownHandler)
+        }
         _renderAll()
     }
 
     function close() {
+        // F-9228-602: bump the seq so any in-flight open() returns early
+        // instead of re-displaying the modal after the user dismissed it.
+        _state.openSeq++
         if (_modal) _modal.style.display = "none"
+        // F-9228-607: detach the document-level keydown listener.
+        if (_state.keydownHandler) {
+            document.removeEventListener("keydown", _state.keydownHandler)
+            _state.keydownHandler = null
+        }
     }
 
     function isOpen() { return !!(_modal && _modal.style.display !== "none") }

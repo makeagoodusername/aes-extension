@@ -238,7 +238,7 @@ if (typeof window !== "undefined") {
         "form-filled":        "Form filled",
         "form-cleared":       "Form cleared",
         "wave-generated":     "Wave plan generated",
-        "leg-applied":        "Wave leg applied",
+        "leg-applied":        "Wave leg pre-filled",
         "preset-selected":    "Preset selected",
         "candidate-dismissed":"Candidate dismissed"
     }

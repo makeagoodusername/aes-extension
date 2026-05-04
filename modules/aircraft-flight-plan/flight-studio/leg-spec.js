@@ -32,6 +32,7 @@
  *       depTimeLocal:         "09:00",                 // "HH:MM"
  *       service?:             "" | "<option value>",
  *       pricePct?:            50..200,                 // integer percent
+ *       dayMask?:             boolean[7],              // Mon..Sun, default daily
  *       appliedAt?:           <ms>,
  *       flightNumberAssigned?: "PAA42",                // captured post-apply
  *       flightId?:            "9135",                  // AS numeric id
@@ -54,6 +55,7 @@
     const SCHEMA_VERSION = 1
     const VALID_SOURCES  = new Set(["manual", "paste", "template", "candidate", "vfp-edit", "auto-build"])
     const VALID_MODES    = new Set(["dry-run", "pre-fill", "submit"])
+    const DEFAULT_DAY_MASK = [true, true, true, true, true, true, true]
 
     // ── id generation ─────────────────────────────────────────────────────
     function _genId() {
@@ -100,6 +102,12 @@
         return isFinite(n) ? n : null
     }
 
+    function _asDayMask(v) {
+        return Array.isArray(v) && v.length >= 7
+            ? v.slice(0, 7).map(Boolean)
+            : null
+    }
+
     function _asSource(v) {
         return VALID_SOURCES.has(v) ? v : "manual"
     }
@@ -119,7 +127,8 @@
             destination:  _asIata(o.destination) || null,
             depTimeLocal: _asHHMM(o.depTimeLocal) || "09:00",
             service:      _asString(o.service)   || "",
-            pricePct:     _asPct(o.pricePct)     != null ? _asPct(o.pricePct) : 100
+            pricePct:     _asPct(o.pricePct)     != null ? _asPct(o.pricePct) : 100,
+            dayMask:      _asDayMask(o.dayMask)  || DEFAULT_DAY_MASK.slice()
         }
         const spec = {
             schemaVersion:    SCHEMA_VERSION,
@@ -136,7 +145,7 @@
             updatedAt:        _asFinite(o.updatedAt) || now,
             source:           _asSource(o.source),
             templateId:       _asString(o.templateId),
-            dryRun:           o.dryRun !== false   // default true (S1 ships dry-run)
+            dryRun:           o.dryRun === true
         }
         return _normalizeSpec(spec)
     }
@@ -149,7 +158,8 @@
             destination:  _asIata(l.destination),
             depTimeLocal: _asHHMM(l.depTimeLocal) || "09:00",
             service:      typeof l.service === "string" ? l.service : "",
-            pricePct:     _asPct(l.pricePct) != null ? _asPct(l.pricePct) : 100
+            pricePct:     _asPct(l.pricePct) != null ? _asPct(l.pricePct) : 100,
+            dayMask:      _asDayMask(l.dayMask) || DEFAULT_DAY_MASK.slice()
         }
         if (_asFinite(l.appliedAt)         != null) out.appliedAt            = _asFinite(l.appliedAt)
         if (_asString(l.flightNumberAssigned))      out.flightNumberAssigned = _asString(l.flightNumberAssigned)
@@ -262,7 +272,7 @@
     /**
      * Convert one LegSpec to the leg shape `AesAfpFormDriver.fill()` and
      * `dryRun()` accept — `{origin, destination, depTime, pricePct, service,
-     * flightNumberText}`. Single-leg only; for multi-leg, the panel iterates
+     * dayMask, flightNumberText}`. Single-leg only; for multi-leg, the panel iterates
      * and calls fill() per leg (S2 form-driver-x landing).
      *
      * `flightNumberText` is a spec-level field (one number per FlightSpec,
@@ -277,6 +287,7 @@
             depTime:          _asHHMM(l.depTimeLocal) || undefined,
             pricePct:         _asPct(l.pricePct),
             service:          typeof l.service === "string" ? l.service : "",
+            dayMask:          _asDayMask(l.dayMask) || DEFAULT_DAY_MASK.slice(),
             flightNumberText: typeof flightNumberText === "string" ? flightNumberText : ""
         }
     }
@@ -358,7 +369,8 @@
             destination:  _asIata(seed.destination)  || null,
             depTimeLocal: _asHHMM(seed.depTimeLocal) || "12:00",
             service:      typeof seed.service === "string" ? seed.service : (tail ? tail.service  : ""),
-            pricePct:     _asPct(seed.pricePct)      != null ? _asPct(seed.pricePct) : (tail ? tail.pricePct : 100)
+            pricePct:     _asPct(seed.pricePct)      != null ? _asPct(seed.pricePct) : (tail ? tail.pricePct : 100),
+            dayMask:      _asDayMask(seed.dayMask) || (tail && _asDayMask(tail.dayMask)) || DEFAULT_DAY_MASK.slice()
         }, s.legs.length)
         return _normalizeSpec(Object.assign({}, s, {legs: s.legs.concat([next])}))
     }
@@ -448,7 +460,7 @@
             pricePct:         _asPct(prev.pricePct) != null ? _asPct(prev.pricePct) : 100,
             flightNumberText: null,
             source:           "manual",
-            dryRun:           s.dryRun !== false
+        dryRun:           s.dryRun === true
         })
     }
 
@@ -526,7 +538,8 @@
             destination:  _asIata(f && f.destination),
             depTimeLocal: _asHHMM(f && (f.depTimeLocal || f.depTime)),
             service:      typeof (f && f.service) === "string" ? f.service : dsvc,
-            pricePct:     _asPct(f && f.pricePct) != null ? _asPct(f.pricePct) : dpct
+            pricePct:     _asPct(f && f.pricePct) != null ? _asPct(f.pricePct) : dpct,
+            dayMask:      Array.isArray(f && f.dayMask) ? f.dayMask : undefined
         }, i))
         return _normalizeSpec(Object.assign({}, s, {
             legs:   legs.length ? legs : s.legs,

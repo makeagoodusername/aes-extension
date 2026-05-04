@@ -78,8 +78,23 @@ class CanvasDemandOverlay {
             const key = "routeAssistant:topRoutes:" + String(hub).toUpperCase()
             const data = await chrome.storage.local.get([key])
             const blob = data[key]
-            return (blob && Array.isArray(blob.rows)) ? blob.rows : []
+            const rows = (blob && Array.isArray(blob.rows)) ? blob.rows : []
+            return rows.map(r => this._normaliseDemandRow(r)).filter(Boolean)
         } catch (_) { return [] }
+    }
+
+    _normaliseDemandRow(row) {
+        if (!row || typeof row !== "object") return null
+        const dest = String(row.destIata || row.dest || row.iata || row.destination || "").trim().toUpperCase()
+        if (!/^[A-Z]{3}$/.test(dest)) return null
+        return Object.assign({}, row, {
+            destIata:      dest,
+            destName:      row.destName || row.name || row.airportName || "",
+            distanceKm:    _num(row.distanceKm != null ? row.distanceKm : row.distance),
+            paxScore:      _num(row.paxScore),
+            cargoScore:    _num(row.cargoScore),
+            profitPerWeek: _num(row.profitPerWeek)
+        })
     }
 
     _pickDestination(rows, usedSet, aircraftRow) {
@@ -161,6 +176,11 @@ function _hhmmToMin(s) {
     const h = +m[1], min = +m[2]
     if (h < 0 || h > 23 || min < 0 || min > 59) return null
     return h * 60 + min
+}
+
+function _num(value) {
+    const n = Number(value)
+    return isFinite(n) ? n : null
 }
 
 if (typeof window !== "undefined") {

@@ -29,11 +29,21 @@ class SchedulePanel {
         // summary above the legs table.
         this.schedule = null
         this._scheduleListener = null
+        this._afpSettings = null
     }
 
     /** Returns true when this panel is per-aircraft (overlay use) vs dashboard. */
     _isOverlayMode() {
         return !!(this.context.server && this.context.aircraftId)
+    }
+
+    static _isValidHHMM(value) {
+        if (!value) return false
+        if (typeof ScheduleFactors === "undefined"
+            || typeof ScheduleFactors.parseHHMM !== "function") {
+            return true
+        }
+        return Number.isFinite(ScheduleFactors.parseHHMM(value))
     }
 
     async render() {
@@ -42,16 +52,20 @@ class SchedulePanel {
             // Track 7 slice 7f — load the persisted Schedule in parallel
             // with the draft so the Current-vs-Proposed summary lights up
             // on first paint when the AFP page has been visited recently.
-            const [draft, schedule] = await Promise.all([
+            const [draft, schedule, afpSettings] = await Promise.all([
                 AesAfpActiveDraftStore.load(
                     this.context.server, this.context.aircraftId),
                 (typeof AesAfpScheduleStore !== "undefined")
                     ? AesAfpScheduleStore.load(
                           this.context.server, this.context.aircraftId).catch(() => null)
+                    : Promise.resolve(null),
+                (typeof AesAfpSettings !== "undefined" && typeof AesAfpSettings.load === "function")
+                    ? AesAfpSettings.load().catch(() => null)
                     : Promise.resolve(null)
             ])
             this.draft = draft
             this.schedule = schedule || null
+            this._afpSettings = afpSettings || null
             // Mirror remote preset selection into editingId when present
             // — keeps the panel in sync with the AFP wave-applier's choice.
             this.editingId = this.draft.presetId
@@ -63,6 +77,7 @@ class SchedulePanel {
         } else {
             this.draft = null
             this.schedule = null
+            this._afpSettings = null
             this.editingId = this.block.defaultPresetId
                 || this.block.presets[0]?.id
                 || null
@@ -254,13 +269,17 @@ class SchedulePanel {
         wrap.append(legend)
 
         wrap.append(this._textField("Name", preset.name, async v => {
-            await SchedulePresets.update(preset.id, {name: v || preset.name})
+            preset.name = v || preset.name
+            await SchedulePresets.update(preset.id, {name: preset.name})
             await this.render()
         }))
         wrap.append(this._textField("Hub (IATA, e.g. FRA)", preset.hub || "", async v => {
-            await SchedulePresets.update(preset.id, {hub: (v || "").toUpperCase()})
+            preset.hub = (v || "").toUpperCase()
+            await SchedulePresets.update(preset.id, {hub: preset.hub})
+            await this.render()
         }, {maxLength: 4, style: "text-transform:uppercase"}))
         wrap.append(this._textField("Notes", preset.notes || "", async v => {
+            preset.notes = v
             await SchedulePresets.update(preset.id, {notes: v})
         }))
         return wrap
@@ -277,7 +296,8 @@ class SchedulePanel {
         const f = preset.factors
 
         const update = async (key, value) => {
-            const next = Object.assign({}, f, {[key]: value})
+            const next = Object.assign({}, preset.factors || f, {[key]: value})
+            preset.factors = next
             await SchedulePresets.update(preset.id, {factors: next})
         }
 
@@ -304,10 +324,12 @@ class SchedulePanel {
         slotLabel.innerText = "Hub slot window"
         slotLabel.style.display = "block"
         const slotStart = this._timeInput(f.slotWindow.start, async v => {
-            await update("slotWindow", Object.assign({}, f.slotWindow, {start: v}))
+            const current = (preset.factors && preset.factors.slotWindow) || f.slotWindow
+            await update("slotWindow", Object.assign({}, current, {start: v}))
         })
         const slotEnd = this._timeInput(f.slotWindow.end, async v => {
-            await update("slotWindow", Object.assign({}, f.slotWindow, {end: v}))
+            const current = (preset.factors && preset.factors.slotWindow) || f.slotWindow
+            await update("slotWindow", Object.assign({}, current, {end: v}))
         })
         const dash = document.createElement("span")
         dash.innerText = " – "
@@ -420,8 +442,11 @@ class SchedulePanel {
         labelInput.style.flex = "1"
         labelInput.value = wave.label
         labelInput.addEventListener("change", async () => {
+            const updated = Object.assign({}, wave, {label: labelInput.value || wave.label})
             const next = preset.waves.slice()
-            next[idx] = Object.assign({}, wave, {label: labelInput.value || wave.label})
+            next[idx] = updated
+            preset.waves = next
+            wave = updated
             await SchedulePresets.update(preset.id, {waves: next})
         })
 
@@ -439,9 +464,13 @@ class SchedulePanel {
         card.append(header)
 
         const updateWindow = async (which, key, value) => {
+            const currentWindow = wave[which] || {}
+            const updatedWindow = Object.assign({}, currentWindow, {[key]: value})
+            const updated = Object.assign({}, wave, {[which]: updatedWindow})
             const next = preset.waves.slice()
-            const updatedWindow = Object.assign({}, wave[which], {[key]: value})
-            next[idx] = Object.assign({}, wave, {[which]: updatedWindow})
+            next[idx] = updated
+            preset.waves = next
+            wave = updated
             await SchedulePresets.update(preset.id, {waves: next})
         }
 
@@ -474,9 +503,12 @@ class SchedulePanel {
             txt.style.cssText = "font-size:90%;"
             txt.innerText = bucketCfg.label || bucket
             const input = this._numberInput(wave.composition[bucket] | 0, 0, 99, async v => {
-                const next = preset.waves.slice()
                 const comp = Object.assign({}, wave.composition, {[bucket]: v})
-                next[idx] = Object.assign({}, wave, {composition: comp})
+                const updated = Object.assign({}, wave, {composition: comp})
+                const next = preset.waves.slice()
+                next[idx] = updated
+                preset.waves = next
+                wave = updated
                 await SchedulePresets.update(preset.id, {waves: next})
             })
             input.style.width = "70px"
@@ -507,49 +539,425 @@ class SchedulePanel {
         status.style.marginLeft = "8px"
 
         buildBtn.addEventListener("click", async () => {
-            const preset = this.block.presets.find(p => p.id === this.editingId)
-            if (!preset) { status.innerText = "Select a preset first."; return }
-            const builder = new ScheduleBuilder(preset, this.context)
-            const errors = builder.validatePreset()
-            if (errors.length) {
-                status.innerHTML = '<span class="bad">Preset issues:</span> ' + errors.join("; ")
-                return
+            if (buildBtn.disabled) return
+            buildBtn.disabled = true
+            try {
+                this.block = await SchedulePresets.load()
+                const preset = this.block.presets.find(p => p.id === this.editingId)
+                if (!preset) { status.innerText = "Select a preset first."; return }
+                const builder = new ScheduleBuilder(preset, this.context)
+                const errors = builder.validatePreset()
+                if (errors.length) {
+                    status.innerHTML = '<span class="bad">Preset issues:</span> ' + errors.join("; ")
+                    return
+                }
+                status.innerText = "Loading dynamic route candidates..."
+                const routePack = await this._loadDynamicRoutesForBuild(preset)
+                if (!routePack.routes.length) {
+                    status.innerText = routePack.blocker || "No dynamic route candidates available for this preset."
+                    return
+                }
+                status.innerText = "Generating from " + routePack.routes.length + " route candidate"
+                    + (routePack.routes.length === 1 ? "" : "s") + "..."
+                const record = builder.build(routePack.routes)
+                record.metadata = Object.assign({}, record.metadata || {}, {
+                    routeSource: routePack.metadata
+                })
+                if (routePack.warnings.length) {
+                    record.warnings = record.warnings.concat(routePack.warnings)
+                }
+                await ScheduleStore.save(record)
+                await SchedulePresets.save({lastBuildId: record.scheduleId})
+                // Mirror into the per-aircraft active draft so the AFP wave
+                // applier can pick up the preset selection and generated flights.
+                // setFlights clears the per-leg edit/apply/dismiss overlay since
+                // seq numbers are regenerated on each build.
+                if (this._isOverlayMode()) {
+                    await AesAfpActiveDraftStore.setFlights(
+                        this.context.server, this.context.aircraftId, {
+                            hub:         preset.hub || this.context.hub || null,
+                            presetId:    preset.id,
+                            flights:     record.flights || [],
+                            generatedAt: Date.now()
+                        })
+                }
+                const flightCount = record.flights.length
+                const warnCount = record.warnings.length
+                status.innerHTML = `<span class="good">Saved schedule ${record.scheduleId}</span> — ${flightCount} flights, ${warnCount} warning(s)`
+                    + " from " + routePack.routes.length + " " + routePack.sourceLabel
+                await this._refreshHistory()
+                await this.render()
+            } catch (err) {
+                console.warn("[AES Schedule Management] build failed", err)
+                status.innerText = "Build failed: " + (err && err.message ? err.message : String(err))
+            } finally {
+                buildBtn.disabled = false
             }
-            status.innerText = "Generating…"
-            const record = builder.build([])
-            await ScheduleStore.save(record)
-            await SchedulePresets.save({lastBuildId: record.scheduleId})
-            // Mirror into the per-aircraft active draft so the AFP wave
-            // applier can pick up the preset selection and any flights the
-            // empty-route foundation build did produce. setFlights clears
-            // the per-leg edit/apply/dismiss overlay since seq numbers are
-            // regenerated on each build.
-            if (this._isOverlayMode()) {
-                await AesAfpActiveDraftStore.setFlights(
-                    this.context.server, this.context.aircraftId, {
-                        hub:         preset.hub || this.context.hub || null,
-                        presetId:    preset.id,
-                        flights:     record.flights || [],
-                        generatedAt: Date.now()
-                    })
-            }
-            const flightCount = record.flights.length
-            const warnCount = record.warnings.length
-            status.innerHTML = `<span class="good">Saved schedule ${record.scheduleId}</span> — ${flightCount} flights, ${warnCount} warning(s)`
-            await this._refreshHistory()
-            await this.render()
         })
 
         bar.append(buildBtn, status)
 
         const note = document.createElement("p")
         note.style.cssText = "color:#888; font-size:90%; margin-top:8px;"
-        note.innerText = "Foundation build: routes are not yet pulled from your AS network. "
-            + "The builder runs end-to-end against an empty route set so you can verify preset structure. "
-            + "Route ingestion ships in a follow-up."
+        note.innerText = "Generate uses dynamic route candidates from AFP, Route Assistant top-routes, "
+            + "or FlightsFrom plus cached distances; it saves a local draft schedule and does not post to AS."
         bar.append(note)
 
         return bar
+    }
+
+    async _loadDynamicRoutesForBuild(preset) {
+        const hub = SchedulePanel._normaliseHub(
+            preset && preset.hub || this.context.hub || this.context.currentHub)
+        const out = {
+            routes: [],
+            warnings: [],
+            blocker: "",
+            sourceLabel: "dynamic route candidates",
+            metadata: {
+                hub,
+                sources: [],
+                candidateCount: 0,
+                selectedCount: 0,
+                skippedNoDistance: 0,
+                skippedNoCapacity: 0,
+                skippedNoBucket: 0
+            }
+        }
+        if (!hub) {
+            out.blocker = "Set a hub on the preset before generating a dynamic schedule."
+            return out
+        }
+
+        const capacity = SchedulePanel._capacityByBucket(preset)
+        out.metadata.capacityByBucket = capacity.byBucket
+        out.metadata.capacityTotal = capacity.total
+        if (capacity.total <= 0) {
+            out.blocker = "Add at least one route to a wave composition before generating."
+            return out
+        }
+
+        const rawRows = []
+        const pushRows = (source, rows, meta) => {
+            if (!Array.isArray(rows) || !rows.length) return
+            for (const row of rows) rawRows.push({source, row})
+            out.metadata.sources.push(Object.assign({
+                source,
+                count: rows.length
+            }, meta || {}))
+        }
+
+        pushRows("AFP candidates", this._inPageCandidateRows(hub))
+
+        const topRoutes = await this._loadTopRoutesRows(hub)
+        pushRows("Route Assistant top-routes", topRoutes.rows, topRoutes.meta)
+
+        const flightsFrom = await this._loadFlightsFromRows(hub)
+        pushRows("FlightsFrom cache", flightsFrom.rows, flightsFrom.meta)
+
+        if (!rawRows.length) {
+            out.blocker = "No cached routes for " + hub
+                + ". Open Route Assistant for this hub or scrape FlightsFrom first."
+            return out
+        }
+
+        const mergedRows = SchedulePanel._dedupeRouteRows(rawRows)
+        await this._backfillCachedDistances(hub, mergedRows)
+
+        const routeBuild = SchedulePanel._rowsToBuildRoutes(mergedRows, {
+            selectedSpec: this.context.selectedSpec || null
+        })
+        out.metadata.candidateCount = mergedRows.length
+        out.metadata.skippedNoDistance = routeBuild.skippedNoDistance
+
+        const selected = SchedulePanel._selectRoutesForPresetCapacity(routeBuild.routes, preset)
+        out.routes = selected.routes
+        out.metadata.selectedCount = selected.routes.length
+        out.metadata.skippedNoCapacity = selected.skippedNoCapacity
+        out.metadata.skippedNoBucket = selected.skippedNoBucket
+        out.metadata.selectedByBucket = selected.selectedByBucket
+
+        if (routeBuild.skippedNoDistance) {
+            out.warnings.push({
+                seq: 0,
+                type: "candidateNoDistance",
+                message: routeBuild.skippedNoDistance + " candidate route"
+                    + (routeBuild.skippedNoDistance === 1 ? " was" : "s were")
+                    + " skipped because no cached distance was available"
+            })
+        }
+        if (selected.skippedNoCapacity) {
+            out.warnings.push({
+                seq: 0,
+                type: "candidateOverCapacity",
+                message: selected.skippedNoCapacity + " extra candidate route"
+                    + (selected.skippedNoCapacity === 1 ? " was" : "s were")
+                    + " left out after filling the preset's wave capacity"
+            })
+        }
+        if (selected.skippedNoBucket) {
+            out.warnings.push({
+                seq: 0,
+                type: "candidateNoBucket",
+                message: selected.skippedNoBucket + " candidate route"
+                    + (selected.skippedNoBucket === 1 ? " did" : "s did")
+                    + " not match any configured range bucket"
+            })
+        }
+
+        if (!out.routes.length) {
+            if (routeBuild.skippedNoDistance >= mergedRows.length) {
+                out.blocker = "Routes were found for " + hub
+                    + ", but none have cached distances yet. Open Route Assistant once for this hub to resolve distances."
+            } else {
+                out.blocker = "Routes were found for " + hub
+                    + ", but none fit the preset's range buckets and wave composition."
+            }
+            return out
+        }
+
+        const sourceNames = out.metadata.sources.map(s => s.source)
+        out.sourceLabel = sourceNames.length === 1
+            ? sourceNames[0]
+            : "dynamic route candidates"
+        return out
+    }
+
+    _inPageCandidateRows(hub) {
+        if (typeof AesAfpRouteCandidates === "undefined") return []
+        const ctx = AesAfpRouteCandidates._lastCtx || null
+        const origin = SchedulePanel._normaliseHub(ctx && ctx.originIata)
+        if (origin && origin !== hub) return []
+        const rows = Array.isArray(AesAfpRouteCandidates.last)
+            ? AesAfpRouteCandidates.last : []
+        return rows.filter(r => r && r.destIata)
+    }
+
+    async _loadTopRoutesRows(hub) {
+        const empty = {rows: [], meta: null}
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return empty
+        const keys = []
+        try {
+            if (typeof acctKey === "function") {
+                const scoped = acctKey("routeAssistant:topRoutes", hub)
+                if (scoped) keys.push(scoped)
+            }
+        } catch (_) { /* account key unavailable */ }
+        keys.push("routeAssistant:topRoutes:" + hub, "routeAssistant:topRoutes")
+        const uniqueKeys = Array.from(new Set(keys))
+        let data = {}
+        try { data = await chrome.storage.local.get(uniqueKeys) }
+        catch (_) { return empty }
+        for (const key of uniqueKeys) {
+            const blob = data[key]
+            if (!blob || !Array.isArray(blob.rows)) continue
+            if (SchedulePanel._normaliseHub(blob.hub) !== hub) continue
+            if (blob.server && this.context.server
+                    && String(blob.server) !== String(this.context.server)) continue
+            return {
+                rows: blob.rows,
+                meta: {
+                    key,
+                    scrapedAt: blob.scrapedAt || null,
+                    accountId: blob.accountId || null
+                }
+            }
+        }
+        return empty
+    }
+
+    async _loadFlightsFromRows(hub) {
+        const empty = {rows: [], meta: null}
+        if (typeof FlightsFromStore === "undefined"
+                || typeof FlightsFromStore.loadAirport !== "function") return empty
+        try {
+            const rec = await FlightsFromStore.loadAirport(hub)
+            if (!rec || !Array.isArray(rec.routes)) return empty
+            return {
+                rows: rec.routes,
+                meta: {
+                    key: "flightsFrom:" + hub,
+                    scrapedAt: rec.scrapedAt || null
+                }
+            }
+        } catch (_) {
+            return empty
+        }
+    }
+
+    async _backfillCachedDistances(hub, rows) {
+        const missing = (rows || []).filter(r =>
+            r && r.destIata && !SchedulePanel._positiveNumber(r.distanceKm)
+                && !SchedulePanel._positiveNumber(r.distanceNm))
+        if (!missing.length) return
+        const pairs = missing.map(r => [hub, r.destIata])
+        let cache = null
+
+        if (typeof RouteAssistantDistanceResolver !== "undefined"
+                && typeof RouteAssistantDistanceResolver.bulkLoadCache === "function") {
+            try { cache = await RouteAssistantDistanceResolver.bulkLoadCache(pairs, {}) }
+            catch (_) { cache = null }
+        }
+        if (!cache && typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+            const keys = pairs.map(([a, b]) =>
+                "routeAssistant:distance:" + SchedulePanel._distancePairKey(a, b))
+            try {
+                const data = await chrome.storage.local.get(keys)
+                cache = new Map()
+                for (const key of keys) {
+                    const rec = data[key]
+                    if (!rec || !SchedulePanel._positiveNumber(rec.distanceKm)) continue
+                    cache.set(key.substring("routeAssistant:distance:".length), rec)
+                }
+            } catch (_) { cache = null }
+        }
+        if (!cache) return
+        for (const row of missing) {
+            const rec = cache.get(SchedulePanel._distancePairKey(hub, row.destIata))
+            if (rec && SchedulePanel._positiveNumber(rec.distanceKm)) {
+                row.distanceKm = Number(rec.distanceKm)
+                row.distanceSource = rec.source || "distance-cache"
+            }
+        }
+    }
+
+    static _normaliseHub(value) {
+        const text = String(value || "").trim().toUpperCase()
+        return /^[A-Z]{3}$/.test(text) ? text : ""
+    }
+
+    static _distancePairKey(a, b) {
+        const x = String(a || "").toUpperCase()
+        const y = String(b || "").toUpperCase()
+        return x < y ? x + "-" + y : y + "-" + x
+    }
+
+    static _positiveNumber(value) {
+        const n = Number(value)
+        return isFinite(n) && n > 0 ? n : null
+    }
+
+    static _routeRank(row) {
+        if (!row) return 0
+        const score = SchedulePanel._positiveNumber(row.score)
+            || SchedulePanel._positiveNumber(row.scoreBlend)
+            || null
+        if (score != null) return score
+        const pax = Number(row.paxScore) || 0
+        const cargo = Number(row.cargoScore) || 0
+        const weekly = Number(row.weeklyFlights) || 0
+        const competition = Number(row.airlineCount) || 0
+        return pax * 10 + cargo * 5 + Math.min(weekly, 100) * 0.25 - competition
+    }
+
+    static _dedupeRouteRows(entries) {
+        const byDest = new Map()
+        for (const entry of entries || []) {
+            const row = entry && entry.row || null
+            const dest = SchedulePanel._normaliseHub(row && (row.destIata || row.dest || row.destination))
+            if (!dest) continue
+            const normalised = Object.assign({}, row, {
+                destIata: dest,
+                _source: entry.source || "unknown",
+                _rankScore: SchedulePanel._routeRank(row)
+            })
+            const prev = byDest.get(dest)
+            if (!prev) {
+                byDest.set(dest, normalised)
+                continue
+            }
+            for (const key in normalised) {
+                if (prev[key] == null || prev[key] === "") prev[key] = normalised[key]
+            }
+            prev._source = prev._source || normalised._source
+            prev._rankScore = Math.max(prev._rankScore || 0, normalised._rankScore || 0)
+        }
+        return Array.from(byDest.values()).sort((a, b) =>
+            (b._rankScore || 0) - (a._rankScore || 0))
+    }
+
+    static _rowsToBuildRoutes(rows, opts) {
+        const spec = opts && opts.selectedSpec || null
+        const aircraftType = spec && (spec.typeName || spec.name) || null
+        const aircraftRangeNm = spec && spec.range
+            ? ScheduleFactors.kmToNm(Number(spec.range))
+            : null
+        const routes = []
+        let skippedNoDistance = 0
+        for (const row of rows || []) {
+            const dest = SchedulePanel._normaliseHub(row && row.destIata)
+            if (!dest) continue
+            const km = SchedulePanel._positiveNumber(row.distanceKm)
+            const nm = SchedulePanel._positiveNumber(row.distanceNm)
+                || (km ? ScheduleFactors.kmToNm(km) : null)
+            if (!nm) {
+                skippedNoDistance++
+                continue
+            }
+            routes.push({
+                destination:       dest,
+                distanceNm:        nm,
+                distanceKm:        km || ScheduleFactors.nmToKm(nm),
+                aircraftType:      aircraftType || row.aircraftTypeName || row.aircraftType || null,
+                aircraftRangeNm:   aircraftRangeNm || row.aircraftRangeNm || null,
+                turnaroundMinutes: Number(row.turnaroundMinutes) || undefined,
+                _rankScore:        row._rankScore || SchedulePanel._routeRank(row),
+                _scoredRow:        row
+            })
+        }
+        routes.sort((a, b) => (b._rankScore || 0) - (a._rankScore || 0))
+        return {routes, skippedNoDistance}
+    }
+
+    static _capacityByBucket(preset) {
+        const buckets = preset && preset.factors && preset.factors.rangeBuckets
+            || ScheduleFactors.defaultRangeBuckets()
+        const byBucket = {}
+        for (const key in buckets) byBucket[key] = 0
+        for (const wave of (preset && preset.waves || [])) {
+            if (wave && wave.archivedAt) continue
+            const comp = wave && wave.composition || {}
+            for (const key in buckets) {
+                byBucket[key] += Math.max(0, Number(comp[key]) || 0)
+            }
+        }
+        let total = 0
+        for (const key in byBucket) total += byBucket[key]
+        return {byBucket, total}
+    }
+
+    static _selectRoutesForPresetCapacity(routes, preset) {
+        const buckets = preset && preset.factors && preset.factors.rangeBuckets
+            || ScheduleFactors.defaultRangeBuckets()
+        const capacity = SchedulePanel._capacityByBucket(preset)
+        const used = {}
+        for (const key in capacity.byBucket) used[key] = 0
+        const selected = []
+        let skippedNoCapacity = 0
+        let skippedNoBucket = 0
+        const seen = new Set()
+        for (const route of routes || []) {
+            const dest = SchedulePanel._normaliseHub(route && route.destination)
+            if (!dest || seen.has(dest)) continue
+            const bucket = ScheduleFactors.bucketize(route.distanceNm, buckets)
+            if (!bucket) {
+                skippedNoBucket++
+                continue
+            }
+            if ((used[bucket] || 0) >= (capacity.byBucket[bucket] || 0)) {
+                skippedNoCapacity++
+                continue
+            }
+            used[bucket] = (used[bucket] || 0) + 1
+            seen.add(dest)
+            selected.push(route)
+        }
+        return {
+            routes: selected,
+            skippedNoCapacity,
+            skippedNoBucket,
+            selectedByBucket: used
+        }
     }
 
     _buildOpenStationsBar() {
@@ -646,11 +1054,21 @@ class SchedulePanel {
         for (const entry of index) {
             const tr = document.createElement("tr")
             const when = new Date(entry.generatedAt).toLocaleString()
-            tr.innerHTML = `<td>${when}</td>
-                <td>${entry.presetName || "(unnamed)"}</td>
-                <td>${entry.hub || ""}</td>
-                <td>${entry.flightCount}</td>
-                <td>${entry.warningCount}</td>`
+            // F-9228-302: presetName + hub flow back from user-typed input
+            // (Identity → Name field, hub free-text), so innerHTML interpolation
+            // is an XSS vector. Build cells with textContent to keep markup escaped.
+            const mkCell = (txt) => {
+                const td = document.createElement("td")
+                td.textContent = txt == null ? "" : String(txt)
+                return td
+            }
+            tr.append(
+                mkCell(when),
+                mkCell(entry.presetName || "(unnamed)"),
+                mkCell(entry.hub || ""),
+                mkCell(entry.flightCount),
+                mkCell(entry.warningCount)
+            )
             const td = document.createElement("td")
             const del = document.createElement("button")
             del.type = "button"
@@ -708,7 +1126,7 @@ class SchedulePanel {
         input.style.display = "inline-block"
         input.value = value
         input.addEventListener("change", () => {
-            if (ScheduleFactors.parseHHMM(input.value)) {
+            if (SchedulePanel._isValidHHMM(input.value)) {
                 onChange(input.value)
             }
         })
@@ -770,16 +1188,15 @@ class SchedulePanel {
         const proposed = (this.draft && Array.isArray(this.draft.flights))
             ? this.draft.flights : []
         if (!this.schedule.legs.length && !proposed.length) return null
+        // F-9228-305: schedule.legs and draft.flights are reloaded from
+        // chrome.storage on every render(), so reference-equality cache
+        // checks never hit. Drop the cache — the compare is cheap and
+        // accumulating dead memo state was misleading.
         let diff
-        if (this._diffCacheLegs === this.schedule.legs && this._diffCacheProposed === proposed) {
-            diff = this._diffCacheResult
-        } else {
-            try { diff = AesAfpScheduleDiff.compare(this.schedule.legs, proposed) }
-            catch (e) { console.warn("[AES schedule-panel] diff threw", e); return null }
-            this._diffCacheLegs = this.schedule.legs
-            this._diffCacheProposed = proposed
-            this._diffCacheResult = diff
-        }
+        const diffOpts = (this._afpSettings && this._afpSettings.autoScheduler
+            && this._afpSettings.autoScheduler.diff) || null
+        try { diff = AesAfpScheduleDiff.compare(this.schedule.legs, proposed, diffOpts) }
+        catch (e) { console.warn("[AES schedule-panel] diff threw", e); return null }
 
         const wrap = document.createElement("div")
         wrap.style.cssText = "margin:0 0 10px 0;padding:6px 10px;border:1px solid #d4d4d8;"
@@ -851,8 +1268,13 @@ class SchedulePanel {
         if (!this._isOverlayMode()) return
         const ctx = this.context || {}
         const aircraftId = ctx.aircraftId
+        // F-9228-301: this._presets was never assigned anywhere on the panel —
+        // the fallback evaluated to null. Use the panel's currently-edited
+        // preset (this.editingId), which is the user's actual selection,
+        // and fall back to the first preset in the loaded block.
         const presetId = (this.draft && this.draft.presetId)
-            || (this._presets || []).find(p => p)
+            || this.editingId
+            || (this.block && this.block.presets && this.block.presets[0] && this.block.presets[0].id)
             || null
         if (!aircraftId || !presetId) {
             if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.warn) {
@@ -933,6 +1355,7 @@ class SchedulePanel {
             + "<th style=\"width:46px;\">Dir</th>"
             + "<th>Origin</th>"
             + "<th>Dest</th>"
+            + "<th style=\"width:74px;\">Flight #</th>"
             + "<th style=\"width:96px;\">Dep time</th>"
             + "<th style=\"width:84px;\">Price %</th>"
             + "<th style=\"width:70px;\">Status</th>"
@@ -989,7 +1412,7 @@ class SchedulePanel {
         }
 
         const td = (txt) => { const c = document.createElement("td"); c.textContent = txt; return c }
-        tr.append(td(flight.waveLabel || flight.waveId || "—"))
+        tr.append(td(eff.waveLabel || eff.waveId || "—"))
 
         const dir = (flight.direction || "").slice(0, 3)
         const dirCell = td(dir)
@@ -1010,6 +1433,23 @@ class SchedulePanel {
         destCell.append(destInput)
         tr.append(destCell)
 
+        // Flight number — optional 1..4 digit suffix; blank lets AS assign.
+        const fnCell = document.createElement("td")
+        const fnInput = SchedulePanel._mkLegTextInput(
+            eff.flightNumberText || SchedulePanel._flightNumberTextFrom(eff.flightNumber || eff.flightCode || ""),
+            (v) => {
+                if (typeof o.onLegEdit !== "function") return
+                const cleaned = SchedulePanel._cleanFlightNumberText(v)
+                return o.onLegEdit(seq, {flightNumberText: cleaned || null})
+            },
+            {maxLength: 4, style: "width:58px;"})
+        fnInput.inputMode = "numeric"
+        fnInput.addEventListener("input", () => {
+            fnInput.value = SchedulePanel._cleanFlightNumberText(fnInput.value)
+        })
+        fnCell.append(fnInput)
+        tr.append(fnCell)
+
         // Departure time — HH:MM input.
         const timeCell = document.createElement("td")
         const timeInput = document.createElement("input")
@@ -1020,7 +1460,7 @@ class SchedulePanel {
         timeInput.addEventListener("change", () => {
             if (typeof o.onLegEdit !== "function") return
             const v = timeInput.value
-            if (v && (typeof ScheduleFactors === "undefined" || ScheduleFactors.parseHHMM(v))) {
+            if (SchedulePanel._isValidHHMM(v)) {
                 o.onLegEdit(seq, {depTimeLocal: v})
             }
         })
@@ -1107,16 +1547,13 @@ class SchedulePanel {
         return input
     }
 
-    _legTextInput(value, onChange, opts) {
-        opts = opts || {}
-        const input = document.createElement("input")
-        input.type = "text"
-        input.className = "form-control input-sm"
-        input.value = value
-        if (opts.maxLength) input.maxLength = opts.maxLength
-        if (opts.style) input.setAttribute("style", opts.style)
-        input.addEventListener("change", () => onChange(input.value))
-        return input
+    static _cleanFlightNumberText(value) {
+        return String(value == null ? "" : value).replace(/[^0-9]/g, "").slice(0, 4)
+    }
+
+    static _flightNumberTextFrom(value) {
+        const m = String(value || "").match(/(\d{1,4})\s*$/)
+        return m ? m[1] : ""
     }
 
     async _patchLegEdit(seq, patch) {
@@ -1155,8 +1592,10 @@ class SchedulePanel {
             origin:       origin || null,
             destination:  destination || null,
             depTimeLocal: eff.depTimeLocal || null,
+            depTime:      eff.depTimeLocal || null,
             pricePct:     (typeof eff.pricePct === "number") ? eff.pricePct : 100,
-            service:      eff.service || null
+            service:      eff.service || null,
+            flightNumberText: SchedulePanel._cleanFlightNumberText(eff.flightNumberText || "")
         }
 
         this._legStatusBySeq[seq] = "submitting"
@@ -1180,4 +1619,8 @@ class SchedulePanel {
             await this.render()
         }
     }
+}
+
+if (typeof window !== "undefined") {
+    window.SchedulePanel = SchedulePanel
 }

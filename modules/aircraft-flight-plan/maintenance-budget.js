@@ -48,34 +48,67 @@
     }
 
     /**
-     * With a valid regression, use equilibrium weekly hours (the rate that
-     * holds Δratio ≈ 0). Without one, fall back to the autoScheduler's
-     * existing fallback constants. The (0, 168] guard prevents a too-small
-     * sample set producing absurd budgets like 600 h/wk.
+     * With a valid regression, solve for the weekly block hours that keep
+     * the maintenance ratio at or above the target after the configured wait
+     * horizon. At exactly the target ratio this collapses to equilibrium
+     * weekly hours (the rate that holds Δratio ≈ 0). Above target, the tail
+     * can spend that buffer; below target, the ceiling tightens so the next
+     * schedule helps the ratio recover. Without a stable regression, fall
+     * back to the autoScheduler's existing fallback constants. The (0, 168]
+     * guard prevents a too-small sample set producing absurd budgets.
      */
-    function _resolveCeiling(fit, settings) {
+    function _resolveCeiling(fit, settings, currentRatio) {
         const a = (settings && settings.autoScheduler) || {}
         const fallbackMaxWeekly = isFinite(a.fallbackMaxWeeklyBlockHours)
             ? Number(a.fallbackMaxWeeklyBlockHours) : 80
         const fallbackMaxDaily = isFinite(a.fallbackMaxDailyBlockHours)
             ? Number(a.fallbackMaxDailyBlockHours) : 14
+        const targetRatio = isFinite(a.minMaintenanceRatio)
+            ? Number(a.minMaintenanceRatio) : RATIO_FLOOR
+        const waitDays = isFinite(a.maintenanceWaitDays) && Number(a.maintenanceWaitDays) > 0
+            ? Number(a.maintenanceWaitDays) : 3
 
         const eq = fit && fit.valid ? fit.equilibriumWeeklyBlockHours : null
         if (isFinite(eq) && eq > 0 && eq <= HOURS_PER_WEEK) {
-            const dailyFromWeekly = Math.max(0, eq / 7 - MANDATORY_GROUND_HOURS_PER_DAY)
+            const targetHours = _weeklyHoursForTargetRatio(
+                currentRatio, fit, targetRatio, waitDays
+            )
+            const maxWeekly = isFinite(targetHours)
+                ? Math.max(0, Math.min(HOURS_PER_WEEK, targetHours))
+                : eq
+            const dailyFromWeekly = Math.max(0, maxWeekly / 7 - MANDATORY_GROUND_HOURS_PER_DAY)
             return {
-                maxWeeklyBlockHours:        eq,
+                maxWeeklyBlockHours:        maxWeekly,
                 maxDailyBlockHours:         Math.min(dailyFromWeekly, fallbackMaxDaily),
                 mandatoryGroundHoursPerDay: MANDATORY_GROUND_HOURS_PER_DAY,
-                source:                     "regression"
+                source:                     "regression",
+                targetMaintenanceRatio:     targetRatio,
+                maintenanceWaitDays:        waitDays,
+                targetLimited:              isFinite(targetHours)
             }
         }
         return {
             maxWeeklyBlockHours:        fallbackMaxWeekly,
             maxDailyBlockHours:         fallbackMaxDaily,
             mandatoryGroundHoursPerDay: MANDATORY_GROUND_HOURS_PER_DAY,
-            source:                     "fallback"
+            source:                     "fallback",
+            targetMaintenanceRatio:     targetRatio,
+            maintenanceWaitDays:        waitDays,
+            targetLimited:              false
         }
+    }
+
+    function _weeklyHoursForTargetRatio(currentRatio, fit, targetRatio, waitDays) {
+        if (!isFinite(currentRatio) || !fit || !fit.valid) return null
+        const slope = Number(fit.slope)
+        const intercept = Number(fit.intercept)
+        const weeks = Number(waitDays) / 7
+        if (!isFinite(slope) || !isFinite(intercept) || !isFinite(weeks) || weeks <= 0) return null
+        // The useful regression shape is slope < 0: more flying consumes
+        // maintenance ratio. If the fitted slope is flat/positive, the
+        // equilibrium ceiling is safer than a target solve.
+        if (slope >= 0) return null
+        return ((Number(targetRatio) - Number(currentRatio)) / weeks - intercept) / slope
     }
 
     async function compute(opts) {
@@ -107,7 +140,8 @@
         }
         const scheduledMaintenanceHoursPerWeek = _sumMaintenanceHours(schedule)
 
-        const ceiling = _resolveCeiling(fit, settingsResolved)
+        const currentRatio = isFinite(maint.ratio) ? Number(maint.ratio) : null
+        const ceiling = _resolveCeiling(fit, settingsResolved, currentRatio)
         // Subtract reserved AS-managed maintenance hours from the wear
         // ceiling — the allocator can't fly during those windows, so
         // they're not available block hours. Only when we're using a
@@ -120,12 +154,14 @@
             ? Math.max(0, adjustedMaxWeekly / 7 - ceiling.mandatoryGroundHoursPerDay)
             : ceiling.maxDailyBlockHours
 
-        const currentRatio = isFinite(maint.ratio) ? Number(maint.ratio) : null
         const forecastRatio7d = useRegression
             ? _forecastRatio(currentRatio, fit, scheduledWeekly, 1)
             : null
         const equilibriumRatio = useRegression
             ? _forecastRatio(currentRatio, fit, adjustedMaxWeekly, 1)
+            : null
+        const forecastRatioTargetDays = useRegression
+            ? _forecastRatio(currentRatio, fit, adjustedMaxWeekly, ceiling.maintenanceWaitDays / 7)
             : null
 
         // Lane C Phase 2 — derive fleet-optimizer target hours dormantly.
@@ -169,10 +205,14 @@
             currentScheduledWeeklyHours:       isFinite(scheduledWeekly) ? Number(scheduledWeekly) : null,
             equilibriumRatio,
             forecastRatio7d,
+            forecastRatioTargetDays,
             ratioFloor:                        RATIO_FLOOR,
             fit:                               fit || null,
             scheduledMaintenanceHoursPerWeek,
             rawMaxWeeklyBlockHours:            ceiling.maxWeeklyBlockHours,
+            targetMaintenanceRatio:            ceiling.targetMaintenanceRatio,
+            maintenanceWaitDays:               ceiling.maintenanceWaitDays,
+            targetLimited:                     ceiling.targetLimited,
             // Lane C Phase 2 — null until user opts in via fleetOptimizer settings.
             targetWeeklyHours,
             floorPct,

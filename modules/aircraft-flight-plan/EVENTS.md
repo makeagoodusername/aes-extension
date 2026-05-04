@@ -49,7 +49,7 @@ auto-delete:start    → auto-delete:progress* → auto-delete:done|aborted|erro
 | `maintenance:scraped` | `maintenance-scraper.js:131` | `{record}` | `record = {ratio, condition, ratioStatus, conditionStatus, scrapedAt}`. Fires after every `maintenance-scraper` run. |
 | `wear:updated` | `wear-model.js:216` | `{sample}` | Sample = trailing-7-day weekly block hours + maintenance ratio sample. Fires when either input changes. |
 | `candidates:updated` | `route-candidates.js:176` | `{candidates: Candidate[]}` | After scoring + sorting; payload reflects the visible-list ordering. |
-| `candidate:selected` | `route-candidates.js:411`, `wave-applier.js:176`, `diagnostics.js:287` | `{candidate, source}` | `source` ∈ `"row-click" \| "wave-leg" \| "memo-replay"`. `form-driver` listens and fills the AS form. |
+| `candidate:selected` | `route-candidates.js:411`, `wave-applier.js:176`, `diagnostics.js:287` | `{candidate, source, originIata?, destinationIata?, depTime?, leg?, skipFormFill?}` | `source` ∈ `"row-click" \| "wave-leg" \| "memo-replay"`. Wave-leg payloads carry exact O/D/time so `form-driver` fills inbound and outbound legs correctly. |
 | `candidate:dismissed` | (defensive subscription in `audit-log.js:403`) | `{candidate, source}` | Fired on row-dismiss CTA. Currently only audit-log subscribes. |
 | `form:filled` | `form-driver.js:439–440` | `{leg, source}` | `leg = {origin, destination, depTime, pricePct, service}`. Means the AS form has been pre-filled — user still clicks AS's own Submit button (HANDOVER §10 invariant: AFP NEVER auto-submits). |
 | `form:cleared` | `form-driver.js` (clear button) | (no payload) | Triggered by the form-driver toolbar Clear CTA. |

@@ -99,9 +99,32 @@ class AesAfpActiveDraftStore {
     /**
      * Persist a partial patch. Fields omitted from `patch` fall through.
      * Returns the merged record.
+     *
+     * F-9228-901: serialised per-key through a tail Promise so concurrent
+     * setApplied / setDismissed / setEdit calls (and any other read-modify-
+     * write helper) don't lose each other's writes via the same
+     * load-then-set race that bit AesSettings.saveArea (F-9223-002). Same
+     * realm/single-tab coverage; cross-tab races on the same key remain
+     * inherent and would need a background single-writer for full coverage.
      */
     static async save(server, aircraftId, patch) {
         if (!server || !aircraftId) return null
+        return AesAfpActiveDraftStore._enqueue(server, aircraftId, () =>
+            AesAfpActiveDraftStore._saveImpl(server, aircraftId, patch))
+    }
+
+    static _enqueue(server, aircraftId, task) {
+        const key = AesAfpActiveDraftStore._key(server, aircraftId)
+        const queue = AesAfpActiveDraftStore._saveQueue
+        const tail = queue.get(key) || Promise.resolve()
+        const next = tail.then(task)
+        // Swallow rejections in the chain so a single failure doesn't poison
+        // every subsequent save; callers still see their own rejection.
+        queue.set(key, next.catch(() => {}))
+        return next
+    }
+
+    static async _saveImpl(server, aircraftId, patch) {
         const existing = await AesAfpActiveDraftStore.load(server, aircraftId)
         const now = Date.now()
         const p = patch || {}
@@ -129,6 +152,8 @@ class AesAfpActiveDraftStore {
         await chrome.storage.local.set({[key]: next})
         return next
     }
+
+    static _saveQueue = new Map()
 
     /**
      * Replace the canonical build output (preset + flights). Clears
@@ -163,32 +188,38 @@ class AesAfpActiveDraftStore {
     /** Patch a single leg's edit overlay. Pass `null` to clear that leg's edits. */
     static async setEdit(server, aircraftId, seq, patch) {
         if (seq == null) return null
-        const cur = await AesAfpActiveDraftStore.load(server, aircraftId)
-        const edits = Object.assign({}, cur.perLegEdits)
-        if (patch === null) {
-            delete edits[seq]
-        } else {
-            edits[seq] = Object.assign({}, edits[seq] || {}, patch || {})
-        }
-        return AesAfpActiveDraftStore.save(server, aircraftId, {perLegEdits: edits})
+        return AesAfpActiveDraftStore._enqueue(server, aircraftId, async () => {
+            const cur = await AesAfpActiveDraftStore.load(server, aircraftId)
+            const edits = Object.assign({}, cur.perLegEdits)
+            if (patch === null) {
+                delete edits[seq]
+            } else {
+                edits[seq] = Object.assign({}, edits[seq] || {}, patch || {})
+            }
+            return AesAfpActiveDraftStore._saveImpl(server, aircraftId, {perLegEdits: edits})
+        })
     }
 
     static async setApplied(server, aircraftId, seq, appliedAt) {
         if (seq == null) return null
-        const cur = await AesAfpActiveDraftStore.load(server, aircraftId)
-        const next = Object.assign({}, cur.appliedLegs)
-        if (appliedAt === null) delete next[seq]
-        else next[seq] = appliedAt || Date.now()
-        return AesAfpActiveDraftStore.save(server, aircraftId, {appliedLegs: next})
+        return AesAfpActiveDraftStore._enqueue(server, aircraftId, async () => {
+            const cur = await AesAfpActiveDraftStore.load(server, aircraftId)
+            const next = Object.assign({}, cur.appliedLegs)
+            if (appliedAt === null) delete next[seq]
+            else next[seq] = appliedAt || Date.now()
+            return AesAfpActiveDraftStore._saveImpl(server, aircraftId, {appliedLegs: next})
+        })
     }
 
     static async setDismissed(server, aircraftId, seq, dismissedAt) {
         if (seq == null) return null
-        const cur = await AesAfpActiveDraftStore.load(server, aircraftId)
-        const next = Object.assign({}, cur.dismissedLegs)
-        if (dismissedAt === null) delete next[seq]
-        else next[seq] = dismissedAt || Date.now()
-        return AesAfpActiveDraftStore.save(server, aircraftId, {dismissedLegs: next})
+        return AesAfpActiveDraftStore._enqueue(server, aircraftId, async () => {
+            const cur = await AesAfpActiveDraftStore.load(server, aircraftId)
+            const next = Object.assign({}, cur.dismissedLegs)
+            if (dismissedAt === null) delete next[seq]
+            else next[seq] = dismissedAt || Date.now()
+            return AesAfpActiveDraftStore._saveImpl(server, aircraftId, {dismissedLegs: next})
+        })
     }
 
     /**

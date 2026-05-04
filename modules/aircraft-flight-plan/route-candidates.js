@@ -32,16 +32,18 @@
  * event so cross-tab + same-tab updates both repaint.
  *
  * Candidate shape:
- *   {destIata, destName, distanceKm, distanceNm, paxScore, cargoScore,
+ *   {originIata, destIata, destName, distanceKm, distanceNm, paxScore, cargoScore,
  *    weeklyFlights, seatsPerWeek, airlineCount,
  *    fits: "fit"|"tight"|"oor"|"unknown", scoreBlend, alreadyScheduled, notes,
  *    score (alias of scoreBlend), aircraftFit ("optimal"|"falloff"|"oor"|null)}
  *
  * Bus contract:
  *   in:  ctx:ready, spec:resolved
- *   out: candidates:updated {candidates}, candidate:selected {candidate, source}
+ *   out: candidates:updated {candidates}, candidate:selected {candidate, source, originIata, depTime}
  */
 ;(function () {
+    if (window.AesAfpRouteCandidates) return
+
     const FIELD_DEFS = [
         {field: "paxScore",      direction: "higher"},
         {field: "cargoScore",    direction: "higher"},
@@ -111,26 +113,31 @@
             const scheduledFlightIds = (opts && opts.scheduledFlightIds) || new Set()
 
             this._lastCtx    = {originIata, spec, settings, scheduledDestSet: scheduled,
-                                scheduledFlightIds}
+                                scheduledFlightIds, scheduleLegs: (opts && opts.scheduleLegs) || []}
             this._lastFfData = null
 
             if (!originIata || !/^[A-Z]{3}$/.test(originIata)) { this.last = []; return [] }
-            if (typeof FlightsFromStore         === "undefined"
-             || typeof RouteAssistantDemandStore === "undefined"
-             || typeof RouteAssistantScore       === "undefined"
+            if (typeof RouteAssistantScore       === "undefined"
              || typeof ScheduleFactors           === "undefined") {
                 console.warn("[AES afp] route-candidates: dependency missing — bailing")
                 this.last = []
                 return []
             }
 
-            const ffData = await FlightsFromStore.loadAirport(originIata)
+            const ffData = (typeof FlightsFromStore !== "undefined"
+                    && typeof FlightsFromStore.loadAirport === "function")
+                ? await FlightsFromStore.loadAirport(originIata)
+                : null
             this._lastFfData = ffData
-            const routes = (ffData && Array.isArray(ffData.routes)) ? ffData.routes : []
+            let routes = (ffData && Array.isArray(ffData.routes)) ? ffData.routes : []
+            if (!routes.length) routes = await this._loadCachedRouteRows(originIata)
             if (!routes.length) { this.last = []; return [] }
 
             const iatas = routes.map(r => String(r.destIata || "").toUpperCase()).filter(Boolean)
-            const demandMap = await RouteAssistantDemandStore.getMany(iatas)
+            const demandMap = (typeof RouteAssistantDemandStore !== "undefined"
+                    && typeof RouteAssistantDemandStore.getMany === "function")
+                ? await RouteAssistantDemandStore.getMany(iatas)
+                : new Map()
 
             // Phase-3 enrichment: bulk-fetch directional α overrides; compute
             // fuel burn once from spec (constant per-aircraft) and apply per-leg.
@@ -205,8 +212,14 @@
             const rangeKm = (spec && Number(spec.range)) || null
             const rangeNm = rangeKm ? ScheduleFactors.kmToNm(rangeKm) : null
             const cruiseKmh = (spec && Number(spec.cruiseSpeedKmh)) || null
+            const ffDemandContext = (typeof FlightsFromStore !== "undefined"
+                    && typeof FlightsFromStore.buildDemandContext === "function")
+                ? FlightsFromStore.buildDemandContext(routes)
+                : null
             const rows = routes.map(r => this._buildRow(r, originIata, demandMap, distMap,
-                rangeNm, scheduled, alphaMap, burn, airportMetaMap, iataToAirportId, cruiseKmh))
+                rangeNm, scheduled, alphaMap, burn, airportMetaMap, iataToAirportId,
+                cruiseKmh, ffDemandContext))
+            this._stampDepartureSuggestions(rows, (opts && opts.scheduleLegs) || [], originIata)
 
             const scoringCfg = (settings && settings.scoring) || {}
             const scored = RouteAssistantScore.computeScores(rows, scoringCfg, FIELD_DEFS)
@@ -224,6 +237,157 @@
 
             this._kickAirportMetaFetch(originIata, iataToAirportId, airportMetaMap)
             return scored
+        },
+
+        /**
+         * Keeps the route builder usable when no FlightsFrom/top-routes scan
+         * exists for the active hub. We mine the route intel already cached
+         * from AS pages: top-routes blobs, ticket-price / pricing records,
+         * watchlist entries, and legacy routeAnalysis snapshots.
+         */
+        async _loadCachedRouteRows(originIata) {
+            if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return []
+            const hub = String(originIata || "").toUpperCase()
+            if (!/^[A-Z]{3}$/.test(hub)) return []
+            let all = {}
+            try { all = await chrome.storage.local.get(null) || {} }
+            catch (_) { return [] }
+
+            const byDest = new Map()
+            const add = (dest, fields) => {
+                const d = String(dest || "").toUpperCase()
+                if (!/^[A-Z]{3}$/.test(d) || d === hub) return
+                const cur = byDest.get(d) || {destIata: d, sources: []}
+                const f = fields || {}
+                for (const k of Object.keys(f)) {
+                    if (f[k] !== null && f[k] !== undefined && f[k] !== "") cur[k] = f[k]
+                }
+                if (f.source && cur.sources.indexOf(f.source) === -1) cur.sources.push(f.source)
+                byDest.set(d, cur)
+            }
+
+            for (const key in all) {
+                const rec = all[key]
+                if (!rec || typeof rec !== "object") continue
+
+                if (/^routeAssistant:topRoutes(?::|$)/.test(key)
+                        && String(rec.hub || "").toUpperCase() === hub
+                        && Array.isArray(rec.rows)) {
+                    for (const row of rec.rows) {
+                        add(row && row.destIata, Object.assign({}, row, {
+                            source:       "cached top routes",
+                            demandSource: row && row.demandSource || "cached top routes",
+                            demandBasis:  row && row.demandBasis  || "Route Assistant top-routes cache"
+                        }))
+                    }
+                    continue
+                }
+
+                if (/^routeAssistant:watchlist(?::|$)/.test(key)
+                        && rec.routes && typeof rec.routes === "object") {
+                    for (const routeKey of Object.keys(rec.routes)) {
+                        const pair = this._routePairFromString(routeKey)
+                        if (pair && pair.hub === hub) add(pair.dest, {
+                            paxScore: 5,
+                            score: 50,
+                            source: "watchlist",
+                            demandSource: "watchlist",
+                            demandBasis: "Route Assistant watchlist"
+                        })
+                    }
+                    continue
+                }
+
+                const recHub = String(rec.hub || rec.origin || "").toUpperCase()
+                const recDest = String(rec.dest || rec.destIata || rec.destination || "").toUpperCase()
+                if (recHub === hub && /^[A-Z]{3}$/.test(recDest)) {
+                    add(recDest, this._fieldsFromCachedRouteRecord(rec, key))
+                    continue
+                }
+
+                const pair = this._routePairFromString(key)
+                if (pair && pair.hub === hub) {
+                    add(pair.dest, this._fieldsFromCachedRouteRecord(rec, key))
+                }
+            }
+
+            return Array.from(byDest.values()).map(r => {
+                const sources = r.sources && r.sources.length ? r.sources.join(" + ") : "cached route intel"
+                return Object.assign({}, r, {
+                    paxScore: Number.isFinite(Number(r.paxScore)) ? Number(r.paxScore) : 5,
+                    cargoScore: Number.isFinite(Number(r.cargoScore)) ? Number(r.cargoScore) : null,
+                    score: Number.isFinite(Number(r.score)) ? Number(r.score) : 50,
+                    status: r.status || sources,
+                    demandSource: r.demandSource || sources,
+                    demandBasis: r.demandBasis || sources,
+                    _fallbackSources: sources
+                })
+            }).sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)
+                || (Number(b.paxScore) || 0) - (Number(a.paxScore) || 0)
+                || a.destIata.localeCompare(b.destIata))
+        },
+
+        _routePairFromString(value) {
+            const matches = String(value || "").toUpperCase().match(/[A-Z]{3}-[A-Z]{3}/g)
+            if (!matches || !matches.length) return null
+            const parts = matches[matches.length - 1].split("-")
+            return {hub: parts[0], dest: parts[1]}
+        },
+
+        _fieldsFromCachedRouteRecord(rec, key) {
+            const fields = {
+                source: "cached route intel",
+                demandSource: "cached route intel",
+                demandBasis: "Cached Route Assistant record"
+            }
+            if (rec.destName || rec.name || rec.destinationName) {
+                fields.destName = rec.destName || rec.name || rec.destinationName
+            }
+            if (rec.distanceKm != null) fields.distanceKm = Number(rec.distanceKm)
+            if (rec.weeklyFlights != null) fields.weeklyFlights = Number(rec.weeklyFlights)
+            if (rec.departureTime) fields.suggestedDepTime = String(rec.departureTime)
+
+            if (/ticketPrice/.test(key)) {
+                fields.source = "ticket-price cache"
+                fields.demandSource = "ticket-price cache"
+                fields.demandBasis = "Cached ticket-price route"
+                fields.paxScore = Number(rec.weeklyFlights) > 0
+                    ? Math.min(10, Math.max(3, Number(rec.weeklyFlights)))
+                    : 5
+                fields.score = fields.paxScore * 10
+            } else if (/ownPricing|markets:ownPricing/.test(key)) {
+                fields.source = "pricing cache"
+                fields.demandSource = "pricing cache"
+                fields.demandBasis = "Cached own-pricing route"
+                fields.paxScore = 5
+                fields.score = 50
+            } else if (/routeAnalysis/.test(key) || rec.type === "routeAnalysis") {
+                const latest = this._latestRouteAnalysis(rec)
+                if (latest) {
+                    const y = latest.Y && Number(latest.Y.totalBkd) && Number(latest.Y.totalCap)
+                        ? Math.round((Number(latest.Y.totalBkd) / Number(latest.Y.totalCap)) * 10) : null
+                    const c = latest.Cargo && Number(latest.Cargo.totalBkd) && Number(latest.Cargo.totalCap)
+                        ? Math.round((Number(latest.Cargo.totalBkd) / Number(latest.Cargo.totalCap)) * 10) : null
+                    fields.paxScore = Number.isFinite(y) ? Math.max(1, Math.min(10, y)) : 6
+                    fields.cargoScore = Number.isFinite(c) ? Math.max(1, Math.min(10, c)) : null
+                    fields.score = fields.paxScore * 10
+                    fields.source = "route analysis"
+                    fields.demandSource = "route analysis"
+                    fields.demandBasis = "Cached booking/load analysis"
+                }
+            }
+            return fields
+        },
+
+        _latestRouteAnalysis(rec) {
+            const dateBlock = rec && rec.date
+            if (!dateBlock || typeof dateBlock !== "object") return null
+            const dates = Object.keys(dateBlock).sort()
+            for (let i = dates.length - 1; i >= 0; i--) {
+                const entry = dateBlock[dates[i]]
+                if (entry && entry.data) return entry.data
+            }
+            return null
         },
 
         /**
@@ -292,10 +456,57 @@
             c.stationTurnMin  = meta ? meta.turnaroundMin : null
         },
 
+        _stampDepartureSuggestions(rows, scheduleLegs, originIata) {
+            if (!Array.isArray(rows) || !rows.length) return
+            if (!Array.isArray(scheduleLegs) || !scheduleLegs.length) return
+            if (!window.AesRouteLauncherSlotFinder
+                    || typeof window.AesRouteLauncherSlotFinder.suggestSlotFromLegs !== "function") {
+                return
+            }
+
+            const defaultDep = this._defaultDepTime || FALLBACK_DEP_TIME
+            for (const c of rows) {
+                if (!Number.isFinite(c.blockMin)) {
+                    if (c.suggestedDepTime && HHMM_RE.test(String(c.suggestedDepTime))) continue
+                    c.depSlotUnavailable = true
+                    if (Array.isArray(c.notes)) {
+                        c.notes.push("No automatic departure: route duration is unresolved")
+                    }
+                    continue
+                }
+                const turn = Number.isFinite(Number(c.stationTurnMin)) ? Number(c.stationTurnMin) : 45
+                const slot = window.AesRouteLauncherSlotFinder.suggestSlotFromLegs(scheduleLegs, {
+                    originIata,
+                    defaultDepartureTime: defaultDep,
+                    turnaroundMin: turn,
+                    flightMin: c.blockMin
+                })
+                if (slot) {
+                    c.suggestedDepTime = slot
+                    if (slot !== defaultDep && Array.isArray(c.notes)) {
+                        c.notes.push("Departure moved to first known schedule gap: " + slot)
+                    }
+                } else {
+                    c.depSlotUnavailable = true
+                    if (Array.isArray(c.notes)) {
+                        c.notes.push("No conflict-free departure gap found from current schedule")
+                    }
+                }
+            }
+        },
+
         _buildRow(r, originIata, demandMap, distMap, rangeNm, scheduled, alphaMap, burn,
-                  airportMetaMap, iataToAirportId, cruiseKmh) {
+                  airportMetaMap, iataToAirportId, cruiseKmh, ffDemandContext) {
             const destIata = String(r.destIata || "").toUpperCase()
             const demand   = demandMap && demandMap.get(destIata)
+            const hasPaxDemand = demand && demand.paxScore !== null && demand.paxScore !== undefined
+                && isFinite(Number(demand.paxScore))
+            const ffDemand = (!hasPaxDemand && ffDemandContext
+                    && typeof FlightsFromStore.demandForRoute === "function")
+                ? FlightsFromStore.demandForRoute(r, ffDemandContext)
+                : null
+            const hasRowPaxDemand = r && r.paxScore !== null && r.paxScore !== undefined
+                && isFinite(Number(r.paxScore))
             let distanceKm = (typeof r.distanceKm === "number" && isFinite(r.distanceKm))
                 ? r.distanceKm : null
             if (distanceKm == null && distMap) {
@@ -344,7 +555,10 @@
             if (fits === "tight")   notes.push("Tight fit — within 5% of range")
             if (fits === "unknown") notes.push("Distance unresolved")
             if (alreadyScheduled)   notes.push("Already scheduled")
-            if (!demand)            notes.push("No demand cached")
+            if (!hasPaxDemand && ffDemand) notes.push("Demand inferred from FlightsFrom frequency")
+            else if (!hasPaxDemand && hasRowPaxDemand) {
+                notes.push(r.demandBasis || "Demand inferred from cached route intel")
+            } else if (!hasPaxDemand)        notes.push("No demand cached")
 
             // Round-trip fuel burn = (cycleL × 2) + perKmL × distanceKm × 2.
             // Convert L → kg with the AS-internal Jet A density. Returns null
@@ -357,6 +571,7 @@
             const alphaRec = alphaMap ? alphaMap.get(originIata + "-" + destIata) : null
 
             return {
+                originIata:       originIata,
                 destIata:        destIata,
                 destName:        r.destName || (demand && demand.name) || null,
                 distanceKm:      distanceKm,
@@ -364,11 +579,19 @@
                 blockMin:        blockMin,
                 rtHoursWithTurnaround: rtHoursWithTurnaround,
                 maxFreqByTime:   maxFreqByTime,
-                paxScore:        demand ? demand.paxScore   : null,
-                cargoScore:      demand ? demand.cargoScore : null,
+                paxScore:        hasPaxDemand ? demand.paxScore : (ffDemand ? ffDemand.paxScore
+                                    : (hasRowPaxDemand ? Number(r.paxScore) : null)),
+                cargoScore:      demand ? demand.cargoScore : (ffDemand ? ffDemand.cargoScore
+                                    : (r && r.cargoScore != null && isFinite(Number(r.cargoScore))
+                                        ? Number(r.cargoScore) : null)),
+                demandSource:    hasPaxDemand ? "route-assistant" : (ffDemand ? ffDemand.demandSource
+                                    : (hasRowPaxDemand ? (r.demandSource || r._fallbackSources || null) : null)),
+                demandBasis:     hasPaxDemand ? null : (ffDemand ? ffDemand.demandBasis
+                                    : (hasRowPaxDemand ? (r.demandBasis || r._fallbackSources || null) : null)),
                 weeklyFlights:   typeof r.weeklyFlights === "number" ? r.weeklyFlights : null,
                 seatsPerWeek:    typeof r.seatsPerWeek    === "number" ? r.seatsPerWeek  : null,
                 airlineCount:    Array.isArray(r.airlines) ? r.airlines.length : null,
+                suggestedDepTime: r.suggestedDepTime || null,
                 fits:            fits,
                 aircraftFit:     aircraftFit,
                 alreadyScheduled: alreadyScheduled,
@@ -747,12 +970,21 @@
             const readDepTime = () => {
                 const inp = tr.querySelector(".aes-afp-row-dep")
                 const raw = inp ? String(inp.value || "").trim() : ""
-                return HHMM_RE.test(raw) ? raw : (this._defaultDepTime || FALLBACK_DEP_TIME)
+                if (HHMM_RE.test(raw)) return raw
+                if (c.depSlotUnavailable) return null
+                return this._defaultDepTime || FALLBACK_DEP_TIME
             }
             const emit = (source) => {
                 if (!window.AesAfp || !AesAfp.bus) return
+                const depTime = readDepTime()
+                if (!depTime && c.depSlotUnavailable) {
+                    this._showDepartureWarning(c)
+                    return
+                }
+                const originIata = String((this._lastCtx && this._lastCtx.originIata)
+                    || c.originIata || "").toUpperCase()
                 AesAfp.bus.emit("candidate:selected",
-                    {candidate: c, source: source, depTime: readDepTime()})
+                    {candidate: c, source: source, originIata: originIata, depTime: depTime})
             }
             tr.addEventListener("click", () => emit("candidate-list"))
 
@@ -855,6 +1087,12 @@
             const cargoCell = this._mkNumCell((c.cargoScore == null) ? "—" : ("★" + c.cargoScore))
             const wklyCell  = this._mkNumCell(c.weeklyFlights == null ? "—" : c.weeklyFlights)
             const airCell   = this._mkNumCell(c.airlineCount  == null ? "—" : c.airlineCount)
+            if (c.demandSource === "flightsfrom") {
+                paxCell.title = "Demand inferred from FlightsFrom frequency"
+                    + (c.demandBasis ? ": " + c.demandBasis : "")
+                paxCell.style.color = "#bfdbfe"
+                cargoCell.title = "Cargo demand is not available from FlightsFrom frequency data."
+            }
 
             const sizeCell  = this._mkNumCell(c.sizeClass == null ? "—" : c.sizeClass)
             if (c.sizeClass) {
@@ -912,13 +1150,15 @@
             const depInput = document.createElement("input")
             depInput.type = "text"
             depInput.maxLength = 5
-            depInput.value = this._defaultDepTime || FALLBACK_DEP_TIME
-            depInput.placeholder = "hh:mm"
+            depInput.value = c.suggestedDepTime || (c.depSlotUnavailable ? "" : (this._defaultDepTime || FALLBACK_DEP_TIME))
+            depInput.placeholder = c.depSlotUnavailable ? "pick" : "hh:mm"
             depInput.className = "aes-afp-row-dep"
-            depInput.title = "Departure HH:MM. Click the row to pre-fill AS's form;"
-                + " edit then press Enter (or click the row) to apply."
+            depInput.title = c.depSlotUnavailable
+                ? "No conflict-free schedule gap was found. Enter a departure HH:MM manually before filling the AS form."
+                : "Departure HH:MM. Click the row to pre-fill AS's form; edit then press Enter (or click the row) to apply."
             depInput.style.cssText = "width:48px;font-size:10px;padding:1px 3px;"
-                + "background:#0f1623;color:#f3f4f6;border:1px solid #374151;"
+                + "background:#0f1623;color:#f3f4f6;border:1px solid "
+                + (c.depSlotUnavailable ? "#f59e0b" : "#374151") + ";"
                 + "border-radius:3px;text-align:center;"
             // Don't bubble row click when interacting with the input.
             depInput.addEventListener("mousedown", ev => ev.stopPropagation())
@@ -948,6 +1188,27 @@
             tail.push(restrCell, depCell)
             tr.append(...tail)
             return tr
+        },
+
+        _showDepartureWarning(c) {
+            const host = this._lastHost
+            if (!host) return
+            let note = host.querySelector("[data-aes-afp-dep-warning]")
+            if (!note) {
+                note = document.createElement("div")
+                note.dataset.aesAfpDepWarning = "1"
+                note.style.cssText = "margin:0 0 6px 0;padding:6px 8px;"
+                    + "border:1px solid #92400e;border-radius:4px;background:#451a03;"
+                    + "color:#fde68a;font-size:11px;line-height:1.4;"
+                host.insertBefore(note, host.firstChild)
+            }
+            note.textContent = "Pick a departure time for "
+                + String((c && c.destIata) || "this route").toUpperCase()
+                + " first. The current aircraft schedule has no automatic conflict-free gap from this hub."
+            clearTimeout(this._depWarningTimer)
+            this._depWarningTimer = setTimeout(() => {
+                if (note && note.parentNode) note.parentNode.removeChild(note)
+            }, 4500)
         },
 
         _mkFitCell(fit) {
@@ -1143,12 +1404,14 @@
          * fleet-schedule-grid/dnd-drop-popover after a successful drop +
          * "Open in Flight Studio" click), scroll the matching row into
          * view, flash a highlight, and pre-fill the per-row Departure
-         * input with the dropMin. The wave-applier consumer leaves
-         * dnd-grid records alone so we can claim them here.
+         * input with the dropMin. Canvas-originated records may also request
+         * a one-shot AS form fill via `fillForm`; older dnd-grid handoffs stay
+         * navigation-only. The wave-applier consumer leaves dnd-grid records
+         * alone so we can claim them here.
          *
          * Idempotent per page-mount via `_dndHandoffConsumed`.
-         * Defensive: no AS form mutation, no candidate:selected emit —
-         * this is a navigation aid only.
+         * Defensive: no candidate:selected emit. AS form mutation only happens
+         * for explicit `fillForm` handoffs.
          */
         async _consumeDndHandoff() {
             if (typeof window.AesHandoffStore === "undefined") return
@@ -1184,18 +1447,41 @@
             row.style.transition = "background 600ms ease"
             row.style.background = "#3b82f6"
             setTimeout(() => { row.style.background = prevBg }, 1400)
-            if (rec.dropMin != null && isFinite(rec.dropMin)) {
+            const handoffDepTime = (() => {
+                if (rec.depTime && HHMM_RE.test(String(rec.depTime))) return String(rec.depTime)
+                if (rec.dropMin == null || !isFinite(rec.dropMin)) return null
                 const m = Math.max(0, Math.min(1439, Math.round(Number(rec.dropMin))))
-                const hh = String(Math.floor(m / 60)).padStart(2, "0")
-                const mm = String(m % 60).padStart(2, "0")
+                return String(Math.floor(m / 60)).padStart(2, "0")
+                    + ":" + String(m % 60).padStart(2, "0")
+            })()
+            if (handoffDepTime) {
                 const depInput = row.querySelector(".aes-afp-row-dep")
                 if (depInput) {
                     // Set value only — do NOT dispatch change. The change
                     // handler emits candidate:selected, which form-driver
-                    // listens to and writes to AS's New Flight form. The
-                    // dnd-grid handoff is a navigation aid only; the user
-                    // commits via row click / Enter when ready.
-                    depInput.value = hh + ":" + mm
+                    // listens to and writes to AS's New Flight form. Plain
+                    // dnd-grid handoffs stay navigation-only; explicit
+                    // fillForm handoffs call the form driver below.
+                    depInput.value = handoffDepTime
+                }
+            }
+            if (rec.fillForm === true
+                    && window.AesAfpFormDriver
+                    && typeof window.AesAfpFormDriver.fill === "function") {
+                const leg = {
+                    origin:           rec.hub || ctx.currentLocationIata || null,
+                    destination:      dest,
+                    depTime:          handoffDepTime || undefined,
+                    dayMask:          Array.isArray(rec.dayMask) ? rec.dayMask : null,
+                    pricePct:         rec.pricePct,
+                    service:          rec.service || "",
+                    flightNumberText: rec.flightNumberText || ""
+                }
+                try {
+                    window.AesAfpFormDriver.fill(leg).catch(e =>
+                        console.warn("[AES AFP candidates] canvas handoff fill failed", e))
+                } catch (e) {
+                    console.warn("[AES AFP candidates] canvas handoff fill threw", e)
                 }
             }
         },
@@ -1229,7 +1515,7 @@
          *  and re-renders; never writes. */
         refresh() {
             if (_scheduledRun) { clearTimeout(_scheduledRun); _scheduledRun = 0 }
-            _runCompute()
+            return _runCompute()
         },
 
         async _loadDefaultDepTime() {
@@ -1330,7 +1616,8 @@
                 .filter(Boolean))
             const opts = {
                 originIata: activeHub,
-                spec, settings, scheduledDestSet, scheduledFlightIds
+                spec, settings, scheduledDestSet, scheduledFlightIds,
+                scheduleLegs
             }
             const candidates = await AesAfpRouteCandidates.compute(opts)
             const host = AesAfp.slot && AesAfp.slot("candidates")
@@ -1393,9 +1680,12 @@
                 // FlightsFrom data writes for the current origin — covers
                 // both this-tab scans started from the empty-state button
                 // and cross-tab scans (Route Assistant, dashboard).
-                if (window.AesAfp && AesAfp.ctx && AesAfp.ctx.currentLocationIata) {
-                    const ffKey = "flightsFrom:" + AesAfp.ctx.currentLocationIata.toUpperCase()
-                    if (Object.prototype.hasOwnProperty.call(changes, ffKey)) {
+                if (window.AesAfp && AesAfp.ctx) {
+                    const activeHub = (typeof AesAfp.getActiveHub === "function")
+                        ? AesAfp.getActiveHub()
+                        : AesAfp.ctx.currentLocationIata
+                    const ffKey = activeHub ? "flightsFrom:" + String(activeHub).toUpperCase() : null
+                    if (ffKey && Object.prototype.hasOwnProperty.call(changes, ffKey)) {
                         _scheduleRun()
                     }
                 }

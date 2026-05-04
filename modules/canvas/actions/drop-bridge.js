@@ -9,14 +9,15 @@
  * drop to a wave cell `{aircraftId, waveId, isEmpty, destIata, destName}`.
  *
  * On a drop:
- *   - Empty cell → opens CanvasRouteCreateModal for fares, then fires
- *     onDrop with kind="addRoute" and the collected fares.
- *   - Filled cell → fires onDrop with kind="moveRoute" — caller can decide
- *     whether to confirm. Phase 7 just stages the intent.
+ *   - Destination card → opens CanvasRouteCreateModal for route details,
+ *     then fires onDrop with kind="addRoute" and the collected values.
+ *   - Schedule cell → fires onDrop with kind="moveRoute" so existing canvas
+ *     legs can be moved between aircraft/waves.
  */
 class CanvasDropBridge {
 
     static DT_TYPE = "application/x-aes-dnd-dest"
+    static DT_CELL_TYPE = "application/x-aes-canvas-cell"
 
     constructor(deps) {
         const d = deps || {}
@@ -54,11 +55,24 @@ class CanvasDropBridge {
         if (deps.fleet     !== undefined) this.fleet = Array.isArray(deps.fleet) ? deps.fleet : []
     }
 
-    _hasOurPayload(dt) {
+    _hasType(dt, type) {
         if (!dt) return false
         const types = dt.types || []
-        for (const t of types) if (t === CanvasDropBridge.DT_TYPE) return true
+        for (const t of types) if (t === type) return true
         return false
+    }
+
+    _hasOurPayload(dt) {
+        return this._hasType(dt, CanvasDropBridge.DT_TYPE)
+            || this._hasType(dt, CanvasDropBridge.DT_CELL_TYPE)
+    }
+
+    _readPayload(dt, type) {
+        if (!dt || !type) return null
+        try {
+            const raw = dt.getData(type)
+            return raw ? JSON.parse(raw) : null
+        } catch (_) { return null }
     }
 
     _findCell(target) {
@@ -71,7 +85,7 @@ class CanvasDropBridge {
         const cell = this._findCell(e.target)
         if (!cell) { this._clearHover(); return }
         e.preventDefault()
-        e.dataTransfer.dropEffect = "copy"
+        e.dataTransfer.dropEffect = this._hasType(e.dataTransfer, CanvasDropBridge.DT_CELL_TYPE) ? "move" : "copy"
         this._setHover(cell)
     }
 
@@ -85,11 +99,12 @@ class CanvasDropBridge {
         this._clearHover()
         if (!cell) return
         e.preventDefault()
-        let payload = null
-        try {
-            const raw = e.dataTransfer.getData(CanvasDropBridge.DT_TYPE)
-            payload = raw ? JSON.parse(raw) : null
-        } catch (_) {}
+        const cellPayload = this._readPayload(e.dataTransfer, CanvasDropBridge.DT_CELL_TYPE)
+        if (cellPayload) {
+            this._handleCellMoveDrop(cell, cellPayload)
+            return
+        }
+        const payload = this._readPayload(e.dataTransfer, CanvasDropBridge.DT_TYPE)
         if (!payload || !payload.destIata) return
         const aircraftId = cell.dataset.canvasAircraftId
         const waveId     = cell.dataset.canvasWaveId
@@ -97,42 +112,107 @@ class CanvasDropBridge {
         const destIata   = String(payload.destIata).toUpperCase()
         const destName   = payload.destName || destIata
 
-        if (isEmpty) {
-            const aircraftRow = this.fleet.find(r => String(r.aircraftId) === String(aircraftId))
-            let fares = {}
-            if (typeof window !== "undefined" && window.CanvasRouteCreateModal) {
-                fares = await window.CanvasRouteCreateModal.open({
-                    hub:          this.activeHub || (aircraftRow && aircraftRow.hub) || "",
-                    destIata,
-                    destName,
-                    aircraftId,
-                    registration: aircraftRow && aircraftRow.registration || ""
-                })
-                if (fares == null) return  // user cancelled
-            }
-            try {
-                this.onDrop({
-                    kind:        "addRoute",
-                    aircraftId,
-                    waveId,
-                    destIata,
-                    destName,
-                    fares,
-                    hub:         this.activeHub || (aircraftRow && aircraftRow.hub) || ""
-                })
-            } catch (err) { console.warn("[AES Canvas] addRoute drop handler threw", err) }
-        } else {
-            try {
-                this.onDrop({
-                    kind:        "moveRoute",
-                    aircraftId,
-                    waveId,
-                    destIata,
-                    destName,
-                    hub:         this.activeHub || ""
-                })
-            } catch (err) { console.warn("[AES Canvas] moveRoute drop handler threw", err) }
+        const aircraftRow = this.fleet.find(r => String(r.aircraftId) === String(aircraftId))
+        let modalResult = {}
+        if (typeof window !== "undefined" && window.CanvasRouteCreateModal) {
+            modalResult = await window.CanvasRouteCreateModal.open({
+                hub:          this.activeHub || (aircraftRow && aircraftRow.hub) || "",
+                destIata,
+                destName,
+                aircraftId,
+                registration: aircraftRow && aircraftRow.registration || "",
+                replaceExisting: !isEmpty
+            })
+            if (modalResult == null) return  // user cancelled
         }
+        const create = this._normaliseCreateResult(modalResult)
+        const finalDestIata = create.destIata || destIata
+        const finalDestName = create.destName || destName || finalDestIata
+        try {
+            this.onDrop({
+                kind:        "addRoute",
+                aircraftId,
+                waveId,
+                destIata:    finalDestIata,
+                destName:    finalDestName,
+                replaceExisting: !isEmpty,
+                fares:       create.fares,
+                pricePct:    create.pricePct,
+                service:     create.service,
+                flightNumberText: create.flightNumberText,
+                depTimeLocal:     create.depTimeLocal,
+                depTime:          create.depTimeLocal,
+                hub:         this.activeHub || (aircraftRow && aircraftRow.hub) || ""
+            })
+        } catch (err) { console.warn("[AES Canvas] addRoute drop handler threw", err) }
+    }
+
+    _normaliseCreateResult(result) {
+        const r = result && typeof result === "object" ? result : {}
+        const fares = (r.fares && typeof r.fares === "object") ? r.fares : r
+        const destIataRaw = String(r.destIata || r.destination || "").trim().toUpperCase()
+        const destIata = /^[A-Z]{3}$/.test(destIataRaw) ? destIataRaw : ""
+        const pricePctN = Number(r.pricePct)
+        const pricePct = Number.isFinite(pricePctN) && pricePctN > 0 ? Math.round(pricePctN) : 100
+        const service = typeof r.service === "string" ? r.service.trim() : ""
+        const flightNumberText = String(r.flightNumberText || "")
+            .replace(/[^0-9]/g, "").slice(0, 4)
+        const depTimeLocal = this._normaliseHHMM(r.depTimeLocal || "")
+        return {
+            destIata,
+            destName: r.destName || destIata,
+            fares,
+            pricePct,
+            service,
+            flightNumberText,
+            depTimeLocal
+        }
+    }
+
+    _normaliseHHMM(value) {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim())
+        if (!m) return ""
+        const h = Number(m[1])
+        const min = Number(m[2])
+        if (!Number.isFinite(h) || !Number.isFinite(min) || h < 0 || h > 23 || min < 0 || min > 59) return ""
+        return (h < 10 ? "0" + h : String(h)) + ":" + (min < 10 ? "0" + min : String(min))
+    }
+
+    _handleCellMoveDrop(cell, payload) {
+        if (!cell || !payload) return
+        const aircraftId = cell.dataset.canvasAircraftId
+        const waveId = cell.dataset.canvasWaveId
+        if (!aircraftId || !waveId) return
+        const sourceAircraftId = payload.aircraftId != null ? String(payload.aircraftId) : ""
+        const sourceWaveId = payload.waveId != null ? String(payload.waveId) : ""
+        if (sourceAircraftId === String(aircraftId) && sourceWaveId === String(waveId)) return
+
+        const aircraftRow = this.fleet.find(r => String(r.aircraftId) === String(aircraftId))
+        const destIata = String(payload.destination || payload.destIata || "").toUpperCase()
+        if (!destIata) return
+        const fnText = this._flightNumberText(payload.flightNumber)
+        try {
+            this.onDrop({
+                kind:             "moveRoute",
+                aircraftId,
+                waveId,
+                destIata,
+                destName:         payload.destName || destIata,
+                hub:              this.activeHub || (aircraftRow && aircraftRow.hub) || "",
+                sourceAircraftId,
+                sourceWaveId,
+                sourceLegSeq:     payload.sourceLegSeq != null ? payload.sourceLegSeq : null,
+                flightId:         payload.flightId || null,
+                flightNumber:     payload.flightNumber || null,
+                flightNumberText: fnText,
+                depTimeLocal:     payload.depTimeLocal || null
+            })
+        } catch (err) { console.warn("[AES Canvas] cell move drop handler threw", err) }
+    }
+
+    _flightNumberText(value) {
+        const m = String(value || "").match(/(\d{1,4})\s*$/)
+        return m ? m[1] : ""
     }
 
     _setHover(cell) {

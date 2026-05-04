@@ -38,6 +38,9 @@
     const VERSION = "0.2.0"
     const HOST_ATTR      = "data-aes-afp-host"
     const WIDE_HOST_ATTR = "data-aes-afp-wide-host"
+    const RELOCATED_NEW_FLIGHT_ATTR = "data-aes-afp-relocated-new-flight"
+    const OVERVIEW_CLASS = "aes-afp-overview-mode"
+    const OVERVIEW_STORAGE_KEY = "aes:afp:overviewMode"
     const SIDEBAR_SLOT_NAMES = ["header", "spec", "maintenance", "audit"]
     // "auto-preview" is owned by Track 5's preview-panel.js. Inserted right
     // under "tools" so the auto-build summary + Apply-all CTA become the
@@ -47,7 +50,12 @@
     // Sits between auto-preview and candidates so the compose surface is
     // visually adjacent to the auto-build readout — both are "what would
     // be applied" surfaces.
-    const WIDE_SLOT_NAMES    = ["tools", "auto-preview", "studio", "candidates", "driver", "wave"]
+    // "mock-schedule" is owned by mock-schedule/studio.js — the multi-leg
+    // route builder GUI that composes a candidate weekly schedule from
+    // selected airports + flight-count target, then drives the live submit
+    // bridge per leg. Mounts under "studio" so the longer panel sits below
+    // the single-flight composer.
+    const WIDE_SLOT_NAMES    = ["tools", "auto-preview", "studio", "mock-schedule", "candidates", "driver", "wave"]
     const REMOUNT_DEBOUNCE_MS = 200
 
     /** Wrap a thunk; swallow errors and return null on throw. */
@@ -230,6 +238,101 @@
         return (AesAfp.ctx && AesAfp.ctx.currentLocationIata) || null
     }
 
+    function _iata(v) {
+        const s = String(v || "").trim().toUpperCase()
+        return /^[A-Z]{3}$/.test(s) ? s : null
+    }
+
+    function _legEndpoint(leg, names) {
+        if (!leg) return null
+        for (const name of names) {
+            const hit = _iata(leg[name])
+            if (hit) return hit
+        }
+        return null
+    }
+
+    function _destForHubFromLeg(hub, leg) {
+        const origin = _legEndpoint(leg, ["origin", "originIata", "from", "fromIata"])
+        const dest   = _legEndpoint(leg, ["destination", "dest", "destIata", "to", "toIata"])
+        if (origin === hub && dest && dest !== hub) return dest
+        if (dest === hub && origin && origin !== hub) return origin
+        return null
+    }
+
+    async function _routeAssistantDestFromStoredSchedule(hub, ctx) {
+        if (typeof AesAfpScheduleStore === "undefined") return null
+        if (!ctx || !ctx.server || !ctx.aircraftId) return null
+        try {
+            const sched = await AesAfpScheduleStore.load(ctx.server, ctx.aircraftId)
+            const legs = sched && sched.legs
+            if (!Array.isArray(legs)) return null
+            for (const leg of legs) {
+                const dest = _destForHubFromLeg(hub, leg)
+                if (dest) return dest
+            }
+        } catch (_) { /* fall through */ }
+        return null
+    }
+
+    function _routeAssistantDestFromVisibleSchedule(hub) {
+        let legs = null
+        try { legs = readVisualFlightPlan() } catch (_) { legs = null }
+        if (!Array.isArray(legs)) return null
+        for (const leg of legs) {
+            const dest = _destForHubFromLeg(hub, leg)
+            if (dest) return dest
+        }
+        return null
+    }
+
+    function _routeAssistantDestFromCandidates(hub) {
+        const list = window.AesAfpRouteCandidates && window.AesAfpRouteCandidates.last
+        if (!Array.isArray(list)) return null
+        for (const c of list) {
+            const origin = _iata(c && (c.origin || c.originIata || c.hub))
+            const dest = _iata(c && (c.destIata || c.destination || c.dest))
+            if (dest && dest !== hub && (!origin || origin === hub)) return dest
+        }
+        return null
+    }
+
+    async function _routeAssistantDestFromTopRoutes(hub) {
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return null
+        const legacyKey = "routeAssistant:topRoutes:" + hub
+        const keys = [legacyKey]
+        try {
+            if (window.AesAccountKey && typeof AesAccountKey.acctKey === "function") {
+                const scoped = AesAccountKey.acctKey("routeAssistant:topRoutes", hub)
+                if (scoped && scoped !== legacyKey) keys.unshift(scoped)
+            }
+        } catch (_) { /* legacy key still works */ }
+        try {
+            const data = await chrome.storage.local.get(keys)
+            for (const key of keys) {
+                const rows = data && data[key] && data[key].rows
+                if (!Array.isArray(rows)) continue
+                for (const row of rows) {
+                    const dest = _iata(row && (row.destIata || row.dest || row.destination))
+                    if (dest && dest !== hub) return dest
+                }
+            }
+        } catch (_) { /* fall through */ }
+        return null
+    }
+
+    async function resolveRouteAssistantSchedulingUrl(hub, ctx) {
+        const hubU = _iata(hub)
+        if (!hubU) return "/app/com/scheduling"
+        const dest = await _routeAssistantDestFromStoredSchedule(hubU, ctx)
+            || _routeAssistantDestFromVisibleSchedule(hubU)
+            || _routeAssistantDestFromCandidates(hubU)
+            || await _routeAssistantDestFromTopRoutes(hubU)
+        return dest
+            ? "/app/com/scheduling/" + encodeURIComponent(hubU + dest)
+            : "/app/com/scheduling"
+    }
+
     /**
      * Visual Flight Plan reader. Returns the legacy `Leg[]` shape — one
      * entry per logical flight across Mon-Sun, sorted by (dayIdx, depTime),
@@ -391,9 +494,10 @@
     /**
      * Internal: walk neighbours of a flight block looking for a `.block.location`
      * containing the requested IATA span. `direction` = -1 for previous siblings,
-     * +1 for next siblings. Stops at the first location bar found in each
-     * direction; returns the IATA via the span's `title` attr (preferred) with
-     * textContent as fallback.
+     * +1 for next siblings. AS can render overlapping location bars around
+     * same-time blocks, so keep scanning past location bars that only carry the
+     * opposite direction. Returns the IATA via the span's `title` attr
+     * (preferred) with textContent as fallback.
      */
     function _findAdjacentIata(children, idx, direction, spanSelector) {
         const step = direction < 0 ? -1 : 1
@@ -409,8 +513,9 @@
                     const m = txt.match(/\b([A-Z]{3})\b/)
                     if (m) return m[1]
                 }
-                return null
+                continue
             }
+            if (sib.classList.contains("flight")) return null
             // Skip turnaround / ready / odd-even background slivers.
         }
         return null
@@ -676,6 +781,90 @@
         return {fragment: wrap, panel}
     }
 
+    function installOverviewCss() {
+        if (document.getElementById("aes-afp-overview-mode-css")) return
+        const style = document.createElement("style")
+        style.id = "aes-afp-overview-mode-css"
+        style.textContent = [
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]{margin-bottom:6px;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]+h3{margin-top:6px;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]>.as-table-well{padding:6px!important;display:grid;grid-template-columns:repeat(3,minmax(320px,1fr));grid-template-areas:\"tools tools tools\" \"auto studio mock\" \"candidates driver wave\";gap:6px;align-items:stretch;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot]{min-width:0;margin-top:0!important;display:flex;flex-direction:column;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='tools']{grid-area:tools;display:block;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='auto-preview']{grid-area:auto;height:min(43vh,520px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='studio']{grid-area:studio;height:min(43vh,520px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='mock-schedule']{grid-area:mock;height:min(43vh,520px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='candidates']{grid-area:candidates;height:min(25vh,300px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='driver']{grid-area:driver;height:min(25vh,300px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='wave']{grid-area:wave;height:min(25vh,300px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host] h3{margin:4px 0!important;font-size:12px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host] button{font-size:10px!important;padding:2px 6px!important;line-height:1.2!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host] input,html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host] select{font-size:10px!important;padding:2px 4px!important;min-height:20px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench]{padding:6px!important;font-size:10px!important;line-height:1.25!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench]>div{margin-bottom:5px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench]>div:nth-child(2){grid-template-columns:repeat(auto-fit,minmax(68px,1fr))!important;gap:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench]>label{margin-bottom:5px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench] [style*='display:flex']{gap:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-root]{padding:6px 0!important;margin-top:0!important;font-size:10px!important;line-height:1.25!important;border-top:0!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-root]>div:first-child{margin-bottom:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-flex]{gap:6px!important;flex-wrap:nowrap!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-body]{flex:1 1 260px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-sidebar]{flex:0 1 190px!important;min-width:170px!important;padding:6px!important;font-size:10px!important;line-height:1.25!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-schedule-planner]{margin:4px 0!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-schedule-planner] summary{padding:4px 6px!important;font-size:10px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-schedule-planner]>div{padding:0 6px 6px!important;gap:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-planner-mock]{max-height:130px!important;overflow:auto!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio]{padding:6px!important;border-radius:3px!important;font-size:10px!important;line-height:1.25!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] h4{font-size:11px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] [style*='max-height:160px']{max-height:96px!important;grid-template-columns:repeat(auto-fill,minmax(126px,1fr))!important;padding:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] table{font-size:10px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] th,html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] td{padding:1px 3px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft .as-panel.visual-flight-plan{margin-top:6px!important;}",
+            "@media (max-width:1500px){html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]>.as-table-well{grid-template-columns:repeat(2,minmax(300px,1fr));grid-template-areas:\"tools tools\" \"auto studio\" \"mock mock\" \"candidates driver\" \"wave wave\";}html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='mock-schedule']{height:min(32vh,390px);}}",
+            "@media (max-width:900px){html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]>.as-table-well{display:block;}html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot]{display:block;height:auto!important;max-height:none!important;margin-top:6px!important;}html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-flex]{flex-wrap:wrap!important;}}"
+        ].join("\n")
+        document.head.appendChild(style)
+    }
+
+    function readOverviewMode() {
+        const v = safeCall(() => window.localStorage && window.localStorage.getItem(OVERVIEW_STORAGE_KEY))
+        return v === "1"
+    }
+
+    function writeOverviewMode(value) {
+        safeCall(() => {
+            if (!window.localStorage) return null
+            window.localStorage.setItem(OVERVIEW_STORAGE_KEY, value ? "1" : "0")
+            return null
+        })
+    }
+
+    function applyOverviewMode(value) {
+        installOverviewCss()
+        const root = document.documentElement
+        if (root && root.classList) root.classList.toggle(OVERVIEW_CLASS, !!value)
+        return !!value
+    }
+
+    function getOverviewMode() {
+        const root = document.documentElement
+        return !!(root && root.classList && root.classList.contains(OVERVIEW_CLASS))
+    }
+
+    function setOverviewMode(value, opts) {
+        const enabled = applyOverviewMode(!!value)
+        writeOverviewMode(enabled)
+        if (!(opts && opts.silent) && AesAfp && AesAfp.bus) {
+            try { AesAfp.bus.emit("overview-mode:changed", {enabled}) }
+            catch (_) { /* bus self-isolates elsewhere */ }
+        }
+        return enabled
+    }
+
+    function toggleOverviewMode() {
+        return setOverviewMode(!getOverviewMode())
+    }
+
     /** Render the header status strip — sidebar slot. */
     function renderHeaderStrip(slot, ctx) {
         if (!slot) return
@@ -826,6 +1015,25 @@
 
         wrap.append(labelSpan, hubInput)
 
+        if (ctxHub && hub && hub !== ctxHub) {
+            const overrideNote = document.createElement("span")
+            overrideNote.textContent = "override; aircraft at " + ctxHub
+            overrideNote.style.cssText = "color:#fbbf24;font-size:10px;"
+
+            const useCurrentBtn = document.createElement("button")
+            useCurrentBtn.type = "button"
+            useCurrentBtn.textContent = "Use " + ctxHub
+            useCurrentBtn.style.cssText = "padding:3px 6px;border-radius:3px;"
+                + "border:1px solid #f59e0b;background:transparent;color:#fde68a;"
+                + "font-size:10px;cursor:pointer;"
+            useCurrentBtn.addEventListener("click", () => {
+                hubInput.value = ctxHub
+                commitHub().catch(() => {})
+            })
+
+            wrap.append(overrideNote, useCurrentBtn)
+        }
+
         // F3b — primary "Open station" opens the per-airport drawer rooted
         // on the active hub (demand, top routes, schedule conflicts). Caret
         // ▾ keeps the legacy bulk-open modal (top routes / watchlist /
@@ -899,8 +1107,16 @@
             !!hub,
             () => {
                 if (!hub) return
-                try { window.open("/app/com/scheduling?origin=" + encodeURIComponent(hub), "_blank") }
-                catch (_) { /* noop */ }
+                const prevText = raBtn.textContent
+                raBtn.disabled = true
+                raBtn.textContent = "Opening…"
+                resolveRouteAssistantSchedulingUrl(hub, ctx)
+                    .then(url => { window.open(url, "_blank") })
+                    .catch(() => { window.open("/app/com/scheduling", "_blank") })
+                    .finally(() => {
+                        raBtn.disabled = false
+                        raBtn.textContent = prevText
+                    })
             })
         wrap.appendChild(raBtn)
 
@@ -932,9 +1148,13 @@
             try {
                 if (typeof AesAfpRouteCandidates !== "undefined"
                     && typeof AesAfpRouteCandidates.refresh === "function") {
-                    AesAfpRouteCandidates.refresh()
+                    const refresh = AesAfpRouteCandidates.refresh()
+                    if (refresh && typeof refresh.then === "function") {
+                        refresh.then(() => _flashRefresh("✓ Updated", "#15803d", 900))
+                            .catch(() => _flashRefresh("Update failed", "#991b1b", 1200))
+                    }
                 }
-            } catch (_) { /* noop */ }
+            } catch (_) { _flashRefresh("Update failed", "#991b1b", 1200) }
         })
         // Confirm completion via the existing candidates:updated event so
         // the user sees explicit "✓ Updated" feedback after the compute
@@ -951,6 +1171,34 @@
             } catch (_) { /* noop */ }
         }
         wrap.appendChild(refreshBtn)
+
+        const overviewBtn = document.createElement("button")
+        overviewBtn.type = "button"
+        const syncOverviewButton = () => {
+            const active = getOverviewMode()
+            overviewBtn.textContent = active ? "Overview On" : "Overview"
+            overviewBtn.title = active
+                ? "Return the route-builder modules to the standard vertical layout."
+                : "Use a compact multi-module layout for route-builder decisions."
+            overviewBtn.style.cssText = toolButtonCss(true)
+                + (active
+                    ? "background:#134e4a;color:#ccfbf1;border-color:#14b8a6;"
+                    : "")
+        }
+        overviewBtn.addEventListener("click", () => {
+            toggleOverviewMode()
+            syncOverviewButton()
+        })
+        syncOverviewButton()
+        if (window.AesAfp && AesAfp.bus) {
+            try {
+                if (_overviewModeHandler) AesAfp.bus.off("overview-mode:changed", _overviewModeHandler)
+                const onOverviewChanged = () => syncOverviewButton()
+                AesAfp.bus.on("overview-mode:changed", onOverviewChanged)
+                _overviewModeHandler = onOverviewChanged
+            } catch (_) { /* noop */ }
+        }
+        wrap.appendChild(overviewBtn)
 
         // Hub-watchlist toggle. Watchlist keys are "<HUB>-<DEST>"; we use
         // a synthetic "<HUB>-HUB" sentinel to mark the hub itself as a
@@ -1006,6 +1254,63 @@
     let _observer = null
     let _remountTimer = null
     let _refreshUpdatedHandler = null
+    let _overviewModeHandler = null
+
+    function normaliseHeadingText(s) {
+        return String(s || "").replace(/\s+/g, " ").trim().toLowerCase()
+    }
+
+    function isAssignNewFlightHeading(el) {
+        return !!(el && el.tagName && el.tagName.toLowerCase() === "h3"
+            && normaliseHeadingText(el.textContent) === "assign a new flight")
+    }
+
+    function findAssignNewFlightModule() {
+        const mainCol = document.querySelector(".as-page-aircraft .col-md-10")
+        if (!mainCol) return null
+
+        let heading = null
+        for (const h of mainCol.querySelectorAll("h3")) {
+            if (isAssignNewFlightHeading(h)) { heading = h; break }
+        }
+        if (!heading) return null
+
+        let panel = heading.nextElementSibling
+        while (panel && !(panel.classList && panel.classList.contains("as-panel"))) {
+            if (panel.tagName && panel.tagName.toLowerCase() === "h3") return null
+            panel = panel.nextElementSibling
+        }
+        if (!panel) return null
+        if (panel.hasAttribute(WIDE_HOST_ATTR) || panel.classList.contains("visual-flight-plan")) return null
+        return {heading, panel}
+    }
+
+    /**
+     * Keep AS's native new-flight module directly above the Visual Flight
+     * Plan. The form stays intact; this only moves the existing heading and
+     * panel so the user can confirm wave/route-builder fills in context.
+     */
+    function relocateAssignNewFlightModule() {
+        const vfp = document.querySelector(".as-page-aircraft .col-md-10 .as-panel.visual-flight-plan")
+        if (!vfp || !vfp.parentElement) return false
+
+        const mod = findAssignNewFlightModule()
+        if (!mod) return false
+        const {heading, panel} = mod
+        const parent = vfp.parentElement
+        const alreadyPlaced = heading.parentElement === parent
+            && panel.parentElement === parent
+            && heading.nextElementSibling === panel
+            && panel.nextElementSibling === vfp
+
+        heading.setAttribute(RELOCATED_NEW_FLIGHT_ATTR, "1")
+        panel.setAttribute(RELOCATED_NEW_FLIGHT_ATTR, "1")
+        if (alreadyPlaced) return false
+
+        parent.insertBefore(heading, vfp)
+        parent.insertBefore(panel, vfp)
+        return true
+    }
 
     /**
      * Attach a MutationObserver to the page row. Wicket re-renders the
@@ -1025,6 +1330,7 @@
                 _remountTimer = null
                 const haveSidebar = !!document.querySelector("[" + HOST_ATTR + "]")
                 const haveWide    = !!document.querySelector("[" + WIDE_HOST_ATTR + "]")
+                relocateAssignNewFlightModule()
                 if (!haveSidebar || !haveWide) {
                     AesAfp.mount().catch(err => {
                         console.warn("[AES AFP] re-mount failed", err)
@@ -1037,9 +1343,9 @@
 
     /**
      * Find the wide-host insertion target. We anchor on the Visual Flight
-     * Plan widget so the new panel sits between AS's Create-new-flight
-     * form and the VFP — i.e., the user can read the schedule then build
-     * candidates against it without scrolling. Returns the element to
+     * Plan widget; mount() later moves AS's Create-new-flight form back
+     * directly above the VFP so confirmation stays next to the schedule.
+     * Returns the element to
      * insertBefore as the second item in a tuple [parent, anchor]; the
      * anchor may be null to mean "append to parent".
      */
@@ -1088,6 +1394,8 @@
             }
         }
         AesAfp.wideHost = widePanel || null
+        relocateAssignNewFlightModule()
+        setOverviewMode(readOverviewMode(), {silent: true})
 
         AesAfp.ctx = extractPageContext()
         await _loadHubOverride()
@@ -1136,6 +1444,10 @@
         getNewFlightForm:   findNewFlightForm,
         getFormTabs:        findFormTabs,
         getActiveHub,                               // override-aware hub for planning
+        getOverviewMode,
+        setOverviewMode,
+        toggleOverviewMode,
+        resolveRouteAssistantSchedulingUrl,
         mount
     }
 

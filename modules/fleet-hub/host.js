@@ -42,10 +42,17 @@ class FleetHubHost {
     async mount() {
         if (!document.querySelector(".as-page-fleet-management")) return
 
-        this.server = AES.getServerName()
+        const AESApi = (typeof AES !== "undefined" && AES)
+            || (typeof window !== "undefined" && window.AES)
+            || null
+        this.server = AESApi && typeof AESApi.getServerName === "function"
+            ? AESApi.getServerName()
+            : (window.location.hostname || "").split(".")[0]
         // fltmng_getAirlineName lives in content_fleetManagement.js, loaded
         // before us in the same content_scripts block, so it's in scope.
-        this.airlineCode = fltmng_getAirlineName()
+        this.airlineCode = typeof fltmng_getAirlineName === "function"
+            ? fltmng_getAirlineName()
+            : ""
         this.fleetKey = this.server + this.airlineCode + "aircraftFleet"
 
         if (!this._resolveTable()) {
@@ -101,7 +108,14 @@ class FleetHubHost {
     }
 
     async _renderOnce() {
+        const previousTable = this.tableEl
         if (!this._resolveTable()) return
+        // F-9228-600: Wicket can swap the entire AS fleet table out from
+        // under us. _resolveTable now points at the new element; re-attach
+        // the MutationObserver here so it tracks the live tbody. Without
+        // this, the observer stays bound to the detached tbody and silently
+        // stops firing on AS sort/paginate/repaint flows.
+        if (this.tableEl !== previousTable) this._attachObserver()
 
         const blob = await chrome.storage.local.get([this.fleetKey])
         const fleetRec = blob[this.fleetKey]

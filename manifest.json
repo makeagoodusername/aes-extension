@@ -944,6 +944,7 @@
                 "modules/aircraft-flight-plan/maintenance-widget.js",
                 "modules/aircraft-flight-plan/form-driver.js",
                 "modules/aircraft-flight-plan/wave-applier.js",
+                "modules/aircraft-flight-plan/handoff-remove-consumer.js",
                 "modules/aircraft-flight-plan/auto-scheduler/grid-state.js",
                 "modules/aircraft-flight-plan/auto-scheduler/objective.js",
                 "modules/aircraft-flight-plan/auto-scheduler/allocator.js",

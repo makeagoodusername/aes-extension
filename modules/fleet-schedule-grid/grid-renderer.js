@@ -39,12 +39,38 @@ class FleetScheduleGridRenderer {
         this._filterRoute  = null
         this._filterHub    = null
         this._dayMode      = "all"                 // "all" or 0..6
+        this._rowMode      = o.rowMode   || "aircraftByDay" // "aircraftByDay" | "dayOverlay"
+        this._colorMode    = o.colorMode || "route"         // "route" | "aircraft" | "day"
+        this._overrides    = o.overrides || null            // AesScheduleColorOverrides state
+        this._showBlockLabels = o.showBlockLabels !== false
         this._lastEls      = []                    // {el, routeKey}
     }
 
     setHub(hub)         { this._filterHub = hub || null;     this.render() }
     setDay(dayMode)     { this._dayMode   = (dayMode == null ? "all" : dayMode); this.render() }
     setRouteFilter(key) { this._filterRoute = key || null;   this.render() }
+    setRowMode(mode) {
+        const next = (mode === "dayOverlay") ? "dayOverlay" : "aircraftByDay"
+        if (this._rowMode === next) return
+        this._rowMode = next
+        this.render()
+    }
+    setColorMode(mode) {
+        const next = (mode === "aircraft" || mode === "day") ? mode : "route"
+        if (this._colorMode === next) return
+        this._colorMode = next
+        this.render()
+    }
+    setOverrides(overrides) {
+        this._overrides = overrides || null
+        this.render()
+    }
+    setBlockLabelsVisible(visible) {
+        const next = visible !== false
+        if (this._showBlockLabels === next) return
+        this._showBlockLabels = next
+        this.render()
+    }
 
     /** Hover highlight — pure DOM toggle, no re-render. */
     setHoveredRoute(routeKey) {
@@ -85,16 +111,25 @@ class FleetScheduleGridRenderer {
         // Time-axis header — a single ruler shared by every aircraft block.
         this.rootEl.appendChild(this._buildTimeAxis(T))
 
-        for (const row of visibleFleet) {
-            const block = this._buildAircraftBlock(row, T)
-            this.rootEl.appendChild(block)
+        if (this._rowMode === "dayOverlay") {
+            // 7 day-rows (or 1 if dayMode filters to a single day). Each row's
+            // lane overlays every visible aircraft's flights for that day.
+            const days = this._daysToRender()
+            for (const dayIdx of days) {
+                this.rootEl.appendChild(this._buildDayOverlayRow(dayIdx, visibleFleet, T))
+            }
+        } else {
+            for (const row of visibleFleet) {
+                const block = this._buildAircraftBlock(row, T)
+                this.rootEl.appendChild(block)
+            }
         }
 
         // Notify overlays / drag handlers that the grid DOM has been rebuilt
         // so they can re-attach band painters and drop targets.
         try {
             this.rootEl.dispatchEvent(new CustomEvent("aes-fsg:rendered", {
-                detail: {visibleFleet},
+                detail: {visibleFleet, rowMode: this._rowMode, colorMode: this._colorMode},
                 bubbles: false
             }))
         } catch (_) {}
@@ -157,72 +192,7 @@ class FleetScheduleGridRenderer {
         const block = document.createElement("div")
         block.style.cssText = "border-bottom:2px solid " + (T ? T.color.oxide : "#2B2520") + ";"
             + "background:" + (T ? T.color.bone : "#F4F1EA") + ";"
-
-        // Aircraft header strip.
-        const header = document.createElement("div")
-        header.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 10px;"
-            + "background:" + (T ? T.color.bone3 : "#E0DAC8") + ";"
-            + "border-bottom:1px solid " + (T ? T.color.paperRule : "#C9C0B0") + ";"
-            + "font-size:12px;color:" + (T ? T.color.oxide : "#2B2520") + ";"
-        const reg = document.createElement("a")
-        reg.href = "/app/fleets/aircraft/" + encodeURIComponent(row.aircraftId) + "/0"
-        reg.target = "_blank"
-        reg.rel = "noopener"
-        reg.style.cssText = "font-weight:700;color:" + (T ? T.color.oxide : "#2B2520") + ";"
-            + "text-decoration:none;border-bottom:1px dotted " + (T ? T.color.oxide2 : "#4A413B") + ";"
-        reg.textContent = row.registration || row.aircraftId
-        reg.title = "Open Flight Plan tab — " + (row.registration || row.aircraftId)
-
-        const equipment = document.createElement("span")
-        equipment.style.cssText = "color:" + (T ? T.color.oxide2 : "#4A413B") + ";"
-        equipment.textContent = row.equipment || "?"
-
-        const hub = document.createElement("span")
-        hub.style.cssText = "padding:1px 6px;border:1px solid " + (T ? T.color.oxide2 : "#4A413B") + ";"
-            + "border-radius:2px;font-family:" + (T ? T.font.mono : "monospace") + ";"
-            + "font-size:11px;color:" + (T ? T.color.oxide : "#2B2520") + ";"
-        hub.textContent = row.hub || "—"
-        hub.title = "Current hub"
-
         const sched = this.schedules.get(String(row.aircraftId))
-        const summary = document.createElement("span")
-        summary.style.cssText = "margin-left:auto;font-family:" + (T ? T.font.mono : "monospace") + ";"
-            + "font-size:11px;color:" + (T ? T.color.slate : "#7A6F66") + ";"
-            + "display:flex;align-items:center;gap:6px;min-width:0;"
-        const schedText = document.createElement("span")
-        if (sched && sched.summary) {
-            const m = sched.summary.weeklyBlockMinutes || 0
-            const h = (m / 60).toFixed(1)
-            schedText.textContent = (sched.summary.flightCount || 0) + " flights · "
-                + h + "h block · scraped " + this._fmtAge(sched.scrapedAt)
-        } else {
-            schedText.textContent = "no schedule loaded"
-        }
-        summary.appendChild(schedText)
-        this._appendMaintenanceChips(summary, row, T)
-
-        // Inspect chevron — opens the per-aircraft cockpit drawer (Aircraft
-        // tab on the side rail). Side rail listens for this event on the
-        // grid root and routes it to FleetScheduleGridAircraftCockpit.
-        const inspect = document.createElement("button")
-        inspect.type = "button"
-        inspect.style.cssText = "padding:2px 8px;cursor:pointer;font-size:10px;flex:0 0 auto;"
-            + "border:1px solid " + (T ? T.color.oxide : "#2B2520") + ";"
-            + "background:transparent;color:" + (T ? T.color.oxide : "#2B2520") + ";"
-            + "text-transform:uppercase;letter-spacing:0.06em;font-weight:700;"
-        inspect.textContent = "▸ Inspect"
-        inspect.title = "Open the per-aircraft cockpit (candidates · ORS · competitors · profit · wave)"
-        inspect.addEventListener("click", () => {
-            try {
-                this.rootEl && this.rootEl.dispatchEvent(new CustomEvent("aes-fsg:aircraft-selected", {
-                    detail: {aircraftId: row.aircraftId},
-                    bubbles: true
-                }))
-            } catch (_) { /* noop */ }
-        })
-
-        header.append(reg, equipment, hub, summary, inspect)
-        block.appendChild(header)
 
         // Day rows — one per day, or one row total when filtered to a single day.
         const days = this._daysToRender()
@@ -238,18 +208,62 @@ class FleetScheduleGridRenderer {
         return (Number.isInteger(d) && d >= 0 && d < 7) ? [d] : [0, 1, 2, 3, 4, 5, 6]
     }
 
+    _selectedDayIdx() {
+        if (this._dayMode === "all") return null
+        const d = +this._dayMode
+        return (Number.isInteger(d) && d >= 0 && d < 7) ? d : null
+    }
+
+    _summaryTextForSchedule(sched) {
+        const dayIdx = this._selectedDayIdx()
+        if (dayIdx != null) {
+            const day = sched && Array.isArray(sched.days) ? sched.days[dayIdx] : null
+            const blocks = day && Array.isArray(day.blocks) ? day.blocks : []
+            const flights = blocks.filter(b => b && b.kind === "flight")
+            const minutes = flights.reduce((sum, b) => {
+                const m = Number(b.durationMin)
+                return sum + (Number.isFinite(m) ? m : 0)
+            }, 0)
+            const label = FleetScheduleGridRenderer.DAY_NAMES[dayIdx] || ("Day " + dayIdx)
+            return label + " · " + flights.length + " flight" + (flights.length === 1 ? "" : "s")
+                + " · " + (minutes / 60).toFixed(1) + "h block"
+        }
+        const m = sched && sched.summary ? (sched.summary.weeklyBlockMinutes || 0) : 0
+        const fc = sched && sched.summary ? (sched.summary.flightCount || 0) : 0
+        return "Mon-Sun · " + fc + " flight" + (fc === 1 ? "" : "s")
+            + " · " + (m / 60).toFixed(1) + "h block"
+    }
+
     _buildDayRow(row, dayIdx, sched, T) {
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;align-items:stretch;border-bottom:1px solid "
             + (T ? T.color.bone2 : "#ECE7DC") + ";"
 
         const labelGutter = document.createElement("div")
-        labelGutter.style.cssText = "flex:0 0 140px;padding:0 10px;display:flex;align-items:center;"
+        labelGutter.style.cssText = "flex:0 0 140px;padding:0 8px;display:flex;align-items:center;gap:6px;"
             + "background:" + (T ? T.color.bone : "#F4F1EA") + ";"
             + "font-size:11px;color:" + (T ? T.color.oxide2 : "#4A413B") + ";"
             + "border-right:1px solid " + (T ? T.color.paperRule : "#C9C0B0") + ";"
             + "font-family:" + (T ? T.font.mono : "monospace") + ";"
-        labelGutter.textContent = FleetScheduleGridRenderer.DAY_NAMES[dayIdx] || ("Day " + dayIdx)
+            + "cursor:pointer;overflow:hidden;"
+        labelGutter.dataset.aircraftId = String(row.aircraftId)
+        labelGutter.tabIndex = 0
+        labelGutter.title = this._aircraftTitle(row, sched)
+        const reg = document.createElement("span")
+        reg.style.cssText = "font-weight:700;color:" + (T ? T.color.oxide : "#2B2520") + ";"
+            + "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+        reg.textContent = row.registration || row.aircraftId
+        const dayLabel = document.createElement("span")
+        dayLabel.style.cssText = "margin-left:auto;flex:0 0 auto;color:" + (T ? T.color.oxide2 : "#4A413B") + ";"
+        dayLabel.textContent = FleetScheduleGridRenderer.DAY_NAMES[dayIdx] || ("D" + dayIdx)
+        labelGutter.append(reg, dayLabel)
+        const selectAircraft = () => this._fireAircraftSelected(row.aircraftId)
+        labelGutter.addEventListener("click", selectAircraft)
+        labelGutter.addEventListener("keydown", (ev) => {
+            if (ev.key !== "Enter" && ev.key !== " ") return
+            ev.preventDefault()
+            selectAircraft()
+        })
 
         const lane = document.createElement("div")
         lane.dataset.aircraftId = String(row.aircraftId)
@@ -271,7 +285,7 @@ class FleetScheduleGridRenderer {
         if (sched && Array.isArray(sched.days) && sched.days[dayIdx]) {
             const day = sched.days[dayIdx]
             for (const b of (day.blocks || [])) {
-                const blockEl = this._buildBlock(b, T)
+                const blockEl = this._buildBlock(b, T, {aircraftId: row.aircraftId, dayIdx})
                 if (blockEl) lane.appendChild(blockEl)
             }
         } else if (sched) {
@@ -289,8 +303,33 @@ class FleetScheduleGridRenderer {
         return wrap
     }
 
-    _buildBlock(b, T) {
+    _fireAircraftSelected(aircraftId) {
+        try {
+            this.rootEl && this.rootEl.dispatchEvent(new CustomEvent("aes-fsg:aircraft-selected", {
+                detail: {aircraftId},
+                bubbles: true
+            }))
+        } catch (_) { /* noop */ }
+    }
+
+    _aircraftTitle(row, sched) {
+        const parts = [row.registration || row.aircraftId]
+        if (row.equipment) parts.push(row.equipment)
+        if (row.hub) parts.push("Hub " + row.hub)
+        if (sched && sched.summary) {
+            parts.push(this._summaryTextForSchedule(sched))
+            parts.push("scraped " + this._fmtAge(sched.scrapedAt))
+        } else {
+            parts.push("schedule not loaded")
+        }
+        parts.push("click to inspect")
+        return parts.join(" · ")
+    }
+
+    _buildBlock(b, T, ctx) {
         if (!b || b.startMin == null || b.durationMin == null || b.durationMin <= 0) return null
+        const aircraftId = (ctx && ctx.aircraftId != null) ? String(ctx.aircraftId) : null
+        const dayIdx     = (ctx && ctx.dayIdx     != null) ? +ctx.dayIdx : (b.dayIdx != null ? +b.dayIdx : null)
         const left = (b.startMin / FleetScheduleGridRenderer.MIN_PER_DAY) * 100
         const width = Math.max(0.05, (b.durationMin / FleetScheduleGridRenderer.MIN_PER_DAY) * 100)
         const el = document.createElement("div")
@@ -309,10 +348,9 @@ class FleetScheduleGridRenderer {
         if (b.kind === "flight" && b.flight) {
             const o = b.flight.origin || "?", d = b.flight.destination || "?"
             routeKey = this.coloring ? this.coloring.keyOf(b.flight) : null
-            const fill = routeKey && this.coloring ? this.coloring.colorOf(routeKey) : "#cfe9d2"
-            const edge = routeKey && this.coloring ? this.coloring.edgeOf(routeKey) : "#5a8a6a"
-            el.style.background = fill
-            el.style.border = "1px solid " + edge
+            const colors = this._resolveBlockColors(b, {routeKey, aircraftId, dayIdx})
+            el.style.background = colors.fill
+            el.style.border = "1px solid " + colors.edge
             label = (b.flight.flightCode || (o + "→" + d))
             titleParts = [
                 b.flight.flightCode || "(no code)",
@@ -338,7 +376,10 @@ class FleetScheduleGridRenderer {
             label = ""
             titleParts = ["Ready", Math.round(b.durationMin) + " min"]
         } else if (b.kind === "maintenance") {
-            el.style.background = T ? T.color.slate : "#7A6F66"
+            const mxFill = (this._overrides && this._overrides.maintenance)
+                || (window.AesScheduleColorOverrides && window.AesScheduleColorOverrides.defaultMaintenance())
+                || "#1A1612"
+            el.style.background = mxFill
             el.style.color = T ? T.color.boneFg : "#F4F1EA"
             el.style.border = "1px solid " + (T ? T.color.oxide : "#2B2520")
             label = "MX"
@@ -359,24 +400,63 @@ class FleetScheduleGridRenderer {
             el.style.opacity = "0.25"
         }
 
-        if (label) {
+        if (label && this._showBlockLabels) {
             const span = document.createElement("span")
             span.style.cssText = "padding:0 3px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;font-weight:600;"
             span.textContent = label
             el.appendChild(span)
         }
         el.title = titleParts.join(" · ")
+        if (el.title) el.setAttribute("aria-label", el.title)
+
+        if (aircraftId) el.dataset.aircraftId = aircraftId
+        if (dayIdx != null && Number.isFinite(dayIdx)) el.dataset.dayIdx = String(dayIdx)
 
         if (routeKey) {
             el.dataset.routeKey = routeKey
             el.addEventListener("mouseenter", () => this.setHoveredRoute(routeKey))
             el.addEventListener("mouseleave", () => this.setHoveredRoute(null))
-            el.addEventListener("click", () => {
-                this._filterRoute = (this._filterRoute === routeKey) ? null : routeKey
-                this.render()
-                this._fireFilterEvent()
-            })
             this._lastEls.push({el, routeKey})
+        }
+
+        if (b.kind === "maintenance") {
+            // Right-click MX → "Set maintenance color" popover.
+            el.addEventListener("contextmenu", (ev) => {
+                ev.preventDefault()
+                this._openColorPicker({
+                    scope: "maintenance",
+                    key: null,
+                    label: "Maintenance",
+                    currentColor: (this._overrides && this._overrides.maintenance) || "",
+                    anchorEl: el
+                })
+            })
+        }
+
+        if (b.kind === "flight") {
+            // The flight block becomes a manipulation handle. Click opens the
+            // Flight Inspector (rich detail + AS deep-links); right-click keeps
+            // the "filter to this route" affordance for power users; a
+            // mousedown that moves past the drag threshold starts an in-lane
+            // drag-to-suggest-time gesture. panel.js owns both the inspector
+            // and the drag arbiter wiring — we just publish enough state on
+            // the block element so the handler can resolve the flight without
+            // re-walking the schedule.
+            el.dataset.kind = "flight"
+            if (b.flight && b.flight.flightId)   el.dataset.flightId = String(b.flight.flightId)
+            if (b.flight && b.flight.flightCode) el.dataset.flightCode = String(b.flight.flightCode)
+            el.dataset.startMin = String(b.startMin)
+            el.dataset.endMin   = String(b.endMin != null ? b.endMin : (b.startMin + b.durationMin))
+            el.dataset.dayIdx   = String(b.dayIdx != null ? b.dayIdx : "")
+            el.title += " · click: inspect · drag: shift time · right-click: menu"
+            el.addEventListener("contextmenu", (ev) => {
+                ev.preventDefault()
+                this._openFlightContextMenu({
+                    block: b, el, routeKey, aircraftId, dayIdx,
+                    pageX: ev.pageX, pageY: ev.pageY,
+                    clientX: ev.clientX, clientY: ev.clientY
+                })
+            })
         }
 
         // Day-spanning markers — paint a slim notch at the spanning edge.
@@ -406,6 +486,245 @@ class FleetScheduleGridRenderer {
                 bubbles: true
             }))
         } catch (_) { /* noop */ }
+    }
+
+    /**
+     * Resolve {fill, edge} for a flight block under the active color mode.
+     * Override-aware: if the user has set a custom color for the active
+     * dimension's key, that wins; otherwise fall back to the deterministic
+     * palette from FleetScheduleGridColoring.
+     */
+    _resolveBlockColors(b, ids) {
+        const ov = this._overrides
+        const FALLBACK_FILL = "#cfe9d2", FALLBACK_EDGE = "#5a8a6a"
+        if (this._colorMode === "aircraft") {
+            const out = (typeof FleetScheduleGridColoring !== "undefined")
+                ? FleetScheduleGridColoring.colorOfAircraft(ids.aircraftId, ov)
+                : null
+            return out || {fill: FALLBACK_FILL, edge: FALLBACK_EDGE}
+        }
+        if (this._colorMode === "day") {
+            const out = (typeof FleetScheduleGridColoring !== "undefined")
+                ? FleetScheduleGridColoring.colorOfDay(ids.dayIdx, ov)
+                : null
+            return out || {fill: FALLBACK_FILL, edge: FALLBACK_EDGE}
+        }
+        // Route mode — let coloring.colorOf consult byRoute overrides.
+        const rk = ids.routeKey
+        const fill = (rk && this.coloring) ? this.coloring.colorOf(rk) : FALLBACK_FILL
+        const edge = (rk && this.coloring) ? this.coloring.edgeOf(rk) : FALLBACK_EDGE
+        return {fill, edge}
+    }
+
+    _openFlightContextMenu(ctx) {
+        if (typeof document === "undefined") return
+        // Single-instance — close any prior menu first.
+        const prior = document.querySelector(".aes-fsg-ctx-menu")
+        if (prior && prior.parentElement) prior.parentElement.removeChild(prior)
+
+        const T = (typeof window !== "undefined" && window.AESTokens) || null
+        const menu = document.createElement("div")
+        menu.className = "aes-fsg-ctx-menu"
+        menu.style.cssText = [
+            "position:fixed",
+            "z-index:" + (T ? T.z.popover || 9999 : 9999),
+            "background:" + (T ? T.color.bone : "#F4F1EA"),
+            "border:1px solid " + (T ? T.color.oxide : "#2B2520"),
+            "box-shadow:0 4px 14px rgba(0,0,0,0.25)",
+            "min-width:200px",
+            "font-family:" + (T ? T.font.display : "system-ui, sans-serif"),
+            "font-size:11px",
+            "padding:4px 0"
+        ].join(";")
+
+        const addItem = (label, fn) => {
+            const item = document.createElement("button")
+            item.type = "button"
+            item.textContent = label
+            item.style.cssText = "display:block;width:100%;text-align:left;border:0;cursor:pointer;"
+                + "background:transparent;padding:7px 12px;font-size:11px;"
+                + "color:" + (T ? T.color.oxide : "#2B2520") + ";"
+            item.addEventListener("mouseenter", () => {
+                item.style.background = T ? T.color.bone2 : "#ECE7DC"
+            })
+            item.addEventListener("mouseleave", () => { item.style.background = "transparent" })
+            item.addEventListener("click", () => { close(); fn() })
+            menu.appendChild(item)
+        }
+
+        const close = () => {
+            if (menu.parentElement) menu.parentElement.removeChild(menu)
+            document.removeEventListener("mousedown", onDocDown, true)
+            document.removeEventListener("keydown",   onKey,     true)
+        }
+        const onDocDown = (ev) => { if (!menu.contains(ev.target)) close() }
+        const onKey     = (ev) => { if (ev.key === "Escape") close() }
+
+        if (ctx.routeKey) {
+            const filterLabel = (this._filterRoute === ctx.routeKey)
+                ? "Clear route filter"
+                : "Filter to this route"
+            addItem(filterLabel, () => {
+                this._filterRoute = (this._filterRoute === ctx.routeKey) ? null : ctx.routeKey
+                this.render()
+                this._fireFilterEvent()
+            })
+        }
+
+        const scope = (this._colorMode === "aircraft") ? "aircraft"
+                    : (this._colorMode === "day")      ? "day"
+                    : "route"
+        const scopeKey = scope === "aircraft" ? ctx.aircraftId
+                      : scope === "day"      ? (ctx.dayIdx != null ? String(ctx.dayIdx) : null)
+                      : ctx.routeKey
+        const scopeLabel = scope === "aircraft" ? this._labelForAircraft(ctx.aircraftId)
+                        : scope === "day"      ? (FleetScheduleGridRenderer.DAY_NAMES[ctx.dayIdx] || ("Day " + ctx.dayIdx))
+                        : (ctx.routeKey || "Route")
+        const currentColor = this._currentOverrideFor(scope, scopeKey)
+        addItem("Set color…", () => {
+            this._openColorPicker({
+                scope, key: scopeKey, label: scopeLabel,
+                currentColor, anchorEl: ctx.el
+            })
+        })
+
+        document.body.appendChild(menu)
+        // Position near pointer, then clamp inside viewport.
+        const vw = window.innerWidth || 1024
+        const vh = window.innerHeight || 768
+        const w = menu.offsetWidth || 220
+        const h = menu.offsetHeight || 80
+        let left = ctx.clientX != null ? ctx.clientX : 100
+        let top  = ctx.clientY != null ? ctx.clientY : 100
+        if (left + w + 8 > vw) left = vw - w - 8
+        if (top  + h + 8 > vh) top  = vh - h - 8
+        menu.style.left = left + "px"
+        menu.style.top  = top + "px"
+
+        setTimeout(() => {
+            document.addEventListener("mousedown", onDocDown, true)
+            document.addEventListener("keydown",   onKey,     true)
+        }, 0)
+    }
+
+    _openColorPicker(opts) {
+        if (typeof window === "undefined" || !window.FleetScheduleGridColorPicker) return
+        const anchorRect = (opts.anchorEl && opts.anchorEl.getBoundingClientRect)
+            ? opts.anchorEl.getBoundingClientRect()
+            : null
+        window.FleetScheduleGridColorPicker.open({
+            scope:        opts.scope,
+            key:          opts.key,
+            label:        opts.label,
+            currentColor: opts.currentColor || "",
+            anchorRect,
+            onApplied: (next) => {
+                this._overrides = next
+                this.render()
+                if (this.rootEl) {
+                    try {
+                        this.rootEl.dispatchEvent(new CustomEvent("aes-fsg:overrides-changed", {
+                            detail: {overrides: next},
+                            bubbles: true
+                        }))
+                    } catch (_) {}
+                }
+            }
+        })
+    }
+
+    _currentOverrideFor(scope, key) {
+        const ov = this._overrides
+        if (!ov) return ""
+        if (scope === "route"    && ov.byRoute    && key) return ov.byRoute[key]    || ""
+        if (scope === "aircraft" && ov.byAircraft && key) return ov.byAircraft[key] || ""
+        if (scope === "day"      && ov.byDay      && key) return ov.byDay[key]      || ""
+        return ""
+    }
+
+    _labelForAircraft(aircraftId) {
+        if (!aircraftId) return "Aircraft"
+        const row = (this.fleet || []).find(r => String(r.aircraftId) === String(aircraftId))
+        return (row && (row.registration || row.aircraftId)) || String(aircraftId)
+    }
+
+    /**
+     * Day-overlay row: a single 24h lane that overlays every visible
+     * aircraft's flights for `dayIdx`. Each block carries data-aircraft-id
+     * so the inspector / drag handlers can still resolve the source flight.
+     * Visual treatment: opacity 0.55 + mix-blend-mode multiply, so overlap
+     * shows as darker shades — intentional density signal.
+     */
+    _buildDayOverlayRow(dayIdx, visibleFleet, T) {
+        const wrap = document.createElement("div")
+        wrap.className = "aes-fsg-day-row aes-fsg-day-row--overlay"
+        wrap.style.cssText = "display:flex;align-items:stretch;border-bottom:2px solid "
+            + (T ? T.color.oxide : "#2B2520") + ";"
+            + "background:" + (T ? T.color.bone : "#F4F1EA") + ";"
+
+        // Stat the row — count flights and aircraft contributing this day.
+        let flightCount = 0
+        const aircraftSet = new Set()
+        const blocksByAircraft = []
+        for (const row of visibleFleet) {
+            const sched = this.schedules.get(String(row.aircraftId))
+            const day = sched && Array.isArray(sched.days) ? sched.days[dayIdx] : null
+            if (!day) continue
+            const blocks = (day.blocks || [])
+            const flights = blocks.filter(b => b && b.kind === "flight")
+            if (!flights.length && !blocks.length) continue
+            blocksByAircraft.push({row, blocks})
+            if (flights.length) {
+                flightCount += flights.length
+                aircraftSet.add(String(row.aircraftId))
+            }
+        }
+
+        const labelGutter = document.createElement("div")
+        labelGutter.style.cssText = "flex:0 0 140px;padding:0 8px;display:flex;flex-direction:column;justify-content:center;"
+            + "background:" + (T ? T.color.bone : "#F4F1EA") + ";"
+            + "font-size:11px;color:" + (T ? T.color.oxide : "#2B2520") + ";"
+            + "border-right:1px solid " + (T ? T.color.paperRule : "#C9C0B0") + ";"
+            + "font-family:" + (T ? T.font.mono : "monospace") + ";"
+        const dayName = document.createElement("span")
+        dayName.style.cssText = "font-weight:700;letter-spacing:0.06em;text-transform:uppercase;"
+        dayName.textContent = FleetScheduleGridRenderer.DAY_NAMES[dayIdx] || ("Day " + dayIdx)
+        const stat = document.createElement("span")
+        stat.style.cssText = "font-size:10px;color:" + (T ? T.color.oxide2 : "#4A413B") + ";"
+        stat.textContent = flightCount + " flight" + (flightCount === 1 ? "" : "s")
+            + " · " + aircraftSet.size + " ✈"
+        labelGutter.append(dayName, stat)
+
+        const lane = document.createElement("div")
+        lane.dataset.dayIdx = String(dayIdx)
+        lane.dataset.rowMode = "dayOverlay"
+        lane.style.cssText = "flex:1 1 auto;position:relative;height:60px;"
+            + "background:" + (T ? T.color.bone : "#F4F1EA") + ";"
+
+        // Hour gridlines.
+        for (let h = 1; h < 24; h++) {
+            const pct = (h / 24) * 100
+            const tick = document.createElement("div")
+            tick.style.cssText = "position:absolute;left:" + pct + "%;top:0;bottom:0;"
+                + "width:1px;background:" + (T ? T.color.bone2 : "#ECE7DC") + ";"
+                + (h % 6 === 0 ? "background:" + (T ? T.color.bone3 : "#E0DAC8") + ";" : "")
+            lane.appendChild(tick)
+        }
+
+        // Paint blocks with overlay treatment.
+        for (const {row, blocks} of blocksByAircraft) {
+            for (const b of blocks) {
+                const blockEl = this._buildBlock(b, T, {aircraftId: row.aircraftId, dayIdx})
+                if (!blockEl) continue
+                blockEl.classList.add("aes-fsg-block--overlay")
+                blockEl.style.opacity   = blockEl.style.opacity || "0.55"
+                blockEl.style.mixBlendMode = "multiply"
+                lane.appendChild(blockEl)
+            }
+        }
+
+        wrap.append(labelGutter, lane)
+        return wrap
     }
 
     _fmtAge(ts) {

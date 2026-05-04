@@ -50,6 +50,8 @@
             railOpen:           true,
             focusedAircraftId:  null,
             focusedWaveId:      null,
+            rowMode:            "aircraftByDay",  // "aircraftByDay" | "dayOverlay"
+            colorMode:          "route",          // "route" | "aircraft" | "day"
             advisorPrefs: {
                 firstRunSeen:           false,
                 debouncedSuggestions:   {}

@@ -49,9 +49,12 @@ class FleetScheduleGridPanel {
         this._hubSelect  = null
         this._daySelect  = null
         this._refreshBtn = null
+        this._labelToggleBtn = null
+        this._showBlockLabels = true
         this._closeBtn   = null
         this._keydownHandler = null
         this._mxUnwatch  = null
+        this._colorOverridesUnwatch = null
         this._renderTimer = null
         this._lastRenderAt = 0
     }
@@ -59,6 +62,7 @@ class FleetScheduleGridPanel {
     /** Open the modal and start the scrape. Single-instance enforced. */
     static async open(opts) {
         const o = opts || {}
+        FleetScheduleGridPanel.cleanupOrphanedDom()
         if (FleetScheduleGridPanel._active) {
             FleetScheduleGridPanel._active.close()
         }
@@ -74,13 +78,48 @@ class FleetScheduleGridPanel {
         if (FleetScheduleGridPanel._active) FleetScheduleGridPanel._active.close()
     }
 
+    static cleanupOrphanedDom() {
+        if (typeof document === "undefined") return 0
+        const activeOverlay = FleetScheduleGridPanel._active
+            ? FleetScheduleGridPanel._active._overlayEl
+            : null
+        const selectors = [
+            "." + FleetScheduleGridPanel.OVERLAY_CLASS,
+            ".aes-fsg-flight-inspector",
+            ".aes-fsg-drop-popover"
+        ]
+        let removed = 0
+        for (const selector of selectors) {
+            for (const el of Array.from(document.querySelectorAll(selector))) {
+                if (activeOverlay && el === activeOverlay) continue
+                if (el.parentElement) {
+                    el.parentElement.removeChild(el)
+                    removed += 1
+                }
+            }
+        }
+        return removed
+    }
+
     close() {
         if (this._scraper) { try { this._scraper.abort() } catch (_) {} }
+        if (typeof FleetScheduleGridFlightInspector !== "undefined") {
+            try { FleetScheduleGridFlightInspector.close() } catch (_) {}
+        }
+        if (typeof FleetScheduleGridDropPopover !== "undefined"
+                && FleetScheduleGridDropPopover._active) {
+            try { FleetScheduleGridDropPopover._active.close() } catch (_) {}
+        }
+        this._hideFlightDragReadout()
         if (this._keydownHandler) {
             document.removeEventListener("keydown", this._keydownHandler, true)
             this._keydownHandler = null
         }
         if (this._mxUnwatch) { try { this._mxUnwatch() } catch (_) {} this._mxUnwatch = null }
+        if (this._colorOverridesUnwatch) {
+            try { this._colorOverridesUnwatch() } catch (_) {}
+            this._colorOverridesUnwatch = null
+        }
         if (this._overlayEl && this._overlayEl.parentElement) {
             this._overlayEl.parentElement.removeChild(this._overlayEl)
         }
@@ -150,9 +189,17 @@ class FleetScheduleGridPanel {
             + " .aes-fsg-block:hover { z-index: 3; }"
         modal.appendChild(styleEl)
 
-        // ESC closes.
+        // ESC closes — but yield to any popover the panel hosts (Flight
+        // Inspector, drop popover) so the user can dismiss the popover
+        // without losing the whole panel.
         this._keydownHandler = (e) => {
-            if (e.key === "Escape") { e.preventDefault(); this.close() }
+            if (e.key !== "Escape") return
+            if (typeof FleetScheduleGridFlightInspector !== "undefined"
+                    && FleetScheduleGridFlightInspector._active) return
+            if (typeof FleetScheduleGridDropPopover !== "undefined"
+                    && FleetScheduleGridDropPopover._active) return
+            e.preventDefault()
+            this.close()
         }
         document.addEventListener("keydown", this._keydownHandler, true)
 
@@ -166,10 +213,12 @@ class FleetScheduleGridPanel {
             fleet:       this.fleet,
             schedules:   this.schedules,
             maintenance: this.maintenance,
-            coloring:    null
+            coloring:    null,
+            showBlockLabels: this._showBlockLabels
         })
         this._populateHubSelect()
         this._wireMaintenanceWatch()
+        await this._wireColorOverrides()
 
         // Apply deep-link hub filter (e.g. when launched from Fleet Command
         // Center's per-hub Schedule button) so the grid opens already
@@ -279,7 +328,7 @@ class FleetScheduleGridPanel {
 
     _buildControlsBar(T) {
         const c = document.createElement("div")
-        c.style.cssText = "display:flex;align-items:center;gap:12px;padding:8px 16px;"
+        c.style.cssText = "display:flex;align-items:center;gap:12px;padding:8px 16px;flex-wrap:wrap;"
             + "background:" + (T ? T.color.bone2 : "#ECE7DC") + ";"
             + "border-bottom:1px solid " + (T ? T.color.paperRule : "#C9C0B0") + ";"
 
@@ -350,13 +399,69 @@ class FleetScheduleGridPanel {
             }
         })
 
+        const sep4 = this._sep(T)
+
+        const labelToggle = document.createElement("button")
+        labelToggle.type = "button"
+        labelToggle.style.cssText = this._btnStyle(T, "default") + "min-width:118px;"
+        labelToggle.addEventListener("click", () => {
+            this._showBlockLabels = !this._showBlockLabels
+            if (this._renderer) this._renderer.setBlockLabelsVisible(this._showBlockLabels)
+            this._updateLabelToggleButton()
+        })
+        this._labelToggleBtn = labelToggle
+        this._updateLabelToggleButton()
+
+        const sep5 = this._sep(T)
+
+        const rowLabel = document.createElement("label")
+        rowLabel.style.cssText = hubLabel.style.cssText
+        rowLabel.textContent = "Row"
+        const rowSelect = document.createElement("select")
+        rowSelect.style.cssText = hubSelect.style.cssText
+        for (const [v, lbl] of [["aircraftByDay", "Aircraft × Day"], ["dayOverlay", "Day Overlay"]]) {
+            const o = document.createElement("option")
+            o.value = v; o.textContent = lbl
+            rowSelect.appendChild(o)
+        }
+        rowSelect.addEventListener("change", () => {
+            if (this._renderer) this._renderer.setRowMode(rowSelect.value)
+        })
+        this._rowSelect = rowSelect
+
+        const sep6 = this._sep(T)
+
+        const colorLabel = document.createElement("label")
+        colorLabel.style.cssText = hubLabel.style.cssText
+        colorLabel.textContent = "Color by"
+        const colorSelect = document.createElement("select")
+        colorSelect.style.cssText = hubSelect.style.cssText
+        for (const [v, lbl] of [["route", "Route"], ["aircraft", "Aircraft"], ["day", "Day"]]) {
+            const o = document.createElement("option")
+            o.value = v; o.textContent = lbl
+            colorSelect.appendChild(o)
+        }
+        colorSelect.addEventListener("change", () => {
+            if (this._renderer) this._renderer.setColorMode(colorSelect.value)
+        })
+        this._colorSelect = colorSelect
+
         const note = document.createElement("div")
         note.style.cssText = "margin-left:auto;font-size:10px;color:" + (T ? T.color.slate : "#7A6F66") + ";"
             + "font-style:italic;"
-        note.textContent = "Click any flight to filter to that route · hover to highlight"
+        note.textContent = "Right-click any flight for filter / color · hover to highlight"
 
-        c.append(refresh, sep1, hubLabel, hubSelect, sep2, dayLabel, daySelect, sep3, clearFilter, note)
+        c.append(refresh, sep1, hubLabel, hubSelect, sep2, dayLabel, daySelect, sep3, clearFilter, sep4, labelToggle, sep5, rowLabel, rowSelect, sep6, colorLabel, colorSelect, note)
         return c
+    }
+
+    _updateLabelToggleButton() {
+        if (!this._labelToggleBtn) return
+        this._labelToggleBtn.textContent = "Bar labels: " + (this._showBlockLabels ? "On" : "Off")
+        this._labelToggleBtn.setAttribute("aria-pressed", this._showBlockLabels ? "true" : "false")
+        this._labelToggleBtn.title = this._showBlockLabels
+            ? "Hide labels inside schedule bars"
+            : "Show labels inside schedule bars"
     }
 
     _buildProgressStrip(T) {
@@ -543,17 +648,23 @@ class FleetScheduleGridPanel {
 
     _renderAll() {
         if (!this._renderer) return
+        const overrides = (this._renderer && this._renderer._overrides) || null
         this.coloring = (typeof FleetScheduleGridColoring !== "undefined")
-            ? FleetScheduleGridColoring.assign(this.schedules)
+            ? FleetScheduleGridColoring.assign(this.schedules, {overrides})
             : null
         this._renderer.coloring = this.coloring
         this._renderer.fleet = this.fleet
         this._renderer.schedules = this.schedules
         this._renderer.maintenance = this.maintenance
+        this._renderer._showBlockLabels = this._showBlockLabels
         this._renderer.render()
         this._renderLegend(null)
         // Keep the cockpit's schedule summary current as bulk-scrape lands.
         if (this._aircraftCockpit) this._aircraftCockpit.refresh()
+        // Lazy-attach the flight-block click + drag-shift handler the first
+        // time we paint. The DOM nodes are recreated on every render so we
+        // bind on the grid root via event delegation, not per-block.
+        if (!this._flightBlockAttached) this._attachFlightBlockHandler()
     }
 
     _renderLegend(filterRoute) {
@@ -802,6 +913,24 @@ class FleetScheduleGridPanel {
         })
     }
 
+    /**
+     * Hydrate the renderer with persisted color overrides + start watching
+     * for cross-tab edits so a Set Color picked in another window applies
+     * here without a refresh.
+     */
+    async _wireColorOverrides() {
+        if (typeof window === "undefined" || !window.AesScheduleColorOverrides) return
+        try {
+            const ov = await window.AesScheduleColorOverrides.load()
+            if (this._renderer) this._renderer._overrides = ov
+            this._renderAll()
+        } catch (_) {}
+        this._colorOverridesUnwatch = window.AesScheduleColorOverrides.watch((next) => {
+            if (this._renderer) this._renderer._overrides = next
+            this._renderAll()
+        })
+    }
+
     _paintWaveBands() {
         if (!this._gridEl) return
         if (typeof FleetScheduleGridWaveOverlay === "undefined") return
@@ -964,8 +1093,210 @@ class FleetScheduleGridPanel {
         }
         this._dragReadoutEl = null
     }
+
+    // ── Flight-block click + drag-to-shift ──────────────────────────────
+    //
+    // A click on a flight block opens the Flight Inspector (read-only details
+    // plus deep-links to the AS edit/delete overlays — we do not POST). A
+    // mousedown that moves past FLIGHT_DRAG_THRESHOLD_PX turns into a drag
+    // gesture: the block follows the cursor, we render a readout with the
+    // proposed dep time, and on release we open the inspector pre-loaded with
+    // the proposed time so the user can hand off to the AS edit overlay.
+    //
+    // Right-click filtering of flights is handled inside grid-renderer.js so
+    // the legacy power-user shortcut still works.
+
+    _attachFlightBlockHandler() {
+        if (this._flightBlockAttached || !this._gridEl) return
+        this._flightBlockAttached = true
+        this._flightDragState = null
+        this._gridEl.addEventListener("mousedown", (e) => this._onFlightMouseDown(e))
+        this._gridEl.addEventListener("click", (e) => this._onFlightClickGuard(e), true)
+    }
+
+    /**
+     * The grid-renderer click handler used to filter routes; we removed that
+     * binding when introducing the inspector. The bare click event still
+     * bubbles up here, so we use it as the click-without-drag fallback for
+     * flight blocks. When a drag fired, _flightDragSuppressClick is set so
+     * the inspector doesn't open twice.
+     */
+    _onFlightClickGuard(e) {
+        if (this._flightDragSuppressClick) {
+            this._flightDragSuppressClick = false
+            e.stopPropagation()
+            return
+        }
+        const blockEl = e.target && e.target.closest && e.target.closest(".aes-fsg-block--flight")
+        if (!blockEl) return
+        // Skip when the click landed on a wave band painted on top.
+        if (e.target && e.target.closest && e.target.closest(".aes-fsg-wave-band")) return
+        this._openInspectorForBlock(blockEl, null)
+    }
+
+    _onFlightMouseDown(e) {
+        if (e.button !== 0) return
+        if (e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return
+        const blockEl = e.target && e.target.closest && e.target.closest(".aes-fsg-block--flight")
+        if (!blockEl) return
+        if (e.target && e.target.closest && e.target.closest(".aes-fsg-wave-band")) return
+        const lane = blockEl.closest("[data-aircraft-id][data-day-idx]")
+        if (!lane) return
+        // Only flight blocks with a known startMin can be shifted.
+        const origStartMin = +blockEl.dataset.startMin
+        if (!isFinite(origStartMin)) return
+
+        const rect = lane.getBoundingClientRect()
+        this._flightDragState = {
+            blockEl,
+            lane,
+            laneRect:    rect,
+            startX:      e.clientX,
+            startY:      e.clientY,
+            origStartMin,
+            origEndMin:  +blockEl.dataset.endMin,
+            durationMin: (+blockEl.dataset.endMin) - origStartMin,
+            deltaMin:    0,
+            dragging:    false,
+            blockRectAtMouseDown: blockEl.getBoundingClientRect()
+        }
+        const onMove = (ev) => this._onFlightDragMove(ev)
+        const onUp   = (ev) => this._onFlightDragUp(ev, onMove, onUp)
+        document.addEventListener("mousemove", onMove, true)
+        document.addEventListener("mouseup",   onUp,   true)
+    }
+
+    _onFlightDragMove(ev) {
+        const s = this._flightDragState
+        if (!s) return
+        const dxPx = ev.clientX - s.startX
+        const dyPx = ev.clientY - s.startY
+        const total = Math.hypot(dxPx, dyPx)
+        if (!s.dragging) {
+            if (total < FleetScheduleGridPanel.FLIGHT_DRAG_THRESHOLD_PX) return
+            s.dragging = true
+            s.blockEl.style.transition = "none"
+            s.blockEl.style.zIndex = "8"
+            s.blockEl.style.cursor = "grabbing"
+            s.blockEl.style.boxShadow = "0 0 0 2px #2B2520, 0 6px 16px rgba(0,0,0,0.35)"
+        }
+        const widthMin = FleetScheduleGridRenderer.MIN_PER_DAY
+        const rawMin = (dxPx / s.laneRect.width) * widthMin
+        const snapped = Math.round(rawMin / FleetScheduleGridPanel.FLIGHT_SNAP_MIN) * FleetScheduleGridPanel.FLIGHT_SNAP_MIN
+        const newStart = Math.max(0, Math.min(widthMin - s.durationMin, s.origStartMin + snapped))
+        s.deltaMin = newStart - s.origStartMin
+        // Translate visually — left percentage is fixed by the renderer; we
+        // shift via translateX in pixels so we don't fight the render output.
+        const pxPerMin = s.laneRect.width / widthMin
+        s.blockEl.style.transform = "translateX(" + (s.deltaMin * pxPerMin) + "px)"
+        this._showFlightDragReadout(s)
+    }
+
+    _onFlightDragUp(ev, onMove, onUp) {
+        document.removeEventListener("mousemove", onMove, true)
+        document.removeEventListener("mouseup",   onUp,   true)
+        const s = this._flightDragState
+        this._flightDragState = null
+        if (!s) return
+        if (s.dragging) {
+            // Reset visual state — the inspector handles the proposal from here.
+            s.blockEl.style.transform = ""
+            s.blockEl.style.transition = ""
+            s.blockEl.style.zIndex = ""
+            s.blockEl.style.cursor = ""
+            s.blockEl.style.boxShadow = ""
+            this._hideFlightDragReadout()
+            this._flightDragSuppressClick = true
+            // If the user dragged but landed on the same minute (e.g. micro-shift
+            // < snap), treat as a click — open the inspector with no proposal.
+            const proposed = (s.deltaMin === 0) ? null : (s.origStartMin + s.deltaMin)
+            this._openInspectorForBlock(s.blockEl, {
+                proposedDepMin: proposed,
+                origDepMin:     s.origStartMin
+            })
+        }
+        // If !s.dragging the click handler will open the inspector via bubble.
+    }
+
+    _showFlightDragReadout(s) {
+        const T = (typeof window !== "undefined" && window.AESTokens) || null
+        if (!this._flightDragReadoutEl) {
+            const el = document.createElement("div")
+            el.style.cssText = "position:fixed;z-index:" + (T ? T.z.toast : 10001) + ";"
+                + "padding:6px 10px;background:" + (T ? T.color.oxide : "#2B2520") + ";"
+                + "color:" + (T ? T.color.boneFg : "#F4F1EA") + ";"
+                + "font-family:" + (T ? T.font.mono : "monospace") + ";font-size:11px;"
+                + "border-radius:2px;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,0.4);"
+                + "top:auto;bottom:24px;left:50%;transform:translateX(-50%);"
+                + "white-space:nowrap;"
+            document.body.appendChild(el)
+            this._flightDragReadoutEl = el
+        }
+        const fmt = (m) => {
+            const mm = Math.max(0, Math.min(1439, Math.round(m)))
+            const h = Math.floor(mm / 60), r = mm % 60
+            return (h < 10 ? "0" + h : h) + ":" + (r < 10 ? "0" + r : r)
+        }
+        const sign = s.deltaMin > 0 ? "+" : ""
+        this._flightDragReadoutEl.textContent =
+            "Dep " + fmt(s.origStartMin) + " → " + fmt(s.origStartMin + s.deltaMin)
+            + "  (" + sign + s.deltaMin + " min)"
+    }
+
+    _hideFlightDragReadout() {
+        if (this._flightDragReadoutEl && this._flightDragReadoutEl.parentElement) {
+            this._flightDragReadoutEl.parentElement.removeChild(this._flightDragReadoutEl)
+        }
+        this._flightDragReadoutEl = null
+    }
+
+    _openInspectorForBlock(blockEl, dragResult) {
+        if (typeof FleetScheduleGridFlightInspector === "undefined") return
+        const lane = blockEl.closest("[data-aircraft-id][data-day-idx]")
+        if (!lane) return
+        const aircraftId = lane.dataset.aircraftId
+        const dayIdx = +lane.dataset.dayIdx
+        const flightId = blockEl.dataset.flightId || null
+        const flightCode = blockEl.dataset.flightCode || null
+        const startMin = +blockEl.dataset.startMin
+        const sched = this.schedules.get(String(aircraftId)) || null
+        let block = null
+        if (sched && Array.isArray(sched.days) && sched.days[dayIdx]) {
+            for (const b of (sched.days[dayIdx].blocks || [])) {
+                if (b.kind !== "flight" || !b.flight) continue
+                if (flightId && String(b.flight.flightId) === flightId) { block = b; break }
+                if (!flightId && b.startMin === startMin && b.flight.flightCode === flightCode) { block = b; break }
+            }
+        }
+        if (!block) return
+        const fleetRow = this.fleet.find(r => String(r.aircraftId) === String(aircraftId)) || null
+        const filterRouteKey = (this._renderer && this._renderer._filterRoute) || null
+        FleetScheduleGridFlightInspector.open({
+            block,
+            aircraftId,
+            fleetRow,
+            schedule: sched,
+            anchorRect: blockEl.getBoundingClientRect(),
+            proposedDepMin: dragResult ? dragResult.proposedDepMin : null,
+            origDepMin: dragResult ? dragResult.origDepMin : null,
+            filterRouteKey,
+            onFilter: (routeKey, on) => {
+                if (!this._renderer) return
+                this._renderer.setRouteFilter(on ? routeKey : null)
+                this._renderLegend(on ? routeKey : null)
+            },
+            onOpenCockpit: (id) => {
+                if (this._aircraftCockpit && id) this._aircraftCockpit.setAircraft(id)
+                if (this._sideRail) this._sideRail.setActiveTab("aircraft")
+            }
+        })
+    }
 }
 
+FleetScheduleGridPanel.FLIGHT_DRAG_THRESHOLD_PX = 4
+FleetScheduleGridPanel.FLIGHT_SNAP_MIN = 15
+
 if (typeof window !== "undefined") {
+    try { FleetScheduleGridPanel.cleanupOrphanedDom() } catch (_) {}
     window.FleetScheduleGridPanel = FleetScheduleGridPanel
 }
