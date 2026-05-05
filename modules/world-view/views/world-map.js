@@ -120,10 +120,45 @@
         wrapper.style.cssText = ws.panelBox()
             + ";position:relative;margin-bottom:" + T.sp[3] + ";"
 
+        const titleContainer = document.createElement("div")
+        titleContainer.style.cssText = "display:flex; justify-content:space-between; align-items:center;"
+
         const title = document.createElement("h4")
         title.style.cssText = ws.paneTitle()
         title.textContent = "WORLD MAP — destinations sized by frequency × competition"
-        wrapper.appendChild(title)
+        titleContainer.appendChild(title)
+
+        // Map toggle
+        const toggleContainer = document.createElement("div")
+        toggleContainer.style.cssText = "display:flex; gap:8px; font-size:10px; font-family:monospace;"
+        const styles = [
+            { id: "vintage", label: "VINTAGE" },
+            { id: "dark", label: "DARK" },
+            { id: "vanilla", label: "VANILLA" }
+        ];
+
+        let currentMapStyle = localStorage.getItem("aes_map_style") || "vintage";
+
+        styles.forEach(s => {
+            const btn = document.createElement("button")
+            btn.textContent = s.label
+            btn.style.cssText = "background:none; border:1px solid #ccc; cursor:pointer; padding:2px 6px; border-radius:3px;"
+            if (s.id === currentMapStyle) {
+                btn.style.background = "#ccc";
+                btn.style.color = "#000";
+            } else {
+                btn.style.color = T.color.slate || "#666";
+            }
+            btn.addEventListener("click", () => {
+                localStorage.setItem("aes_map_style", s.id);
+                // trigger re-render
+                render(host, network, opts);
+            });
+            toggleContainer.appendChild(btn)
+        });
+
+        titleContainer.appendChild(toggleContainer)
+        wrapper.appendChild(titleContainer)
 
         // SVG canvas
         const svgWrap = document.createElement("div")
@@ -135,7 +170,24 @@
             height: "100%",
             preserveAspectRatio: "xMidYMid meet"
         })
-        svg.style.background = T.color.bone2
+        svg.style.background = T.color.bone2;
+        // Background map handling
+        const mapStyle = localStorage.getItem("aes_map_style") || "vintage";
+        function updateMapBackground() {
+            if (mapStyle === "vintage") {
+                svg.style.backgroundImage = "url(" + chrome.runtime.getURL("images/vintage-map.jpg") + ")";
+                svg.style.backgroundSize = "cover";
+                svg.style.backgroundPosition = "center";
+            } else if (mapStyle === "dark") {
+                svg.style.backgroundImage = "url(" + chrome.runtime.getURL("images/vintage-map-dark.svg") + ")";
+                svg.style.backgroundSize = "cover";
+                svg.style.backgroundPosition = "center";
+            } else {
+                svg.style.backgroundImage = "none";
+                svg.style.background = T.color.bone2;
+            }
+        }
+        updateMapBackground();
         svg.style.border = T.geom.bw1 + " solid " + T.color.paperRule
 
         svg.appendChild(_graticule())
