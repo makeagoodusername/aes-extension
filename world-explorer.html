@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>AES — World Explorer</title>
+    <link rel="stylesheet" href="css/design-tokens.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/command-bridge.css">
+</head>
+<body>
+    <main class="aes-bridge" id="aes-world-explorer-root">
+        <header class="aes-bridge__masthead">
+            <h1 class="aes-bridge__h1">World Explorer</h1>
+            <span class="aes-bridge__tagline">interactive map · network departures</span>
+            <div class="aes-bridge__masthead-stats" id="aes-we-masthead-stats"></div>
+            <span class="aes-bridge__version" id="aes-we-version">v?</span>
+        </header>
+
+        <section class="aes-bridge__section" id="aes-we-map"></section>
+
+        <section class="aes-bridge__section" id="aes-we-board"></section>
+
+        <footer class="aes-bridge__footer">
+            <span>AirlineSim Enhancement Suite</span>
+            <a id="aes-bridge-footer-options" href="#">Open Data Manager</a>
+            <a href="https://forums.airlinesim.aero/t/introducing-airlinesim-enhancement-suite-beta/" target="_blank" rel="noreferrer noopener">Forum</a>
+            <a href="https://github.com/ZoeBijl/airlinesim-enhancement-suite" target="_blank" rel="noreferrer noopener">GitHub</a>
+        </footer>
+    </main>
+
+    <script src="modules/_shared/account-registry.js"></script>
+    <script src="modules/_shared/fleet-roster.js"></script>
+    <script src="helpers.js"></script>
+    <script src="modules/canopy/affiliations-store.js"></script>
+    <script src="modules/canopy/orgs-store.js"></script>
+    <script src="modules/aircraft-flight-plan/schedule-store.js"></script>
+    <script src="modules/strategy/portfolio.js"></script>
+    <script src="modules/world-explorer/map.js"></script>
+    <script src="modules/world-explorer/departures-board.js"></script>
+    <script src="modules/world-explorer/app.js"></script>
+</body>
+</html>
