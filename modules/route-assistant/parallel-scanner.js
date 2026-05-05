@@ -214,33 +214,40 @@ class RouteAssistantParallelScanner {
         state.phase = "fetching"
         this._notify(state)
 
-        const countries = Array.from(countryToIatas.keys())
-        for (let i = 0; i < countries.length; i++) {
-            if (this._aborted) break
-            const countryId = countries[i]
-            state.currentCountryId = countryId
-            this._notify(state)
-            try {
-                const airports = await CountryScraper._getAllAirportsForCountry(countryId, this.server)
-                if (airports && airports.length) {
-                    await RouteAssistantDemandStore.saveCountryAirports(countryId, airports)
-                    // Mark each requested IATA in this country as "fetched";
-                    // IATAs that the country page didn't return get flagged.
-                    const have = new Set(airports.map(a => String(a.iata || "").toUpperCase()))
-                    for (const iata of countryToIatas.get(countryId)) {
-                        if (have.has(iata)) state.fetched++
-                        else state.failedIatas.push(iata)
+        const countriesQueue = Array.from(countryToIatas.keys())
+        const fetchWorkerCount = Math.max(1, Math.min(this.concurrency || 1, countriesQueue.length))
+        const fetchWorkers = []
+
+        for (let w = 0; w < fetchWorkerCount; w++) {
+            fetchWorkers.push((async () => {
+                while (countriesQueue.length > 0 && !this._aborted) {
+                    const countryId = countriesQueue.shift()
+                    state.currentCountryId = countryId
+                    this._notify(state)
+                    try {
+                        const airports = await CountryScraper._getAllAirportsForCountry(countryId, this.server)
+                        if (airports && airports.length) {
+                            await RouteAssistantDemandStore.saveCountryAirports(countryId, airports)
+                            // Mark each requested IATA in this country as "fetched";
+                            // IATAs that the country page didn't return get flagged.
+                            const have = new Set(airports.map(a => String(a.iata || "").toUpperCase()))
+                            for (const iata of countryToIatas.get(countryId)) {
+                                if (have.has(iata)) state.fetched++
+                                else state.failedIatas.push(iata)
+                            }
+                        } else {
+                            for (const iata of countryToIatas.get(countryId)) state.failedIatas.push(iata)
+                        }
+                    } catch (error) {
+                        console.warn(`[AES routeAssistant] country ${countryId} scrape failed`, error)
+                        for (const iata of countryToIatas.get(countryId)) state.failedIatas.push(iata)
                     }
-                } else {
-                    for (const iata of countryToIatas.get(countryId)) state.failedIatas.push(iata)
+                    this._notify(state)
+                    if (countriesQueue.length > 0 && !this._aborted) await sleep(this.staggerMs)
                 }
-            } catch (error) {
-                console.warn(`[AES routeAssistant] country ${countryId} scrape failed`, error)
-                for (const iata of countryToIatas.get(countryId)) state.failedIatas.push(iata)
-            }
-            this._notify(state)
-            if (i < countries.length - 1) await sleep(this.staggerMs)
+            })())
         }
+        await Promise.all(fetchWorkers)
 
         state.phase = "done"
         state.currentCountryId = null
