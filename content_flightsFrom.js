@@ -296,13 +296,11 @@ function dismissOverlay() {
         "[id*='cookie'] button",
         "[class*='consent'] button",
         "[class*='gdpr'] button"
-    ]
-    for (const sel of closeSelectors) {
-        for (const el of document.querySelectorAll(sel)) {
-            const rect = el.getBoundingClientRect()
-            if (rect.width === 0 || rect.height === 0) continue
-            try { el.click(); dismissed = true } catch (e) { /* keep looking */ }
-        }
+    ].join(", ")
+    for (const el of document.querySelectorAll(closeSelectors)) {
+        const rect = el.getBoundingClientRect()
+        if (rect.width === 0 || rect.height === 0) continue
+        try { el.click(); dismissed = true } catch (e) { /* keep looking */ }
     }
     // 2. Text-based fallback for "no thanks" / "accept" / "got it".
     if (!dismissed) {
