@@ -256,12 +256,22 @@ function appearsInStationsTable(iata) {
     const wantWord = new RegExp(`\\b${want}\\b`)
     const paren = `(${want})`
     const tables = Array.from(document.querySelectorAll("table")).filter(t => {
-        const h = (t.querySelector("thead")?.innerText || t.querySelector("tr")?.innerText || "").toLowerCase()
+        const h = (t.tHead?.innerText || t.rows[0]?.innerText || "").toLowerCase()
         return h.includes("iata") || h.includes("code") || h.includes("apt") || h.includes("station")
     })
     for (const table of tables) {
-        for (const row of table.querySelectorAll("tbody tr, tr")) {
-            if (row.querySelector("th") && !row.querySelector("td")) continue
+        for (const row of table.rows) {
+            let hasTd = false
+            let hasTh = false
+            for (const cell of row.cells) {
+                if (cell.tagName === "TD") {
+                    hasTd = true
+                    break
+                }
+                if (cell.tagName === "TH") hasTh = true
+            }
+            if (hasTh && !hasTd) continue
+
             const txt = (row.innerText || "").toUpperCase()
             if (!txt) continue
             if (txt.includes(paren) || wantWord.test(txt)) return true
