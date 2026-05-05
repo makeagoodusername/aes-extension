@@ -178,8 +178,8 @@ class RouteAssistantSettings {
                 // without any AS-side effect. Tier 3.2 flips dryRunOnly's
                 // default to false; Tier 3.3 adds the silent-auto loop.
                 apply: {
-                    enabled:               false,   // top-level kill switch — false = no writes regardless of dryRunOnly
-                    dryRunOnly:            true,    // 3.1 hard gate; 3.2 default flips to false
+                    enabled:               true,   // top-level kill switch — false = no writes regardless of dryRunOnly
+                    dryRunOnly:            false,    // 3.1 hard gate; 3.2 default flips to false
                     defaultScope: {
                         airportPair:         true,
                         flightNumbers:       true,
