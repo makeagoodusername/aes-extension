@@ -4483,6 +4483,10 @@ class RouteAssistantPanel {
                 row.airportId = demand.airportId || null
                 row.paxScore = demand.paxScore
                 row.cargoScore = demand.cargoScore
+                row.rmTightnessY = demand.rmTightnessByClass && demand.rmTightnessByClass.Y;
+                row.rmTightnessC = demand.rmTightnessByClass && demand.rmTightnessByClass.C;
+                row.rmTightnessF = demand.rmTightnessByClass && demand.rmTightnessByClass.F;
+                row.rmTightnessCargo = demand.rmTightnessByClass && demand.rmTightnessByClass.Cargo;
                 row.demandSource = "route-assistant"
                 row.demandBasis = null
             }
@@ -17710,6 +17714,10 @@ class RouteAssistantPanel {
             r.avgPriceByClass       = derived.avgPriceByClass
             r.priceElasticityByClass = derived.priceElasticityByClass
             r.rmTightnessByClass    = derived.rmTightnessByClass
+            r.rmTightnessY          = derived.rmTightnessByClass ? derived.rmTightnessByClass.Y : null
+            r.rmTightnessC          = derived.rmTightnessByClass ? derived.rmTightnessByClass.C : null
+            r.rmTightnessF          = derived.rmTightnessByClass ? derived.rmTightnessByClass.F : null
+            r.rmTightnessCargo      = derived.rmTightnessByClass ? derived.rmTightnessByClass.Cargo : null
             r.demandDerivedAt = derived.scrapedAt
             r.demandNotes     = derived.derivationNotes
             // Slice 5b — slim PAX history series (last 12 periods) for the
@@ -28389,7 +28397,11 @@ const RA_DIFF_TRACKED = [
     {field: "cargoDemandPool",   fmt: "compact"},
     {field: "ourPaxShare",       fmt: "pct1"},
     {field: "orsRatingGapToTop", fmt: "intSigned"},
-    {field: "rmTightness",       fmt: "pctTight"}
+    {field: "rmTightness",       fmt: "pctTight"},
+    {field: "rmTightnessY",      fmt: "pctTight"},
+    {field: "rmTightnessC",      fmt: "pctTight"},
+    {field: "rmTightnessF",      fmt: "pctTight"},
+    {field: "rmTightnessCargo",  fmt: "pctTight"}
 ]
 const RA_DIFF_FMT_BY_FIELD = (() => {
     const m = {}
