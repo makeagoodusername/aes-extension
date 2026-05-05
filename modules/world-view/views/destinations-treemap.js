@@ -102,10 +102,44 @@
         const wrapper = document.createElement("div")
         wrapper.style.cssText = ws.panelBox() + ";"
 
+        const titleContainer = document.createElement("div")
+        titleContainer.style.cssText = "display:flex; justify-content:space-between; align-items:center;"
+
         const title = document.createElement("h4")
         title.style.cssText = ws.paneTitle()
         title.textContent = "DESTINATIONS — sized by frequency × competition"
-        wrapper.appendChild(title)
+        titleContainer.appendChild(title)
+
+        // Treemap toggle
+        const toggleContainer = document.createElement("div")
+        toggleContainer.style.cssText = "display:flex; gap:8px; font-size:10px; font-family:monospace;"
+        const styles = [
+            { id: "dark", label: "DATA POP" },
+            { id: "vanilla", label: "VANILLA" }
+        ];
+
+        let currentTreemapStyle = localStorage.getItem("aes_treemap_style") || "dark";
+
+        styles.forEach(s => {
+            const btn = document.createElement("button")
+            btn.textContent = s.label
+            btn.style.cssText = "background:none; border:1px solid #ccc; cursor:pointer; padding:2px 6px; border-radius:3px;"
+            if (s.id === currentTreemapStyle) {
+                btn.style.background = "#ccc";
+                btn.style.color = "#000";
+            } else {
+                btn.style.color = T.color.slate || "#666";
+            }
+            btn.addEventListener("click", () => {
+                localStorage.setItem("aes_treemap_style", s.id);
+                // trigger re-render
+                render(host, network, opts);
+            });
+            toggleContainer.appendChild(btn)
+        });
+
+        titleContainer.appendChild(toggleContainer)
+        wrapper.appendChild(titleContainer)
 
         const dests = (network && Array.isArray(network.destinations))
             ? network.destinations.filter(d => d && d.sizeWeight > 0)
@@ -125,8 +159,8 @@
             "position:relative",
             "width:100%",
             "height:" + height + "px",
-            "background:" + T.color.bone2,
-            "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+            "background:" + (currentTreemapStyle === "dark" ? "#1a1a1a" : T.color.bone2),
+            "border:" + T.geom.bw1 + " solid " + (currentTreemapStyle === "dark" ? "#333" : T.color.paperRule),
             "overflow:hidden"
         ].join(";")
         wrapper.appendChild(canvas)
@@ -149,8 +183,34 @@
                 const d = p.item && p.item.dest
                 if (!d) continue
                 const rect = p.rect
-                const press = ws.pressureColor(d.competition && d.competition.score)
+                let press = ws.pressureColor(d.competition && d.competition.score)
                 const glyph = ws.carrierGlyph(d.carrierClass)
+
+                // Dark mode overrides
+                let bgColor = press.bg;
+                let borderColor = press.border;
+                let fgColor = press.fg;
+                let codeColor = T.color.oxide;
+                let metaColor = T.color.oxide2;
+
+                if (currentTreemapStyle === "dark") {
+                    const score = d.competition && d.competition.score || 0;
+                    if (score >= 0.66) {
+                        bgColor = "#4a0f18"; // deep crimson
+                        borderColor = "#ff4d4d"; // bright red
+                        fgColor = "#ffb3b3";
+                    } else if (score >= 0.33) {
+                        bgColor = "#4a3300"; // deep amber
+                        borderColor = "#ffb84d"; // bright orange
+                        fgColor = "#ffe6b3";
+                    } else {
+                        bgColor = "#0f331a"; // deep green
+                        borderColor = "#4dffa6"; // bright green
+                        fgColor = "#b3ffcc";
+                    }
+                    codeColor = "#ffffff";
+                    metaColor = fgColor;
+                }
 
                 const tile = document.createElement("div")
                 tile.dataset.dest = d.dest
@@ -160,9 +220,9 @@
                     "top:" + rect.y + "px",
                     "width:" + Math.max(0, rect.w - 1) + "px",
                     "height:" + Math.max(0, rect.h - 1) + "px",
-                    "background:" + press.bg,
-                    "border:" + T.geom.bw1 + " solid " + press.border,
-                    "color:" + press.fg,
+                    "background:" + bgColor,
+                    "border:" + T.geom.bw1 + " solid " + borderColor,
+                    "color:" + fgColor,
                     "cursor:pointer",
                     "padding:2px 4px",
                     "box-sizing:border-box",
@@ -175,34 +235,52 @@
 
                 // Inner content: IATA + glyph + (mini) freq.
                 const minDim = Math.min(rect.w, rect.h)
+                const maxDim = Math.max(rect.w, rect.h)
+
                 if (minDim >= 36) {
                     const code = document.createElement("div")
                     code.textContent = d.dest
-                    code.style.cssText = "color:" + T.color.oxide + ";font-weight:bold;"
+                    code.style.cssText = "color:" + codeColor + ";font-weight:bold;"
                     tile.appendChild(code)
+
+                    // Add destination name if there's horizontal space
+                    if (maxDim >= 100 && d.destName && minDim >= 48) {
+                        const nameDiv = document.createElement("div")
+                        nameDiv.textContent = d.destName
+                        nameDiv.style.cssText = "color:" + metaColor + ";font-size:" + T.fs.micro + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80%;"
+                        tile.appendChild(nameDiv)
+                    }
 
                     if (minDim >= 48) {
                         const meta = document.createElement("div")
                         meta.textContent = d.weeklyFlights + "× · " + Math.round((d.competition.score || 0) * 100) + "%"
-                        meta.style.cssText = "color:" + T.color.oxide2 + ";font-size:" + T.fs.micro + ";"
+                        meta.style.cssText = "color:" + metaColor + ";font-size:" + T.fs.micro + ";"
                         tile.appendChild(meta)
+
+                        // Add vs info if we have lots of room
+                        if (minDim >= 64 && d.competition && d.competition.dominantCarrier && currentTreemapStyle === "dark") {
+                            const vsInfo = document.createElement("div")
+                            vsInfo.textContent = "vs " + d.competition.dominantCarrier
+                            vsInfo.style.cssText = "color:" + borderColor + ";font-size:9px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+                            tile.appendChild(vsInfo)
+                        }
                     }
 
                     const corner = document.createElement("div")
                     corner.textContent = glyph.char
-                    corner.style.cssText = "position:absolute;top:2px;right:4px;color:" + glyph.color + ";"
+                    corner.style.cssText = "position:absolute;top:2px;right:4px;color:" + (currentTreemapStyle === "dark" ? borderColor : glyph.color) + ";"
                     tile.appendChild(corner)
 
                     if (d.watchlisted) {
                         const star = document.createElement("div")
                         star.textContent = "★"
-                        star.style.cssText = "position:absolute;bottom:2px;right:4px;color:" + T.color.rust + ";"
+                        star.style.cssText = "position:absolute;bottom:2px;right:4px;color:" + (currentTreemapStyle === "dark" ? "#ffcc00" : T.color.rust) + ";"
                         tile.appendChild(star)
                     }
                 } else if (minDim >= 16) {
                     const code = document.createElement("div")
                     code.textContent = d.dest
-                    code.style.cssText = "color:" + T.color.oxide + ";font-size:" + T.fs.micro + ";"
+                    code.style.cssText = "color:" + codeColor + ";font-size:" + T.fs.micro + ";"
                     tile.appendChild(code)
                 }
 
