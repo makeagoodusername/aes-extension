@@ -10884,7 +10884,28 @@ class RouteAssistantPanel {
      * user's enterprise isn't in the leaderboard, or the freshness
      * window between marketShare and ORS data is > 7 days.
      */
-    async _calibrateOrsSandboxT(route, banner) {
+    _queueCalibrateToast(routeKey, T) {
+        if (!this._calibrateToastBatch) {
+            this._calibrateToastBatch = { count: 0, lastRoute: null, lastT: null, timeout: null }
+        }
+        const b = this._calibrateToastBatch
+        b.count++
+        b.lastRoute = routeKey
+        b.lastT = T
+        if (b.timeout) clearTimeout(b.timeout)
+        b.timeout = setTimeout(() => {
+            if (typeof RouteAssistantToast !== "undefined") {
+                if (b.count === 1) {
+                    RouteAssistantToast.success("Calibrated T = " + b.lastT + " for " + b.lastRoute, {duration: 5000})
+                } else {
+                    RouteAssistantToast.success("Calibrated T for " + b.count + " routes", {duration: 5000})
+                }
+            }
+            this._calibrateToastBatch = null
+        }, 2000)
+    }
+
+    async _calibrateOrsSandboxT(route, banner, skipRender=false) {
         const out = (msg, ok) => {
             if (!banner) return
             banner.style.color = ok ? "#34d399" : "#fbbf24"
@@ -10961,12 +10982,10 @@ class RouteAssistantPanel {
         } catch (e) { console.warn("[AES sandboxBacktest] log on calibrate failed", e) }
 
         out("Calibrated T = " + T + " (from " + (Math.round(observedShare * 1000) / 10) + "% observed share). Re-projecting…", true)
-        if (typeof RouteAssistantToast !== "undefined") {
-            const routeKey = String(this.hubIata || "").toUpperCase() + "→" + String(route.dest || "").toUpperCase()
-            RouteAssistantToast.success("Calibrated T = " + T + " for " + routeKey, {duration: 5000})
-        }
+        const routeKey = String(this.hubIata || "").toUpperCase() + "→" + String(route.dest || "").toUpperCase()
+        this._queueCalibrateToast(routeKey, T)
         this._orsSandboxResult = null
-        this._render()
+        if (!skipRender) this._render()
     }
 
     /**
@@ -18103,6 +18122,23 @@ class RouteAssistantPanel {
             if (this.settings.orsSandbox.enabled) this._render()
         })
         ctrlRow.append(resetDefaultsBtn)
+
+        const calAllBtn = document.createElement("button")
+        calAllBtn.textContent = "Calibrate all visible routes"
+        Object.assign(calAllBtn.style, smallBtnStyle())
+        calAllBtn.style.background = "#1e1b4b"
+        calAllBtn.style.color = "#a78bfa"
+        calAllBtn.style.borderColor = "#4c1d95"
+        calAllBtn.title = "Runs T-calibration for all routes currently visible in the table."
+        calAllBtn.addEventListener("click", async () => {
+            if (!this.scoredRows) return
+            for (const r of this.scoredRows) {
+                // Pass null for banner, we don't need a banner for bulk calibrate
+                await this._calibrateOrsSandboxT(r, null, true)
+            }
+            this._render()
+        })
+        ctrlRow.append(calAllBtn)
 
         wrap.append(ctrlRow)
 
