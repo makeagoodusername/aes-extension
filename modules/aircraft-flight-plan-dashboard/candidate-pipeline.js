@@ -187,14 +187,19 @@ class AesAfpCandidatePipeline {
         })
         const more = conflicts.length > samples.length ? " +" + (conflicts.length - samples.length) + " more" : ""
         build.validation = Array.isArray(build.validation) ? build.validation.slice() : []
-        build.validation.push(
-            "Generated wave plan overlaps the current aircraft schedule: "
+        const message = "Generated wave plan overlaps the current aircraft schedule: "
             + samples.join("; ") + more
             + ". Adjust the wave windows or pick a less-busy aircraft before dry-running these legs."
-        )
+
+        build.validation.push(message)
         build.metadata = Object.assign({}, build.metadata || {}, {
             scheduleConflictCount: conflicts.length
         })
+
+        // Ensure flights are not emitted if there are overlaps
+        build.flights = [];
+        build.hasHardErrors = true;
+        build.errorReason = message;
     }
 
     _findScheduleConflicts(proposedFlights, scheduleLegs) {

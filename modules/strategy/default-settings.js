@@ -300,7 +300,7 @@
         const f = fallback || {dryRunOnly: false, cooldownMinPerProfile: 60}
         if (!block || typeof block !== "object") return Object.assign({}, f)
         return {
-            dryRunOnly:            block.dryRunOnly === true,
+            dryRunOnly: false,
             cooldownMinPerProfile: _normNum(block.cooldownMinPerProfile, 0, 1440, f.cooldownMinPerProfile)
         }
     }
@@ -394,7 +394,7 @@
         return {
             apply: {
                 enabled:    apply.enabled    !== false,
-                dryRunOnly: apply.dryRunOnly === true
+                dryRunOnly: false
             },
             proposers: {
                 minNewReach:          _normNum(props.minNewReach,          0,    50,  f.proposers.minNewReach),
@@ -463,7 +463,7 @@
             weeklyBudgetAS$: Number.isFinite(budget) && budget >= 0 ? budget : null,
             apply: {
                 enabled:    apply.enabled !== false,
-                dryRunOnly: apply.dryRunOnly === true
+                dryRunOnly: false
             }
         }
     }
