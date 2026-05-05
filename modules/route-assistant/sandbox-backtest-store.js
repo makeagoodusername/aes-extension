@@ -170,6 +170,75 @@ class RouteAssistantSandboxBacktestStore {
         return record
     }
 
+    /**
+     * Bulk log multiple entries across different routes.
+     * @param {Array<{hub: string, dest: string, entry: Object}>} logs
+     */
+    static async logMany(logs) {
+        if (!logs || !logs.length) return []
+
+        const cleanedLogs = []
+        for (const log of logs) {
+            const hubU  = String(log.hub  || "").toUpperCase()
+            const destU = String(log.dest || "").toUpperCase()
+            if (!hubU || !destU) continue
+            const cleaned = RouteAssistantSandboxBacktestStore._normaliseEntry(log.entry || {})
+            if (!cleaned) continue
+            cleanedLogs.push({ hub: hubU, dest: destU, entry: cleaned })
+        }
+
+        if (!cleanedLogs.length) return []
+
+        const reads = []
+        const logMap = new Map()
+        for (const log of cleanedLogs) {
+            const ns = RouteAssistantSandboxBacktestStore._key(log.hub, log.dest)
+            const lg = RouteAssistantSandboxBacktestStore._legacyKey(log.hub, log.dest)
+            if (reads.indexOf(ns) === -1) reads.push(ns)
+            if (reads.indexOf(lg) === -1) reads.push(lg)
+
+            const pairKey = log.hub + "-" + log.dest
+            if (!logMap.has(pairKey)) logMap.set(pairKey, [])
+            logMap.get(pairKey).push(log)
+        }
+
+        const out = await chrome.storage.local.get(reads)
+        const writes = {}
+        const now = Date.now()
+        const records = []
+
+        for (const [pairKey, routeLogs] of logMap.entries()) {
+            const { hub, dest } = routeLogs[0]
+            const ns = RouteAssistantSandboxBacktestStore._key(hub, dest)
+            const lg = RouteAssistantSandboxBacktestStore._legacyKey(hub, dest)
+
+            const existing = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+            const entries = (existing && Array.isArray(existing.entries))
+                ? existing.entries.slice()
+                : []
+
+            for (const log of routeLogs) {
+                entries.push(log.entry)
+            }
+
+            while (entries.length > RouteAssistantSandboxBacktestStore.MAX_PER_ROUTE) {
+                entries.shift()
+            }
+
+            const record = {
+                hub:       hub,
+                dest:      dest,
+                entries:   entries,
+                updatedAt: now
+            }
+            writes[ns] = record
+            records.push(record)
+        }
+
+        await chrome.storage.local.set(writes)
+        return records
+    }
+
     static async remove(hub, dest) {
         const ns = RouteAssistantSandboxBacktestStore._key(hub, dest)
         const lg = RouteAssistantSandboxBacktestStore._legacyKey(hub, dest)
