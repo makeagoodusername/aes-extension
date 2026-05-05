@@ -197,6 +197,8 @@
             },
             crewPay: {
                 weeklyBudgetAS$: null,
+                targetSalaryPctAboveAverage: null,
+                roleOverrides: {},
                 apply: {
                     enabled:    true,
                     dryRunOnly: false
@@ -459,8 +461,20 @@
         if (!block || typeof block !== "object") return JSON.parse(JSON.stringify(f))
         const budget = Number(block.weeklyBudgetAS$)
         const apply = (block.apply && typeof block.apply === "object") ? block.apply : {}
+        const overrides = (block.roleOverrides && typeof block.roleOverrides === "object") ? block.roleOverrides : {}
+        const safeOverrides = {}
+        for (const k in overrides) {
+            const v = Number(overrides[k])
+            if (Number.isFinite(v) && v >= -100 && v <= 100) safeOverrides[k] = Math.round(v)
+        }
+
+        let targetPct = Number(block.targetSalaryPctAboveAverage)
+        targetPct = isFinite(targetPct) ? Math.max(-50, Math.min(50, targetPct)) : null
+
         return {
             weeklyBudgetAS$: Number.isFinite(budget) && budget >= 0 ? budget : null,
+            targetSalaryPctAboveAverage: targetPct !== null ? targetPct : f.targetSalaryPctAboveAverage,
+            roleOverrides: safeOverrides,
             apply: {
                 enabled:    apply.enabled !== false,
                 dryRunOnly: apply.dryRunOnly === true
