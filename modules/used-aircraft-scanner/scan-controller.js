@@ -102,14 +102,18 @@ class ScanController {
             staggerMs: (opts && opts.staggerMs) || 2000
         })
 
-        await MarketScanSession.cleanupOld(this.server, this.session.scanId)
-        // Acquire lease against this fresh scanId. A new scanId always wins
+        // Clean up old sessions, acquire the lease for this fresh scan, save the new session,
+        // and update the preset's lastScanId concurrently. A new scanId always wins
         // because MarketScanLease.acquire treats a different scanId as a
         // valid takeover — the user explicitly asked to start a new scan.
-        await MarketScanLease.acquire(this.server, this.session.scanId)
-        this.mirror = false
-        await MarketScanSession.saveSession(this.session)
-        await UsedAircraftPresets.save({lastScanId: this.session.scanId})
+        await Promise.all([
+            MarketScanSession.cleanupOld(this.server, this.session.scanId),
+            MarketScanLease.acquire(this.server, this.session.scanId).then(() => {
+                this.mirror = false
+            }),
+            MarketScanSession.saveSession(this.session),
+            UsedAircraftPresets.save({lastScanId: this.session.scanId})
+        ])
 
         this._installStorageListener()
         this._notify()
@@ -124,10 +128,13 @@ class ScanController {
         if (this.staggerTimer) { clearTimeout(this.staggerTimer); this.staggerTimer = null }
         for (const t in this.timers) clearTimeout(this.timers[t])
         this.timers = {}
-        await MarketScanSession.saveSession(this.session)
+
+        const tasks = [MarketScanSession.saveSession(this.session)]
         if (!this.mirror) {
-            await MarketScanLease.release(this.server, this.session.scanId)
+            tasks.push(MarketScanLease.release(this.server, this.session.scanId))
         }
+        await Promise.all(tasks)
+
         this._notify()
     }
 
@@ -286,16 +293,21 @@ class ScanController {
             this.session.status = "done"
             this.session.finishedAt = Date.now()
             if (this.staggerTimer) { clearTimeout(this.staggerTimer); this.staggerTimer = null }
-            await MarketScanSession.saveSession(this.session)
+
+            const tasks = [MarketScanSession.saveSession(this.session)]
             if (!this.mirror) {
                 // Release the lease so any tab can start the next scan
                 // immediately rather than waiting out the TTL. Also fold
                 // in the freshly-completed observations to the per-type
                 // history store so future classifier scores are anchored
                 // against more samples.
-                await MarketScanLease.release(this.server, this.session.scanId)
-                ScanController._recordHistory(this.server, this.session)
+                tasks.push(
+                    MarketScanLease.release(this.server, this.session.scanId)
+                        .then(() => ScanController._recordHistory(this.server, this.session))
+                )
             }
+            await Promise.all(tasks)
+
             this._notify()
         }
     }
