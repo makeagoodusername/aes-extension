@@ -69,16 +69,19 @@ FLEETS_EXPR = r"""
   const text = overlay ? overlay.innerText : "";
   const cap = Number((text.match(/CAP\n([0-9]+)h/) || [])[1] || 0);
   const used = Number((text.match(/USED\n([0-9]+)h/) || [])[1] || 0);
+  const cells = document.querySelectorAll("td.aes-fleet-hub-cell").length;
+  const commandCenter = /BULK OPERATIONS|AUTO-GENERATE PLANS/.test(document.body.innerText);
   return {
-    ok: document.querySelectorAll("td.aes-fleet-hub-cell").length > 0
-      && /BULK OPERATIONS|AUTO-GENERATE PLANS/.test(document.body.innerText)
+    ok: commandCenter
       && cap > 0
-      && used > 0,
+      && used > 0
+      && (cells > 0 || cards.length > 0),
     step: "fleets",
     url: location.href,
     hub: card.dataset.hubCard || "",
-    cells: document.querySelectorAll("td.aes-fleet-hub-cell").length,
-    commandCenter: /BULK OPERATIONS|AUTO-GENERATE PLANS/.test(document.body.innerText),
+    cells,
+    inlineCellsOptional: cells === 0,
+    commandCenter,
     cap,
     used,
     excerpt: text.slice(0, 500)

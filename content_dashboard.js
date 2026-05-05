@@ -3041,6 +3041,22 @@ function displayAircraftProfitability() {
     }
 
     let key = server + airline.name.trim().replace(/[^A-Za-z0-9]/g, '') + 'aircraftFleet';
+
+    // Auto-refresh when the aircraftFleet blob changes — e.g. user overrides
+    // HUB on /app/fleets/aircraft/<id>/1 in another tab and syncFleetHubData
+    // mirrors the change here. Without this the table renders stale until the
+    // user clicks "reload table".
+    if (window._aesAircraftProfitabilityListener) {
+        chrome.storage.onChanged.removeListener(window._aesAircraftProfitabilityListener);
+    }
+    window._aesAircraftProfitabilityListener = (changes, area) => {
+        if (area !== 'local') return;
+        if (!changes[key]) return;
+        if (window._aesAircraftProfitabilityRefresh) clearTimeout(window._aesAircraftProfitabilityRefresh);
+        window._aesAircraftProfitabilityRefresh = setTimeout(() => displayAircraftProfitability(), 250);
+    };
+    chrome.storage.onChanged.addListener(window._aesAircraftProfitabilityListener);
+
     //Get storage fleet data
     chrome.storage.local.get(key, function(result) {
         //get aircraft flight data
@@ -3117,9 +3133,11 @@ function displayAircraftProfitability() {
             }
             // Upstream v0.7.6 profitability columns. Booleans get *Label
             // companions so the table can sort by display string. `hub`
-            // mirrors the fleet `location` field (same source the
-            // Fleet Management table uses for the HUB column added in
-            // commit 57c8807).
+            // chain: prefer the override + detected fields written by
+            // syncFleetHubData() on /aircraft/<id>/1 (item 20), fall back
+            // to the legacy `location` field (Fleet Management's HUB
+            // column from commit 57c8807). Without this fallback, a HUB
+            // override never surfaces here.
             const deliveredLabel = value.delivered === true ? 'Yes' : (value.delivered === false ? 'No' : '--');
             const ownedLabel = value.owned === true ? 'Yes' : (value.owned === false ? 'No' : '--');
             const pureCargoLabel = value.pureCargo === true ? 'Yes' : (value.pureCargo === false ? 'No' : '--');
@@ -3133,7 +3151,7 @@ function displayAircraftProfitability() {
                 age: value.age,
                 maintenance: value.maintanance,
                 dateAircraft: AES.formatDateString(value.date) + ' ' + value.time,
-                hub: value.location || '',
+                hub: value.hubEffective || value.hubOverride || value.hubDetected || value.location || '',
                 delivered: value.delivered,
                 deliveredLabel: deliveredLabel,
                 owned: value.owned,

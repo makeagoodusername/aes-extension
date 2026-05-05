@@ -842,9 +842,28 @@
         LF_ANCHOR
     }
 
+    let _rerunTimer = null
+    function _scheduleRerun() {
+        if (!NUMBERS_PATH_RE.test(location.pathname)) return
+        if (_rerunTimer) clearTimeout(_rerunTimer)
+        _rerunTimer = setTimeout(() => {
+            _rerunTimer = null
+            run().catch(e => console.warn("[AES per-leg autopricer] rerun failed", e))
+        }, 250)
+    }
+
     _ready(() => {
-        if (NUMBERS_PATH_RE.test(location.pathname)) {
-            run().catch(e => console.warn("[AES per-leg autopricer] run failed", e))
+        if (!NUMBERS_PATH_RE.test(location.pathname)) return
+        run().catch(e => console.warn("[AES per-leg autopricer] run failed", e))
+        // Re-render when relevant data lands in another tab (cross-tab demand/ORS
+        // scrape, RA panel bulk sync) or when the user flips a routeAssistant
+        // pricing setting. Without these the chips/banner reflect the cache as
+        // it was at page open and never react to incoming data.
+        if (window.AesRelay) {
+            window.AesRelay.onSettingsArea("routeAssistant", _scheduleRerun)
+            window.AesRelay.onStorageKey("routeAssistant:demand:", _scheduleRerun)
+            window.AesRelay.onStorageKey("routeAssistant:ors:", _scheduleRerun)
+            window.AesRelay.onStorageKey("routeAssistant:markets:", _scheduleRerun)
         }
     })
 })()

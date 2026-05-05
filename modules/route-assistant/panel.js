@@ -324,6 +324,16 @@ class RouteAssistantPanel {
                     needFullRefresh = true
                     continue
                 }
+                // Cross-tab demand / ORS / markets scrape lands in another
+                // tab → re-render so the heatmap / table reflects the fresh
+                // cache without forcing the user to reload the page. Prior
+                // gap: panel saw the data on next manual refresh only.
+                if (key.startsWith("routeAssistant:demand:")
+                 || key.startsWith("routeAssistant:ors:")
+                 || key.startsWith("routeAssistant:markets:")) {
+                    needFullRefresh = true
+                    continue
+                }
                 if (typeof AesAfpScheduleStore !== "undefined"
                  && key.startsWith(AesAfpScheduleStore.PREFIX)
                  && myHub) {

@@ -14,6 +14,9 @@ function loadInventoryContext() {
         window: {
             addEventListener() {}
         },
+        AesBoot: {
+            register() {}
+        },
         chrome: {
             storage: {
                 local: {
@@ -29,6 +32,7 @@ function loadInventoryContext() {
             }
         }
     }
+    ctx.window.AesBoot = ctx.AesBoot
     vm.createContext(ctx)
     vm.runInContext(code, ctx)
     ctx.settings = {

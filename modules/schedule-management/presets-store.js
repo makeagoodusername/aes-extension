@@ -21,6 +21,8 @@
  * of running a preset — live separately in `schedule-store.js`.
  */
 class SchedulePresets {
+    static SETTINGS_KEY = "settings"
+
     static _defaults() {
         return {
             presets: [],
@@ -147,9 +149,9 @@ class SchedulePresets {
                 && typeof window.AesSettings.getArea === "function") {
             return await window.AesSettings.getArea("scheduleManagement")
         }
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data && data.settings && typeof data.settings === "object"
-            ? data.settings
+        const data = await chrome.storage.local.get([SchedulePresets.SETTINGS_KEY])
+        const settings = data && data[SchedulePresets.SETTINGS_KEY] && typeof data[SchedulePresets.SETTINGS_KEY] === "object"
+            ? data[SchedulePresets.SETTINGS_KEY]
             : {}
         const area = settings.scheduleManagement
         return area && typeof area === "object" && !Array.isArray(area) ? area : {}
@@ -162,12 +164,12 @@ class SchedulePresets {
             await window.AesSettings.saveArea("scheduleManagement", block)
             return block
         }
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data && data.settings && typeof data.settings === "object"
-            ? Object.assign({}, data.settings)
+        const data = await chrome.storage.local.get([SchedulePresets.SETTINGS_KEY])
+        const settings = data && data[SchedulePresets.SETTINGS_KEY] && typeof data[SchedulePresets.SETTINGS_KEY] === "object"
+            ? Object.assign({}, data[SchedulePresets.SETTINGS_KEY])
             : {}
         settings.scheduleManagement = block
-        await chrome.storage.local.set({settings})
+        await chrome.storage.local.set({[SchedulePresets.SETTINGS_KEY]: settings})
         return block
     }
 

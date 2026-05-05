@@ -69,6 +69,7 @@
                 "modules/_shared/migrate-legacy.js",
                 "modules/_shared/data-bus.js",
                 "modules/_shared/data-bus-topics.js",
+                "modules/_shared/relay-helpers.js",
                 "modules/_shared/utils.js",
                 "modules/_shared/store-cache.js",
                 "modules/_shared/write-through.js",
@@ -818,7 +819,6 @@
                 "modules/aircraft-flight-plan/maintenance-scraper.js",
                 "modules/aircraft-flight-plan/flight-log-scraper.js",
                 "modules/aircraft-flight-plan/wear-model.js",
-                "modules/aircraft-flight-plan/schedule-store.js",
                 "modules/aircraft-flights/scheduled-decorator.js"
             ],
             "matches": [
