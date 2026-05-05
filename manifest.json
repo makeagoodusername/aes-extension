@@ -899,14 +899,6 @@
         },
         {
             "js": [
-                "content_personelManagement.js"
-            ],
-            "matches": [
-                "https://*.airlinesim.aero/action/enterprise/staffOverview*"
-            ]
-        },
-        {
-            "js": [
                 "modules/crew-management/staff-overview-scraper.js",
                 "modules/crew-management/staff-overview-store.js",
                 "modules/crew-management/pay-tier-scraper.js",

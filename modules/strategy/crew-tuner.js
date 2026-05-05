@@ -256,6 +256,46 @@
      *   activeFraction  = recruitDelta / required
      *   orsLiftPp       = activeFraction × orsPerActivePp
      */
+    function _calculateOverrideMove(position, targetTierPp) {
+        const required = _num(position.required, 0)
+        const employed = _num(position.employed, 0)
+        const countryAvg = _num(position.countryAverage, 0)
+        const currentSalary = _num(position.salaryPerEmployee, 0)
+        if (employed <= 0 || countryAvg <= 0 || currentSalary <= 0) return null
+
+        const targetSalary = Math.round(countryAvg * (1 + targetTierPp / 100))
+        if (targetSalary === currentSalary) return null
+
+        const direction = targetSalary > currentSalary ? "raisePay" : "cutPay"
+        const weeklyCostDelta = (targetSalary - currentSalary) * employed
+
+        const J = targetSalary > currentSalary ? 1000 : 500 // Ensure overrides are prioritized
+
+        return {
+            kind:                      "pay",
+            positionId:                position.positionId,
+            label:                     position.label,
+            group:                     position.group,
+            currentSalary:             currentSalary,
+            recommendedSalary:         targetSalary,
+            countryAverage:            countryAvg,
+            payTierPp:                 targetTierPp,
+            weeklyCostDelta:           weeklyCostDelta,
+            employed:                  employed,
+            expectedRecruitDelta:      0,
+            expectedOrsLiftPp:         0,
+            expectedReputationLiftPp:  0,
+            perceptionAction:          direction,
+            perceptionConfidence:      "high",
+            perceptionHypothesis:      "Strategy override targeting " + (targetTierPp > 0 ? "+" : "") + targetTierPp + "% vs average.",
+            rationale:                 ["Strategy override matched: " + targetTierPp + "%"],
+            objective:                 {kind: "override", weights: {}},
+            accepted:                  false,
+            source:                    "crew-tuner",
+            _J:                        J
+        }
+    }
+
     function _tunePosition(position, snapshot, weights, opts, bySkillLabel, networkRev) {
         const required = _num(position.required, 0)
         const employed = _num(position.employed, 0)
@@ -383,9 +423,9 @@
         if (!isFinite(weeklyBudget) || weeklyBudget <= 0) return payMoves   // no cap
         const cuts   = payMoves.filter(m => m.weeklyCostDelta <= 0)
         const raises = payMoves.filter(m => m.weeklyCostDelta > 0)
-        // Bang-per-buck for raises: J per AS$ committed.
-        raises.sort((a, b) => (b.J / Math.max(1, b.weeklyCostDelta))
-                            - (a.J / Math.max(1, a.weeklyCostDelta)))
+        // Bang-per-buck for raises: J per AS$ committed. overrides have high _J.
+        raises.sort((a, b) => ((b._J !== undefined ? b._J : b.J) / Math.max(1, b.weeklyCostDelta))
+                            - ((a._J !== undefined ? a._J : a.J) / Math.max(1, a.weeklyCostDelta)))
         let spent = 0
         for (const m of cuts) spent += m.weeklyCostDelta   // negative; gives back room
         const out = cuts.slice()
@@ -439,23 +479,38 @@
             ? Math.max(0, declaredBudget - serviceCost)
             : NaN
 
+        const targetPct = _num(settings.targetSalaryPctAboveAverage, NaN)
+        const roleOverrides = (settings.roleOverrides && typeof settings.roleOverrides === "object") ? settings.roleOverrides : {}
+
         // ── Score pay moves per position ─────────────────────────────────
         const rawPayMoves = []
+        const overrideMoves = []
         const byPosition = snapshot.crew.byPosition
         for (const positionId in byPosition) {
             const position = byPosition[positionId]
             if (!position || !position.positionId) {
                 position && (position.positionId = positionId)
             }
-            const move = _tunePosition(
-                Object.assign({positionId}, position),
-                snapshot, resolved, o, bySkillLabel, networkRev
-            )
-            if (move) rawPayMoves.push(move)
+
+            let move = null;
+            const overridePct = roleOverrides[positionId] !== undefined ? roleOverrides[positionId] : targetPct;
+            if (isFinite(overridePct)) {
+                move = _calculateOverrideMove(Object.assign({positionId}, position), overridePct);
+                if (move) {
+                    move.accepted = true // overrides bypass budget
+                    overrideMoves.push(move)
+                }
+            } else {
+                move = _tunePosition(
+                    Object.assign({positionId}, position),
+                    snapshot, resolved, o, bySkillLabel, networkRev
+                )
+                if (move) rawPayMoves.push(move)
+            }
         }
 
         // ── Budget greedy + accept/defer flag ────────────────────────────
-        const payMoves = _allocateBudget(rawPayMoves, remainingBudget)
+        const payMoves = overrideMoves.concat(_allocateBudget(rawPayMoves, remainingBudget))
         const accepted = payMoves.filter(m => m.accepted)
         const deferred = payMoves.filter(m => !m.accepted)
 

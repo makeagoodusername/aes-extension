@@ -53,6 +53,10 @@
         {key: "learningStepSize",       label: "Learning step size",            min: 0.01, max: 0.50, step: 0.01, fmt: _f2}
     ]
 
+    const CREW_PAY_SLIDERS = [
+        {key: "targetSalaryPctAboveAverage", label: "Target Salary (% vs Average)", min: -50, max: 50, step: 1, fmt: _f0}
+    ]
+
     function _f0(v) { return String(Math.round(Number(v))) }
     function _f2(v) { const n = Number(v); return isFinite(n) ? n.toFixed(2) : "—" }
 
@@ -174,6 +178,9 @@
                 if (field === "weights") {
                     const curW = (cur.weights && typeof cur.weights === "object") ? cur.weights : {}
                     patch = {weights: Object.assign({}, curW, {[key]: value}), riskProfile: "custom"}
+                } else if (field === "crewPay") {
+                    const curCP = (cur.crewPay && typeof cur.crewPay === "object") ? cur.crewPay : {}
+                    patch = {crewPay: Object.assign({}, curCP, {[key]: value}), riskProfile: "custom"}
                 } else {
                     patch = {[key]: value, riskProfile: "custom"}
                 }
@@ -198,6 +205,42 @@
             topSec.appendChild(row.row)
         }
         det.appendChild(topSec)
+
+        // ── Crew Pay Settings ─────────────────────────────────────────────
+        const crewSec = _section("Crew Pay Strategy")
+        for (const spec of CREW_PAY_SLIDERS) {
+            const v = (settings && settings.crewPay && typeof settings.crewPay[spec.key] === "number") ? settings.crewPay[spec.key] : null
+            const row = _slider(spec, v, (val) => _saveSlider("crewPay", spec.key, val))
+            crewSec.appendChild(row.row)
+        }
+
+        const overridesWrap = _el("div", "padding:8px 16px;font:12px sans-serif;color:" + COLOR.text + ";")
+        const overridesTitle = _el("div", "margin-bottom:8px;color:" + COLOR.muted + ";", "Role Overrides (JSON format: {\"123\": 10, \"456\": -5}):")
+        const overridesTextarea = _el("textarea", "width:100%;height:60px;background:" + COLOR.chipBg + ";color:" + COLOR.text + ";border:1px solid " + COLOR.rule + ";border-radius:3px;padding:4px;font:11px monospace;")
+        const roleOverrides = (settings && settings.crewPay && settings.crewPay.roleOverrides) ? settings.crewPay.roleOverrides : {}
+        overridesTextarea.value = JSON.stringify(roleOverrides, null, 2)
+        const overridesSaveBtn = _el("button", "margin-top:4px;background:" + COLOR.chipBg + ";color:" + COLOR.text + ";border:1px solid " + COLOR.rule + ";border-radius:3px;padding:4px 8px;cursor:pointer;", "Save Overrides")
+        overridesSaveBtn.addEventListener("click", async () => {
+            try {
+                const parsed = JSON.parse(overridesTextarea.value)
+                const cur = await window.AesStrategySettings.load()
+                const curCP = (cur.crewPay && typeof cur.crewPay === "object") ? cur.crewPay : {}
+                const patch = {crewPay: Object.assign({}, curCP, {roleOverrides: parsed}), riskProfile: "custom"}
+                await window.AesStrategySettings.save(patch)
+                const next = await window.AesStrategySettings.load()
+                onChange(next)
+                overridesSaveBtn.textContent = "Saved!"
+                setTimeout(() => { overridesSaveBtn.textContent = "Save Overrides" }, 2000)
+            } catch (e) {
+                alert("Invalid JSON format for Role Overrides.")
+            }
+        })
+        overridesWrap.appendChild(overridesTitle)
+        overridesWrap.appendChild(overridesTextarea)
+        overridesWrap.appendChild(overridesSaveBtn)
+        crewSec.appendChild(overridesWrap)
+
+        det.appendChild(crewSec)
 
         // ── Reset to defaults ─────────────────────────────────────────────
         const resetWrap = _el("div", "padding:8px 16px;display:flex;justify-content:flex-end;")
