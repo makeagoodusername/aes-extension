@@ -173,9 +173,11 @@ class RouteAssistantServiceProfileScraper {
     async syncAll() {
         const list = await this.scrapeList()
         if (!list || !Array.isArray(list.profiles)) return new Map()
+        const promises = []
         for (const p of list.profiles) {
-            if (typeof p.id === "number") await this.scrapeDetail(p.id)
+            if (typeof p.id === "number") promises.push(this.scrapeDetail(p.id))
         }
+        await Promise.all(promises)
         return RouteAssistantServiceProfileScraper.loadAllDetails()
     }
 
