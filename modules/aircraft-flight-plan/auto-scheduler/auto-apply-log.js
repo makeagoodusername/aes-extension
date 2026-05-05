@@ -245,10 +245,17 @@ class AesAfpAutoApplyLogClass {
 
     /** Wipe BOTH stores entirely. Returns the count of keys removed. */
     async clear() {
-        const all = await chrome.storage.local.get(null)
         const keys = [AesAfpAutoApplyLogClass.GLOBAL_KEY]
-        for (const k in all) {
-            if (k.startsWith(AesAfpAutoApplyLogClass.PER_AIRCRAFT_PREFIX)) keys.push(k)
+        if (typeof chrome.storage.local.getKeys === "function") {
+            const allKeys = await chrome.storage.local.getKeys()
+            for (const k of allKeys) {
+                if (k.startsWith(AesAfpAutoApplyLogClass.PER_AIRCRAFT_PREFIX)) keys.push(k)
+            }
+        } else {
+            const all = await chrome.storage.local.get(null)
+            for (const k in all) {
+                if (k.startsWith(AesAfpAutoApplyLogClass.PER_AIRCRAFT_PREFIX)) keys.push(k)
+            }
         }
         if (keys.length) await chrome.storage.local.remove(keys)
         return keys.length
