@@ -27,7 +27,7 @@ test("Cmd-K dispatch → Accounting page opens", async () => {
     const modKey = process.platform === "darwin" ? "Meta" : "Control"
 
     const ctx = await chromium.launchPersistentContext(profileDir, {
-        headless: false,
+        headless: true,
         args: [
             `--disable-extensions-except=${extPath}`,
             `--load-extension=${extPath}`,

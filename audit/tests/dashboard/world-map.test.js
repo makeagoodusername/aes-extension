@@ -60,7 +60,7 @@ global.document = {
     createElement: (tag) => mkEl(tag),
     createElementNS: (ns, tag) => mkEl(tag)
 }
-global.window = {}
+global.window = { localStorage: { getItem: () => "vintage", setItem: () => {} }, chrome: { runtime: { getURL: () => "" } } }; global.localStorage = global.window.localStorage; global.chrome = global.window.chrome;
 
 // Load airport-coords for real
 const ac = fs.readFileSync(path.join(ROOT, "modules/world-view/airport-coords.js"), "utf8")
