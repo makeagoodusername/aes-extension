@@ -54,8 +54,18 @@ async function _aesAccountTouchApply(req) {
     airlineIdentity: identity,
     displayName:     String(req.displayName || identity),
     firstSeenAt:     (prior && prior.firstSeenAt) ? prior.firstSeenAt : now,
-    lastSeenAt:      now
+    lastSeenAt:      now,
+    credentials:     (prior && prior.credentials) || null
   };
+
+  // Link captured credentials if they are fresh (e.g. within last 2 minutes)
+  if (_aesVaultCredentials && (Date.now() - _aesVaultCredentials.capturedAt) < 120000) {
+      accounts[accountId].credentials = {
+          username: _aesVaultCredentials.username,
+          password: _aesVaultCredentials.password
+      };
+      _aesVaultCredentials = null; // Clear after linking
+  }
   // migrationVersion stays 0 until L2's migration shim copies legacy
   // Class B/C/D keys into their `:acct:<id>:` namespaced form. Stores
   // gate their legacy-fallback reads on (version < 1).
@@ -123,4 +133,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     .then((resp) => { try { sendResponse(resp); } catch (_) {} })
     .catch((err) => { try { sendResponse({ ok: false, error: (err && err.message) || String(err) }); } catch (_) {} });
   return true;
+});
+
+let _aesVaultCredentials = null;
+let _aesPreparedLogin = null;
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg) return false;
+
+  if (msg.type === 'aes:vault:save-credentials') {
+    _aesVaultCredentials = {
+      username: msg.username,
+      password: msg.password,
+      capturedAt: Date.now()
+    };
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg.type === 'aes:vault:prepare-login') {
+    _aesPreparedLogin = {
+        username: msg.username,
+        password: msg.password,
+        preparedAt: Date.now()
+    };
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg.type === 'aes:vault:get-prepared-login') {
+      if (_aesPreparedLogin && (Date.now() - _aesPreparedLogin.preparedAt) < 60000) {
+          sendResponse({
+              username: _aesPreparedLogin.username,
+              password: _aesPreparedLogin.password
+          });
+          _aesPreparedLogin = null; // Clear after retrieving
+      } else {
+          sendResponse({ ok: false });
+      }
+      return true;
+  }
+
+  return false;
 });

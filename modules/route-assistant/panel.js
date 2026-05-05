@@ -2909,6 +2909,12 @@ class RouteAssistantPanel {
             }
         } catch (e) { /* ignore */ }
 
+        for (const eid of classifyMap.keys()) {
+            if (classifyMap.get(eid).kind === "self") {
+                ourEnterpriseIds.add(String(eid));
+            }
+        }
+
         const ctx = {
             classifyKind: (eid) => {
                 if (eid == null) return "neutral"
@@ -16322,13 +16328,20 @@ class RouteAssistantPanel {
         // numeric ID, so an ID-match is rock-solid where a name match is
         // fragile (extra spaces, periods, "Airways" suffix variants).
         // Multi-enterprise users (e.g. FLY NYON. + NYON.) collect all IDs.
-        const ourEnterpriseIds = new Set()
+        const activeEnterpriseIds = new Set()
         try {
             for (const a of document.querySelectorAll(".as-navbar-main a[href*='dashboard?select=']")) {
                 const m = /select=(\d+)/.exec(a.getAttribute("href") || "")
-                if (m) ourEnterpriseIds.add(parseInt(m[1], 10))
+                if (m) activeEnterpriseIds.add(parseInt(m[1], 10))
             }
         } catch (e) { /* ignore */ }
+
+        const canopyEnterpriseIds = new Set();
+        for (const eid of allKinMap.keys()) {
+            if (!activeEnterpriseIds.has(eid)) {
+                canopyEnterpriseIds.add(eid);
+            }
+        }
 
         for (const r of this.rows) {
             const key = RouteAssistantMarketsPageScraper._pairKey(this.hubIata, r.destIata)
@@ -16347,9 +16360,9 @@ class RouteAssistantPanel {
                 // (rock-solid), then airline name (fragile).
                 let ourPaxShare = null
                 for (const e of r.marketSharePax) {
-                    if (e.enterpriseId != null && ourEnterpriseIds.has(e.enterpriseId)) {
-                        ourPaxShare = e.sharePct
-                        break
+                    if (e.enterpriseId != null && (activeEnterpriseIds.has(e.enterpriseId) || canopyEnterpriseIds.has(e.enterpriseId))) {
+                        ourPaxShare = (ourPaxShare || 0) + e.sharePct
+                        // Combine market share for all active & canopy enterprises
                     }
                 }
                 if (ourPaxShare == null && ourNameLow) {
@@ -16407,8 +16420,9 @@ class RouteAssistantPanel {
                 const merged = new Map()  // key → {enterpriseId|name, name, paxShare, cargoShare, paxRank, cargoRank, paxChange, cargoChange}
                 const addEntry = (e, kind) => {
                     if (!e) return
-                    const isOurs = (e.enterpriseId != null && ourEnterpriseIds.has(e.enterpriseId))
+                    const isOurs = (e.enterpriseId != null && activeEnterpriseIds.has(e.enterpriseId))
                         || (e.name && e.name.toLowerCase().trim() === ourNameLow)
+                    const isCanopy = (e.enterpriseId != null && canopyEnterpriseIds.has(e.enterpriseId))
                     if (isOurs) return
                     const key = e.enterpriseId != null ? "id:" + e.enterpriseId : "name:" + (e.name || "").toLowerCase().trim()
                     if (!key || key === "name:") return
@@ -16423,7 +16437,8 @@ class RouteAssistantPanel {
                             paxRank:      null,
                             cargoRank:    null,
                             paxChange:    null,
-                            cargoChange:  null
+                            cargoChange:  null,
+                            isCanopy:     isCanopy
                         }
                         merged.set(key, slot)
                     }
@@ -16486,7 +16501,10 @@ class RouteAssistantPanel {
                 const flightPrefixes = new Map()  // prefix → grouped market inventory + unique flight count
                 const competitorFlights = []
                 for (const c of all) {
-                    if (c.isOurs) continue
+                    // isOurs flag in scrape might match active or canopy depending on scraping time
+                    const isActive = c.isOurs && (!c.enterpriseId || activeEnterpriseIds.has(c.enterpriseId) || (c.name && c.name.toLowerCase().trim() === ourNameLow));
+                    if (isActive) continue
+                    if (c.enterpriseId && activeEnterpriseIds.has(c.enterpriseId)) continue;
                     const flightDetail = this._normaliseCompetitorFlight(c)
                     if (flightDetail) competitorFlights.push(flightDetail)
                     const clsRaw = String(c.serviceClass || "").trim().toUpperCase()
@@ -21843,7 +21861,11 @@ class RouteAssistantPanel {
     _buildCarrierRowInner(entry, row) {
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;align-items:center;gap:8px;padding:3px 4px;border-radius:3px;"
-        wrap.addEventListener("mouseenter", () => { wrap.style.background = "rgba(34,197,94,0.08)" })
+        if (entry.isCanopy) {
+            wrap.style.borderLeft = "2px solid #fcd34d";
+            wrap.style.paddingLeft = "2px";
+        }
+        wrap.addEventListener("mouseenter", () => { wrap.style.background = entry.isCanopy ? "rgba(252, 211, 77, 0.08)" : "rgba(34,197,94,0.08)" })
         wrap.addEventListener("mouseleave", () => { wrap.style.background = "" })
 
         const cfgC = (this.settings && this.settings.carriers) || {}
@@ -21899,6 +21921,9 @@ class RouteAssistantPanel {
         nameLink.rel = "noreferrer noopener"
         nameLink.textContent = entry.name || "(unknown)"
         nameLink.style.cssText = "color:#93c5fd;text-decoration:none;font-weight:600;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;"
+        if (entry.isCanopy) {
+            nameLink.style.color = "#fcd34d"; // Yellow/Amber for canopy flights
+        }
         nameLink.addEventListener("mouseenter", () => { nameLink.style.textDecoration = "underline" })
         nameLink.addEventListener("mouseleave", () => { nameLink.style.textDecoration = "none" })
         nameRow.append(nameLink)
@@ -21937,6 +21962,14 @@ class RouteAssistantPanel {
             il.title = "Open for interlining at this airport (per AS Stations table)"
             il.style.cssText = "color:#94a3b8;font-size:11px;font-weight:600;flex-shrink:0;"
             nameRow.append(il)
+        }
+
+        if (entry.isCanopy) {
+            const canopyLabel = document.createElement("span");
+            canopyLabel.textContent = "Canopy";
+            canopyLabel.style.cssText = "margin-left:auto; background:#fcd34d; color:#1e293b; font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; text-transform:uppercase;";
+            canopyLabel.title = "This flight is operated by another subsidiary in your Canopy Vault.";
+            nameRow.append(canopyLabel);
         }
         middle.append(nameRow)
 

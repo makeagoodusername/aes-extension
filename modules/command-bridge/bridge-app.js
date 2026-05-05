@@ -77,6 +77,15 @@
             await opps.mount()
         }
 
+        const vaultHost = document.getElementById("aes-bridge-vault")
+        if (vaultHost && window.AesBridgeCanopyVault) {
+            const vault = new window.AesBridgeCanopyVault({
+                host: vaultHost,
+                accounts: accounts
+            })
+            await vault.mount()
+        }
+
         // Cross-tab listener: the registry and affiliations blob can change
         // any time another AS tab touches a page. Re-render the surfaces
         // that read them.
