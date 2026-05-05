@@ -3840,16 +3840,18 @@ async function displayStationAutomation() {
         // If pop-ups blocked any tabs, synthesise failed results for their
         // airports so the run still completes and the progress table doesn't
         // hang on "X/Y processed" forever.
+        const blockedPromises = [];
         for (const chunkIdx of blockedChunkIdxs) {
             for (const entry of run.chunks[chunkIdx]) {
-                await StationAutomationStorage.writeResult(server, airlineCode, run.runId, entry.flatIdx, {
+                blockedPromises.push(StationAutomationStorage.writeResult(server, airlineCode, run.runId, entry.flatIdx, {
                     iata: entry.iata,
                     status: 'failed',
                     detail: 'Tab blocked by pop-up blocker.',
                     finishedAt: Date.now(),
-                });
+                }));
             }
         }
+        await Promise.all(blockedPromises);
         const existingNote = alreadyOpenCount ? ` (skipped ${alreadyOpenCount} already in your network)` : '';
         if (blockedChunkIdxs.length > 0) {
             formFeedback.removeClass().addClass('bad').text(
