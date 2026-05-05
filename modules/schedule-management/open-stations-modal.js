@@ -745,7 +745,8 @@ class OpenStationsModal {
         }
 
         const beforeRecord = await StationAutomationStorage.load(this.server, this.airlineCode)
-        const baseLength   = (beforeRecord.queue || []).length
+        if (!beforeRecord.queue) beforeRecord.queue = []
+        const baseLength   = beforeRecord.queue.length
         const addedIatas   = []
 
         for (const [countryId, iatas] of byCountry) {
@@ -762,9 +763,11 @@ class OpenStationsModal {
                 exceptions: [],
                 airportWhitelist: iatas,
             }
-            await StationAutomationStorage.enqueue(this.server, this.airlineCode, entry)
+            beforeRecord.queue.push(entry)
             addedIatas.push(...iatas)
         }
+
+        await StationAutomationStorage.save(beforeRecord)
 
         const totalAirports = addedIatas.length
         const message = `Queued ${totalAirports} airport${totalAirports === 1 ? "" : "s"} `
