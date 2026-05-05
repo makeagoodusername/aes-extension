@@ -69,7 +69,7 @@ function displayPersonelManagement(){
     chrome.storage.local.set({settings: settings}, function(){});
   });
   input.change(function(){
-    settings.personelManagement.value = AES.cleanInteger(input.val());
+    settings.personelManagement.value = AES.cleanCurrency(input.val());
     chrome.storage.local.set({settings: settings}, function(){});
   });
 
@@ -111,8 +111,8 @@ function priceUpdate(span){
         }
 
         let salaryInput = $(this).find('form input:eq(2)');
-        let salary = AES.cleanInteger(salaryInput.val());
-        let average = AES.cleanInteger($(this).find('td:eq(9)').text());
+        let salary = AES.cleanCurrency(salaryInput.val());
+        let average = AES.cleanCurrency($(this).find('td:eq(9)').text());
         let salaryBtn = $(this).find('td:eq(8) > form .input-group-btn input');
         let newSalary;
         switch(type) {

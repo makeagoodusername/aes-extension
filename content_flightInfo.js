@@ -151,7 +151,7 @@ function getFinancials() {
                     cmp = 'Total'
                     break;
             }
-            let value = AES.cleanInteger($(this).text());
+            let value = AES.cleanCurrency($(this).text());
             if (!data[contMargin]) {
                 data[contMargin] = {}
             }
