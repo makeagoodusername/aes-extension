@@ -134,7 +134,7 @@ function getFlight(row) {
         cmp: compCode,
         cap: AES.cleanInteger(capacity),
         bkd: AES.cleanInteger(booked),
-        price: AES.cleanInteger(price),
+        price: AES.cleanCurrency(price),
         status: status
     }
     
@@ -183,8 +183,8 @@ function getPriceDetails() {
  * @returns {object} price
  */
 function getPrice(cells) {
-    const currentPrice = AES.cleanInteger(cells[1].innerText)
-    const defaultPrice = AES.cleanInteger(cells[4].innerText.replace(/\s+/g, ''))
+    const currentPrice = AES.cleanCurrency(cells[1].innerText)
+    const defaultPrice = AES.cleanCurrency(cells[4].innerText)
     const currentPricePoint = getCurrentPricePoint(currentPrice, defaultPrice)
     const newPriceInput = cells[2].querySelector("input")
     

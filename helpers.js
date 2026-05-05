@@ -202,21 +202,29 @@ class AES {
     }
     
     /**
+     * Cleans a currency string and returns an integer
+     * @param {string} value - "-2,000 AS$" | "2.000 AS$"
+     * @returns {integer} -2000 | 2000
+     */
+    static cleanCurrency(value) {
+        value = (value || "").trim()
+        const isExpectedFormat = Boolean(value.match(/^-?(\d+[.,]?)+ AS\$$/))
+
+        if (!isExpectedFormat) {
+            console.warn(`cleanCurrency(): unexpected format for value: "${value}"`)
+        }
+
+        return AES.cleanInteger(value)
+    }
+
+    /**
      * Cleans a string of punctuation to returns an integer
      * @param {string} value - "-2,000 AS$" | "2.000 AS$" | "256"
      * @returns {integer} -2000 | 2000 | 256
      */
     static cleanInteger(value) {
-        // TODO: create separate function for cleaning currency values
-        // value = value.trim()
-        // const isExpectedFormat = Boolean(value.match(/^-?(\d+[.,]?)+ AS\$$/))
-        //
-        // if (!isExpectedFormat) {
-        //     throw new Error("cleanInteger(): unexpected format for value")
-        // }
-
-        // Match any character that’s no a digit or a dash
-        const result = value.replaceAll(/[^\d-]/g, "")
+        // Match any character that’s not a digit or a dash
+        const result = (value || "").toString().replace(/[^\d-]/g, "")
         return parseInt(result, 10)
     }
 }
