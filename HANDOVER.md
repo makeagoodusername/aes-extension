@@ -2654,7 +2654,38 @@ If the Used Aircraft Scanner first-run logs `[AES priceScraper] no price/yield/O
 
 ---
 
-## 9 · Open work / next steps
+## 9 · Open work / next steps (Restructured)
+
+The roadmap is structured into 4 Core Strategic Themes, prioritized by what is needed to make the extension robust and powerful.
+
+### Phase 1: Foundation & Stability (Immediate Priority)
+If the existing files don't work well, we must fix the foundation.
+
+- **Codebase Modularization:** Break apart massive files like `panel.js`. Separate the UI rendering, state management, and business logic into distinct, manageable modules.
+- **Bug Squashing & UX Polish:** Fix whatever is currently broken in your gameplay workflow.
+- **Tech Debt Cleanup:** (See "Tech debt" below).
+
+### Phase 2: Closed-Loop Automation (The "Make Money" Phase)
+Focus strictly on features that directly automate the most tedious parts of the game and optimize revenue.
+
+- **Auto-Pricing Write-back:** Ship Tier 3.2 and 3.3 so the extension can actually update prices in the game based on the ORS Sandbox projections. (See Auto-Pricing Tier 3 below).
+- **Schedule Optimization:** Advance the Wave overlay so you can drag-and-drop slots and save schedules directly. (See Wave + interlining + slot management workspace below).
+
+### Phase 3: Advanced Decision Support (The "Work Smarter" Phase)
+Enhance the tools that help you make strategic decisions.
+
+- **ORS Sandbox Enhancements:** Sweet-spot finder, sensitivity heatmaps, and A/B scenario comparisons. (See ORS Sandbox roadmap below).
+- **Fleet & Market Intelligence:** Fleet age/condition heatmaps, comparing two enterprises side-by-side. (See Daily-driver QoL backlog below).
+
+### Phase 4: Scale & Canopy (The "Empire" Phase)
+When the core game loop for one airline is perfected, expand it.
+
+- **Project Canopy (L):** Multi-account management, cross-server views, and aggregated dashboards. (See Letter L multi-account federation plan below).
+
+---
+
+### Detailed Task Backlogs (Mapped to the Strategic Themes)
+
 
 Pulled from `MANUAL.md §16` (the master roadmap, letter-coded A–K) and the user's confirmed direction.
 

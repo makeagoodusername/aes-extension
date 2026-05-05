@@ -826,7 +826,39 @@ After seeding demand (paxScore = 10/10 for ATL): Pax LF jumps from 0.75 → 0.95
 
 ---
 
-## 16 · Roadmap (letter-coded, prioritised)
+## 16 · Roadmap (Restructured into 4 Strategic Themes)
+
+Letters are stable across commits and breakdown-tooltip references. Status reflects HANDOVER.md as of v0.6.9-beta.
+
+The roadmap is structured into 4 Core Strategic Themes, prioritized by what is needed to make the extension robust and powerful.
+
+### Phase 1: Foundation & Stability (Immediate Priority)
+If the existing files don't work well, we must fix the foundation.
+
+- **Codebase Modularization:** Break apart massive files like `panel.js`. Separate the UI rendering, state management, and business logic into distinct, manageable modules.
+- **Bug Squashing & UX Polish:** Fix whatever is currently broken in your gameplay workflow.
+
+### Phase 2: Closed-Loop Automation (The "Make Money" Phase)
+Focus strictly on features that directly automate the most tedious parts of the game and optimize revenue.
+
+- **Auto-Pricing Write-back:** Ship Tier 3.2 and 3.3 so the extension can actually update prices in the game based on the ORS Sandbox projections.
+- **Schedule Optimization:** Advance the Wave overlay so you can drag-and-drop slots and save schedules directly.
+
+### Phase 3: Advanced Decision Support (The "Work Smarter" Phase)
+Enhance the tools that help you make strategic decisions.
+
+- **ORS Sandbox Enhancements:** Sweet-spot finder, sensitivity heatmaps, and A/B scenario comparisons.
+- **Fleet & Market Intelligence:** Fleet age/condition heatmaps, comparing two enterprises side-by-side.
+
+### Phase 4: Scale & Canopy (The "Empire" Phase)
+When the core game loop for one airline is perfected, expand it.
+
+- **Project Canopy (L):** Multi-account management, cross-server views, and aggregated dashboards.
+
+---
+
+### Detailed Task Backlogs (Mapped to the Strategic Themes)
+
 
 Letters are stable across commits and breakdown-tooltip references. Status reflects HANDOVER.md as of v0.6.9-beta — see HANDOVER §9 for the current open-work list.
 
