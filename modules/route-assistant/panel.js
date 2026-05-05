@@ -10993,6 +10993,99 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Bulk calibrate T over a list of routes. Like _calibrateOrsSandboxT, but
+     * uses the bulk persistence methods from Settings and SandboxBacktestStore
+     * to avoid race conditions and waterfall I/O overhead.
+     */
+    async _bulkCalibrateOrsSandboxT(routes) {
+        if (!routes || !routes.length) return
+        if (typeof RouteAssistantOrsModel === "undefined") return
+        const cfg = Object.assign({}, this.settings.orsSandbox || {})
+        const map = Object.assign({}, cfg.perRouteTemperature || {})
+        const tsMap = Object.assign({}, cfg.perRouteTemperatureCalibratedAt || {})
+
+        const logsToInsert = []
+        let calibratedCount = 0
+
+        for (const route of routes) {
+            const ourId = route.ourEnterpriseId
+            let result
+            try {
+                result = RouteAssistantOrsModel.calibrateRouteT({
+                    orsByClass:      route.orsByClass,
+                    marketSharePax:  route.marketSharePax,
+                    ourEnterpriseId: ourId
+                })
+            } catch (e) { continue }
+
+            if (!result || !result.ok) continue
+
+            const T = result.T
+            const observedShare = result.observedShare
+            const key = String(this.hubIata || "").toUpperCase() + "-" + String(route.dest || "").toUpperCase()
+
+            map[key] = T
+            tsMap[key] = Date.now()
+
+            let projection = null
+            try {
+                const scenario = (cfg.lastScenarioByRoute || {})[key] || RouteAssistantOrsModel._normaliseScenario({})
+                projection = RouteAssistantOrsModel.project({
+                    route:              route,
+                    scenario:           scenario,
+                    modelParams:        Object.assign({}, cfg.modelParams || {}, {perRouteT: T}),
+                    economics:          this.settings.economics || {},
+                    useRealDemandForLF: !!(this.settings.demandDepth && this.settings.demandDepth.useRealDemandForLF)
+                })
+
+                logsToInsert.push({
+                    hub: this.hubIata,
+                    dest: route.dest,
+                    entry: {
+                        ts:          Date.now(),
+                        trigger:     "calibrate",
+                        scenario:    scenario,
+                        modelParams: projection.modelParams,
+                        projected: {
+                            share:          projection.projected && projection.projected.share,
+                            paxPerWeek:     projection.projected && projection.projected.paxPerWeek,
+                            revenuePerWeek: projection.projected && projection.projected.revenuePerWeek,
+                            profitPerWeek:  projection.projected && projection.projected.profitPerWeek
+                        },
+                        observed: {
+                            share:  observedShare,
+                            period: null
+                        },
+                        backfilledAt: Date.now()
+                    }
+                })
+            } catch (e) { console.warn("[AES sandboxBacktest] project for bulk log failed", e) }
+
+            const routeKey = String(this.hubIata || "").toUpperCase() + "→" + String(route.dest || "").toUpperCase()
+            this._queueCalibrateToast(routeKey, T)
+            calibratedCount++
+        }
+
+        if (!calibratedCount) return
+
+        cfg.perRouteTemperature = map
+        cfg.perRouteTemperatureCalibratedAt = tsMap
+        this.settings.orsSandbox = cfg
+
+        const saves = []
+        saves.push(RouteAssistantSettings.save({orsSandbox: cfg}).catch(() => {}))
+
+        if (logsToInsert.length > 0 && typeof RouteAssistantSandboxBacktestStore !== "undefined" && typeof RouteAssistantSandboxBacktestStore.logMany === "function") {
+            saves.push(RouteAssistantSandboxBacktestStore.logMany(logsToInsert).catch(e => {
+                console.warn("[AES sandboxBacktest] bulk log on calibrate failed", e)
+            }))
+        }
+
+        await Promise.all(saves)
+        this._orsSandboxResult = null
+    }
+
+    /**
      * Auto-T-calibration over every visible row whose inputs satisfy the
      * same gates the manual calibrate button enforces (marketSharePax
      * cached, ourEnterpriseId in leaderboard, primary-class connections
@@ -18140,10 +18233,7 @@ class RouteAssistantPanel {
         calAllBtn.title = "Runs T-calibration for all routes currently visible in the table."
         calAllBtn.addEventListener("click", async () => {
             if (!this.scoredRows) return
-            for (const r of this.scoredRows) {
-                // Pass null for banner, we don't need a banner for bulk calibrate
-                await this._calibrateOrsSandboxT(r, null, true)
-            }
+            await this._bulkCalibrateOrsSandboxT(this.scoredRows)
             this._render()
         })
         ctrlRow.append(calAllBtn)
