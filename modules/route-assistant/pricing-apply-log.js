@@ -343,10 +343,17 @@ class RouteAssistantPricingApplyLog {
      * the settings drawer.
      */
     async clear() {
-        const all = await chrome.storage.local.get(null)
         const keys = [RouteAssistantPricingApplyLog.GLOBAL_KEY]
-        for (const k in all) {
-            if (k.startsWith(RouteAssistantPricingApplyLog.PER_ROUTE_PREFIX)) keys.push(k)
+        if (chrome.storage.local.getKeys) {
+            const allKeys = await chrome.storage.local.getKeys()
+            for (const k of allKeys) {
+                if (k.startsWith(RouteAssistantPricingApplyLog.PER_ROUTE_PREFIX)) keys.push(k)
+            }
+        } else {
+            const all = await chrome.storage.local.get(null)
+            for (const k in all) {
+                if (k.startsWith(RouteAssistantPricingApplyLog.PER_ROUTE_PREFIX)) keys.push(k)
+            }
         }
         if (keys.length) await chrome.storage.local.remove(keys)
         return keys.length
