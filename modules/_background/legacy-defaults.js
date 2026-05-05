@@ -90,13 +90,26 @@ function setDefaultInvPricingSettings() {
   return invPricing;
 }
 
+function setDefaultFeatureToggles() {
+  return {
+    routeAssistant: true,
+    stationAutomation: true,
+    usedAircraftScanner: true,
+    inventory: true,
+    competitorMonitoring: true,
+    scheduleManagement: true,
+    flightsFrom: true
+  };
+}
+
 function setDefaultSettings() {
   const aesSettings = {
     invPricing:          setDefaultInvPricingSettings(),
     general:             setDefaultGeneralSettings(),
     schedule:            setDefaultScheduleSettings(),
     stationAutomation:   setDefaultStationAutomationSettings(),
-    usedAircraftScanner: setDefaultUsedAircraftScannerSettings()
+    usedAircraftScanner: setDefaultUsedAircraftScannerSettings(),
+    featureToggles:      setDefaultFeatureToggles()
   };
   chrome.storage.local.get(['settings'], function(result) {
     if (result.settings) return;

@@ -130,48 +130,95 @@
 
     function mountHubOverview(host, settingsAdapters) {
         if (!host) return;
-        host.textContent = "";
 
-        const rows = hubTileRows();
-        const mounted = rows.filter(function (r) { return r.mounted; }).length;
-        const expanded = rows.filter(function (r) { return r.expanded; }).length;
+        const p1 = window.AesSettings ? window.AesSettings.getArea("featureToggles") : Promise.resolve({});
 
-        const wrap = document.createElement("div");
-        wrap.style.cssText = "display:flex;flex-direction:column;gap:16px";
+        p1.then(function(toggles) {
+            host.textContent = "";
+            const rows = hubTileRows();
+            const mounted = rows.filter(function (r) { return r.mounted; }).length;
+            const expanded = rows.filter(function (r) { return r.expanded; }).length;
 
-        const head = document.createElement("div");
-        head.style.cssText = "display:flex;align-items:flex-start;justify-content:space-between;gap:16px";
-        const titleBlock = document.createElement("div");
-        const title = document.createElement("h2");
-        title.textContent = "Hub Modules";
-        title.style.cssText = "margin:0;font-size:18px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:var(--aes-oxide)";
-        const sub = document.createElement("div");
-        sub.textContent = "Registered hub tiles, settings adapters, and runtime state for this page.";
-        sub.style.cssText = "margin-top:4px;color:var(--aes-slate);font-size:12px;line-height:1.4";
-        titleBlock.append(title, sub);
-        head.appendChild(titleBlock);
+            const wrap = document.createElement("div");
+            wrap.style.cssText = "display:flex;flex-direction:column;gap:16px";
 
-        const dashboardBtn = smallButton("Open dashboard", function () {
-            if (window.location && window.location.pathname.indexOf("/app/enterprise/dashboard") < 0) {
-                window.location.href = "/app/enterprise/dashboard";
-            }
-        }, {disabled: !(window.location && window.location.pathname.indexOf("/app/enterprise/dashboard") < 0)});
-        head.appendChild(dashboardBtn);
-        wrap.appendChild(head);
+            const head = document.createElement("div");
+            head.style.cssText = "display:flex;align-items:flex-start;justify-content:space-between;gap:16px";
+            const titleBlock = document.createElement("div");
+            const title = document.createElement("h2");
+            title.textContent = "Hub Modules";
+            title.style.cssText = "margin:0;font-size:18px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:var(--aes-oxide)";
+            const sub = document.createElement("div");
+            sub.textContent = "Registered hub tiles, settings adapters, and runtime state for this page.";
+            sub.style.cssText = "margin-top:4px;color:var(--aes-slate);font-size:12px;line-height:1.4";
+            titleBlock.append(title, sub);
+            head.appendChild(titleBlock);
 
-        const stats = document.createElement("div");
-        stats.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px";
-        stats.append(
-            statCell("registered", rows.length),
-            statCell("mounted", mounted),
-            statCell("expanded", expanded),
-            statCell("adapters", (settingsAdapters || []).length)
-        );
-        wrap.appendChild(stats);
+            const dashboardBtn = smallButton("Open dashboard", function () {
+                if (window.location && window.location.pathname.indexOf("/app/enterprise/dashboard") < 0) {
+                    window.location.href = "/app/enterprise/dashboard";
+                }
+            }, {disabled: !(window.location && window.location.pathname.indexOf("/app/enterprise/dashboard") < 0)});
+            head.appendChild(dashboardBtn);
+            wrap.appendChild(head);
 
-        wrap.appendChild(tileTable(rows));
-        wrap.appendChild(adapterList(settingsAdapters || []));
-        host.appendChild(wrap);
+            const stats = document.createElement("div");
+            stats.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px";
+            stats.append(
+                statCell("registered", rows.length),
+                statCell("mounted", mounted),
+                statCell("expanded", expanded),
+                statCell("adapters", (settingsAdapters || []).length)
+            );
+            wrap.appendChild(stats);
+
+            wrap.appendChild(featureTogglesList(toggles || {}));
+            wrap.appendChild(tileTable(rows));
+            wrap.appendChild(adapterList(settingsAdapters || []));
+
+            host.appendChild(wrap);
+        });
+    }
+
+    function featureTogglesList(toggles) {
+        const section = panelSection("Feature Toggles");
+        const list = document.createElement("div");
+        list.style.cssText = "display:flex;flex-direction:column;gap:12px;padding:12px;border:1px solid var(--aes-paper-rule);background:var(--aes-bone);";
+
+        const features = [
+            { id: "routeAssistant", label: "Route Assistant" },
+            { id: "stationAutomation", label: "Station Automation" },
+            { id: "usedAircraftScanner", label: "Used Aircraft Scanner" },
+            { id: "inventory", label: "Inventory" },
+            { id: "competitorMonitoring", label: "Competitor Monitoring" },
+            { id: "scheduleManagement", label: "Schedule Management" },
+            { id: "flightsFrom", label: "Flights From" }
+        ];
+
+        features.forEach(function (f) {
+            const row = document.createElement("label");
+            row.style.cssText = "display:flex;align-items:center;gap:12px;cursor:pointer;font-size:13px;color:var(--aes-oxide);margin:0;";
+
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            // Default to true if the toggle is completely absent
+            checkbox.checked = toggles[f.id] !== false;
+
+            checkbox.addEventListener("change", function () {
+                toggles[f.id] = checkbox.checked;
+                if (window.AesSettings && typeof window.AesSettings.saveArea === "function") {
+                    window.AesSettings.saveArea("featureToggles", toggles);
+                }
+            });
+
+            const text = document.createTextNode(f.label);
+            row.appendChild(checkbox);
+            row.appendChild(text);
+            list.appendChild(row);
+        });
+
+        section.appendChild(list);
+        return section;
     }
 
     function hubTileRows() {
