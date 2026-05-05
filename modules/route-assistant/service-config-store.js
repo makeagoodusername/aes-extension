@@ -9,7 +9,8 @@
  * seats-offered-per-class-per-week and a class-aware revenue/cost
  * breakdown.
  *
- *   routeAssistant:serviceConfig:<HUB>-<DEST>  →
+ *   routeAssistant:serviceConfig:<HUB>-<DEST>  →                       (legacy)
+ *   routeAssistant:serviceConfig:acct:<id>:<HUB>-<DEST>  →             (L2+)
  *     {hub, dest,
  *      classMix:    {Y, C, F},                           // fractions, sum to 1
  *      serviceLevel: "budget"|"standard"|"premium"|null, // null = inherit defaults
@@ -20,7 +21,7 @@
  *      },
  *      note?, createdAt, updatedAt}
  *
- * Pair key is **directional** (matches RouteAssistantTicketPriceScraper +
+ * Pair key is **directional** (matches RouteAssistantSchedulePageScraper +
  * RouteAssistantRouteOverridesStore) — class mix and service level might
  * legitimately differ outbound vs inbound (e.g. business-heavy outbound,
  * leisure-heavy inbound).
@@ -31,38 +32,112 @@
  *   F = First
  * AS uses similar single-letter codes on the inventory page; if Tier 2b
  * brings real fares we'll cross-check.
+ *
+ * L2 — namespaced key + legacy fallback (audit/streamline-A7.md F-3):
+ *   - `_key` routes through `acctKey()` so writes land in the
+ *     account-namespaced slot once `window.__aesAccountId` is set.
+ *   - `get` / `getMany` read the namespaced key first, then fall back
+ *     to the legacy key. Migration is additive; legacy stays live as
+ *     fallback so sister-airline data already on disk still resolves.
+ *   - `saveAt(accountId, …)` is the explicit-account API. `save()` is
+ *     a thin wrapper that captures `currentAccountIdSync()` and
+ *     delegates.
+ *   - `remove` clears BOTH the namespaced AND legacy key — explicit
+ *     user removes are intentionally absolute.
  */
 class RouteAssistantServiceConfigStore {
-    static PREFIX = "routeAssistant:serviceConfig:"
+    static LEGACY_PREFIX = "routeAssistant:serviceConfig:"
+    static SCOPE_PREFIX  = "routeAssistant:serviceConfig"
     static CLASSES = ["Y", "C", "F"]
     static SERVICE_LEVELS = ["budget", "standard", "premium"]
-
-    static _key(hub, dest) {
-        return RouteAssistantServiceConfigStore.PREFIX
-            + String(hub  || "").toUpperCase() + "-"
-            + String(dest || "").toUpperCase()
-    }
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
-    static async get(hub, dest) {
-        const key = RouteAssistantServiceConfigStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+    static _key(hub, dest) {
+        const pair = RouteAssistantServiceConfigStore._pairKey(hub, dest)
+        if (typeof acctKey === "function") {
+            return acctKey(RouteAssistantServiceConfigStore.SCOPE_PREFIX, pair)
+        }
+        // No global acctKey helper available — fall through to legacy
+        // shape so reads/writes still hit a stable slot.
+        return RouteAssistantServiceConfigStore.LEGACY_PREFIX + pair
     }
 
+    static _keyForAccount(accountId, hub, dest) {
+        const pair = RouteAssistantServiceConfigStore._pairKey(hub, dest)
+        if (!accountId) return RouteAssistantServiceConfigStore.LEGACY_PREFIX + pair
+        if (typeof acctKeyForAccount === "function") {
+            return acctKeyForAccount(RouteAssistantServiceConfigStore.SCOPE_PREFIX, accountId, pair)
+        }
+        if (typeof window !== "undefined"
+                && window.AesAccountKey
+                && typeof window.AesAccountKey.acctKeyForAccount === "function") {
+            return window.AesAccountKey.acctKeyForAccount(
+                RouteAssistantServiceConfigStore.SCOPE_PREFIX, accountId, pair)
+        }
+        return RouteAssistantServiceConfigStore.SCOPE_PREFIX + ":acct:" + accountId + ":" + pair
+    }
+
+    static _legacyKey(hub, dest) {
+        return RouteAssistantServiceConfigStore.LEGACY_PREFIX
+            + RouteAssistantServiceConfigStore._pairKey(hub, dest)
+    }
+
+    static async get(hub, dest) {
+        const accountId = (typeof currentAccountIdSync === "function")
+            ? currentAccountIdSync()
+            : null
+        return RouteAssistantServiceConfigStore.getAt(accountId, hub, dest)
+    }
+
+    static async getAt(accountId, hub, dest) {
+        const ns = RouteAssistantServiceConfigStore._keyForAccount(accountId, hub, dest)
+        const lg = RouteAssistantServiceConfigStore._legacyKey(hub, dest)
+        if (ns === lg) {
+            const out = await chrome.storage.local.get([ns])
+            return out[ns] || null
+        }
+        const out = await chrome.storage.local.get([ns, lg])
+        if (out[ns] !== undefined) return out[ns]
+        return out[lg] || null
+    }
+
+    /**
+     * Bulk read for a list of [hub, dest] pairs. Returns
+     * Map<pairKey, record> where pairKey is "<HUB>-<DEST>".
+     * Namespaced wins per pair; legacy fills gaps so pre-migration
+     * records are still surfaced until they are rewritten.
+     */
     static async getMany(pairs) {
+        const accountId = (typeof currentAccountIdSync === "function")
+            ? currentAccountIdSync()
+            : null
+        return RouteAssistantServiceConfigStore.getManyAt(accountId, pairs)
+    }
+
+    static async getManyAt(accountId, pairs) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(([h, d]) => RouteAssistantServiceConfigStore._key(h, d))
-        const out = await chrome.storage.local.get(keys)
+        const nsKeys   = []
+        const lgKeys   = []
+        const pairKeys = []
+        for (const p of pairs) {
+            const [h, d] = Array.isArray(p) ? p : [p.hub, p.dest]
+            pairKeys.push(RouteAssistantServiceConfigStore._pairKey(h, d))
+            nsKeys.push(RouteAssistantServiceConfigStore._keyForAccount(accountId, h, d))
+            lgKeys.push(RouteAssistantServiceConfigStore._legacyKey(h, d))
+        }
+        const all = []
+        for (const k of nsKeys) all.push(k)
+        for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
+        const out = await chrome.storage.local.get(all)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
-            if (!rec) continue
-            const pair = k.substring(RouteAssistantServiceConfigStore.PREFIX.length)
-            map.set(pair, rec)
+        for (let i = 0; i < pairs.length; i++) {
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            const rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+            if (rec) map.set(pairKeys[i], rec)
         }
         return map
     }
@@ -73,17 +148,24 @@ class RouteAssistantServiceConfigStore {
      * payloads remove the key entirely.
      */
     static async save(hub, dest, fields) {
+        const accountId = (typeof currentAccountIdSync === "function")
+            ? currentAccountIdSync()
+            : null
+        return RouteAssistantServiceConfigStore.saveAt(accountId, hub, dest, fields)
+    }
+
+    static async saveAt(accountId, hub, dest, fields) {
         const hubU  = String(hub  || "").toUpperCase()
         const destU = String(dest || "").toUpperCase()
         if (!hubU || !destU) return null
 
         const cleaned = RouteAssistantServiceConfigStore._clean(fields || {})
         if (!RouteAssistantServiceConfigStore._hasAnyValue(cleaned)) {
-            await RouteAssistantServiceConfigStore.remove(hubU, destU)
+            await RouteAssistantServiceConfigStore.removeAt(accountId, hubU, destU)
             return null
         }
 
-        const key = RouteAssistantServiceConfigStore._key(hubU, destU)
+        const key = RouteAssistantServiceConfigStore._keyForAccount(accountId, hubU, destU)
         const existing = (await chrome.storage.local.get([key]))[key] || null
         const now = Date.now()
         const record = Object.assign(
@@ -96,8 +178,20 @@ class RouteAssistantServiceConfigStore {
     }
 
     static async remove(hub, dest) {
-        const key = RouteAssistantServiceConfigStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+        const accountId = (typeof currentAccountIdSync === "function")
+            ? currentAccountIdSync()
+            : null
+        return RouteAssistantServiceConfigStore.removeAt(accountId, hub, dest)
+    }
+
+    static async removeAt(accountId, hub, dest) {
+        const hubU  = String(hub  || "").toUpperCase()
+        const destU = String(dest || "").toUpperCase()
+        if (!hubU || !destU) return
+        const ns = RouteAssistantServiceConfigStore._keyForAccount(accountId, hubU, destU)
+        const lg = RouteAssistantServiceConfigStore._legacyKey(hubU, destU)
+        const keys = (ns === lg) ? [ns] : [ns, lg]
+        await chrome.storage.local.remove(keys)
     }
 
     /**
@@ -241,4 +335,11 @@ class RouteAssistantServiceConfigStore {
         out.serviceLevelCostPerPax = isFinite(Number(lvl.costPerPax)) ? Number(lvl.costPerPax) : 0
         return out
     }
+
+    /** L2 deprecated alias — preserve for any reader still doing key arithmetic. */
+    static get PREFIX() { return RouteAssistantServiceConfigStore.LEGACY_PREFIX }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantServiceConfigStore = RouteAssistantServiceConfigStore
 }

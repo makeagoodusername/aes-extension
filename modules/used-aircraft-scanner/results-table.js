@@ -22,6 +22,18 @@ class MarketScanResultsTable {
         // Defaults are nulls so the table works without RA loaded.
         this.context = {fleetByType: null, economics: null, topRoutes: null,
                         topRoutesHub: null, routeFitConfig: null}
+        // When set, replaces the within-set relative scorer with an absolute
+        // composite score + deal-class bucketing. The market panel passes
+        // one in; the dashboard tile leaves it null and uses the legacy
+        // relative scorer so existing behaviour is preserved verbatim.
+        this.classifier = null
+        // Drives mode-aware price-column visibility: lease mode shows
+        // leasingRate, buy mode shows nextBid + immediatePurchase. Default
+        // null = legacy behaviour (all three columns shown in wide mode).
+        this.leaseConfig = null
+        // Narrow mode hides low-priority columns and tightens padding so
+        // the table fits inside a sidebar without horizontal scroll.
+        this.narrowMode = false
     }
 
     /** Replace the rows and re-render. */
@@ -75,17 +87,75 @@ class MarketScanResultsTable {
         this._draw()
     }
 
+    /**
+     * Provide a `MarketScanDealClassifier` instance. When present the
+     * relative `_scoreRows` blender is bypassed; the classifier decorates
+     * each row with {dealScore, dealClass, dealLabel, dealColor,
+     * dealReasons, dealBreakdown} and the score column reads from
+     * `dealScore`. A "Class" badge column is also added.
+     *
+     * Pass null to revert to the legacy relative scorer.
+     */
+    setClassifier(classifier) {
+        this.classifier = classifier || null
+        this._draw()
+    }
+
+    /**
+     * Provide the active lease/buy config so the table can swap which
+     * price columns are visible: lease shows LEASING RATE, buy shows
+     * NEXT BID + IMMEDIATE PURCHASE. Pass null to restore the legacy
+     * "show everything" behaviour.
+     */
+    setLeaseConfig(leaseConfig) {
+        this.leaseConfig = leaseConfig || null
+        this._draw()
+    }
+
+    /**
+     * Toggles narrow mode for embedding inside a sidebar:
+     *   - hides cargoCapacity, paxSatisfaction, lease pair columns when
+     *     no leaseConfig is active (mode-aware visibility wins otherwise)
+     *   - tightens td/th padding via a one-shot stylesheet
+     * Re-renders. Pass false to restore the full column set.
+     */
+    setNarrowMode(narrow) {
+        this.narrowMode = !!narrow
+        if (this.narrowMode) MarketScanResultsTable._ensureNarrowStyle()
+        this._draw()
+    }
+
+    static _ensureNarrowStyle() {
+        if (document.getElementById("aes-marketScan-narrow-style")) return
+        const s = document.createElement("style")
+        s.id = "aes-marketScan-narrow-style"
+        s.textContent = "table#aes-marketScan-resultsTable.narrow td,"
+                      + "table#aes-marketScan-resultsTable.narrow th {"
+                      + "padding:3px 6px !important;font-size:11px;line-height:1.3;}"
+                      + "table#aes-marketScan-resultsTable.narrow th {"
+                      + "letter-spacing:0.02em;}"
+        document.head.appendChild(s)
+    }
+
     _draw() {
         this.target.innerHTML = ""
 
         const scoringActive = this._scoringActive()
-        // Enrich BEFORE filter/score/sort so familyName participates in sort
-        // and survives _scoreRows()'s Object.assign spread. Deal metrics
-        // (pricePerSeat, breakEvenDays, etc.) are decorated in the same pass
-        // so they're available for both filtering and the score blend.
-        const enriched = this._enrichDeal(this._enrichFamily(this.rows))
+        // When a classifier is set, the caller (the in-page market panel) is
+        // expected to have pre-decorated rows with family + deal metrics +
+        // dealScore. Skipping re-decoration eliminates the dominant CPU
+        // cost on rapid filter/sort interactions. The dashboard tile path
+        // still passes through the legacy enrich + relative-scorer flow.
+        let enriched
+        if (this.classifier) {
+            enriched = this.rows
+            for (const r of enriched) r.score = r.dealScore
+        } else {
+            enriched = this._enrichDeal(this._enrichFamily(this.rows))
+        }
         const filteredRows = this._applyFilters(enriched)
-        const scoredRows = scoringActive ? this._scoreRows(filteredRows) : filteredRows
+        const useRelativeScorer = scoringActive && !this.classifier
+        const scoredRows = useRelativeScorer ? this._scoreRows(filteredRows) : filteredRows
 
         // Default to sorting by Score when scoring is active and the user
         // hasn't picked a different column yet.
@@ -109,6 +179,7 @@ class MarketScanResultsTable {
 
         const table = document.createElement("table")
         table.className = "table table-bordered table-striped table-hover"
+            + (this.narrowMode ? " narrow" : "")
         table.id = "aes-marketScan-resultsTable"
 
         const thead = document.createElement("thead")
@@ -163,6 +234,8 @@ class MarketScanResultsTable {
                     MarketScanResultsTable._renderMaintCell(td, row)
                 } else if (col.renderer === "fleetBadge") {
                     MarketScanResultsTable._renderFleetCell(td, row)
+                } else if (col.renderer === "dealBadge") {
+                    MarketScanResultsTable._renderDealCell(td, row)
                 } else if (col.currency) {
                     if (value === null || value === undefined || value === "") {
                         td.innerText = "—"
@@ -193,6 +266,9 @@ class MarketScanResultsTable {
     }
 
     _scoringActive() {
+        // Classifier always activates the score column — it produces a score
+        // for every row that has any input signal at all.
+        if (this.classifier) return true
         if (!this.scoring) return false
         for (const f of MarketScanResultsTable.scoringFields()) {
             if (this.scoring[f.field] && this.scoring[f.field].enabled) return true
@@ -201,9 +277,19 @@ class MarketScanResultsTable {
     }
 
     _activeColumns(scoringActive) {
-        const cols = MarketScanResultsTable.columns().slice()
-        if (scoringActive) {
-            cols.unshift({field: "score", label: "Score", align: "right", number: true, defaultDir: -1})
+        let cols = MarketScanResultsTable.columns().slice()
+        if (this.classifier) {
+            // Score column reads from dealScore (mapped to `score` in _draw).
+            // Class badge sits at position 0 so the strongest signal — the
+            // bucket — is the leftmost cell after the family rail.
+            cols.unshift({field: "score", label: "Score", align: "right",
+                          number: true, defaultDir: -1})
+            cols.unshift({field: "dealClass", label: "Class",
+                          renderer: "dealBadge", sortKey: "dealScore",
+                          defaultDir: -1, csv: r => r.dealLabel || ""})
+        } else if (scoringActive) {
+            cols.unshift({field: "score", label: "Score", align: "right",
+                          number: true, defaultDir: -1})
         }
         // When the user has a Route Assistant hub published, name it in
         // the Route-fit header so the count is unambiguous about which
@@ -212,6 +298,29 @@ class MarketScanResultsTable {
         if (hub) {
             const fit = cols.find(c => c.field === "routeFitLabel")
             if (fit) fit.label = "Route-fit (" + hub + ")"
+        }
+        if (this.narrowMode) {
+            const hide = new Set([
+                "cargoCapacity", "paxSatisfaction",
+                "speed",
+                "seatKmYearCost", "breakEvenDays",
+                "currentBid"
+            ])
+            cols = cols.filter(c => !hide.has(c.field))
+        }
+        // Mode-aware price columns: lease mode hides the full-purchase pair
+        // and surfaces leasingRate + leasingDepot (the only money the user
+        // actually pays — recurring rent + the one-time upfront deposit).
+        // Buy mode hides the lease pair and shows nextBid + immediatePurchase
+        // (the auction prices that matter for outright purchase).
+        const mode = this.leaseConfig && this.leaseConfig.mode === "buy" ? "buy" : "lease"
+        if (this.leaseConfig) {
+            const hideByMode = mode === "lease"
+                ? new Set(["nextBid", "immediatePurchase"])
+                : new Set(["leasingRate", "leasingDepot"])
+            cols = cols.filter(c => !hideByMode.has(c.field))
+        } else if (this.narrowMode) {
+            cols = cols.filter(c => c.field !== "leasingRate" && c.field !== "leasingDepot")
         }
         return cols
     }
@@ -427,8 +536,8 @@ class MarketScanResultsTable {
         lines.push("Profit/day:     AS$" + fmt(b.paxRev) + " + AS$" + fmt(b.cargoRev)
             + " − AS$" + fmt(b.opCost) + " = AS$" + fmt(b.profitPerDay))
         lines.push("")
-        lines.push("Block hours/day are a fixed assumption (DAILY_BLOCK_HOURS = " + b.hours
-            + "). Tuned for 'earliest sensible payback' across mixed fleets.")
+        lines.push("Block hours/day = " + b.hours + "h (by family category — regional 8h, "
+            + "narrowbody 12h, widebody 14h). Tuned for 'earliest sensible payback'.")
         return lines.join("\n")
     }
 
@@ -494,14 +603,29 @@ class MarketScanResultsTable {
     }
 
     /**
-     * Tooltip for the $/seat cell — names which acquisition source was used
-     * (next bid vs. immediate purchase, whichever was cheaper) and reminds
-     * the user that leasing is excluded.
+     * Tooltip for the $/seat cell. Branches on the row's resolved
+     * `priceBasis` ("lease" | "purchase") so the formula and units match
+     * what's actually being displayed:
+     *   lease    → AS$/seat/mo (monthly lease ÷ seats)
+     *   purchase → AS$/seat    (next-bid or immediate-purchase ÷ seats)
      */
     static _formatPricePerSeatTooltip(row) {
         if (!row || row.pricePerSeat === null || row.pricePerSeat === undefined) return ""
+        if (!row.seats) return ""
+        if (row.priceBasis === "lease") {
+            const monthly = isFiniteNumber(row.monthlyLease) ? row.monthlyLease : null
+            if (monthly === null) return ""
+            return [
+                "$/seat/mo = monthly lease ÷ seats",
+                "          = AS$" + Math.round(monthly).toLocaleString() + " ÷ " + row.seats,
+                "          = AS$" + row.pricePerSeat.toLocaleString() + "/mo",
+                "",
+                "Cost basis: monthly lease — purchase price is ignored when",
+                "lease-first is on (Used Aircraft Scanner → scoring controls)."
+            ].join("\n")
+        }
         const price = MarketScanDealMetrics.acquisitionPrice(row)
-        if (price === null || !row.seats) return ""
+        if (price === null) return ""
         const hasBid = isFiniteNumber(row.nextBid) && row.nextBid > 0
         const hasIp  = isFiniteNumber(row.immediatePurchase) && row.immediatePurchase > 0
         let source
@@ -519,8 +643,8 @@ class MarketScanResultsTable {
             "       = AS$" + Math.round(price).toLocaleString() + " ÷ " + row.seats,
             "       = AS$" + row.pricePerSeat.toLocaleString(),
             "",
-            "Acquisition source: " + source + ".",
-            "Leasing rate is excluded — it's a recurring cost, not an upfront price."
+            "Cost basis: " + source + ".",
+            "Lease rate is unavailable for this offer, so the purchase price was used."
         ].join("\n")
     }
 
@@ -599,6 +723,34 @@ class MarketScanResultsTable {
     }
 
     /**
+     * Deal-class badge — Steal/Great/Good/Fair/Pass with the class color from
+     * the classifier. Tooltip lists the rationale chips so the user can see
+     * *why* the row landed where it did without opening the side panel.
+     */
+    static _renderDealCell(td, row) {
+        if (!row || !row.dealClass) { td.innerText = "—"; return }
+        const pill = document.createElement("span")
+        pill.textContent = row.dealLabel || row.dealClass
+        pill.style.cssText = "display:inline-block;padding:2px 8px;border-radius:10px;"
+            + "background:" + (row.dealColor || "#666") + ";"
+            + "color:#fff;font-size:85%;font-weight:700;"
+            + "text-transform:uppercase;letter-spacing:0.04em;"
+        td.append(pill)
+        // Prefer the woven narrative when it's available — full prose
+        // beats the chip dump for "why is this a Great deal?". Fall back
+        // to the rationale chip list when narrative module is absent
+        // (dashboard context doesn't load it).
+        let tip = null
+        if (typeof MarketScanDealNarrative !== "undefined") {
+            tip = MarketScanDealNarrative.summarize(row)
+        }
+        if (!tip && row.dealReasons && row.dealReasons.length) {
+            tip = row.dealReasons.join(" · ")
+        }
+        if (tip) td.title = tip
+    }
+
+    /**
      * Fleet-synergy badge — small green pill when the user already
      * operates this typeId, otherwise em-dash. Sourced from
      * RouteAssistantFleetStore via context.fleetByType.
@@ -656,6 +808,7 @@ class MarketScanResultsTable {
             {field: "nextBid",           label: "Next Bid",           align: "right", currency: true},
             {field: "immediatePurchase", label: "Immediate Purchase", align: "right", currency: true},
             {field: "leasingRate",       label: "Leasing Rate",       align: "right", currency: true},
+            {field: "leasingDepot",      label: "Lease Deposit",      align: "right", currency: true},
             {field: "location",          label: "Location"},
             {field: "registration",      label: "Registration"},
             {field: "owner",             label: "Owner"},

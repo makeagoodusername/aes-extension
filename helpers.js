@@ -6,12 +6,22 @@ class AES {
      */
     static getAirlineCode() {
         const factsTable = document.querySelector(".facts table")
-        const nameElement = factsTable.querySelector("tr:nth-child(1) td:last-child")
-        const codeElement = factsTable.querySelector("tr:nth-child(2) td:last-child")
+        const nameElement = factsTable?.querySelector("tr:nth-child(1) td:last-child")
+        const codeElement = factsTable?.querySelector("tr:nth-child(2) td:last-child")
+        const name = (nameElement?.innerText || "").trim()
+        const code = (codeElement?.innerText || "").trim()
+
+        if (!name && !code) {
+            const identity = AES.getAirlineIdentity()
+            return {
+                name: identity,
+                code: identity
+            }
+        }
 
         return {
-            name: nameElement.innerText,
-            code: codeElement.innerText
+            name: name || code,
+            code: code || name
         }
     }
 
@@ -41,10 +51,14 @@ class AES {
     static getServerName() {
         const hostname = window.location.hostname
         const servername = hostname.split(".")[0]
-        
+
         return servername
     }
-    
+
+    static getServer() {
+        return AES.getServerName()
+    }
+
     /**
      * Formats a currency value local standards
      * @param {integer} currency value
@@ -149,18 +163,34 @@ class AES {
      * @returns {object} datetime - { date: "20240607", time: "16:24 UTC" }
      */
     static getServerDate() {
-        const source = document.querySelector(".as-navbar-bottom span:has(.fa-clock-o)").innerText.trim()
-        const sourceAsNumbers = source.toString().replace(/\D/g, "")
-        
-        // The source always consists of 12 numbers
-        const expectedLength = 12
-        if (sourceAsNumbers.length != expectedLength) {
-            throw new Error(`Unexpected length for source (${sourceAsNumbers.length}). There might’ve been a UI update. Check AES.getServerDate()`)
+        const fallbackDate = new Date()
+        const fallback = {
+            date: fallbackDate.getUTCFullYear().toString()
+                + String(fallbackDate.getUTCMonth() + 1).padStart(2, "0")
+                + String(fallbackDate.getUTCDate()).padStart(2, "0"),
+            time: String(fallbackDate.getUTCHours()).padStart(2, "0")
+                + ":" + String(fallbackDate.getUTCMinutes()).padStart(2, "0") + " UTC"
         }
-        
+
+        const sourceEl = document.querySelector(".as-navbar-bottom span:has(.fa-clock-o)")
+            || document.querySelector(".as-navbar-bottom span")
+            || document.querySelector(".as-navbar-bottom")
+        const source = sourceEl ? (sourceEl.innerText || sourceEl.textContent || "").trim() : ""
+        if (!source) return fallback
+
+        const sourceAsNumbers = source.toString().replace(/\D/g, "")
+
         // Splits the date component from the data,
         // then splits that into an array for the year, month, and day
-        let dateArray = source.split(" ")[0].split(/\D+/)
+        let dateArray = source.split(" ")[0].split(/\D+/).filter(Boolean)
+        if (dateArray.length < 3 && sourceAsNumbers.length >= 8) {
+            dateArray = [
+                sourceAsNumbers.substring(0, 4),
+                sourceAsNumbers.substring(4, 6),
+                sourceAsNumbers.substring(6, 8)
+            ]
+        }
+        if (dateArray.length < 3) return fallback
         if (dateArray[0].length === 2) {
             dateArray.reverse()
         }
@@ -168,7 +198,8 @@ class AES {
         
         // Strip the date component from the data
         // leaving only the time
-        let time = source.replace(/.{10}\s/, "")
+        let timeMatch = source.match(/\b\d{1,2}:\d{2}(?:\s*[A-Z]{2,4})?\b/)
+        let time = timeMatch ? timeMatch[0] : fallback.time
         
         const datetime = {
             date: date,
@@ -202,31 +233,118 @@ class AES {
     }
     
     /**
-     * Cleans a currency string and returns an integer
-     * @param {string} value - "-2,000 AS$" | "2.000 AS$"
-     * @returns {integer} -2000 | 2000
-     */
-    static cleanCurrency(value) {
-        value = (value || "").trim()
-        const isExpectedFormat = Boolean(value.match(/^-?(\d+[.,]?)+ AS\$$/))
-
-        if (!isExpectedFormat) {
-            console.warn(`cleanCurrency(): unexpected format for value: "${value}"`)
-        }
-
-        return AES.cleanInteger(value)
-    }
-
-    /**
      * Cleans a string of punctuation to returns an integer
      * @param {string} value - "-2,000 AS$" | "2.000 AS$" | "256"
      * @returns {integer} -2000 | 2000 | 256
      */
     static cleanInteger(value) {
-        // Match any character that’s not a digit or a dash
-        const result = (value || "").toString().replace(/[^\d-]/g, "")
+        // TODO: create separate function for cleaning currency values
+        // value = value.trim()
+        // const isExpectedFormat = Boolean(value.match(/^-?(\d+[.,]?)+ AS\$$/))
+        //
+        // if (!isExpectedFormat) {
+        //     throw new Error("cleanInteger(): unexpected format for value")
+        // }
+
+        // Match any character that’s no a digit or a dash
+        const result = value.replaceAll(/[^\d-]/g, "")
         return parseInt(result, 10)
     }
+
+    /**
+     * Safely updates the global `settings` blob in chrome.storage.local.
+     * Reads the current snapshot, hands it to `mutator` for in-place
+     * editing, writes it back, then invokes `callback(latest)`. Both
+     * arguments optional. Ported from v0.7.8 helpers.js.
+     * @param {function(object): void} [mutator]
+     * @param {function(object): void} [callback]
+     */
+    static updateSettings(mutator, callback) {
+        const finish = function (latest) {
+            if (typeof callback === "function") {
+                callback(latest)
+            }
+        }
+        const bridge = (typeof AesSettings !== "undefined") ? AesSettings : null
+        if (bridge && typeof bridge._enqueueWrite === "function") {
+            bridge._enqueueWrite(function (current) {
+                if (typeof mutator === "function") {
+                    mutator(current)
+                }
+                return current
+            }, {area: "settings", sections: ["*"]})
+                .then(finish)
+                .catch(function (err) {
+                    console.warn("[AES] updateSettings failed", err)
+                    finish(null)
+                })
+            return
+        }
+        chrome.storage.local.get(["settings"], function (result) {
+            const current = result.settings || {}
+            if (typeof mutator === "function") {
+                mutator(current)
+            }
+            const payload = {}
+            payload.settings = current
+            chrome.storage.local.set(payload, function () {
+                finish(current)
+            })
+        })
+    }
+
+    /**
+     * Builds the storage key for a competitor-monitoring record.
+     * Owner-scoped form preferred when ownerAirlineId is present so
+     * cross-airline shared-fleet sims don't collide.
+     * @param {string} server
+     * @param {string} ownerAirlineId
+     * @param {string} competitorAirlineId
+     * @returns {string}
+     */
+    static getCompetitorMonitoringKey(server, ownerAirlineId, competitorAirlineId) {
+        if (ownerAirlineId) {
+            return `${server}${ownerAirlineId}_${competitorAirlineId}competitorMonitoring`
+        }
+        return `${server}${competitorAirlineId}competitorMonitoring`
+    }
+
+    /**
+     * Builds the storage key for the owner-scoped
+     * competitor-monitoring index.
+     * @param {string} server
+     * @param {string} ownerAirlineId
+     * @returns {string}
+     */
+    static getCompetitorMonitoringIndexKey(server, ownerAirlineId) {
+        return `${server}${ownerAirlineId}competitorMonitoringIndex`
+    }
+
+    /**
+     * Promise-resolving timeout. Useful for staggering scrapes.
+     * @param {number} ms
+     * @returns {Promise<void>}
+     */
+    static sleep(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms) })
+    }
+
+    /**
+     * Opens up to 20 URLs in new tabs, 200 ms apart, to avoid AS
+     * rate-limiting. Caps at 20 even if `pages.length` exceeds.
+     * @param {string[]} pages
+     */
+    static async openPagesWithDelay(pages) {
+        const cap = Math.min(pages.length, 20)
+        for (let i = 0; i < cap; i++) {
+            window.open(pages[i], "_blank")
+            await AES.sleep(200)
+        }
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.AES = AES
 }
 
 /**
@@ -242,23 +360,32 @@ function escapeHtml(s) {
         .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
 }
 
-// ── ?aes-debug smoke tests (no test runner — project convention) ───
-try {
-    if (typeof location !== "undefined"
-            && /[?&]aes-debug\b/.test(location.search || "")) {
-        console.assert(escapeHtml(null) === "", "[AES helpers smoke] escapeHtml(null)")
-        console.assert(escapeHtml(undefined) === "", "[AES helpers smoke] escapeHtml(undefined)")
-        console.assert(escapeHtml("") === "", "[AES helpers smoke] escapeHtml(\"\")")
-        console.assert(escapeHtml(0) === "0", "[AES helpers smoke] escapeHtml(0)")
-        console.assert(escapeHtml(false) === "false", "[AES helpers smoke] escapeHtml(false)")
-        console.assert(escapeHtml("&") === "&amp;", "[AES helpers smoke] escapeHtml(&)")
-        console.assert(escapeHtml("<") === "&lt;", "[AES helpers smoke] escapeHtml(<)")
-        console.assert(escapeHtml(">") === "&gt;", "[AES helpers smoke] escapeHtml(>)")
-        console.assert(escapeHtml('"') === "&quot;", "[AES helpers smoke] escapeHtml(\")")
-        console.assert(escapeHtml("'") === "&#39;", "[AES helpers smoke] escapeHtml(')")
-        console.assert(escapeHtml("&<>'\"") === "&amp;&lt;&gt;&#39;&quot;", "[AES helpers smoke] escapeHtml(multiple)")
-        console.assert(escapeHtml(123) === "123", "[AES helpers smoke] escapeHtml(number)")
-
-        console.log("[AES helpers] escapeHtml smoke tests passed")
-    }
-} catch (_) { /* never let smoke break the page */ }
+// ── L1 + L2.2 account-registry bootstrap ───────────────────────────────
+//
+// Once the manifest content-script chain has loaded (deferred via
+// setTimeout 0 to clear the synchronous load phase), kick off the
+// account-registry bootstrap. It reads (server, airline) from the
+// page DOM, computes the canonical id, sets `window.__aesAccountId`,
+// and fires a single `aes:account:touch` message so background.js
+// upserts the registry. See modules/_shared/account-registry.js.
+//
+// After the touch resolves, run the L2.2 legacy-migration shim. It's
+// a no-op once `migrationVersion >= 1`; on first run it copies the
+// pre-L2 Class C/D legacy keys into the namespaced slot for the
+// active account (or flags `migrationPending` for multi-account users
+// — the L2.2.c modal handles those). Failures inside the shim are
+// caught and logged; the legacy-fallback path in every refactored
+// store keeps working until the next mount retries.
+//
+// Harmless when the registry module / migration shim / background
+// handler / manifest entries aren't all wired yet — each layer guards
+// for typeof undefined and silently bails.
+;(function _aesL1ScheduleAccountBootstrap() {
+    setTimeout(async function () {
+        if (typeof AesAccountRegistry === "undefined") return
+        await AesAccountRegistry.bootstrapFromPage()
+        if (typeof AesMigrateLegacy !== "undefined") {
+            AesMigrateLegacy.runIfNeeded()
+        }
+    }, 0)
+})()

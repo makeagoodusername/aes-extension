@@ -1,0 +1,123 @@
+{
+  "ok": true,
+  "port": "10031",
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "loggedIn": true,
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?2&select=775",
+  "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+  "cadence": {
+    "startedAt": 1777938387762,
+    "observed": [
+      {
+        "at": 1777938391375,
+        "iso": "2026-05-04T23:46:31.375Z",
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": false,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777938391375,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777938396374,
+        "iso": "2026-05-04T23:46:36.374Z",
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": false,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777938396374,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      }
+    ],
+    "intervalsMs": [
+      4999
+    ],
+    "restoredSettings": true,
+    "configured": {
+      "silentAutoEnabled": true,
+      "dryRun": false,
+      "liveWrites": true,
+      "applyEnabled": true,
+      "dryRunOnly": false,
+      "silentLiveAllowed": true,
+      "applyGate": {
+        "applyEnabled": true,
+        "dryRunOnly": false,
+        "scopeName": "silentAuto",
+        "scopeLiveAllowed": true,
+        "forcedDryRun": false,
+        "dryRun": false,
+        "liveWrites": true,
+        "reason": "live"
+      },
+      "strategy": "per-class-elasticity",
+      "followMode": "all",
+      "tickMin": 0.08333333333333333,
+      "tickSec": 5,
+      "tickMs": 5000,
+      "tickLabel": "5 sec",
+      "mutedUntil": null
+    },
+    "previewBefore": {
+      "counts": {
+        "routes": 0,
+        "watchlisted": 0,
+        "pinned": 0,
+        "proposed": 0,
+        "withOwnPricing": 0,
+        "withCompetitors": 0,
+        "withYieldHistory": 0,
+        "withOrs": 0,
+        "withActiveFlights": 0,
+        "cooldownBlocked": 0,
+        "capBlocked": 0,
+        "withOrsIndex": 0,
+        "withOrsPriceIndex": 0
+      },
+      "proposals": []
+    },
+    "ok": true,
+    "durationMs": 9107
+  },
+  "routeBuilder": {
+    "ok": true,
+    "hasModal": true,
+    "hasCandidateSummary": true,
+    "hasHideScheduled": true,
+    "hasScheduledFlag": true,
+    "hasMockSchedule": true,
+    "buttons": [
+      "×",
+      "BOS · D10",
+      "MCO · D10",
+      "Recommend schedule"
+    ],
+    "excerpt": "Route builder — pick airports → mock schedule → apply\n×\nAIRCRAFT\nHUB\nserver: free1 · airline: codex\nFLIGHTS\nAIRPORT COUNT (AUTO)\nBASE DEPART\nFIRST DAY\nMon\nTue\nWed\nThu\nFri\nSat\nSun\nTURNAROUND (MIN)\nINCLUDED AIRPORTS — CLICK CHIPS OR TYPE IATA CODES\n3 candidates from AS in-game smoke 3 · 1 already scheduled (schedule-store)\nBOS · D10\nMCO · D10\nSequential long-haul placement\nHide scheduled\nRecommend schedule\nMock schedule (4 flights · 2 round-trips)\nBOS\nJFK → BOS\nOUT DAY\nMon\nTue\nWed\nThu\nFri\nSat\nSun\nOUT DEP\nIN DAY\nMon\nTue\nWed\nThu\nFri\nSat\nSun\nIN DEP\nshort\nJFK → BOS\nOUT DAY\nMon\nTue\nWed\nThu\nFri\nSat\nSun\nOUT DEP\nIN DAY\nMon\nTue\nWed\nThu\nFri\nSat\nSun\nIN DEP\nshort\nEdit any HH:MM or day to override the planner. Edits persist into the apply payload.\nApply will POST 4 new flight numbers to AS · ~1 min total\nClose\nApply schedule"
+  },
+  "screenshot": "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-codex-routebuilder-price-10031-20260505.png",
+  "consoleRows": [],
+  "pageErrors": []
+}

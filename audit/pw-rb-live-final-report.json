@@ -1,0 +1,81 @@
+{
+  "startedAt": "2026-05-03T07:46:29.376Z",
+  "steps": [
+    {
+      "name": "own-chrome-login",
+      "at": "2026-05-03T07:46:29.377Z",
+      "sourcePort": 0
+    },
+    {
+      "name": "console",
+      "type": "log",
+      "text": "[AES cleanup] tab-idle: 2/2 ok in 1ms"
+    },
+    {
+      "name": "login-ready",
+      "at": "2026-05-03T07:46:49.967Z",
+      "ok": true,
+      "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?2&codex-login-verify=1777794404071",
+      "usedCredentials": true
+    },
+    {
+      "name": "console",
+      "type": "log",
+      "text": "[AES cleanup] tab-idle: 2/2 ok in 0ms"
+    },
+    {
+      "name": "enterprise-selected",
+      "at": "2026-05-03T07:46:52.049Z",
+      "enterpriseId": "775",
+      "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775"
+    },
+    {
+      "name": "preflight-flight-numbers",
+      "at": "2026-05-03T07:46:54.480Z",
+      "baseFn": 34,
+      "targetNumbers": [
+        "34",
+        "35"
+      ],
+      "existing": []
+    },
+    {
+      "name": "console",
+      "type": "log",
+      "text": "[AES cleanup] tab-idle: 1/1 ok in 5ms"
+    },
+    {
+      "name": "loaded-afp",
+      "at": "2026-05-03T07:46:59.240Z",
+      "url": "https://free1.airlinesim.aero/app/fleets/aircraft/22092/0?5&codex-final=1777794414480",
+      "shot": "audit/pw-rb-shots/route-builder-final-01-loaded.png"
+    },
+    {
+      "name": "seeded-route-builder",
+      "at": "2026-05-03T07:46:59.279Z",
+      "presetId": "p-codex-final-route-builder",
+      "candidates": [
+        {
+          "destIata": "LHR",
+          "distanceKm": 5535,
+          "scoreBlend": 0,
+          "fits": "fit"
+        }
+      ],
+      "tier": "apply-on-confirm"
+    },
+    {
+      "name": "auto-build-blocked",
+      "at": "2026-05-03T07:47:45.601Z",
+      "error": "timeout waiting for auto-build 2 legs: {\"ok\":false,\"text\":\"\",\"hint\":\"Auto-build placed 0 legs — check candidates / preset / budget.\"}",
+      "hint": "Auto-build placed 0 legs — check candidates / preset / budget."
+    },
+    {
+      "name": "report-written",
+      "at": "2026-05-03T07:47:45.687Z",
+      "report": "audit/pw-rb-live-final-report.json"
+    }
+  ],
+  "ok": false,
+  "error": "Error: auto-build produced no conflict-free legs; manual live fallback disabled\n    at main (file:///Users/jihwan/Downloads/AES.v0.6.9/audit/scripts/live-route-builder-final.mjs:559:23)"
+}

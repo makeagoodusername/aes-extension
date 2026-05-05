@@ -1,0 +1,51 @@
+{
+  "ok": true,
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "cdpPort": 10121,
+  "authenticated": true,
+  "company": "Lamda",
+  "page": {
+    "title": "Dashboard: Lamda | Free1 | AirlineSim",
+    "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?7&select=775",
+    "hasPasswordInput": false,
+    "bodyHead": "DASHBOARD\nAIRLINESIM\nDENSITY: COMPACT\n⇧D\n DATABASE \n HELP \n COMMUNITY \n PRIVATE MESSAGES 39\n JEASCO \nLAMDA \n0 AS$\nCOMMERCIAL \nOPERATIONS \nMANAGEMENT \nAES\nBRIDGE\nDASHBOARD\nAES HUB\nAirlineSim Enhancement Suite\nSCRAPE EVERYTHING\nSCRAPE CACHE\nlast scrape: just now · per-aircraft 0/28·5f\nAUTO\n· F —\n· H —\n· A —\n· R —\nFREE1 · LAM\nV0.6.13-BETA\nCLASSIC\nCASCADE\nACTIVITY\nQUIET SINCE LAST VISIT\nALERT\n—\nWARN\n—\nINFO\n—\nCASH\nAS$0\ncash · 2026-05-08\nFLEET\n—\nno fleet record\nTOP ROUTE\n—\nopen RA on a hub\nALERTS\n0\nno",
+    "companyFromTitle": "Lamda",
+    "aesInjected": true
+  },
+  "live": {
+    "pricing": {
+      "permanentLiveMode": true,
+      "applyEnabled": true,
+      "dryRunOnly": false,
+      "liveScopes": {
+        "manual": true,
+        "bulk": true,
+        "silentAuto": true,
+        "bulkRecommended": true
+      },
+      "silentAutoEnabled": true,
+      "followMode": "all",
+      "desc": {
+        "dryRun": false,
+        "liveWrites": true,
+        "followMode": "all",
+        "tickSec": 5
+      }
+    },
+    "strategy": {
+      "tier": "apply-auto",
+      "schedule": true,
+      "price": true,
+      "service": true,
+      "crew": true,
+      "alliance": true
+    },
+    "afp": {
+      "autoSchedulerEnabled": true,
+      "tier": "apply-on-confirm",
+      "dragSubmitDryRunOnly": false,
+      "applyDryRunOnly": false
+    }
+  }
+}

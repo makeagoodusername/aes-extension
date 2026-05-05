@@ -1,0 +1,74 @@
+{
+  "ok": true,
+  "url": "https://free1.airlinesim.aero/app/fleets/aircraft/13538/0?3&aes-debug",
+  "title": "N003FGM | Free1 | AirlineSim",
+  "loggedIn": false,
+  "aircraftId": "13538",
+  "remoteDebuggingPort": "10039",
+  "profile": "/tmp/aes-chrome-routebuilder-10038",
+  "screenshot": "/Users/jihwan/Downloads/AES.v0.6.9/audit-jihwan/pw-results/live-route-candidates-columns-20260505.png",
+  "snapshot": {
+    "hub": "SEA",
+    "dest": "JFK",
+    "scheduleRecord": {
+      "weeklyFlights": 14,
+      "departureTime": "06:00",
+      "primaryAircraftType": "Boeing 737-700"
+    },
+    "candidate": {
+      "destIata": "JFK",
+      "weeklyFlights": 259,
+      "liveWeeklyFlights": 14,
+      "liveDeparture": "06:00",
+      "liveAircraftType": "Boeing 737-700",
+      "paxScore": 10
+    },
+    "headers": [
+      "DEST",
+      "Dist",
+      "Time",
+      "Pax",
+      "Cargo",
+      "Wkly",
+      "AS/w",
+      "AS dep",
+      "Air",
+      "Size",
+      "Fuel",
+      "αY",
+      "Score ▾",
+      "R!",
+      "Dep"
+    ],
+    "firstCells": [
+      "⋮⋮☆JFK ⚠ⓘ",
+      "5,535",
+      "6:35",
+      "★10",
+      "★8",
+      "259",
+      "14",
+      "06:00",
+      "—",
+      "—",
+      "75.1t",
+      "—",
+      "80",
+      "—",
+      ""
+    ],
+    "hostText": "Range-fit only\nHide scheduled\n★ Watchlist\n🌊 Waves\nTop 10 ▾\nDEST\tDist\tTime\tPax\tCargo\tWkly\tAS/w\tAS dep\tAir\tSize\tFuel\tαY\tScore ▾\tR!\tDep\n⋮⋮☆JFK ⚠ⓘ\t5,535\t6:35\t★10\t★8\t259\t14\t06:00\t—\t—\t75.1t\t—\t80\t—\t\n1 of 1 · sorted by Score desc · AS live 1",
+    "headerCount": 15,
+    "cellCount": 15,
+    "hasAsWeekly": true,
+    "hasAsDeparture": true,
+    "columnsAligned": true
+  },
+  "consoleRows": [
+    {
+      "type": "warning",
+      "text": "[AES auto-4c] smoke tests threw ReferenceError: ScheduleStore is not defined\n    at ScheduleBuilder.build (chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/modules/schedule-management/schedule-builder.js:714:24)\n    at Object.filterFeasible (chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/modules/aircraft-flight-plan/auto-scheduler/slot-optimizer.js:555:35)\n    at chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/modules/aircraft-flight-plan/auto-scheduler/slot-optimizer.js:1106:44\n    at chrome-extension://cpkkmmjhaajhfkmiejhhkkgdjdhoggkl/modules/aircraft-flight-plan/auto-scheduler/slot-optimizer.js:1199:3"
+    }
+  ],
+  "pageErrors": []
+}

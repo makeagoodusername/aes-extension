@@ -1,0 +1,105 @@
+{
+    "manifest_version": 3,
+    "name": "AirlineSim Enhancement Suite",
+    "short_name": "AES",
+    "description": "Great quality of live improvements for AirlineSim",
+    "version": "0.7.8",
+    "version_name": "0.7.8",
+    "homepage_url": "https://github.com/NEWLY2014/AirlineSim-Enhancement-Suite",
+    "action": {
+        "default_icon": {
+            "256": "images/AES-logo-256.png",
+            "128": "images/AES-logo-128.png",
+            "48": "images/AES-logo-48.png",
+            "32": "images/AES-logo-32.png",
+            "16": "images/AES-logo-16.png"
+        }
+    },
+    "icons": {
+        "256": "images/AES-logo-256.png",
+        "128": "images/AES-logo-128.png",
+        "48": "images/AES-logo-48.png",
+        "32": "images/AES-logo-32.png",
+        "16": "images/AES-logo-16.png"
+    },
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "css": ["css/content.css"],
+            "js": [
+                "js/vendor/jquery-3.7.1.slim.min.js",
+                "helpers.js",
+                "modules/aes-menu.js",
+                "modules/about-dialog.js",
+                "modules/release-notes.js",
+                "modules/notification.js",
+                "modules/notifications.js"
+            ],
+            "matches": [
+                "https://*.airlinesim.aero/app/*",
+                "https://*.airlinesim.aero/action/*"
+            ]
+        },
+        {
+            "js": ["content_inventory.js", "modules/inventory/validation.js"],
+            "matches": ["https://*.airlinesim.aero/app/com/inventory/*"]
+        },
+        {
+            "js": ["content_flightSchedule.js"],
+            "matches": ["https://*.airlinesim.aero/app/info/enterprises/*tab=3"]
+        },
+        {
+            "js": ["content_settings.js"],
+            "matches": ["https://*.airlinesim.aero/app/enterprise/settings*"]
+        },
+        {
+            "js": ["content_dashboard.js"],
+            "matches": ["https://*.airlinesim.aero/app/enterprise/dashboard*"]
+        },
+        {
+            "js": ["content_personnelManagement.js"],
+            "matches": [
+                "https://*.airlinesim.aero/action/enterprise/staffOverview*"
+            ]
+        },
+        {
+            "js": ["content_enterpriseOverview.js"],
+            "matches": ["https://*.airlinesim.aero/app/info/enterprises/*"]
+        },
+        {
+            "js": [
+                "modules/flightInfo/flightInfo.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/action/info/flight*"]
+        },
+        {
+            "js": ["content_aircraftFlights.js"],
+            "matches": ["https://*.airlinesim.aero/app/fleets/aircraft/*/1*"]
+        },
+        {
+            "js": ["content_fleetManagement.js"],
+            "matches": ["https://*.airlinesim.aero/app/fleets*"]
+        },
+        {
+            "js": [
+                "modules/onlineReservationSystem/onlineReservationSystem.js"
+            ],
+            "matches": ["https://*.airlinesim.aero/app/info/ors*"]
+        }
+    ],
+    "permissions": [
+        "declarativeContent",
+        "storage",
+        "unlimitedStorage"
+    ],
+    "host_permissions": ["https://*.airlinesim.aero/"],
+    "options_page": "options.html",
+    "web_accessible_resources": [
+        {
+            "resources": ["/images/*"],
+            "matches": ["https://*.airlinesim.aero/*"]
+        }
+    ]
+}

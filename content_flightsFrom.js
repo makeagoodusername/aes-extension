@@ -650,7 +650,19 @@ function absoluteUrl(href) {
 
 function cleanupAndClose() {
     sessionStorage.removeItem(AES_FF.SESSION_KEY)
-    window.close()
+    try {
+        if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
+            chrome.runtime.sendMessage({type: "aes:tab:close-self", source: "flightsfrom"}, resp => {
+                const err = chrome.runtime.lastError
+                if (!err && resp && resp.ok) return
+                try { window.close() } catch (_) { /* tab may already be gone */ }
+            })
+            return
+        }
+    } catch (_) {
+        // Fall back below; cleanup should never turn a successful scrape into an error.
+    }
+    try { window.close() } catch (_) { /* ignored */ }
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }

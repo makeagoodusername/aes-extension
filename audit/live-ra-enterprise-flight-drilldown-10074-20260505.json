@@ -1,0 +1,1537 @@
+{
+  "ok": true,
+  "mode": "read-only-real-airlinesim-market-flight-drilldown",
+  "noAirlineSimPosts": true,
+  "startedAt": "2026-05-05T00:45:21.779Z",
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "hub": "JFK",
+  "dest": "LAX",
+  "loggedIn": true,
+  "marketUrl": "https://free1.airlinesim.aero/app/com/markets/JFKLAX?3",
+  "title": "Market Analysis | Free1 | AirlineSim",
+  "parsedFamilies": [
+    "competitors",
+    "ownPricing",
+    "marketShare",
+    "historic"
+  ],
+  "competitorRows": 165,
+  "competitorFlightRowsExcludingOwn": 165,
+  "marketSharePaxRows": 9,
+  "marketShareCargoRows": 9,
+  "airlineGroupsWithFlightDetail": 8,
+  "rowsWithAnyCapacity": 165,
+  "typeIds": [
+    3000,
+    15300,
+    3150,
+    2660,
+    3160,
+    2200,
+    3921,
+    3100
+  ],
+  "typeErrors": [],
+  "storageIataBackfills": 0,
+  "groups": [
+    {
+      "enterpriseId": null,
+      "name": "MRM - 27 flights",
+      "iata": "MRM",
+      "fromFlightList": true,
+      "flightCount": 27,
+      "rowCount": 81,
+      "totalSeatCapacity": 5940,
+      "totalCargoCapacity": 661500,
+      "pricesByClass": {
+        "Y": {
+          "count": 27,
+          "min": 313,
+          "max": 313,
+          "median": 313
+        },
+        "C": {
+          "count": 27,
+          "min": 760,
+          "max": 760,
+          "median": 760
+        },
+        "Cargo": {
+          "count": 27,
+          "min": 203,
+          "max": 203,
+          "median": 203
+        }
+      },
+      "departures": [
+        "19:40",
+        "08:15",
+        "11:15",
+        "15:45",
+        "17:20"
+      ],
+      "aircraft": [
+        {
+          "typeCode": "321",
+          "typeId": 3000,
+          "seatCapacity": 220,
+          "cargoCapacity": 24500,
+          "flights": 25
+        },
+        {
+          "typeCode": "321",
+          "typeId": 3100,
+          "seatCapacity": 220,
+          "cargoCapacity": 24500,
+          "flights": 2
+        }
+      ],
+      "sampleFlights": [
+        {
+          "flightCode": "MRM 404",
+          "flightId": 88913,
+          "depDateLocal": "2026-05-02",
+          "depTimeLocal": "19:40",
+          "arrTimeLocal": "21:49",
+          "typeCode": "321",
+          "typeId": 3000,
+          "seatCapacity": 220,
+          "cargoCapacity": 24500,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "MRM 408",
+          "flightId": 94343,
+          "depDateLocal": "2026-05-03",
+          "depTimeLocal": "08:15",
+          "arrTimeLocal": "10:24",
+          "typeCode": "321",
+          "typeId": 3000,
+          "seatCapacity": 220,
+          "cargoCapacity": 24500,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "MRM 406",
+          "flightId": 95909,
+          "depDateLocal": "2026-05-03",
+          "depTimeLocal": "11:15",
+          "arrTimeLocal": "13:24",
+          "typeCode": "321",
+          "typeId": 3000,
+          "seatCapacity": 220,
+          "cargoCapacity": 24500,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "MRM 402",
+          "flightId": 98009,
+          "depDateLocal": "2026-05-03",
+          "depTimeLocal": "15:45",
+          "arrTimeLocal": "17:54",
+          "typeCode": "321",
+          "typeId": 3000,
+          "seatCapacity": 220,
+          "cargoCapacity": 24500,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        }
+      ]
+    },
+    {
+      "enterpriseId": null,
+      "name": "LBS - 8 flights",
+      "iata": "LBS",
+      "fromFlightList": true,
+      "flightCount": 8,
+      "rowCount": 24,
+      "totalSeatCapacity": 1767,
+      "totalCargoCapacity": 189500,
+      "pricesByClass": {
+        "Y": {
+          "count": 8,
+          "min": 313,
+          "max": 313,
+          "median": 313
+        },
+        "C": {
+          "count": 8,
+          "min": 760,
+          "max": 760,
+          "median": 760
+        },
+        "Cargo": {
+          "count": 8,
+          "min": 203,
+          "max": 203,
+          "median": 203
+        }
+      },
+      "departures": [
+        "15:48",
+        "01:00"
+      ],
+      "aircraft": [
+        {
+          "typeCode": "32Q",
+          "typeId": 3160,
+          "seatCapacity": 240,
+          "cargoCapacity": 25300,
+          "flights": 5
+        },
+        {
+          "typeCode": "32N",
+          "typeId": 2660,
+          "seatCapacity": 189,
+          "cargoCapacity": 21000,
+          "flights": 3
+        }
+      ],
+      "sampleFlights": [
+        {
+          "flightCode": "LBS 1002",
+          "flightId": 98047,
+          "depDateLocal": "2026-05-03",
+          "depTimeLocal": "15:48",
+          "arrTimeLocal": "17:57",
+          "typeCode": "32Q",
+          "typeId": 3160,
+          "seatCapacity": 240,
+          "cargoCapacity": 25300,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "LBS 1004",
+          "flightId": 102509,
+          "depDateLocal": "2026-05-04",
+          "depTimeLocal": "01:00",
+          "arrTimeLocal": "03:09",
+          "typeCode": "32N",
+          "typeId": 2660,
+          "seatCapacity": 189,
+          "cargoCapacity": 21000,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "LBS 1002",
+          "flightId": 110934,
+          "depDateLocal": "2026-05-04",
+          "depTimeLocal": "15:48",
+          "arrTimeLocal": "17:57",
+          "typeCode": "32Q",
+          "typeId": 3160,
+          "seatCapacity": 240,
+          "cargoCapacity": 25300,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "inflight"
+        },
+        {
+          "flightCode": "LBS 1004",
+          "flightId": 115842,
+          "depDateLocal": "2026-05-05",
+          "depTimeLocal": "01:00",
+          "arrTimeLocal": "03:09",
+          "typeCode": "32N",
+          "typeId": 2660,
+          "seatCapacity": 189,
+          "cargoCapacity": 21000,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        }
+      ]
+    },
+    {
+      "enterpriseId": null,
+      "name": "AAC - 5 flights",
+      "iata": "AAC",
+      "fromFlightList": true,
+      "flightCount": 5,
+      "rowCount": 5,
+      "totalSeatCapacity": 0,
+      "totalCargoCapacity": 392180,
+      "pricesByClass": {
+        "Cargo": {
+          "count": 5,
+          "min": 203,
+          "max": 203,
+          "median": 203
+        }
+      },
+      "departures": [
+        "21:40"
+      ],
+      "aircraft": [
+        {
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "flights": 5
+        }
+      ],
+      "sampleFlights": [
+        {
+          "flightCode": "AAC 4",
+          "flightId": 88502,
+          "depDateLocal": "2026-05-02",
+          "depTimeLocal": "21:40",
+          "arrTimeLocal": "23:45",
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "classes": {
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "AAC 4",
+          "flightId": 100707,
+          "depDateLocal": "2026-05-03",
+          "depTimeLocal": "21:40",
+          "arrTimeLocal": "23:45",
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "classes": {
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "AAC 4",
+          "flightId": 113917,
+          "depDateLocal": "2026-05-04",
+          "depTimeLocal": "21:40",
+          "arrTimeLocal": "23:45",
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "classes": {
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        },
+        {
+          "flightCode": "AAC 4",
+          "flightId": 128151,
+          "depDateLocal": "2026-05-05",
+          "depTimeLocal": "21:40",
+          "arrTimeLocal": "23:45",
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "classes": {
+            "Cargo": {
+              "price": 203,
+              "availability": 9,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        }
+      ]
+    },
+    {
+      "enterpriseId": null,
+      "name": "FN - 5 flights",
+      "iata": "FN",
+      "fromFlightList": true,
+      "flightCount": 5,
+      "rowCount": 5,
+      "totalSeatCapacity": 0,
+      "totalCargoCapacity": 392180,
+      "pricesByClass": {
+        "Cargo": {
+          "count": 5,
+          "min": 203,
+          "max": 203,
+          "median": 203
+        }
+      },
+      "departures": [
+        "06:05"
+      ],
+      "aircraft": [
+        {
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "flights": 5
+        }
+      ],
+      "sampleFlights": [
+        {
+          "flightCode": "FN 24",
+          "flightId": 93043,
+          "depDateLocal": "2026-05-03",
+          "depTimeLocal": "06:05",
+          "arrTimeLocal": "08:10",
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "classes": {
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "FN 24",
+          "flightId": 105498,
+          "depDateLocal": "2026-05-04",
+          "depTimeLocal": "06:05",
+          "arrTimeLocal": "07:34",
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "classes": {
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "FN 24",
+          "flightId": 119068,
+          "depDateLocal": "2026-05-05",
+          "depTimeLocal": "06:05",
+          "arrTimeLocal": "08:10",
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "classes": {
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        },
+        {
+          "flightCode": "FN 24",
+          "flightId": 134237,
+          "depDateLocal": "2026-05-06",
+          "depTimeLocal": "06:05",
+          "arrTimeLocal": "08:10",
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "seatCapacity": 0,
+          "cargoCapacity": 78436,
+          "classes": {
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        }
+      ]
+    },
+    {
+      "enterpriseId": null,
+      "name": "FTG - 5 flights",
+      "iata": "FTG",
+      "fromFlightList": true,
+      "flightCount": 5,
+      "rowCount": 15,
+      "totalSeatCapacity": 945,
+      "totalCargoCapacity": 105000,
+      "pricesByClass": {
+        "Y": {
+          "count": 5,
+          "min": 304,
+          "max": 304,
+          "median": 304
+        },
+        "C": {
+          "count": 5,
+          "min": 737,
+          "max": 737,
+          "median": 737
+        },
+        "Cargo": {
+          "count": 5,
+          "min": 197,
+          "max": 197,
+          "median": 197
+        }
+      },
+      "departures": [
+        "14:31"
+      ],
+      "aircraft": [
+        {
+          "typeCode": "32N",
+          "typeId": 2660,
+          "seatCapacity": 189,
+          "cargoCapacity": 21000,
+          "flights": 5
+        }
+      ],
+      "sampleFlights": [
+        {
+          "flightCode": "FTG 3",
+          "flightId": 97906,
+          "depDateLocal": "2026-05-03",
+          "depTimeLocal": "14:31",
+          "arrTimeLocal": "16:40",
+          "typeCode": "32N",
+          "typeId": 2660,
+          "seatCapacity": 189,
+          "cargoCapacity": 21000,
+          "classes": {
+            "Y": {
+              "price": 304,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 737,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 197,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "FTG 3",
+          "flightId": 110310,
+          "depDateLocal": "2026-05-04",
+          "depTimeLocal": "14:31",
+          "arrTimeLocal": "16:40",
+          "typeCode": "32N",
+          "typeId": 2660,
+          "seatCapacity": 189,
+          "cargoCapacity": 21000,
+          "classes": {
+            "Y": {
+              "price": 304,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 737,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 197,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "FTG 3",
+          "flightId": 124077,
+          "depDateLocal": "2026-05-05",
+          "depTimeLocal": "14:31",
+          "arrTimeLocal": "16:40",
+          "typeCode": "32N",
+          "typeId": 2660,
+          "seatCapacity": 189,
+          "cargoCapacity": 21000,
+          "classes": {
+            "Y": {
+              "price": 304,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 737,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 197,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        },
+        {
+          "flightCode": "FTG 3",
+          "flightId": 139964,
+          "depDateLocal": "2026-05-06",
+          "depTimeLocal": "14:31",
+          "arrTimeLocal": "16:40",
+          "typeCode": "32N",
+          "typeId": 2660,
+          "seatCapacity": 189,
+          "cargoCapacity": 21000,
+          "classes": {
+            "Y": {
+              "price": 304,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 737,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 197,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        }
+      ]
+    },
+    {
+      "enterpriseId": null,
+      "name": "TWA - 5 flights",
+      "iata": "TWA",
+      "fromFlightList": true,
+      "flightCount": 5,
+      "rowCount": 15,
+      "totalSeatCapacity": 1100,
+      "totalCargoCapacity": 125000,
+      "pricesByClass": {
+        "Y": {
+          "count": 5,
+          "min": 313,
+          "max": 313,
+          "median": 313
+        },
+        "C": {
+          "count": 5,
+          "min": 760,
+          "max": 760,
+          "median": 760
+        },
+        "Cargo": {
+          "count": 5,
+          "min": 203,
+          "max": 203,
+          "median": 203
+        }
+      },
+      "departures": [
+        "01:17",
+        "00:59"
+      ],
+      "aircraft": [
+        {
+          "typeCode": "321",
+          "typeId": 3150,
+          "seatCapacity": 220,
+          "cargoCapacity": 25000,
+          "flights": 5
+        }
+      ],
+      "sampleFlights": [
+        {
+          "flightCode": "TWA 101",
+          "flightId": 101946,
+          "depDateLocal": "2026-05-03",
+          "depTimeLocal": "01:17",
+          "arrTimeLocal": "04:00",
+          "typeCode": "321",
+          "typeId": 3150,
+          "seatCapacity": 220,
+          "cargoCapacity": 25000,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "TWA 101",
+          "flightId": 102427,
+          "depDateLocal": "2026-05-04",
+          "depTimeLocal": "00:59",
+          "arrTimeLocal": "03:55",
+          "typeCode": "321",
+          "typeId": 3150,
+          "seatCapacity": 220,
+          "cargoCapacity": 25000,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "TWA 101",
+          "flightId": 115818,
+          "depDateLocal": "2026-05-05",
+          "depTimeLocal": "00:59",
+          "arrTimeLocal": "03:55",
+          "typeCode": "321",
+          "typeId": 3150,
+          "seatCapacity": 220,
+          "cargoCapacity": 25000,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        },
+        {
+          "flightCode": "TWA 101",
+          "flightId": 130446,
+          "depDateLocal": "2026-05-06",
+          "depTimeLocal": "00:59",
+          "arrTimeLocal": "03:55",
+          "typeCode": "321",
+          "typeId": 3150,
+          "seatCapacity": 220,
+          "cargoCapacity": 25000,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        }
+      ]
+    },
+    {
+      "enterpriseId": null,
+      "name": "UAF - 4 flights",
+      "iata": "UAF",
+      "fromFlightList": true,
+      "flightCount": 4,
+      "rowCount": 12,
+      "totalSeatCapacity": 580,
+      "totalCargoCapacity": 67360,
+      "pricesByClass": {
+        "Y": {
+          "count": 4,
+          "min": 313,
+          "max": 313,
+          "median": 313
+        },
+        "C": {
+          "count": 4,
+          "min": 760,
+          "max": 760,
+          "median": 760
+        },
+        "Cargo": {
+          "count": 4,
+          "min": 203,
+          "max": 203,
+          "median": 203
+        }
+      },
+      "departures": [
+        "22:12"
+      ],
+      "aircraft": [
+        {
+          "typeCode": "319",
+          "typeId": 2200,
+          "seatCapacity": 145,
+          "cargoCapacity": 16840,
+          "flights": 4
+        }
+      ],
+      "sampleFlights": [
+        {
+          "flightCode": "UAF 1056",
+          "flightId": 117433,
+          "depDateLocal": "2026-05-03",
+          "depTimeLocal": "22:12",
+          "arrTimeLocal": "00:21",
+          "typeCode": "319",
+          "typeId": 2200,
+          "seatCapacity": 145,
+          "cargoCapacity": 16840,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "UAF 1056",
+          "flightId": 117438,
+          "depDateLocal": "2026-05-04",
+          "depTimeLocal": "22:12",
+          "arrTimeLocal": "00:21",
+          "typeCode": "319",
+          "typeId": 2200,
+          "seatCapacity": 145,
+          "cargoCapacity": 16840,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        },
+        {
+          "flightCode": "UAF 1056",
+          "flightId": 128511,
+          "depDateLocal": "2026-05-05",
+          "depTimeLocal": "22:12",
+          "arrTimeLocal": "00:21",
+          "typeCode": "319",
+          "typeId": 2200,
+          "seatCapacity": 145,
+          "cargoCapacity": 16840,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        },
+        {
+          "flightCode": "UAF 1056",
+          "flightId": 144185,
+          "depDateLocal": "2026-05-06",
+          "depTimeLocal": "22:12",
+          "arrTimeLocal": "00:21",
+          "typeCode": "319",
+          "typeId": 2200,
+          "seatCapacity": 145,
+          "cargoCapacity": 16840,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 760,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        }
+      ]
+    },
+    {
+      "enterpriseId": null,
+      "name": "MCT - 2 flights",
+      "iata": "MCT",
+      "fromFlightList": true,
+      "flightCount": 2,
+      "rowCount": 8,
+      "totalSeatCapacity": 880,
+      "totalCargoCapacity": 104000,
+      "pricesByClass": {
+        "Y": {
+          "count": 2,
+          "min": 313,
+          "max": 313,
+          "median": 313
+        },
+        "C": {
+          "count": 2,
+          "min": 440,
+          "max": 440,
+          "median": 440
+        },
+        "F": {
+          "count": 2,
+          "min": 870,
+          "max": 870,
+          "median": 870
+        },
+        "Cargo": {
+          "count": 2,
+          "min": 203,
+          "max": 203,
+          "median": 203
+        }
+      },
+      "departures": [
+        "00:10"
+      ],
+      "aircraft": [
+        {
+          "typeCode": "359",
+          "typeId": 3921,
+          "seatCapacity": 440,
+          "cargoCapacity": 52000,
+          "flights": 2
+        }
+      ],
+      "sampleFlights": [
+        {
+          "flightCode": "MCT 43",
+          "flightId": 102056,
+          "depDateLocal": "2026-05-04",
+          "depTimeLocal": "00:10",
+          "arrTimeLocal": "01:23",
+          "typeCode": "359",
+          "typeId": 3921,
+          "seatCapacity": 440,
+          "cargoCapacity": 52000,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 9,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 440,
+              "availability": 9,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "F": {
+              "price": 870,
+              "availability": 9,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 0,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "finished"
+        },
+        {
+          "flightCode": "MCT 43",
+          "flightId": 129992,
+          "depDateLocal": "2026-05-06",
+          "depTimeLocal": "00:10",
+          "arrTimeLocal": "01:23",
+          "typeCode": "359",
+          "typeId": 3921,
+          "seatCapacity": 440,
+          "cargoCapacity": 52000,
+          "classes": {
+            "Y": {
+              "price": 313,
+              "availability": 9,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "C": {
+              "price": 440,
+              "availability": 9,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "F": {
+              "price": 870,
+              "availability": 9,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            },
+            "Cargo": {
+              "price": 203,
+              "availability": 9,
+              "capacity": 0,
+              "booked": 0,
+              "loadPct": 0
+            }
+          },
+          "status": "booked"
+        }
+      ]
+    }
+  ],
+  "sampleFlights": [
+    {
+      "flightCode": "MRM 404",
+      "flightNumberId": null,
+      "flightId": 88913,
+      "carrierPrefix": "MRM",
+      "operatorPrefix": "MRM",
+      "typeCode": "321",
+      "typeId": 3000,
+      "depDateUtc": "2026-05-03",
+      "depDateLocal": "2026-05-02",
+      "depTimeUtc": "00:40",
+      "depTimeLocal": "19:40",
+      "arrTimeUtc": "05:49",
+      "arrTimeLocal": "21:49",
+      "serviceClass": "Y",
+      "capacity": null,
+      "booked": null,
+      "loadPct": null,
+      "availability": 0,
+      "price": 313,
+      "status": "finished",
+      "isOurs": false
+    },
+    {
+      "flightCode": "MRM 404",
+      "flightNumberId": null,
+      "flightId": 88913,
+      "carrierPrefix": "MRM",
+      "operatorPrefix": "MRM",
+      "typeCode": "321",
+      "typeId": 3000,
+      "depDateUtc": "2026-05-03",
+      "depDateLocal": "2026-05-02",
+      "depTimeUtc": "00:40",
+      "depTimeLocal": "19:40",
+      "arrTimeUtc": "05:49",
+      "arrTimeLocal": "21:49",
+      "serviceClass": "C",
+      "capacity": null,
+      "booked": null,
+      "loadPct": null,
+      "availability": 0,
+      "price": 760,
+      "status": "finished",
+      "isOurs": false
+    },
+    {
+      "flightCode": "MRM 404",
+      "flightNumberId": null,
+      "flightId": 88913,
+      "carrierPrefix": "MRM",
+      "operatorPrefix": "MRM",
+      "typeCode": "321",
+      "typeId": 3000,
+      "depDateUtc": "2026-05-03",
+      "depDateLocal": "2026-05-02",
+      "depTimeUtc": "00:40",
+      "depTimeLocal": "19:40",
+      "arrTimeUtc": "05:49",
+      "arrTimeLocal": "21:49",
+      "serviceClass": "Cargo",
+      "capacity": null,
+      "booked": null,
+      "loadPct": null,
+      "availability": 0,
+      "price": 203,
+      "status": "finished",
+      "isOurs": false
+    },
+    {
+      "flightCode": "AAC 4",
+      "flightNumberId": null,
+      "flightId": 88502,
+      "carrierPrefix": "AAC",
+      "operatorPrefix": "AAC",
+      "typeCode": "76Y",
+      "typeId": 15300,
+      "depDateUtc": "2026-05-03",
+      "depDateLocal": "2026-05-02",
+      "depTimeUtc": "02:40",
+      "depTimeLocal": "21:40",
+      "arrTimeUtc": "07:45",
+      "arrTimeLocal": "23:45",
+      "serviceClass": "Cargo",
+      "capacity": null,
+      "booked": null,
+      "loadPct": null,
+      "availability": 0,
+      "price": 203,
+      "status": "finished",
+      "isOurs": false
+    },
+    {
+      "flightCode": "TWA 101",
+      "flightNumberId": null,
+      "flightId": 101946,
+      "carrierPrefix": "TWA",
+      "operatorPrefix": "TWA",
+      "typeCode": "321",
+      "typeId": 3150,
+      "depDateUtc": "2026-05-03",
+      "depDateLocal": "2026-05-03",
+      "depTimeUtc": "06:17",
+      "depTimeLocal": "01:17",
+      "arrTimeUtc": "12:00",
+      "arrTimeLocal": "04:00",
+      "serviceClass": "Y",
+      "capacity": null,
+      "booked": null,
+      "loadPct": null,
+      "availability": 0,
+      "price": 313,
+      "status": "finished",
+      "isOurs": false
+    },
+    {
+      "flightCode": "TWA 101",
+      "flightNumberId": null,
+      "flightId": 101946,
+      "carrierPrefix": "TWA",
+      "operatorPrefix": "TWA",
+      "typeCode": "321",
+      "typeId": 3150,
+      "depDateUtc": "2026-05-03",
+      "depDateLocal": "2026-05-03",
+      "depTimeUtc": "06:17",
+      "depTimeLocal": "01:17",
+      "arrTimeUtc": "12:00",
+      "arrTimeLocal": "04:00",
+      "serviceClass": "C",
+      "capacity": null,
+      "booked": null,
+      "loadPct": null,
+      "availability": 0,
+      "price": 760,
+      "status": "finished",
+      "isOurs": false
+    },
+    {
+      "flightCode": "TWA 101",
+      "flightNumberId": null,
+      "flightId": 101946,
+      "carrierPrefix": "TWA",
+      "operatorPrefix": "TWA",
+      "typeCode": "321",
+      "typeId": 3150,
+      "depDateUtc": "2026-05-03",
+      "depDateLocal": "2026-05-03",
+      "depTimeUtc": "06:17",
+      "depTimeLocal": "01:17",
+      "arrTimeUtc": "12:00",
+      "arrTimeLocal": "04:00",
+      "serviceClass": "Cargo",
+      "capacity": null,
+      "booked": null,
+      "loadPct": null,
+      "availability": 0,
+      "price": 203,
+      "status": "finished",
+      "isOurs": false
+    },
+    {
+      "flightCode": "FN 24",
+      "flightNumberId": null,
+      "flightId": 93043,
+      "carrierPrefix": "FN",
+      "operatorPrefix": "FN",
+      "typeCode": "76Y",
+      "typeId": 15300,
+      "depDateUtc": "2026-05-03",
+      "depDateLocal": "2026-05-03",
+      "depTimeUtc": "11:05",
+      "depTimeLocal": "06:05",
+      "arrTimeUtc": "16:10",
+      "arrTimeLocal": "08:10",
+      "serviceClass": "Cargo",
+      "capacity": null,
+      "booked": null,
+      "loadPct": null,
+      "availability": 0,
+      "price": 203,
+      "status": "finished",
+      "isOurs": false
+    }
+  ],
+  "consoleRows": [],
+  "pageErrors": [],
+  "reportPath": "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-ra-enterprise-flight-drilldown-10074-20260505.json",
+  "shotPath": "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-ra-enterprise-flight-drilldown-10074-20260505.png",
+  "profileDir": "/var/folders/zx/0dqhlzq10hvc07_m0nq_jbvc0000gn/T/aes-ra-enterprise-flight-drilldown-10074",
+  "remoteDebuggingPort": "10074"
+}

@@ -41,11 +41,15 @@ class RouteAssistantPricingApplyLog {
      * @param {object} [opts]
      * @param {number} [opts.limit=200]   — global timeline cap
      * @param {number} [opts.perRouteLimit=20]
+     * @param {number} [opts.dedupWindowMin=5] — collapse identical fingerprints
+     *   within this many minutes (instance default; per-call override via
+     *   `add(..., {dedupWindowMs})` still wins).
      */
     constructor(opts) {
         opts = opts || {}
-        this.limit         = isFinite(opts.limit)         ? Math.max(20, opts.limit)         : RouteAssistantPricingApplyLog.DEFAULT_LIMIT
-        this.perRouteLimit = isFinite(opts.perRouteLimit) ? Math.max(5,  opts.perRouteLimit) : RouteAssistantPricingApplyLog.PER_ROUTE_LIMIT
+        this.limit          = isFinite(opts.limit)          ? Math.max(20, opts.limit)          : RouteAssistantPricingApplyLog.DEFAULT_LIMIT
+        this.perRouteLimit  = isFinite(opts.perRouteLimit)  ? Math.max(5,  opts.perRouteLimit)  : RouteAssistantPricingApplyLog.PER_ROUTE_LIMIT
+        this.dedupWindowMin = isFinite(opts.dedupWindowMin) ? Math.max(0,  opts.dedupWindowMin) : 5
     }
 
     static _pairKey(hub, dest) {
@@ -77,13 +81,25 @@ class RouteAssistantPricingApplyLog {
      */
     async add(record, opts) {
         opts = opts || {}
-        const dedupWindowMs = isFinite(opts.dedupWindowMs) ? opts.dedupWindowMs : 5 * 60 * 1000
+        const dedupWindowMs = isFinite(opts.dedupWindowMs)
+            ? opts.dedupWindowMs
+            : (this.dedupWindowMin * 60 * 1000)
         const ts = record && record.ts ? record.ts : Date.now()
         const fingerprint = (record && record.fingerprint) || null
 
         const cleaned = RouteAssistantPricingApplyLog._cleanRecord(record)
         cleaned.ts = ts
         cleaned.id = cleaned.id || RouteAssistantPricingApplyLog._newId(ts)
+        // Phase A4 — stamp accountId on every record so a future migration
+        // can split legacy entries without guessing. Best-effort: when the
+        // bootstrap hasn't resolved yet, accountId stays null and the
+        // splitter will skip those rows.
+        if (cleaned.accountId == null
+                && window.AesAccountKey
+                && typeof window.AesAccountKey.currentAccountIdSync === "function") {
+            const acctId = window.AesAccountKey.currentAccountIdSync()
+            if (acctId) cleaned.accountId = acctId
+        }
 
         const routeKey = RouteAssistantPricingApplyLog._routeKey(cleaned.hub, cleaned.dest)
         const got = await chrome.storage.local.get([
@@ -123,6 +139,17 @@ class RouteAssistantPricingApplyLog {
         const writes = {
             [RouteAssistantPricingApplyLog.GLOBAL_KEY]: {entries, updatedAt},
             [routeKey]: {hub: cleaned.hub, dest: cleaned.dest, entries: routeEntries, updatedAt}
+        }
+        // Phase A4 — dual-write to account-scoped keys. Legacy keys remain
+        // the read source; the scoped keys give the migration's second
+        // slice a clean per-account history to switch readers to.
+        if (cleaned.accountId) {
+            const scopedGlobal = RouteAssistantPricingApplyLog.GLOBAL_KEY
+                + ":acct:" + cleaned.accountId
+            const scopedRoute = scopedGlobal + ":"
+                + RouteAssistantPricingApplyLog._pairKey(cleaned.hub, cleaned.dest)
+            writes[scopedGlobal] = {entries, updatedAt}
+            writes[scopedRoute]  = {hub: cleaned.hub, dest: cleaned.dest, entries: routeEntries, updatedAt}
         }
         await chrome.storage.local.set(writes)
         return cleaned
@@ -209,6 +236,65 @@ class RouteAssistantPricingApplyLog {
     }
 
     /**
+     * Tier 3.2 — global "any successful apply across all routes" timestamp.
+     * Drives the cross-route cooldown so a rapid-fire chain of writes
+     * (script loop, accidental key-repeat) gets throttled even when no
+     * single route has fired twice. Walks the global timeline once;
+     * dry-run + failed entries skipped — same rule as the per-route
+     * variant. Returns null when no successful write has ever landed.
+     */
+    async getLastSuccessGlobal() {
+        const r = await this.getRecent()
+        for (const e of r.entries) {
+            if (!e) continue
+            if (e.status === "verified" || e.status === "posted") return e.ts || null
+        }
+        return null
+    }
+
+    /**
+     * Count silent-auto applies (verified | posted) in arbitrary windows
+     * over the global timeline. `windows` is `{name: sinceMs}` — each
+     * window's count is returned under the same name. One walk per call
+     * so the daily + hourly cap reconciliation is a single storage
+     * round-trip + one linear pass.
+     *
+     * Failed + dry-run + aborted entries are excluded — the cap is on
+     * REAL writes that landed, mirroring the per-route cooldown gate.
+     *
+     * Dedup'd entries (collapsed by `add()`'s 5-min fingerprint window)
+     * count toward their merged `count` so each distinct POST shows up.
+     */
+    async countSilentAutoIn(windows) {
+        const w = windows || {}
+        const counts = {}
+        for (const k in w) counts[k] = 0
+        const r = await this.getRecent()
+        for (const e of r.entries) {
+            if (!e) continue
+            if (e.source !== "silent-auto") continue
+            if (e.status !== "verified" && e.status !== "posted") continue
+            if (!isFinite(e.ts)) continue
+            const inc = isFinite(e.count) ? Math.max(1, e.count) : 1
+            for (const k in w) {
+                if (e.ts >= w[k]) counts[k] += inc
+            }
+        }
+        return counts
+    }
+
+    /**
+     * Single-window convenience kept for callers that only need one
+     * count. Implemented as a thin wrapper over `countSilentAutoIn` so
+     * the underlying scan stays in one place.
+     */
+    async countSilentAutoSince(sinceTs) {
+        const since = isFinite(sinceTs) ? sinceTs : (Date.now() - 24 * 3600 * 1000)
+        const c = await this.countSilentAutoIn({n: since})
+        return c.n
+    }
+
+    /**
      * Bulk-load the last-success timestamps for many routes. Drives the
      * "is cooldown active?" preflight in a single combined fetch when
      * the bulk apply modal is opening across N rows.
@@ -266,6 +352,80 @@ class RouteAssistantPricingApplyLog {
         return keys.length
     }
 
+    // ------------------------------------------------------------------
+    // Tier 3.4 helpers — observability primitives.
+    //   - getEntryById  : single-entry lookup for the audit modal +
+    //                     undo flow
+    //   - markUndone    : flag an entry as superseded by an undo apply;
+    //                     cosmetic only (the actual price restore is a
+    //                     fresh apply by the caller)
+    //   - getLastEntry  : most-recent per-route ring entry (any status)
+    //                     for the route-row badge; passive query, no
+    //                     filtering — caller decides what to render
+    //   - getBatch      : pull every entry sharing a `batchId` for the
+    //                     bulk-apply group view in the audit modal
+    // ------------------------------------------------------------------
+
+    /**
+     * Lookup a single entry by id. Walks the global timeline first (the
+     * larger store), then per-route rings as a fallback for entries that
+     * have aged out of the global cap. Returns null when not found.
+     */
+    async getEntryById(id) {
+        if (!id) return null
+        const got = await chrome.storage.local.get([RouteAssistantPricingApplyLog.GLOBAL_KEY])
+        const globalRec = got[RouteAssistantPricingApplyLog.GLOBAL_KEY]
+        if (globalRec && Array.isArray(globalRec.entries)) {
+            const hit = globalRec.entries.find(e => e && e.id === id)
+            if (hit) return hit
+        }
+        // Fallback: scan per-route rings. Only triggers when an entry has
+        // aged out of the 200-cap global log; the typical audit-modal flow
+        // hits the global log path above.
+        const all = await chrome.storage.local.get(null)
+        for (const k in all) {
+            if (!k.startsWith(RouteAssistantPricingApplyLog.PER_ROUTE_PREFIX)) continue
+            const rec = all[k]
+            if (!rec || !Array.isArray(rec.entries)) continue
+            const hit = rec.entries.find(e => e && e.id === id)
+            if (hit) return hit
+        }
+        return null
+    }
+
+    /**
+     * Flag the entry as undone — cosmetic mark surfaced in the audit
+     * modal (struck through, "↺ Undone" badge). The actual price restore
+     * is a separate fresh apply by the caller; this is the bookkeeping.
+     */
+    async markUndone(id) {
+        return await this.update(id, {undone: true, undoneAt: Date.now()})
+    }
+
+    /**
+     * Return the most-recent entry for a route (any status) — drives the
+     * inline route-row status badge. No filtering by status; the caller
+     * decides how to render `status`, `dryRun`, `undone`, etc.
+     */
+    async getLastEntry(hub, dest) {
+        const r = await this.getForRoute(hub, dest, 1)
+        return (r.entries && r.entries[0]) || null
+    }
+
+    /**
+     * Pull every entry sharing a `batchId`, newest-first. Used by the
+     * audit modal's bulk-group expander. Walks the global timeline only
+     * — bulk applies are recent by design and the global log holds the
+     * full batch (cap 200, per-route ring is too small to span batches).
+     */
+    async getBatch(batchId) {
+        if (!batchId) return []
+        const got = await chrome.storage.local.get([RouteAssistantPricingApplyLog.GLOBAL_KEY])
+        const globalRec = got[RouteAssistantPricingApplyLog.GLOBAL_KEY]
+        if (!globalRec || !Array.isArray(globalRec.entries)) return []
+        return globalRec.entries.filter(e => e && e.batchId === batchId)
+    }
+
     /**
      * Strip stuff we don't want stored — function references, oversized
      * `bodyPreview` strings, anything that wouldn't deserialise. Keeps
@@ -292,12 +452,38 @@ class RouteAssistantPricingApplyLog {
             reason:           r.reason ? String(r.reason).slice(0, 240) : null,
             sandboxScenario:  r.sandboxScenario ? Object.assign({}, r.sandboxScenario) : null,
             projectedDelta:   r.projectedDelta  ? Object.assign({}, r.projectedDelta)  : null,
+            preApplySync:     RouteAssistantPricingApplyLog._cleanPreApplySync(r.preApplySync),
             preflight:        RouteAssistantPricingApplyLog._cleanPreflight(r.preflight),
             error:            r.error ? Object.assign({}, r.error) : null,
             warning:          r.warning ? String(r.warning).slice(0, 240) : null,
             bodyPreview:      r.bodyPreview ? String(r.bodyPreview).slice(0, 1500) : null,
             dryRun:           !!r.dryRun,
-            count:            isFinite(r.count) ? r.count : 1
+            count:            isFinite(r.count) ? r.count : 1,
+            // Tier 3.4 — observability fields. All optional; legacy entries
+            // without these read as `undefined` and the UI treats them as
+            // ungrouped/non-undone.
+            batchId:          r.batchId  ? String(r.batchId).slice(0, 64) : null,
+            batchSize:        isFinite(r.batchSize) ? r.batchSize : null,
+            undoOf:           r.undoOf   ? String(r.undoOf).slice(0, 64)  : null,
+            undone:           r.undone === true ? true : null,
+            undoneAt:         isFinite(r.undoneAt) ? r.undoneAt : null,
+            proposerStrategy: r.proposerStrategy ? String(r.proposerStrategy).slice(0, 64) : null,
+            rationale:        Array.isArray(r.rationale)
+                                ? r.rationale.slice(0, 12).map(s => String(s).slice(0, 240))
+                                : null,
+            objective:        r.objective ? Object.assign({}, r.objective) : null,
+            // Endpoint targeting — present only when this apply went via
+            // `/app/com/numbers/<flightNumberId>/<legIndex>`. The audit
+            // modal shows "via FN <id>/<leg>" when these are non-null.
+            // The legacy markets-page apply omits all three; downstream
+            // readers MUST treat absence as "markets" for backward compat.
+            endpoint:         r.endpoint === "flightNumbers" ? "flightNumbers" : null,
+            flightNumberId:   r.endpoint === "flightNumbers" && r.flightNumberId != null
+                                ? String(r.flightNumberId).slice(0, 32)
+                                : null,
+            legIndex:         r.endpoint === "flightNumbers" && isFinite(r.legIndex)
+                                ? r.legIndex
+                                : null
         }
         // Drop nulls to keep storage small.
         for (const k in out) {
@@ -314,6 +500,26 @@ class RouteAssistantPricingApplyLog {
             deltas:        pf.deltas        ? Object.assign({}, pf.deltas)        : {},
             percentDeltas: pf.percentDeltas ? Object.assign({}, pf.percentDeltas) : {}
         }
+    }
+
+    /**
+     * Records the orchestrator pre-flight pass that ran before this apply.
+     * `scheduleAt` / `orsAt` are scrape timestamps from the orchestrator's
+     * per-route result (`schedule.scrapedAt` / `ors.scrapedAt`); either
+     * may be null if that scraper failed or was skipped by the freshness
+     * gate. `halted: true` marks routes that were skipped because the
+     * orchestrator's circuit breaker tripped before reaching them — those
+     * apply-log entries land with `status: "skipped"` and no POST.
+     */
+    static _cleanPreApplySync(s) {
+        if (!s) return null
+        const out = {
+            scheduleAt: isFinite(s.scheduleAt) ? s.scheduleAt : null,
+            orsAt:      isFinite(s.orsAt)      ? s.orsAt      : null,
+            halted:     !!s.halted
+        }
+        if (out.scheduleAt == null && out.orsAt == null && !out.halted) return null
+        return out
     }
 }
 

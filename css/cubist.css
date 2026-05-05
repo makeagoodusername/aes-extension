@@ -1,0 +1,225 @@
+/* ===========================================================
+   AES "FACET" — css/cubist.css
+   Cubism-inspired GUI overhaul, opt-in via body.aes-cubist.
+   Foundation slice CB0 — primitives only, no surface yet.
+
+   Extends css/design-tokens.css. Inherits the bone/oxide/slate/rust
+   palette and adds Cubist geometry: polygon clip-paths, ghost-layer
+   offsets, seam strokes, pivot motion. All scoped under .aes-cubist
+   so a default install sees zero change.
+   =========================================================== */
+
+body.aes-cubist {
+    /* ---- Polygon clip-path library (12 named shapes) ----- */
+    --poly-wedge-tl:    polygon(0 0, 100% 0, 100% 70%, 70% 100%, 0 100%);
+    --poly-wedge-tr:    polygon(0 0, 100% 0, 100% 100%, 30% 100%, 0 70%);
+    --poly-wedge-bl:    polygon(0 30%, 30% 0, 100% 0, 100% 100%, 0 100%);
+    --poly-wedge-br:    polygon(0 0, 70% 0, 100% 30%, 100% 100%, 0 100%);
+
+    --poly-pentagon-r:  polygon(0 0, 80% 0, 100% 50%, 80% 100%, 0 100%);
+    --poly-pentagon-l:  polygon(20% 0, 100% 0, 100% 100%, 20% 100%, 0 50%);
+    --poly-pentagon-t:  polygon(50% 0, 100% 20%, 100% 100%, 0 100%, 0 20%);
+    --poly-pentagon-b:  polygon(0 0, 100% 0, 100% 80%, 50% 100%, 0 80%);
+
+    --poly-lozenge-c:   polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+    --poly-trapezoid-t: polygon(15% 0, 85% 0, 100% 100%, 0 100%);
+    --poly-trapezoid-b: polygon(0 0, 100% 0, 85% 100%, 15% 100%);
+    --poly-rect:        polygon(0 0, 100% 0, 100% 100%, 0 100%);
+
+    /* ---- Composition presets ----------------------------- */
+    --cubist-comp-vertical:   "totem";
+    --cubist-comp-horizon:    "landscape";
+    --cubist-comp-still-life: "centered";
+}
+
+/* ---- Facet primitive ------------------------------------ */
+.aes-cubist .aes-facet {
+    position: relative;
+    display: block;
+    box-sizing: border-box;
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    font-family: var(--aes-font-display);
+    transition: opacity var(--aes-tr-medium), filter var(--aes-tr-medium);
+}
+
+.aes-cubist .aes-facet[data-shape="wedge-tl"]   { clip-path: var(--poly-wedge-tl);   }
+.aes-cubist .aes-facet[data-shape="wedge-tr"]   { clip-path: var(--poly-wedge-tr);   }
+.aes-cubist .aes-facet[data-shape="wedge-bl"]   { clip-path: var(--poly-wedge-bl);   }
+.aes-cubist .aes-facet[data-shape="wedge-br"]   { clip-path: var(--poly-wedge-br);   }
+.aes-cubist .aes-facet[data-shape="pentagon-r"] { clip-path: var(--poly-pentagon-r); }
+.aes-cubist .aes-facet[data-shape="pentagon-l"] { clip-path: var(--poly-pentagon-l); }
+.aes-cubist .aes-facet[data-shape="pentagon-t"] { clip-path: var(--poly-pentagon-t); }
+.aes-cubist .aes-facet[data-shape="pentagon-b"] { clip-path: var(--poly-pentagon-b); }
+.aes-cubist .aes-facet[data-shape="lozenge-c"]  { clip-path: var(--poly-lozenge-c);  }
+.aes-cubist .aes-facet[data-shape="trapezoid-t"]{ clip-path: var(--poly-trapezoid-t);}
+.aes-cubist .aes-facet[data-shape="trapezoid-b"]{ clip-path: var(--poly-trapezoid-b);}
+.aes-cubist .aes-facet[data-shape="rect"]       { clip-path: var(--poly-rect);       }
+
+/* ---- Polyhedron primitive ------------------------------- */
+.aes-cubist .aes-polyhedron {
+    position: relative;
+    display: grid;
+    box-sizing: border-box;
+    transform-style: preserve-3d;
+    transition: transform var(--aes-tr-medium);
+}
+
+.aes-cubist .aes-polyhedron:hover .aes-facet:not(:hover) {
+    opacity: 0.70;
+}
+
+.aes-cubist .aes-polyhedron[data-pivot="on"]:hover {
+    transform: rotateY(var(--aes-cubist-pivot, 8deg));
+}
+
+/* CB5 — discoverable affordance for the shift+click decompose gesture. */
+.aes-cubist .aes-polyhedron {
+    position: relative;
+}
+.aes-cubist .aes-polyhedron::after {
+    content: "⊟ shift+click";
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    padding: 2px 6px;
+    background: var(--aes-oxide);
+    color: var(--aes-bone);
+    font-family: var(--aes-font-mono);
+    font-size: 9px;
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--aes-tr-fast);
+    z-index: 2;
+}
+.aes-cubist .aes-polyhedron:hover::after {
+    opacity: 0.8;
+}
+
+/* CB5 — decomposed-facet visual differentiation. */
+.aes-cubist .aes-decomposed-facet {
+    box-shadow: 4px 4px 0 0 var(--aes-paper-rule);
+}
+.aes-cubist .aes-decomposed-facet:active {
+    box-shadow: 2px 2px 0 0 var(--aes-paper-rule);
+}
+
+/* ---- Ghost layer (past + present + forecast) ------------ */
+.aes-cubist .aes-ghost-layer {
+    position: relative;
+}
+
+.aes-cubist .aes-ghost-layer > .aes-ghost-past {
+    position: absolute;
+    inset: 0;
+    transform: translate(calc(var(--aes-cubist-ghost-offset) * -1),
+                         calc(var(--aes-cubist-ghost-offset) * -1));
+    opacity: var(--aes-cubist-ghost-alpha);
+    filter: sepia(0.30);
+    pointer-events: none;
+}
+
+.aes-cubist .aes-ghost-layer > .aes-ghost-forecast {
+    position: absolute;
+    inset: 0;
+    transform: translate(var(--aes-cubist-ghost-offset),
+                         var(--aes-cubist-ghost-offset));
+    opacity: 0.45;
+    background: transparent !important;
+    border: var(--aes-bw-1) dashed var(--aes-paper-rule);
+    pointer-events: none;
+}
+
+.aes-cubist .aes-ghost-layer > .aes-ghost-present {
+    position: relative;
+    z-index: 1;
+}
+
+/* ---- Seam stroke (1px hairline between adjacent facets) - */
+.aes-cubist .aes-cubist-seam {
+    position: absolute;
+    background: var(--aes-oxide);
+    height: var(--aes-bw-1);
+    pointer-events: none;
+    transform-origin: 0 50%;
+}
+
+/* ---- Stencil label (synthetic-cubism collage type) ------ */
+.aes-cubist .aes-stencil {
+    display: inline-block;
+    padding: 0 var(--aes-sp-2);
+    background: linear-gradient(
+        to bottom,
+        transparent 0,
+        transparent calc(50% - 1px),
+        var(--aes-bone-3) calc(50% - 1px),
+        var(--aes-bone-3) calc(50% + 1px),
+        transparent calc(50% + 1px)
+    );
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-black);
+    font-size: var(--aes-fs-small);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+    text-shadow:
+         1px  1px 0 var(--aes-bone),
+        -1px -1px 0 var(--aes-bone),
+         1px -1px 0 var(--aes-bone),
+        -1px  1px 0 var(--aes-bone);
+}
+
+.aes-cubist .aes-stencil > .aes-stencil-light {
+    font-weight: var(--aes-fw-regular);
+}
+
+/* ---- Composition (asymmetric-grid wrapper) -------------- */
+.aes-cubist .aes-composition {
+    display: grid;
+    gap: var(--aes-sp-3);
+    box-sizing: border-box;
+}
+
+.aes-cubist .aes-composition[data-preset="totem"] {
+    grid-template-columns: 1fr;
+    grid-auto-rows: minmax(64px, auto);
+}
+
+.aes-cubist .aes-composition[data-preset="landscape"] {
+    grid-template-columns: 2fr 1fr 1fr;
+    grid-auto-rows: minmax(80px, auto);
+}
+
+.aes-cubist .aes-composition[data-preset="still-life"] {
+    grid-template-columns: 1fr 2fr 1fr;
+    grid-template-rows: 1fr 2fr 1fr;
+}
+
+/* ---- Below 1200px viewport: revert to orthogonal -------- */
+@media (max-width: 1199px) {
+    .aes-cubist .aes-composition,
+    .aes-cubist .aes-composition[data-preset] {
+        grid-template-columns: 1fr;
+        grid-template-rows: none;
+    }
+    .aes-cubist .aes-polyhedron {
+        grid-template-columns: 1fr !important;
+    }
+    .aes-cubist .aes-facet {
+        clip-path: none !important;
+    }
+}
+
+/* ---- Reduced-motion: opacity-only transitions ----------- */
+@media (prefers-reduced-motion: reduce) {
+    .aes-cubist .aes-polyhedron,
+    .aes-cubist .aes-polyhedron[data-pivot="on"]:hover {
+        transform: none !important;
+        transition: opacity var(--aes-tr-medium) !important;
+    }
+    .aes-cubist .aes-facet {
+        transition: opacity var(--aes-tr-medium) !important;
+    }
+}

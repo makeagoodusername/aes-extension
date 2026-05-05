@@ -97,6 +97,13 @@ class AesAfpAutoApplyLogClass {
     async add(record) {
         const cleaned = AesAfpAutoApplyLogClass._cleanRecord(record)
         cleaned.id = cleaned.id || AesAfpAutoApplyLogClass._newId(cleaned.ts)
+        // Phase A4 — stamp accountId for future per-account splitting.
+        if (cleaned.accountId == null
+                && window.AesAccountKey
+                && typeof window.AesAccountKey.currentAccountIdSync === "function") {
+            const acctId = window.AesAccountKey.currentAccountIdSync()
+            if (acctId) cleaned.accountId = acctId
+        }
 
         const globalKey = AesAfpAutoApplyLogClass.GLOBAL_KEY
         const aircraftKey = (cleaned.server && cleaned.aircraftId)
@@ -129,6 +136,19 @@ class AesAfpAutoApplyLogClass {
             }
         }
 
+        // Phase A4 — dual-write to account-scoped keys. Legacy reads stay
+        // canonical; the scoped keys give the migration's second slice a
+        // clean per-account history.
+        if (cleaned.accountId) {
+            const scopedGlobal = AesAfpAutoApplyLogClass.GLOBAL_KEY
+                + ":acct:" + cleaned.accountId
+            writes[scopedGlobal] = {entries, updatedAt: cleaned.ts}
+            if (aircraftKey && writes[aircraftKey]) {
+                const scopedAircraft = scopedGlobal + ":"
+                    + cleaned.server + ":" + cleaned.aircraftId
+                writes[scopedAircraft] = writes[aircraftKey]
+            }
+        }
         await chrome.storage.local.set(writes)
         return cleaned
     }

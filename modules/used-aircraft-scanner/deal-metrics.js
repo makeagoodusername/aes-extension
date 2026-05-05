@@ -18,12 +18,27 @@
 class MarketScanDealMetrics {
 
     /**
-     * Daily block-hour budget assumed by the break-even estimator. AS
-     * utilisation varies by aircraft size — pick a conservative middle
-     * value so the metric reads as "earliest sensible payback" rather
-     * than an optimistic best case.
+     * Daily block-hour budget assumed by the break-even estimator. Varies
+     * by aircraft category — small regionals turn fewer hours/day than
+     * widebodies. Reads `row.familyCategory` (set by `_enrichFamily`
+     * before `decorate()`) and falls back to the legacy 10h default for
+     * rows without a category. Conservative middle values per band so the
+     * metric reads as "earliest sensible payback" rather than optimistic.
      */
-    static DAILY_BLOCK_HOURS = 10
+    static BLOCK_HOURS_BY_CATEGORY = {
+        commuter:   8,
+        turboprop:  8,
+        regional:   8,
+        narrowbody: 12,
+        widebody:   14
+    }
+    static DAILY_BLOCK_HOURS = 10  // legacy fallback / external alias
+
+    static _blockHoursFor(row) {
+        const cat = row && row.familyCategory
+        const h = cat && MarketScanDealMetrics.BLOCK_HOURS_BY_CATEGORY[cat]
+        return isFiniteNumber(h) && h > 0 ? h : MarketScanDealMetrics.DAILY_BLOCK_HOURS
+    }
 
     /**
      * Maximum service life used by `seatKmYearCost`. Most AS players
@@ -43,6 +58,162 @@ class MarketScanDealMetrics {
         const candidates = [row.nextBid, row.immediatePurchase].filter(v => isFiniteNumber(v) && v > 0)
         if (!candidates.length) return null
         return Math.min.apply(null, candidates)
+    }
+
+    /**
+     * Monthly lease payment scraped from the offer. AS publishes leases as a
+     * monthly figure, so no unit conversion. Returns null when the row has
+     * no lease offer or the rate is zero/non-finite.
+     */
+    static monthlyLeasePayment(row) {
+        const r = numOrNull(row && row.leasingRate)
+        return r !== null && r > 0 ? r : null
+    }
+
+    /**
+     * Picks the cost basis for "$/seat"-style metrics. Always lease-anchored:
+     * leasing rate × termMonths, regardless of `leaseConfig.mode`.
+     *
+     * Rationale (per project spec): on the used market, auction prices are
+     * noisy and don't reflect the asset's true ongoing value. The published
+     * leasing rate does — it's the market's price for the asset's monthly
+     * service. Scoring on lease rate in both lease AND buy mode keeps the
+     * "$/seat" column comparable across the result set and across modes.
+     *
+     * A row without a lease offer drops out of price-based scoring entirely
+     * (the classifier renormalises around the remaining components). Buy
+     * mode still uses NEXT BID + IMMEDIATE PURCHASE for the *displayed*
+     * price columns — that swap lives in results-table._activeColumns().
+     *
+     * `leaseConfig.mode` is preserved on the return so callers (table
+     * tooltips, classifier display copy) can show the user which mode they're
+     * in even though the cost basis is uniform.
+     */
+    static effectiveAcquisitionCost(row, leaseConfig) {
+        const cfg = leaseConfig || {}
+        const mode = cfg.mode === "buy" ? "buy" : "lease"
+        const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
+        const term    = numOrDefault(cfg.termMonths, 60)
+        if (monthly === null || term <= 0) return null
+        return {
+            cost:       monthly * term,
+            kind:       "lease",
+            monthly:    monthly,
+            termMonths: term,
+            mode:       mode
+        }
+    }
+
+    /**
+     * Actual upfront cash outlay for *this offer*, used for the affordability
+     * chip (cash vs cost). Mode-aware so the chip reflects the cash that
+     * actually leaves the bank account on day one:
+     *   lease mode → leasingDepot (one-time deposit; monthly rent is
+     *                paid out of operating revenue, not cash on hand)
+     *   buy mode   → cheapest of nextBid / immediatePurchase
+     *
+     * Falls back to monthly × term in lease mode when the deposit is
+     * missing — that older path approximates total commitment, not the
+     * upfront cash, but keeps offers with broken/blank deposit fields
+     * comparable to others instead of dropping out of the chip entirely.
+     *
+     * Distinct from `effectiveAcquisitionCost` which is uniformly
+     * lease-anchored (monthly × term) for *scoring* purposes.
+     *
+     * Returns null when the relevant figure is missing.
+     */
+    static affordabilityCost(row, leaseConfig) {
+        const cfg = leaseConfig || {}
+        if (cfg.mode === "buy") {
+            return MarketScanDealMetrics.acquisitionPrice(row)
+        }
+        const depot = numOrNull(row && row.leasingDepot)
+        if (depot !== null && depot > 0) return depot
+        const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
+        const term    = numOrDefault(cfg.termMonths, 60)
+        if (monthly === null || term <= 0) return null
+        return monthly * term
+    }
+
+    /**
+     * Lease-equivalent "$/seat" — monthly lease ÷ seats. Lower is better.
+     * Comparable across lease offers; for cross-mode comparison the
+     * classifier scores lease and purchase separately (see priceBasis).
+     */
+    static leasePerSeat(row) {
+        const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
+        const seats   = numOrNull(row && row.seats)
+        if (monthly === null || seats === null || seats <= 0) return null
+        return Math.round(monthly / seats)
+    }
+
+    /**
+     * Lease-mode lifecycle ratio: annual lease cost per seat-km. No
+     * remaining-life term — lease is recurring, you pay per month
+     * regardless of airframe age.
+     *
+     *   value = monthly × 12 / (seats × range)
+     */
+    static leaseSeatKmYearCostBreakdown(row) {
+        const monthly = MarketScanDealMetrics.monthlyLeasePayment(row)
+        const seats   = numOrNull(row && row.seats)
+        const range   = numOrNull(row && row.range)
+        if (monthly === null || seats === null || seats <= 0) return null
+        if (range === null || range <= 0) return null
+        const value = Math.round((monthly * 12 / (seats * range)) * 10000) / 10000
+        return {
+            value:   value,
+            monthly: monthly,
+            seats:   seats,
+            range:   range,
+            basis:   "lease"
+        }
+    }
+
+    /**
+     * Fuel cost per seat-km, derived from RouteAssistantFuelBurn.heuristic
+     * + the user's RA fuel price. Lower is better.
+     *
+     *   fuelL/km   = perKmL × ageMult   (cycleL is fixed-per-flight, so
+     *                                    it doesn't enter the per-seat-km
+     *                                    metric — that would skew toward
+     *                                    long-range aircraft)
+     *   fuel$/km   = fuelL/km × priceASc / 100
+     *   per seat   = fuel$/km / seats
+     *
+     *   ageMult    = 1 + (ageYears × fuelAgePenaltyPerYear)
+     *
+     * fuelCtx shape: {fuelPriceASc, fuelAgePenaltyPerYear}. When
+     * RouteAssistantFuelBurn isn't loaded (manifest miswiring), returns
+     * null so the component drops out without breaking the scorer.
+     */
+    static fuelCostPerSeatKm(row, fuelCtx) {
+        if (!row || !fuelCtx) return null
+        if (typeof RouteAssistantFuelBurn === "undefined") return null
+        const seats = numOrNull(row.seats)
+        if (seats === null || seats <= 0) return null
+        const priceASc = numOrNull(fuelCtx.fuelPriceASc)
+        if (priceASc === null || priceASc <= 0) return null
+        const burn = RouteAssistantFuelBurn.heuristic({
+            seats:         row.seats,
+            cargoCapacity: row.cargoCapacity,
+            speed:         row.speed
+        })
+        if (!burn || !isFinite(burn.perKmL)) return null
+        const age      = numOrNull(row.ageYears) || 0
+        const penalty  = numOrDefault(fuelCtx.fuelAgePenaltyPerYear, 0)
+        const ageMult  = 1 + age * penalty
+        const litresPerKm = burn.perKmL * ageMult
+        const dollarsPerKm = litresPerKm * priceASc / 100
+        const value = dollarsPerKm / seats
+        return {
+            value:    Math.round(value * 100000) / 100000,
+            perKmL:   burn.perKmL,
+            cycleL:   burn.cycleL,
+            ageMult:  ageMult,
+            priceASc: priceASc,
+            source:   burn.source
+        }
     }
 
     /**
@@ -152,7 +323,7 @@ class MarketScanDealMetrics {
         const crew  = numOrDefault(economics.crewCostPerHour, 0)
         const maint = numOrDefault(economics.maintenanceCostPerHour, 0)
 
-        const hours       = MarketScanDealMetrics.DAILY_BLOCK_HOURS
+        const hours       = MarketScanDealMetrics._blockHoursFor(row)
         const dailyKm     = hours * speed
         const paxRev      = dailyKm * seats  * lf      * yieldKm
         const cargoRev    = dailyKm * cargo  * cargoLf * cargoY
@@ -327,9 +498,14 @@ class MarketScanDealMetrics {
      * the table renderer. Mutates and returns the row for chaining.
      *
      * Decorated keys:
-     *   pricePerSeat        — number | null
+     *   priceBasis          — "lease" | "purchase" | null   (drives reasons)
+     *   pricePerSeat        — number | null   (lease-or-purchase $/seat)
+     *   leasePerSeat        — number | null   (always lease, when available)
+     *   monthlyLease        — number | null   (raw monthly lease, when available)
      *   seatKmYearCost      — number | null
-     *   breakEvenDays       — number | null
+     *   breakEvenDays       — number | null   (days to recoup lease term OR purchase)
+     *   fuelPerSeatKm       — number | null   (AS$/seat-km from heuristic fuel burn)
+     *   fuelBreakdown       — {value, perKmL, cycleL, ageMult, priceASc, source} | null
      *   fleetOwned          — true | false | null   (null = no fleet ctx)
      *   fleetOwnedCount     — number | null
      *   routeFitCount       — number | null         (null = no topRoutes)
@@ -342,16 +518,57 @@ class MarketScanDealMetrics {
      *   maintLevel          — "green" | "amber" | "red" | null
      *   maintLabel          — "Fresh" | "Mid-life" | "Heavy" | null
      *   maintColor          — hex string | null
+     *
+     * ctx fields:
+     *   economics       — RouteAssistant economics block
+     *   fleetByType     — Map | object keyed by typeId
+     *   topRoutes       — array for route-fit
+     *   routeFitConfig  — {paxSeatsPerScorePoint, weeklyDemandPerScorePoint}
+     *   leaseConfig     — {mode: "lease"|"buy", termMonths}
+     *   fuelCtx         — {fuelPriceASc, fuelAgePenaltyPerYear}
      */
     static decorate(row, ctx) {
         ctx = ctx || {}
-        row.pricePerSeat   = MarketScanDealMetrics.pricePerSeat(row)
-        const seatKm = MarketScanDealMetrics.seatKmYearCostBreakdown(row)
+        const leaseConfig = ctx.leaseConfig || null
+
+        // Pick basis once and use it everywhere downstream so the row reads
+        // coherently — no half-lease half-purchase rows.
+        const basis = MarketScanDealMetrics.effectiveAcquisitionCost(row, leaseConfig)
+        row.priceBasis  = basis ? basis.kind : null
+        // Stamp the user's mode so narrative + tooltips can distinguish
+        // "scoring on lease, paying on lease" from "scoring on lease,
+        // paying on purchase". priceBasis stays uniformly "lease" for
+        // classifier-cohort purposes; userMode is the display switch.
+        row.userMode    = (leaseConfig && leaseConfig.mode === "buy") ? "buy" : "lease"
+        row.leasePerSeat = MarketScanDealMetrics.leasePerSeat(row)
+        row.monthlyLease = MarketScanDealMetrics.monthlyLeasePayment(row)
+
+        // No usable basis (typically lease-mode + no lease offer): leave
+        // price/lifecycle/payback unset so the classifier renormalises
+        // around the remaining components instead of silently scoring
+        // against a basis the user opted out of.
+        const isLease = basis && basis.kind === "lease"
+        // Lease-mode payback recoups the signed lease term (monthly × term);
+        // reuse the daily-profit model via a synthetic price input.
+        const beRow = isLease
+            ? Object.assign({}, row, {nextBid: basis.cost, immediatePurchase: null})
+            : row
+        const seatKm = !basis ? null
+            : isLease ? MarketScanDealMetrics.leaseSeatKmYearCostBreakdown(row)
+                      : MarketScanDealMetrics.seatKmYearCostBreakdown(row)
+        const be = !basis ? null
+            : MarketScanDealMetrics.daysToBreakEvenBreakdown(beRow, ctx.economics)
+        row.pricePerSeat        = !basis ? null
+            : isLease ? row.leasePerSeat
+                      : MarketScanDealMetrics.pricePerSeat(row)
         row.seatKmYearCost      = seatKm ? seatKm.value : null
         row.seatKmYearBreakdown = seatKm
-        const be = MarketScanDealMetrics.daysToBreakEvenBreakdown(row, ctx.economics)
-        row.breakEvenDays      = be ? be.value : null
-        row.breakEvenBreakdown = be
+        row.breakEvenDays       = be ? be.value : null
+        row.breakEvenBreakdown  = be
+
+        const fuel = MarketScanDealMetrics.fuelCostPerSeatKm(row, ctx.fuelCtx)
+        row.fuelPerSeatKm    = fuel ? fuel.value : null
+        row.fuelBreakdown    = fuel
 
         const synergy = MarketScanDealMetrics.fleetSynergy(row, ctx.fleetByType)
         row.fleetOwned       = synergy ? synergy.owned : null
@@ -395,4 +612,8 @@ function numOrDefault(v, fallback) {
 
 function isFiniteNumber(v) {
     return typeof v === "number" && isFinite(v)
+}
+
+if (typeof window !== "undefined") {
+    window.MarketScanDealMetrics = MarketScanDealMetrics
 }

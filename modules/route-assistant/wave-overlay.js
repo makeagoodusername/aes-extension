@@ -14,9 +14,12 @@
  *     → ScheduleBuilder(preset, ctx).evaluateFlights(placements)
  *     → renderGantt(host, build, opts)
  *
- * Slice 1 is read-only against ScheduleStore. The build runs in-memory
- * only; nothing persists. Slice 2 will add an explicit "Save schedule"
- * CTA that hands the build to ScheduleStore.save().
+ * The overlay itself stays read-only against ScheduleStore — buildSchedule
+ * runs in-memory and never writes. Slice 2 lifted persistence into the
+ * panel via an explicit "💾 Save schedule" CTA in the header strip
+ * (`RouteAssistantPanel._saveWaveScheduleToStore`); that click handler is
+ * the SOLE write path. Don't add a save call inside this module — the
+ * panel's invariant ledger names that boundary explicitly.
  */
 class RouteAssistantWaveOverlay {
 
@@ -86,9 +89,10 @@ class RouteAssistantWaveOverlay {
      * @param {object} preset - SchedulePresets record
      * @param {Array} scoredRows
      * @param {object} ctx - {server, airlineCode, hubIata, selectedSpec, topN,
-     *                        carrierClassifier?}
+     *                        carrierClassifier?, overrides?, optimize?}
      * @returns {object} {validation, routes, flights, warnings, placements,
-     *   unplaced, shortfall, skipped, connections, preset}
+     *   unplaced, shortfall, skipped, excludedDests, connections, preset,
+     *   optimised, optimiseIters, optimiseScore}
      */
     static buildSchedule(preset, scoredRows, ctx) {
         const c = ctx || {}
@@ -96,6 +100,8 @@ class RouteAssistantWaveOverlay {
             validation: [], routes: [], flights: [], warnings: [],
             placements: [], unplaced: [], shortfall: {}, skipped: [],
             connections: [],
+            forcedDests: [],
+            excludedDests: [],
             preset: preset || null
         }
         if (!preset) {
@@ -116,16 +122,41 @@ class RouteAssistantWaveOverlay {
                 hubIata:      c.hubIata
             }
         )
-        out.routes = routes
+        const excludedDests = RouteAssistantWaveOverlay._excludedDestsFromOverrides(c.overrides)
+        const buildRoutes = excludedDests.size
+            ? routes.filter(r => !excludedDests.has(String(r && r.destination || "").toUpperCase()))
+            : routes
+        out.routes = buildRoutes
+        out.excludedDests = Array.from(excludedDests)
         out.skipped = skipped
 
         if (out.validation.length) return out
-        if (!routes.length) return out
+        if (!buildRoutes.length) return out
 
-        const assignment = builder.assignRoutes(routes)
-        out.placements = assignment.placements
-        out.unplaced   = assignment.unplaced
-        out.shortfall  = assignment.shortfall
+        // Slice E — pass user overrides into the assignment so dragged
+        // routes land on their picked wave even if it's bucket-saturated.
+        // H slice 3 — `c.optimize` flips placement onto the
+        // connection-graph-maximising hill-climb (still respects
+        // overrides; forced routes stay pinned).
+        // F slice 3 — `c.mode === "profit"` flips placement onto the
+        // per-slot profit greedy-best-marginal in
+        // `ScheduleBuilder._assignRoutesProfit`. Older callers pass no
+        // mode and keep the bucket-greedy / connection-hill-climb path.
+        const assignment = builder.assignRoutes(buildRoutes, {
+            overrides:    c.overrides,
+            optimize:     !!c.optimize,
+            mode:         c.mode || null,
+            selectedSpec: c.selectedSpec,
+            fleetSpecs:   c.fleetSpecs,
+            demandHourMap: c.demandHourMap
+        })
+        out.placements   = assignment.placements
+        out.unplaced     = assignment.unplaced
+        out.shortfall    = assignment.shortfall
+        out.forcedDests  = assignment.forcedDests || []
+        out.optimised    = !!assignment.optimised
+        out.optimiseIters = assignment.optimiseIters || 0
+        out.optimiseScore = assignment.optimiseScore || 0
 
         const evaluation = builder.evaluateFlights(assignment.placements)
         out.flights  = evaluation.flights
@@ -137,7 +168,52 @@ class RouteAssistantWaveOverlay {
         out.connections = builder.computeConnections(out.flights, {
             carrierClassifier: c.carrierClassifier
         })
+
+        // H slice 3b.2 — annotate each interline-classified connection
+        // with the recorded per-route partner share so the renderer can
+        // surface a "Y 30%" pill on the curve. Panel passes the lookup
+        // callback; missing records leave `interlineShare` undefined and
+        // the renderer skips the pill.
+        const interlineShareLookup = typeof c.interlineShareLookup === "function"
+            ? c.interlineShareLookup
+            : null
+        if (interlineShareLookup) {
+            for (const conn of out.connections) {
+                if (!conn || conn.classification !== "interline") continue
+                if (!conn.outboundDest) continue
+                try {
+                    const share = interlineShareLookup(conn.outboundDest)
+                    if (share && (share.paxPercent > 0 || share.cargoPercent > 0)) {
+                        conn.interlineShare = share
+                    }
+                } catch (_) { /* lookup outage — skip silently */ }
+            }
+        }
         return out
+    }
+
+    static _excludedDestsFromOverrides(overrides) {
+        const excluded = new Set()
+        if (!overrides) return excluded
+        const isExclude = (value) => {
+            if (typeof RouteAssistantWaveOverridesStore !== "undefined"
+                    && typeof RouteAssistantWaveOverridesStore.isExcludeValue === "function") {
+                return RouteAssistantWaveOverridesStore.isExcludeValue(value)
+            }
+            return String(value || "") === "__exclude__"
+        }
+        if (overrides instanceof Map) {
+            for (const [dest, value] of overrides.entries()) {
+                const d = String(dest || "").toUpperCase()
+                if (d && isExclude(value)) excluded.add(d)
+            }
+        } else if (typeof overrides === "object") {
+            for (const dest in overrides) {
+                const d = String(dest || "").toUpperCase()
+                if (d && isExclude(overrides[dest])) excluded.add(d)
+            }
+        }
+        return excluded
     }
 
     /**
@@ -214,11 +290,44 @@ class RouteAssistantWaveOverlay {
             const lane = RouteAssistantWaveOverlay._renderLane(
                 wave, flightsByWave.get(wave.id) || [], build, {
                     cropMin, cropMax, startMin, totalMin,
-                    onFlightClick: o.onFlightClick,
-                    hubIata: o.hubIata
+                    onFlightClick:   o.onFlightClick,
+                    hubIata:         o.hubIata,
+                    // Slice D — editor mode. When `onEnhanceLabel` is
+                    // supplied, the lane's label column is handed to the
+                    // wave-editor for spinner / time-input / delete UI.
+                    // Read-only callers (other panel modes, eventual
+                    // dashboard preview) pass nothing → static label.
+                    onEnhanceLabel:  o.onEnhanceLabel,
+                    preset:          preset,
+                    // Slice E — drop target + forced-bar release wiring
+                    // travel down to the lane through ctx.
+                    onPlace:         o.onPlace,
+                    onReleaseForced: o.onReleaseForced
                 }
             )
             host.append(lane)
+        }
+
+        // Slice D — "+ Add wave" footer. Visible only in editor mode
+        // (i.e. when the panel passed an `onAddWave` callback). Sits
+        // below the swim lanes; clicking it appends a wave to the
+        // active preset and re-renders.
+        if (typeof o.onAddWave === "function") {
+            const addRow = document.createElement("div")
+            addRow.style.cssText = "margin-top:4px;display:flex;justify-content:flex-start;"
+            const addBtn = document.createElement("button")
+            addBtn.type = "button"
+            addBtn.textContent = "+ Add wave"
+            addBtn.title = "Append a new wave to this preset (staggered ~4h after the last)."
+            addBtn.style.cssText = "background:#1f2937;color:#cbd5e1;"
+                + "border:1px dashed #475569;border-radius:3px;padding:4px 12px;"
+                + "font-size:11px;cursor:pointer;"
+            addBtn.addEventListener("click", (e) => {
+                e.preventDefault()
+                o.onAddWave()
+            })
+            addRow.append(addBtn)
+            host.append(addRow)
         }
 
         // ----- Slice 2 connection-graph SVG overlay -----
@@ -227,7 +336,10 @@ class RouteAssistantWaveOverlay {
         // pointer-events:none so flight-bar tooltips/clicks still work.
         if (o.showConnections !== false
             && build.connections && build.connections.length) {
-            RouteAssistantWaveOverlay._renderConnectionsOverlay(host, build.connections)
+            RouteAssistantWaveOverlay._renderConnectionsOverlay(host, build.connections, {
+                onInterlinePillClick: typeof o.onInterlinePillClick === "function"
+                    ? o.onInterlinePillClick : null
+            })
         }
 
         // ----- Warnings panel -----
@@ -256,24 +368,85 @@ class RouteAssistantWaveOverlay {
         }
 
         // ----- Unplaced strip -----
+        // Slice E — chips are now draggable. Drop on any wave lane to
+        // force-place a route there (override stored per (hub, preset)).
+        // The "Auto-fill" button bumps the haul-bucket on the first wave
+        // with capacity headroom for every unplaced route in one click.
         if (build.unplaced && build.unplaced.length) {
             const ubox = document.createElement("div")
             ubox.style.cssText = "margin-top:8px;padding:6px 8px;"
                 + "background:rgba(107,114,128,0.10);border:1px solid #374151;"
                 + "border-radius:4px;font-size:11px;color:#cbd5e1;"
+            const headRow = document.createElement("div")
+            headRow.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:4px;"
             const h = document.createElement("strong")
             h.textContent = "Unplaced (" + build.unplaced.length + ")"
-            h.style.cssText = "color:#cbd5e1;display:block;margin-bottom:4px;"
-            ubox.append(h)
+            h.style.cssText = "color:#cbd5e1;flex:1;"
+            headRow.append(h)
+            const draggable = typeof o.onPlace === "function"
+            if (draggable) {
+                const hint = document.createElement("span")
+                hint.textContent = "drag onto a wave →"
+                hint.style.cssText = "color:#6b7280;font-size:10px;font-style:italic;"
+                headRow.append(hint)
+                if (typeof o.onAutoFill === "function") {
+                    const auto = document.createElement("button")
+                    auto.type = "button"
+                    auto.textContent = "Auto-fill"
+                    auto.title = "Bump each wave's S/M/L capacity until every unplaced route fits."
+                    auto.style.cssText = "background:#1e40af;color:#dbeafe;"
+                        + "border:1px solid #3b82f6;border-radius:3px;"
+                        + "padding:2px 8px;font-size:10px;cursor:pointer;"
+                    auto.addEventListener("click", (e) => { e.preventDefault(); o.onAutoFill() })
+                    headRow.append(auto)
+                }
+            }
+            ubox.append(headRow)
             const chips = document.createElement("div")
             chips.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;"
             for (const r of build.unplaced) {
                 const chip = document.createElement("span")
                 chip.style.cssText = "padding:2px 6px;background:#374151;border-radius:3px;"
                     + "font-family:monospace;font-size:10px;color:#cbd5e1;"
+                    + (draggable ? "cursor:grab;" : "")
                 chip.textContent = r.destination + " " + r.distanceNm + "nm"
-                chip.title = "No wave with matching " + (ScheduleFactors.bucketize(r.distanceNm,
-                    preset.factors && preset.factors.rangeBuckets) || "?") + " capacity"
+                chip.title = draggable
+                    ? "Drag onto a wave to place. (No "
+                        + (ScheduleFactors.bucketize(r.distanceNm,
+                            preset.factors && preset.factors.rangeBuckets) || "?")
+                        + " capacity in any wave currently.)"
+                    : "No wave with matching "
+                        + (ScheduleFactors.bucketize(r.distanceNm,
+                            preset.factors && preset.factors.rangeBuckets) || "?")
+                        + " capacity"
+                if (draggable) {
+                    chip.draggable = true
+                    chip.dataset.dest = r.destination
+                    chip.addEventListener("dragstart", (e) => {
+                        chip.style.cursor = "grabbing"
+                        chip.style.opacity = "0.5"
+                        e.dataTransfer.effectAllowed = "move"
+                        e.dataTransfer.setData("text/plain",
+                            "aes-wave-route:" + r.destination)
+                        RouteAssistantWaveOverlay._emitGestureBus("dragschedule:gesture-start", {
+                            gestureId: "ra.unplaced.toLane", surface: "ra",
+                            kind: "native", destination: r.destination, presetId: preset.id
+                        })
+                    })
+                    chip.addEventListener("dragend", (e) => {
+                        chip.style.cursor = "grab"
+                        chip.style.opacity = "1"
+                        // dropEffect "none" on dragend → drop was cancelled (ESC,
+                        // dragged outside any drop target, etc). Browser-native
+                        // ESC works on HTML5 drag — emit cancelled outcome.
+                        const cancelled = !e.dataTransfer || e.dataTransfer.dropEffect === "none"
+                        RouteAssistantWaveOverlay._emitGestureBus("dragschedule:gesture-end", {
+                            gestureId: "ra.unplaced.toLane", surface: "ra",
+                            outcome:   cancelled ? "cancelled" : "applied",
+                            destination: r.destination, presetId: preset.id
+                        })
+                    })
+                }
                 chips.append(chip)
             }
             ubox.append(chips)
@@ -306,25 +479,61 @@ class RouteAssistantWaveOverlay {
         lane.style.cssText = "display:flex;align-items:stretch;margin-bottom:3px;"
             + "border:1px solid #2a3444;border-radius:3px;background:#0f1623;"
 
-        // Wave label (fixed-width left column)
+        // Wave label (fixed-width left column). Slice D: when
+        // `ctx.onEnhanceLabel` is supplied, hand the label element to the
+        // editor so spinners / time inputs replace the static text.
+        // Read-only callers fall through to the original markup.
         const label = document.createElement("div")
-        label.style.cssText = "width:140px;flex-shrink:0;padding:6px 8px;"
+        label.style.cssText = "width:160px;flex-shrink:0;padding:6px 8px;"
             + "border-right:1px solid #2a3444;background:#111827;color:#cbd5e1;font-size:11px;"
         const comp = wave.composition || {}
         const compStr = [comp.shortHaul || 0, comp.mediumHaul || 0, comp.longHaul || 0].join("/")
-        label.innerHTML = "<strong>" + escapeHtml(wave.label || "Wave") + "</strong>"
-            + "<br><span style='color:#6b7280;font-size:9px;font-family:monospace;'>"
-            + compStr + " S/M/L</span>"
-            + "<br><span style='color:#6b7280;font-size:9px;'>"
-            + "arr " + escapeHtml(wave.arrivalWindow.start) + "–" + escapeHtml(wave.arrivalWindow.end)
-            + "<br>dep " + escapeHtml(wave.departureWindow.start) + "–" + escapeHtml(wave.departureWindow.end)
-            + "</span>"
+        if (typeof ctx.onEnhanceLabel === "function") {
+            ctx.onEnhanceLabel(label, wave, ctx.preset)
+        } else {
+            label.innerHTML = "<strong>" + escapeHtml(wave.label || "Wave") + "</strong>"
+                + "<br><span style='color:#6b7280;font-size:9px;font-family:monospace;'>"
+                + compStr + " S/M/L</span>"
+                + "<br><span style='color:#6b7280;font-size:9px;'>"
+                + "arr " + escapeHtml(wave.arrivalWindow.start) + "–" + escapeHtml(wave.arrivalWindow.end)
+                + "<br>dep " + escapeHtml(wave.departureWindow.start) + "–" + escapeHtml(wave.departureWindow.end)
+                + "</span>"
+        }
 
         // Flight strip (relative-positioned canvas for absolute children)
         const strip = document.createElement("div")
         strip.style.cssText = "position:relative;flex:1;height:48px;"
             + "background-image:linear-gradient(to right, #1a2233 1px, transparent 1px);"
             + "background-size:" + (100 / Math.max(1, ctx.cropMax - ctx.cropMin)) + "% 100%;"
+
+        // Slice E — drop target for dragged Unplaced chips. The
+        // wave-overlay's caller wires `onPlace(destIata, waveId)` to
+        // persist the override + re-render.
+        if (typeof ctx.onPlace === "function") {
+            strip.addEventListener("dragover", (e) => {
+                e.preventDefault()
+                e.dataTransfer.dropEffect = "move"
+                strip.style.outline = "2px dashed #60a5fa"
+                strip.style.outlineOffset = "-2px"
+            })
+            strip.addEventListener("dragleave", () => {
+                strip.style.outline = ""
+                strip.style.outlineOffset = ""
+            })
+            strip.addEventListener("drop", (e) => {
+                e.preventDefault()
+                strip.style.outline = ""
+                strip.style.outlineOffset = ""
+                const data = e.dataTransfer.getData("text/plain") || ""
+                const m = data.match(/^aes-wave-route:(.+)$/)
+                if (!m) return
+                ctx.onPlace(m[1], wave.id)
+                RouteAssistantWaveOverlay._emitGestureBus("dragschedule:applied", {
+                    gestureId: "ra.unplaced.toLane",
+                    effect: {kind: "ra-unplaced-place", destination: m[1], waveId: wave.id}
+                })
+            })
+        }
 
         // Wave window bands (subtle shaded backgrounds for arr+dep windows)
         const arrStart = ScheduleFactors.parseHHMM(wave.arrivalWindow.start)
@@ -373,34 +582,63 @@ class RouteAssistantWaveOverlay {
                 alignItems:   "center"
             })
             const peer = isOut ? f.destination : f.origin
-            bar.textContent = peer
+            // Slice E — surface forced placements with a 📌 prefix in
+            // both the bar text and the tooltip so the user can spot
+            // overridden routes at a glance and click → release.
+            bar.textContent = (f.forced ? "📌" : "") + peer
             bar.title = (isOut ? "OUT " : "IN  ")
                 + f.origin + "→" + f.destination
                 + "  " + f.depTimeLocal
                 + "  " + f.distanceNm + "nm"
                 + (f.aircraftType ? "  " + f.aircraftType : "")
                 + (f.rangeBucket ? "  [" + f.rangeBucket + "]" : "")
+                + (f.forced ? "  · FORCED (manual placement). Click → release override."
+                            : "")
             // Range bucket — colored left edge: short=lighter, long=darker
             if (f.rangeBucket === "longHaul")        bar.style.borderLeft = "3px solid #1e40af"
             else if (f.rangeBucket === "mediumHaul") bar.style.borderLeft = "3px solid #2563eb"
             else if (f.rangeBucket === "shortHaul")  bar.style.borderLeft = "3px solid #60a5fa"
+            // Slice E — dashed outline marks forced placements.
+            if (f.forced) {
+                bar.style.border = "1.5px dashed #fbbf24"
+                bar.style.background = isOut
+                    ? "linear-gradient(45deg, #3b82f6 75%, #2563eb 75%)"
+                    : "linear-gradient(45deg, #10b981 75%, #059669 75%)"
+            }
 
             if (ctx.onFlightClick) {
                 bar.addEventListener("click", (e) => {
                     e.preventDefault()
                     e.stopPropagation()
-                    ctx.onFlightClick(f, ctx.hubIata)
+                    // Slice E — click on a forced bar releases the
+                    // override (returns the route to the bucket-driven
+                    // assignment). Non-forced bars open the AS
+                    // scheduling page as before.
+                    if (f.forced && typeof ctx.onReleaseForced === "function") {
+                        ctx.onReleaseForced(isOut ? f.destination : f.origin)
+                    } else {
+                        ctx.onFlightClick(f, ctx.hubIata)
+                    }
                 })
             }
             strip.append(bar)
         }
 
-        // Empty-strip hint
+        // Empty-strip hint. Slice D: when this wave has zero capacity
+        // (composition 0/0/0) point the user at the spinners instead of
+        // the unhelpful "no flights placed" — that's the most common
+        // first-run reason a wave is empty, and the fix is one click left.
         if (!flights.length) {
             const hint = document.createElement("div")
             hint.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;"
                 + "justify-content:center;color:#4b5563;font-size:10px;font-style:italic;"
-            hint.textContent = "no flights placed in this wave"
+            const totalCap = (comp.shortHaul || 0) + (comp.mediumHaul || 0) + (comp.longHaul || 0)
+            if (totalCap === 0) {
+                hint.textContent = "← set S / M / L capacity to place flights here"
+                hint.style.color = "#fbbf24"
+            } else {
+                hint.textContent = "no flights placed in this wave"
+            }
             strip.append(hint)
         }
 
@@ -436,7 +674,10 @@ class RouteAssistantWaveOverlay {
      *
      * Caller has already verified build.connections.length > 0.
      */
-    static _renderConnectionsOverlay(host, connections) {
+    static _renderConnectionsOverlay(host, connections, opts) {
+        const onPillClick = (opts && typeof opts.onInterlinePillClick === "function")
+            ? opts.onInterlinePillClick
+            : null
         host.style.position = "relative"
         const hostRect = host.getBoundingClientRect()
         const SVGNS = "http://www.w3.org/2000/svg"
@@ -493,11 +734,154 @@ class RouteAssistantWaveOverlay {
             path.dataset.outSeq = String(c.outboundSeq)
             svg.append(path)
             drawn++
+
+            // H slice 3b.2 — interline share pill at curve midpoint.
+            // Bezier with control points (x1+dx, y1) and (x2-dx, y2) has
+            // midpoint = ((x1+x2)/2, (y1+y2)/2) — the dx terms cancel at
+            // t=0.5 so the linear midpoint formula is exact for our shape.
+            if (c.interlineShare) {
+                const label = RouteAssistantWaveOverlay._formatInterlineShareLabel(c.interlineShare)
+                if (label) {
+                    const midX = (x1 + x2) / 2
+                    const midY = (y1 + y2) / 2
+                    const pad = 3
+                    const fontSize = 9
+                    const charW = fontSize * 0.55
+                    const w = label.length * charW + pad * 2
+                    const h = fontSize + pad * 2
+                    const rect = document.createElementNS(SVGNS, "rect")
+                    rect.setAttribute("x", String(midX - w / 2))
+                    rect.setAttribute("y", String(midY - h / 2))
+                    rect.setAttribute("width", String(w))
+                    rect.setAttribute("height", String(h))
+                    rect.setAttribute("rx", "2")
+                    rect.setAttribute("fill", "rgba(15,23,42,0.85)")
+                    rect.setAttribute("stroke", style.stroke)
+                    rect.setAttribute("stroke-width", "1")
+                    rect.dataset.inSeq  = String(c.inboundSeq)
+                    rect.dataset.outSeq = String(c.outboundSeq)
+                    rect.dataset.aesInterlinePill = "1"
+                    rect.dataset.aesDest = String(c.outboundDest || "")
+                    // Tooltip via SVG <title> — surfaces per-class detail
+                    // and partner names on hover without a custom popover.
+                    const tip = RouteAssistantWaveOverlay._formatInterlineShareTooltip(c.interlineShare)
+                    if (tip) {
+                        const titleNode = document.createElementNS(SVGNS, "title")
+                        titleNode.textContent = tip
+                        rect.append(titleNode)
+                    }
+                    svg.append(rect)
+                    const text = document.createElementNS(SVGNS, "text")
+                    text.setAttribute("x", String(midX))
+                    text.setAttribute("y", String(midY))
+                    text.setAttribute("text-anchor", "middle")
+                    text.setAttribute("dominant-baseline", "central")
+                    text.setAttribute("font-size", String(fontSize))
+                    text.setAttribute("font-family", "monospace")
+                    text.setAttribute("fill", "#fbbf24")
+                    text.setAttribute("opacity", "0.95")
+                    text.dataset.inSeq  = String(c.inboundSeq)
+                    text.dataset.outSeq = String(c.outboundSeq)
+                    text.dataset.aesInterlinePill = "1"
+                    text.dataset.aesDest = String(c.outboundDest || "")
+                    text.textContent = label
+                    if (tip) {
+                        const titleNode2 = document.createElementNS(SVGNS, "title")
+                        titleNode2.textContent = tip
+                        text.append(titleNode2)
+                    }
+                    svg.append(text)
+                    // Click-through to the panel's per-route popover. The
+                    // SVG sits behind a pointer-events:none wrapper, so we
+                    // re-enable pointer events on the pill nodes only.
+                    if (onPillClick && c.outboundDest) {
+                        rect.style.pointerEvents = "auto"
+                        rect.style.cursor = "pointer"
+                        text.style.pointerEvents = "auto"
+                        text.style.cursor = "pointer"
+                        const handler = (ev) => {
+                            ev.preventDefault()
+                            ev.stopPropagation()
+                            try { onPillClick(String(c.outboundDest), rect) }
+                            catch (_) { /* swallow — pill click never blocks */ }
+                        }
+                        rect.addEventListener("click", handler)
+                        text.addEventListener("click", handler)
+                    }
+                }
+            }
         }
 
         if (!drawn) return
         host.append(svg)
         RouteAssistantWaveOverlay._wireConnectionHover(host, svg)
+    }
+
+    /**
+     * H slice 3b.2 — compact label like "Y 30%" or "Y/C 45%" for the
+     * interline pill. Picks the dominant class (PAX > CARGO when both
+     * non-zero; abbreviates Y/C/F as the umbrella when paxPercent is the
+     * sum of subclasses). Returns null when neither side carries share.
+     */
+    static _formatInterlineShareLabel(share) {
+        if (!share) return null
+        const pax = Math.round(Number(share.paxPercent) || 0)
+        const cargo = Math.round(Number(share.cargoPercent) || 0)
+        if (!pax && !cargo) return null
+        if (pax && cargo) return "P " + pax + "% · C " + cargo + "%"
+        if (pax) return "Y " + pax + "%"
+        return "C " + cargo + "%"
+    }
+
+    /**
+     * H slice 3b.2 follow-up — multi-line tooltip for the pill. SVG <title>
+     * elements support newlines, so we surface the per-class breakdown
+     * (Y / C / F) when an asymmetric record exists. Falls back to the
+     * aggregate paxPercent when only umbrella PAX entries are present.
+     */
+    static _formatInterlineShareTooltip(share) {
+        if (!share) return null
+        const lines = []
+        const byClass = share.byClass || null
+        if (byClass) {
+            for (const cls of ["Y", "C", "F"]) {
+                const v = Math.round(Number(byClass[cls]) || 0)
+                if (v > 0) lines.push("• " + cls + ": " + v + "% interlined")
+            }
+        }
+        if (!lines.length && share.paxPercent > 0) {
+            lines.push("• Pax: " + Math.round(share.paxPercent) + "% interlined")
+        }
+        if (share.cargoPercent > 0) {
+            lines.push("• Cargo: " + Math.round(share.cargoPercent) + "% interlined")
+        }
+        if (!lines.length) return null
+        // H slice 3b.2.2 — sensitivity surfacing. Estimator-derived loss in
+        // weekly revenue (cost stays fixed regardless of codeshare share,
+        // so revenue loss == profit loss). Surfaced when the panel's
+        // lookup decorated the share with non-zero figures.
+        const lossPerWeek = Number(share.revenueLossPerWeek) || 0
+        if (lossPerWeek > 0) {
+            lines.push("")
+            lines.push("Forgone revenue ≈ "
+                + RouteAssistantWaveOverlay._formatMoneyShort(lossPerWeek) + "/wk")
+            lines.push("(cost stays the same — make sure the deal is worth it)")
+        }
+        return "Interline share on this route\n" + lines.join("\n") + "\nClick to edit partners."
+    }
+
+    /**
+     * H slice 3b.2.2 — compact money formatter for tooltip lines.
+     * `123456` → `"$123K"`, `1234567` → `"$1.2M"`, smaller values rounded
+     * to the nearest hundred. Negative values flow through with the sign.
+     */
+    static _formatMoneyShort(n) {
+        const v = Number(n) || 0
+        const sign = v < 0 ? "-" : ""
+        const a = Math.abs(v)
+        if (a >= 1e6) return sign + "$" + (Math.round(a / 1e5) / 10) + "M"
+        if (a >= 1e3) return sign + "$" + Math.round(a / 1e3) + "K"
+        return sign + "$" + Math.round(a / 100) * 100
     }
 
     /**
@@ -603,4 +987,24 @@ class RouteAssistantWaveOverlay {
 
         host.append(wrap)
     }
+
+    /**
+     * Phase A1: emit gesture lifecycle to whichever buses are present so
+     * the chip→lane HTML5 native drag participates in the same audit
+     * trail as arbiter-routed manual drags. Browser ESC already cancels
+     * HTML5 drag natively — this is purely instrumentation.
+     */
+    static _emitGestureBus(event, payload) {
+        const buses = []
+        try { if (window.AesAfp && window.AesAfp.bus) buses.push(window.AesAfp.bus) } catch (_) {}
+        try { if (window.AesStrategy && window.AesStrategy.bus) buses.push(window.AesStrategy.bus) } catch (_) {}
+        try { if (window.CentralHubBus) buses.push(window.CentralHubBus) } catch (_) {}
+        for (const bus of buses) {
+            try { bus.emit(event, payload) } catch (_) {}
+        }
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantWaveOverlay = RouteAssistantWaveOverlay
 }

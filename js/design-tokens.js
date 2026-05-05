@@ -1,9 +1,21 @@
 /* ===========================================================
    AES "CONCRETE" — js/design-tokens.js
    Mirror of design-tokens.css as a JS object on window.AESTokens.
-   Used by modules that build DOM with inline `style.cssText` strings
-   instead of (or in addition to) class-based styling.
-   Source of truth is the CSS file; this file MUST stay in sync.
+
+   Each token getter returns a CSS `var(--aes-*)` reference rather than
+   a literal value. Modules concatenate these into `style.cssText`; the
+   browser resolves the variable on every paint, so changing the CSS
+   custom property at runtime updates every existing inline-styled
+   element instantly without re-rendering. The customization engine
+   exploits this — see modules/customization/applier.js.
+
+   The CSS file (css/design-tokens.css) is the source of truth for
+   default values. This file holds the JS-side map from camelCase paths
+   to CSS variable names. They MUST stay in sync.
+
+   For the rare caller that needs a resolved literal (color math,
+   string comparison), use `AESTokens.literal.color.bone` which reads
+   the computed value off `:root`.
    =========================================================== */
 
 (function () {
@@ -12,111 +24,123 @@
     if (typeof window === "undefined") { return; }
     if (window.AESTokens) { return; }
 
+    function v(cssVar) { return "var(" + cssVar + ")"; }
+
     const T = {
         color: {
-            // Bone family — light surfaces
-            bone:       "#F4F1EA",
-            bone2:      "#ECE7DC",
-            bone3:      "#E0DAC8",
-            paperRule:  "#C9C0B0",
+            bone:        v("--aes-bone"),
+            bone2:       v("--aes-bone-2"),
+            bone3:       v("--aes-bone-3"),
+            paperRule:   v("--aes-paper-rule"),
 
-            // Oxide family — text & structure
-            oxide:      "#2B2520",
-            oxide2:     "#4A413B",
-            slate:      "#7A6F66",
+            oxide:       v("--aes-oxide"),
+            oxide2:      v("--aes-oxide-2"),
+            slate:       v("--aes-slate"),
 
-            // Dark variant — toasts, status overlays
-            oxideBg:    "#1A1612",
-            oxideBg2:   "#28221C",
-            boneFg:     "#F4F1EA",
-            oxideRule:  "#4A413B",
+            oxideBg:     v("--aes-oxide-bg"),
+            oxideBg2:    v("--aes-oxide-bg-2"),
+            boneFg:      v("--aes-bone-fg"),
+            oxideRule:   v("--aes-oxide-rule"),
 
-            // Signal accent
-            rust:        "#B8472A",
-            rustSoft:    "rgba(184, 71, 42, 0.12)",
-            rustDeep:    "#8B3520",
-            rustFg:      "#F4F1EA",
+            rust:        v("--aes-rust"),
+            rustSoft:    v("--aes-rust-soft"),
+            rustDeep:    v("--aes-rust-deep"),
+            rustFg:      v("--aes-rust-fg"),
 
-            // Status (semantic only)
-            cobalt:        "#3656A8",
-            cobaltSoft:    "rgba(54, 86, 168, 0.14)",
-            moss:          "#2F5F3F",
-            mossSoft:      "rgba(47, 95, 63, 0.14)",
-            amber:         "#B8861F",
-            amberSoft:     "rgba(184, 134, 31, 0.14)",
-            crimson:       "#8B2727",
-            crimsonSoft:   "rgba(139, 39, 39, 0.14)"
+            cobalt:      v("--aes-cobalt"),
+            cobaltSoft:  v("--aes-cobalt-soft"),
+            moss:        v("--aes-moss"),
+            mossSoft:    v("--aes-moss-soft"),
+            amber:       v("--aes-amber"),
+            amberSoft:   v("--aes-amber-soft"),
+            crimson:     v("--aes-crimson"),
+            crimsonSoft: v("--aes-crimson-soft"),
+
+            // Cubist accents — additive; consumed under body.aes-cubist
+            vermilion:     v("--aes-vermilion"),
+            vermilionSoft: v("--aes-vermilion-soft"),
+            viridian:      v("--aes-viridian"),
+            viridianSoft:  v("--aes-viridian-soft"),
+            gold:          v("--aes-gold"),
+            goldSoft:      v("--aes-gold-soft")
         },
 
         font: {
-            display: "'Inter Tight', 'Helvetica Now Display', 'Helvetica Neue', system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
-            mono:    "'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+            display: v("--aes-font-display"),
+            mono:    v("--aes-font-mono")
         },
 
         fs: {
-            micro:   "10px",
-            small:   "11px",
-            body:    "12px",
-            lead:    "14px",
-            h3:      "18px",
-            h2:      "24px",
-            h1:      "36px",
-            display: "56px"
+            micro:   v("--aes-fs-micro"),
+            small:   v("--aes-fs-small"),
+            body:    v("--aes-fs-body"),
+            lead:    v("--aes-fs-lead"),
+            h3:      v("--aes-fs-h3"),
+            h2:      v("--aes-fs-h2"),
+            h1:      v("--aes-fs-h1"),
+            display: v("--aes-fs-display")
         },
 
         fw: {
-            regular: 400,
-            medium:  500,
-            bold:    700,
-            display: 800,
-            black:   900
+            regular: v("--aes-fw-regular"),
+            medium:  v("--aes-fw-medium"),
+            bold:    v("--aes-fw-bold"),
+            display: v("--aes-fw-display"),
+            black:   v("--aes-fw-black")
         },
 
         lh: {
-            tight: 1.15,
-            body:  1.4
+            tight: v("--aes-lh-tight"),
+            body:  v("--aes-lh-body")
         },
 
         track: {
-            caps: "0.08em",
-            mono: "0.02em"
+            caps: v("--aes-tracking-caps"),
+            mono: v("--aes-tracking-mono")
         },
 
         sp: {
-            1: "4px",
-            2: "8px",
-            3: "12px",
-            4: "16px",
-            5: "24px",
-            6: "32px",
-            7: "48px"
+            0: "0",
+            1: v("--aes-sp-1"),
+            2: v("--aes-sp-2"),
+            3: v("--aes-sp-3"),
+            4: v("--aes-sp-4"),
+            5: v("--aes-sp-5"),
+            6: v("--aes-sp-6"),
+            7: v("--aes-sp-7")
         },
 
         geom: {
-            radius: "0",
-            bw1:    "1px",
-            bw2:    "2px",
-            bw3:    "3px"
+            radius: v("--aes-radius"),
+            bw1:    v("--aes-bw-1"),
+            bw2:    v("--aes-bw-2"),
+            bw3:    v("--aes-bw-3")
         },
 
         z: {
-            base:    1,
-            overlay: 100,
-            panel:   1000,
-            popover: 9000,
-            modal:   10000,
-            toast:   10001
+            base:    v("--aes-z-base"),
+            overlay: v("--aes-z-overlay"),
+            panel:   v("--aes-z-panel"),
+            popover: v("--aes-z-popover"),
+            modal:   v("--aes-z-modal"),
+            toast:   v("--aes-z-toast")
         },
 
         tr: {
-            fast:   "80ms linear",
-            medium: "140ms linear"
+            fast:   v("--aes-tr-fast"),
+            medium: v("--aes-tr-medium")
+        },
+
+        shadow: {
+            panel:    v("--aes-shadow-panel"),
+            modal:    v("--aes-shadow-modal"),
+            backdrop: v("--aes-shadow-backdrop")
         }
     };
 
-    // Convenience helpers —
-    // Build a panel-card style string in one line:
-    //   el.style.cssText = AESTokens.styles.panel();
+    // Convenience helpers — unchanged behaviour. The strings they produce
+    // now carry `var(--aes-*)` references, so they recolor live as the
+    // customization engine writes new values to the cascade.
     T.styles = {
         panel: function (opts) {
             const dark = opts && opts.dark;
@@ -164,6 +188,44 @@
                 "letter-spacing:" + T.track.mono
             ].join(";");
         }
+    };
+
+    // Escape hatch — read the resolved literal off :root for callers that
+    // need to do colour math or string compare. Lazy, no upkeep cost when
+    // unused. Returns "" if the document hasn't loaded the CSS yet.
+    function readLiteral(cssVar) {
+        try {
+            return getComputedStyle(document.documentElement)
+                .getPropertyValue(cssVar)
+                .trim();
+        } catch (_) {
+            return "";
+        }
+    }
+
+    T.literal = {
+        color: new Proxy({}, {
+            get: function (_, k) {
+                const map = {
+                    bone: "--aes-bone", bone2: "--aes-bone-2", bone3: "--aes-bone-3",
+                    paperRule: "--aes-paper-rule",
+                    oxide: "--aes-oxide", oxide2: "--aes-oxide-2", slate: "--aes-slate",
+                    oxideBg: "--aes-oxide-bg", oxideBg2: "--aes-oxide-bg-2",
+                    boneFg: "--aes-bone-fg", oxideRule: "--aes-oxide-rule",
+                    rust: "--aes-rust", rustSoft: "--aes-rust-soft",
+                    rustDeep: "--aes-rust-deep", rustFg: "--aes-rust-fg",
+                    cobalt: "--aes-cobalt", cobaltSoft: "--aes-cobalt-soft",
+                    moss: "--aes-moss", mossSoft: "--aes-moss-soft",
+                    amber: "--aes-amber", amberSoft: "--aes-amber-soft",
+                    crimson: "--aes-crimson", crimsonSoft: "--aes-crimson-soft",
+                    vermilion: "--aes-vermilion", vermilionSoft: "--aes-vermilion-soft",
+                    viridian: "--aes-viridian", viridianSoft: "--aes-viridian-soft",
+                    gold: "--aes-gold", goldSoft: "--aes-gold-soft"
+                };
+                const cssVar = map[k];
+                return cssVar ? readLiteral(cssVar) : "";
+            }
+        })
     };
 
     window.AESTokens = T;

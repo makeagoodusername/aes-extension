@@ -7,7 +7,7 @@
  * Mirrors `modules/route-assistant/pricing-applier.js`'s GET → parse →
  * build → POST → verify pipeline but is intentionally narrower:
  *   - drives one class price; carries the other three forward unchanged
- *   - forces scope to `settings:airportPair` only
+ *   - applies to the airport pair and its flight numbers by default
  *   - no audit/log persistence (the central-hub tile uses toasts instead)
  *
  * The inventory settings form is structurally a near-twin of the markets
@@ -51,32 +51,13 @@ class CentralInventoryQuickPriceApplier {
         {cls: "F",     name: "classes:prices:2:newPrice"},
         {cls: "Cargo", name: "classes:prices:3:newPrice"}
     ]
+    static DECIMAL_CLASS_KEYS = {Cargo: true}
 
     constructor(opts) {
         opts = opts || {}
         this.dryRunOnly   = !!opts.dryRunOnly
         this.applyEnabled = opts.applyEnabled !== false
         this.verifyAfter  = opts.verifyAfter !== false
-        this.applyLog     = opts.applyLog || null
-    }
-
-    static fingerprint({hub, dest, classKey, newPrice}) {
-        const h = String(hub || "").toUpperCase()
-        const d = String(dest || "").toUpperCase()
-        const c = String(classKey || "")
-        const p = isFinite(newPrice) ? Math.round(Number(newPrice)) : ""
-        return h + "-" + d + "|" + c + "=" + p
-    }
-
-    async _writeLog(envelope) {
-        if (!this.applyLog || typeof this.applyLog.add !== "function") return envelope
-        try {
-            const saved = await this.applyLog.add(envelope)
-            if (saved && saved.id) envelope.logId = saved.id
-        } catch (e) {
-            console.warn("[AES inventoryQuickPriceApplier] apply-log write failed", e)
-        }
-        return envelope
     }
 
     static _baseUrl(server) {
@@ -87,6 +68,68 @@ class CentralInventoryQuickPriceApplier {
         return CentralInventoryQuickPriceApplier._baseUrl(server)
             + "/app/com/inventory/"
             + String(hub).toUpperCase() + String(dest).toUpperCase()
+    }
+
+    static _parseInteger(text) {
+        const n = parseInt(String(text || "").replace(/[^\d-]/g, ""), 10)
+        return isFinite(n) ? n : null
+    }
+
+    static _parsePrice(text, classKey) {
+        if (!CentralInventoryQuickPriceApplier.DECIMAL_CLASS_KEYS[classKey]) {
+            return CentralInventoryQuickPriceApplier._parseInteger(text)
+        }
+        const raw = String(text || "").trim().replace(/[^\d,.\-]/g, "")
+        if (!raw || raw === "-") return null
+        const sign = raw.charAt(0) === "-" ? -1 : 1
+        const body = sign < 0 ? raw.slice(1) : raw
+        const sep = Math.max(body.lastIndexOf("."), body.lastIndexOf(","))
+        if (sep >= 0) {
+            const whole = body.slice(0, sep).replace(/\D/g, "")
+            const frac = body.slice(sep + 1).replace(/\D/g, "")
+            if (frac.length > 0 && frac.length <= 2) {
+                const n = Number((whole || "0") + "." + frac)
+                return isFinite(n) ? sign * n : null
+            }
+        }
+        const n = Number(body.replace(/\D/g, ""))
+        return isFinite(n) ? sign * n : null
+    }
+
+    static _normalisePriceForClass(classKey, value) {
+        const n = Number(value)
+        if (!isFinite(n)) return NaN
+        if (CentralInventoryQuickPriceApplier.DECIMAL_CLASS_KEYS[classKey]) {
+            return Math.round(n * 100) / 100
+        }
+        return Math.round(n)
+    }
+
+    static _formatPriceForForm(classKey, value) {
+        const n = CentralInventoryQuickPriceApplier._normalisePriceForClass(classKey, value)
+        if (!isFinite(n)) return ""
+        if (CentralInventoryQuickPriceApplier.DECIMAL_CLASS_KEYS[classKey]) {
+            return n.toFixed(2).replace(/\.?0+$/, "")
+        }
+        return String(Math.round(n))
+    }
+
+    static _pricesEqual(classKey, a, b) {
+        const left = CentralInventoryQuickPriceApplier._normalisePriceForClass(classKey, a)
+        const right = CentralInventoryQuickPriceApplier._normalisePriceForClass(classKey, b)
+        const tolerance = CentralInventoryQuickPriceApplier.DECIMAL_CLASS_KEYS[classKey] ? 0.005 : 0.5
+        return isFinite(left) && isFinite(right) && Math.abs(left - right) < tolerance
+    }
+
+    static normalizeClassKey(label) {
+        const raw = String(label || "").trim()
+        if (!raw) return null
+        const norm = raw.replace(/\s+/g, " ").toLowerCase()
+        if (/^y$/i.test(raw) || /\b(economy|eco|tourist)\b/i.test(norm)) return "Y"
+        if (/^c$/i.test(raw) || /\b(business|biz)\b/i.test(norm)) return "C"
+        if (/^f$/i.test(raw) || /\b(first)\b/i.test(norm)) return "F"
+        if (/^cargo$/i.test(raw) || /\b(cargo|freight|mail|fracht)\b/i.test(norm)) return "Cargo"
+        return null
     }
 
     /**
@@ -116,7 +159,9 @@ class CentralInventoryQuickPriceApplier {
         for (const f of doc.querySelectorAll("form[method='post']")) {
             const action = f.getAttribute("action") || ""
             if (action.indexOf(CentralInventoryQuickPriceApplier.FORM_ACTION_SUFFIX) < 0) continue
-            if (!f.querySelector("button[name='submit-prices'], input[name='submit-prices']")) continue
+            const submit = f.querySelector("button[name='submit-prices']")
+                || f.querySelector("input[name='submit-prices']")
+            if (!submit) continue
             settingsForm = f
             break
         }
@@ -136,12 +181,40 @@ class CentralInventoryQuickPriceApplier {
         const currentPrices = {}
         const observedFieldNames = {}
         const classOrder = []
+
+        let pricingFieldset = null
+        for (const fs of settingsForm.querySelectorAll("fieldset")) {
+            const legend = fs.querySelector("legend")
+            if (legend && /^pricing$/i.test((legend.textContent || "").trim())) {
+                pricingFieldset = fs
+                break
+            }
+        }
+        if (pricingFieldset) {
+            for (const tr of pricingFieldset.querySelectorAll("table tbody tr")) {
+                const cells = tr.querySelectorAll("td")
+                if (!cells || cells.length < 3) continue
+                const cls = CentralInventoryQuickPriceApplier.normalizeClassKey(cells[0].textContent)
+                if (!cls || observedFieldNames[cls]) continue
+                const inp = cells[2].querySelector("input[type='text']")
+                    || cells[2].querySelector("input")
+                if (!inp) continue
+                const name = inp.getAttribute("name")
+                if (!name) continue
+                const inputValue = CentralInventoryQuickPriceApplier._parsePrice(inp.getAttribute("value"), cls)
+                const currentValue = CentralInventoryQuickPriceApplier._parsePrice(cells[1].textContent, cls)
+                currentPrices[cls] = inputValue != null ? inputValue : currentValue
+                observedFieldNames[cls] = name
+                classOrder.push(cls)
+            }
+        }
+
         for (const spec of CentralInventoryQuickPriceApplier.CANONICAL_PRICE_FIELDS) {
+            if (observedFieldNames[spec.cls]) continue
             const inp = settingsForm.querySelector("input[name='" + spec.name + "']")
             if (!inp) continue
-            const raw = inp.getAttribute("value")
-            const n = parseInt((raw || "").replace(/[^\d-]/g, ""), 10)
-            currentPrices[spec.cls] = isFinite(n) ? n : null
+            const n = CentralInventoryQuickPriceApplier._parsePrice(inp.getAttribute("value"), spec.cls)
+            currentPrices[spec.cls] = n
             observedFieldNames[spec.cls] = spec.name
             classOrder.push(spec.cls)
         }
@@ -173,14 +246,13 @@ class CentralInventoryQuickPriceApplier {
     /**
      * Build the URL-encoded body. Emits all four class prices (the target
      * class at `newPrice`, the others carried forward at their parsed
-     * value), every General Settings select unchanged, the airport-pair
-     * scope checkbox, and the submit-prices button name.
+     * value), every General Settings select unchanged, the requested scope
+     * checkboxes, and the submit-prices button name.
      *
      * Wicket convention: unchecked checkboxes are absent from the body —
-     * NOT sent as `off`. So we deliberately omit flightNumbers,
-     * returnAirportPair, returnFlightNumbers.
+     * NOT sent as `off`.
      */
-    static buildBody({formContext, classKey, newPrice}) {
+    static buildBody({formContext, classKey, newPrice, scope}) {
         if (!formContext) throw new Error("buildBody: formContext required")
         const body = new URLSearchParams()
 
@@ -190,7 +262,7 @@ class CentralInventoryQuickPriceApplier {
 
         const observed = formContext.observedFieldNames || {}
         const fallback = CentralInventoryQuickPriceApplier.FIELD_NAMES.prices
-        const rounded = Math.round(Number(newPrice))
+        const rounded = CentralInventoryQuickPriceApplier._normalisePriceForClass(classKey, newPrice)
         for (const cls of (formContext.classOrder || [])) {
             const fieldName = observed[cls] || fallback[cls]
             if (!fieldName) continue
@@ -198,14 +270,23 @@ class CentralInventoryQuickPriceApplier {
                 ? rounded
                 : formContext.currentPrices[cls]
             if (value == null || !isFinite(value)) continue
-            body.set(fieldName, String(value))
+            body.set(fieldName, CentralInventoryQuickPriceApplier._formatPriceForForm(cls, value))
         }
 
         for (const fieldName in (formContext.generalSettings || {})) {
             body.set(fieldName, String(formContext.generalSettings[fieldName]))
         }
 
-        body.set(CentralInventoryQuickPriceApplier.FIELD_NAMES.scope.airportPair, "on")
+        const effectiveScope = Object.assign({
+            airportPair:         true,
+            flightNumbers:       true,
+            returnAirportPair:   false,
+            returnFlightNumbers: false
+        }, scope || {})
+        const scopeFields = CentralInventoryQuickPriceApplier.FIELD_NAMES.scope
+        for (const k in scopeFields) {
+            if (effectiveScope[k]) body.set(scopeFields[k], "on")
+        }
         body.set(CentralInventoryQuickPriceApplier.SUBMIT_BUTTON, "1")
 
         return body
@@ -217,21 +298,14 @@ class CentralInventoryQuickPriceApplier {
      * @returns {Promise<object>}
      */
     async apply(args) {
-        const result = await this._applyInner(args || {})
-        return await this._writeLog(result)
-    }
-
-    async _applyInner(args) {
+        args = args || {}
         const hub      = String(args.hub  || "").toUpperCase()
         const dest     = String(args.dest || "").toUpperCase()
         const server   = String(args.server || "")
         const classKey = args.classKey
         const newPrice = Number(args.newPrice)
-        const ts       = Date.now()
-        const source   = args.source || "tile"
-        const fingerprint = CentralInventoryQuickPriceApplier.fingerprint({hub, dest, classKey, newPrice})
 
-        const baseEnvelope = {hub, dest, classKey, server, ts, source, fingerprint}
+        const baseEnvelope = {hub, dest, classKey}
 
         if (CentralInventoryQuickPriceApplier.VALID_CLASS_KEYS.indexOf(classKey) < 0) {
             return Object.assign({}, baseEnvelope, {
@@ -299,7 +373,7 @@ class CentralInventoryQuickPriceApplier {
         }
 
         const prev = formContext.currentPrices[classKey]
-        const rounded = Math.round(newPrice)
+        const rounded = CentralInventoryQuickPriceApplier._normalisePriceForClass(classKey, newPrice)
         const envelope = Object.assign({}, baseEnvelope, {prev: prev != null ? prev : null, new: rounded})
 
         if (typeof args.onPreflight === "function") {
@@ -321,7 +395,12 @@ class CentralInventoryQuickPriceApplier {
             }
         }
 
-        const body = CentralInventoryQuickPriceApplier.buildBody({formContext, classKey, newPrice})
+        const body = CentralInventoryQuickPriceApplier.buildBody({
+            formContext,
+            classKey,
+            newPrice,
+            scope: args.scope
+        })
 
         if (dryRun) {
             return Object.assign({}, envelope, {status: "dry-run"})
@@ -375,7 +454,15 @@ class CentralInventoryQuickPriceApplier {
             verified = await this._verifyOne(server, hub, dest, classKey)
         }
 
-        if (verified != null && Math.round(verified) === rounded) {
+        if (verified != null && CentralInventoryQuickPriceApplier._pricesEqual(classKey, verified, rounded)) {
+            await this._syncVerifiedOwnPricingCache({
+                server,
+                hub,
+                dest,
+                classKey,
+                verified: rounded,
+                formContext
+            })
             return Object.assign({}, envelope, {status: "verified", verified, httpStatus})
         }
         return Object.assign({}, envelope, {status: "posted", verified, httpStatus})
@@ -392,6 +479,129 @@ class CentralInventoryQuickPriceApplier {
         } catch (e) {
             return null
         }
+    }
+
+    async _syncVerifiedOwnPricingCache(args) {
+        if (!args || !args.hub || !args.dest || !args.classKey) return
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return
+        const pair = String(args.hub).toUpperCase() + "-" + String(args.dest).toUpperCase()
+        const legacyKey = "routeAssistant:markets:ownPricing:" + pair
+        let scopedKey = legacyKey
+        if (typeof window !== "undefined" && window.AesAccountKey
+                && typeof window.AesAccountKey.acctKey === "function") {
+            scopedKey = window.AesAccountKey.acctKey("routeAssistant:markets:ownPricing", pair)
+        } else if (typeof acctKey !== "undefined" && typeof acctKey === "function") {
+            scopedKey = acctKey("routeAssistant:markets:ownPricing", pair)
+        }
+
+        const formPrices = Object.assign({}, (args.formContext && args.formContext.currentPrices) || {})
+        formPrices[args.classKey] = CentralInventoryQuickPriceApplier._normalisePriceForClass(args.classKey, args.verified)
+        const cleanPrices = {}
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
+            const n = Number(formPrices[cls])
+            if (isFinite(n)) cleanPrices[cls] = CentralInventoryQuickPriceApplier._normalisePriceForClass(cls, n)
+        }
+        if (!Object.keys(cleanPrices).length) return
+
+        try {
+            const reads = scopedKey === legacyKey ? [legacyKey] : [scopedKey, legacyKey]
+            const cur = await chrome.storage.local.get(reads)
+            const prev = cur[scopedKey] || cur[legacyKey] || {}
+            const next = Object.assign({}, prev, {
+                hub: String(args.hub).toUpperCase(),
+                dest: String(args.dest).toUpperCase(),
+                server: args.server || prev.server || null,
+                scrapedAt: Date.now(),
+                source: "inventoryQuickPrice:verified",
+                prices: Object.assign({}, prev.prices || {}, cleanPrices)
+            })
+            if (args.formContext && args.formContext.generalSettings) {
+                next.generalSettings = Object.assign(
+                    {},
+                    prev.generalSettings || {},
+                    args.formContext.generalSettings
+                )
+            }
+            const writes = {}
+            writes[legacyKey] = next
+            if (scopedKey !== legacyKey) writes[scopedKey] = next
+            await chrome.storage.local.set(writes)
+            if (typeof window !== "undefined" && window.AesDataBus
+                    && typeof window.AesDataBus.emit === "function") {
+                window.AesDataBus.emit("data:route-assistant:markets:updated", {
+                    hub: next.hub,
+                    dest: next.dest,
+                    keysTouched: ["ownPricing"]
+                })
+            }
+        } catch (e) {
+            console.warn("[AES inventory quick price] verified price cache sync failed", e)
+        }
+    }
+
+    /**
+     * Slice 9 — batch apply mode. Sequentially apply a list of price
+     * updates against the inventory form. Sequential (not parallel) so AS
+     * doesn't see two concurrent submits for the same airline. Each entry
+     * is the full `apply()` shape: `{hub, dest, classKey, newPrice, server,
+     * dryRun?, onPreflight?}`.
+     *
+     * Options:
+     *   interMs:      delay between submits (default 250ms — keeps AS
+     *                 happy without slowing the user too much).
+     *   stopOnError:  when true, abort the batch on first non-dry-run
+     *                 failure. Defaults to false so a per-route hiccup
+     *                 doesn't drop the whole batch.
+     *   onProgress:   `(idx, total, lastResult) → void` per-entry hook.
+     *
+     * Returns `{results: [...], summary: {ok, failed, dryRun, aborted}}`.
+     * `results[i].status` mirrors the per-entry `apply()` envelope; if
+     * the batch aborted mid-way, trailing entries get `{status: "skipped",
+     * reason: "aborted"}` so caller indices stay aligned with input.
+     */
+    async applyBatch(entries, opts) {
+        opts = opts || {}
+        const interMs = Math.max(0, Number(opts.interMs) || 250)
+        const stopOnError = !!opts.stopOnError
+        const onProgress = (typeof opts.onProgress === "function") ? opts.onProgress : null
+        const list = Array.isArray(entries) ? entries : []
+        const results = new Array(list.length)
+        const summary = {ok: 0, failed: 0, dryRun: 0, aborted: false, total: list.length}
+        let aborted = false
+
+        for (let i = 0; i < list.length; i++) {
+            if (aborted) {
+                results[i] = {status: "skipped", reason: "aborted",
+                              hub: list[i] && list[i].hub, dest: list[i] && list[i].dest,
+                              classKey: list[i] && list[i].classKey}
+                continue
+            }
+            let r
+            try {
+                r = await this.apply(list[i] || {})
+            } catch (e) {
+                r = {status: "failed", error: (e && e.message) || String(e),
+                     hub: list[i] && list[i].hub, dest: list[i] && list[i].dest,
+                     classKey: list[i] && list[i].classKey}
+            }
+            results[i] = r
+            if (r.status === "verified" || r.status === "posted") summary.ok++
+            else if (r.status === "dry-run") summary.dryRun++
+            else if (r.status === "failed" || r.status === "aborted") summary.failed++
+
+            if (onProgress) {
+                try { onProgress(i, list.length, r) } catch (_) { /* hook optional */ }
+            }
+            if (stopOnError && (r.status === "failed" || r.status === "aborted")) {
+                aborted = true
+                summary.aborted = true
+                continue
+            }
+            if (interMs > 0 && i < list.length - 1 && !aborted) {
+                await new Promise(res => setTimeout(res, interMs))
+            }
+        }
+        return {results: results, summary: summary}
     }
 }
 

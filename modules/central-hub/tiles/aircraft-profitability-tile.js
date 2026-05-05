@@ -4,9 +4,15 @@
  * Aircraft Profitability tile — surfaces lifetime profit per aircraft and
  * highlights the best/worst performers.
  *
- * Reads:
- *   <server><sanitizedAirlineName>aircraftFleet  — fleet roster (legacy key)
- *   <server>aircraftFlights<aircraftId>          — per-aircraft profit blob
+ * Reads via `AesAircraftInfoHub`, the central per-aircraft facade that joins
+ * fleet roster (`<server><airline>aircraftFleet`), per-aircraft flight blobs
+ * (`<server>[<airline>]aircraftFlights<id>`), and per-flight money
+ * (`<server>[<airline>]flightInfo<flightId>`). The hub re-derives the
+ * effective profit from per-flight CM5.Total when the cached value is zero
+ * or missing, and on mount we kick off a backfill loop that fetches the
+ * `/action/info/flight?id=<id>` endpoint for finished flights whose money
+ * blobs were never extracted — so the tile populates with real numbers
+ * without forcing the user to visit each aircraft's Flights tab manually.
  *
  * The legacy `displayAircraftProfitability()` (content_dashboard.js:2000)
  * provides the full sortable / filterable / hideable column table; this
@@ -21,49 +27,96 @@ class CentralHubAircraftProfitabilityTile extends window.CentralHubTile {
         this.section = "fleet"
         this.priority = 40
         this.requiresAirline = false
+        this._backfillInFlight = false
+        this._backfillUnsubscribe = null
     }
 
     watchedStorageKeys(ctx) {
-        return [String(ctx && ctx.server || "") + ""]
+        const server = String(ctx && ctx.server || "")
+        if (!server) return []
+        // F-9228-703: only watch the per-aircraft profit records here.
+        // Fleet records are `<server><airline>aircraftFleet`, which have no
+        // shared prefix that does not also catch unrelated server-scoped
+        // writes; those are handled by the hub subscription in mount().
+        return [server + "aircraftFlights", server + "flightInfo"]
+    }
+
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        const server = String(ctx && ctx.server || "")
+        if (server && window.AesAircraftInfoHub) {
+            this._backfillUnsubscribe = window.AesAircraftInfoHub.subscribe(server, () => this.refresh())
+        }
+        // Kick off a backfill pass once the tile mounts. The hub does the
+        // throttling; this is fire-and-forget so the tile renders the
+        // existing snapshot first and updates as backfilled blobs land via
+        // the storage subscription above.
+        this._maybeRunBackfill()
+    }
+
+    dispose() {
+        if (this._backfillUnsubscribe) {
+            try { this._backfillUnsubscribe() } catch (_) { /* noop */ }
+            this._backfillUnsubscribe = null
+        }
+        super.dispose()
     }
 
     openHref() { return "/app/fleets" }
 
     async _loadFleetWithProfit() {
         const server = (this.ctx && this.ctx.server) || ""
-        if (!server) return []
-        const all = await chrome.storage.local.get(null)
-        let fleetRec = null
-        let bestTime = ""
-        for (const k in all) {
-            if (k.indexOf(server) !== 0) continue
-            if (k.lastIndexOf("aircraftFleet") !== k.length - "aircraftFleet".length) continue
-            const rec = all[k]
-            if (!rec || !Array.isArray(rec.fleet) || !rec.fleet.length) continue
-            const latest = rec.fleet.reduce((acc, a) => (a && a.time && a.time > acc) ? a.time : acc, "")
-            if (!fleetRec || latest > bestTime) { fleetRec = rec; bestTime = latest }
-        }
-        if (!fleetRec) return []
+        if (!server || !window.AesAircraftInfoHub) return []
+        const airline = (this.ctx && this.ctx.airline) || null
+        // Fall back to roster across the largest fleet on the server when
+        // airline isn't supplied — matches AesFleetRoster's default.
+        const snapshots = await window.AesAircraftInfoHub.getRoster(server, airline)
+        if (!snapshots.length) return []
+        return snapshots.map(s => ({
+            aircraftId:      s.aircraftId,
+            registration:    s.registration || "",
+            equipment:       s.equipment || "",
+            fleet:           s.fleet || "",
+            profit:          s.effectiveProfit,
+            profitSource:    s.profitSource,
+            totalFlights:    s.totalFlights,
+            finishedFlights: s.finishedFlights,
+            coveredFlights:  s.coveredFlights,
+            missingFlightInfo: s.missingFlightInfo,
+            profitDate:      s.scrapedDate
+        }))
+    }
 
-        const profitPrefix = server + "aircraftFlights"
-        const merged = []
-        for (const a of fleetRec.fleet) {
-            if (!a || !a.aircraftId) continue
-            const profitKey = profitPrefix + a.aircraftId
-            const blob = all[profitKey]
-            const profit = blob ? Number(blob.profit) : NaN
-            merged.push({
-                aircraftId: a.aircraftId,
-                registration: a.registration || "",
-                equipment: a.equipment || "",
-                fleet: a.fleet || "",
-                profit: Number.isFinite(profit) ? profit : null,
-                totalFlights: blob ? blob.totalFlights : null,
-                finishedFlights: blob ? blob.finishedFlights : null,
-                profitDate: blob ? blob.date : null
-            })
+    /**
+     * Single-flight backfill driver. Walks the roster, finds aircraft with
+     * finished flights but missing per-flight money, and asks the hub to
+     * fetch the missing blobs (rate-limited inside the hub). Runs at most
+     * one pass per mount so we don't hammer AS — re-runs are gated on the
+     * `_backfillInFlight` flag and the hub's negative cache for purged ids.
+     */
+    async _maybeRunBackfill() {
+        const server = (this.ctx && this.ctx.server) || ""
+        if (!server || !window.AesAircraftInfoHub) return
+        if (this._backfillInFlight) return
+        this._backfillInFlight = true
+        try {
+            const airline = (this.ctx && this.ctx.airline) || null
+            const roster = await window.AesAircraftInfoHub.getRoster(server, airline)
+            const targets = roster.filter(s => s.missingFlightInfo > 0)
+            // Prioritise aircraft with the largest gap — they're the ones
+            // showing AS$0 on the tile and should populate first.
+            targets.sort((a, b) => (b.missingFlightInfo || 0) - (a.missingFlightInfo || 0))
+            for (const t of targets) {
+                if (!this.root) return  // disposed mid-loop
+                await window.AesAircraftInfoHub.backfillProfit(server, t.aircraftId, {
+                    airline: t.airline || airline || ""
+                })
+            }
+        } catch (e) {
+            console.warn("[AES profitability-tile] backfill failed", e)
+        } finally {
+            this._backfillInFlight = false
         }
-        return merged
     }
 
     async loadStatus() {
@@ -99,8 +152,14 @@ class CentralHubAircraftProfitabilityTile extends window.CentralHubTile {
 
     async renderBody(ctx, host) {
         const T = window.AESTokens
+        // Re-entrancy guard — overlapping renders from the shell's
+        // open-tile flow (toggle()'s render + an explicit render with
+        // filter) would otherwise both clear, both await, both append,
+        // doubling the Top-5 / Bottom-3 sections in the body.
+        const gen = (this._renderGen = (this._renderGen || 0) + 1)
         host.textContent = ""
         const merged = await this._loadFleetWithProfit()
+        if (gen !== this._renderGen) return
         const withProfit = merged.filter(m => m.profit !== null)
         if (!withProfit.length) {
             const empty = document.createElement("p")
@@ -141,7 +200,22 @@ class CentralHubAircraftProfitabilityTile extends window.CentralHubTile {
 
         for (const r of rows) {
             const tr = document.createElement("tr")
-            tr.style.cssText = "border-bottom:" + T.geom.bw1 + " solid " + T.color.paperRule + ";"
+            tr.style.cssText = "border-bottom:" + T.geom.bw1 + " solid " + T.color.paperRule
+                + ";cursor:pointer;"
+            tr.addEventListener("mouseenter", () => { tr.style.background = T.color.bone2 })
+            tr.addEventListener("mouseleave", () => { tr.style.background = "" })
+            tr.addEventListener("click", (e) => {
+                if (e.target && e.target.closest("a")) return  // let link clicks navigate
+                if (!window.CentralHubBus) return
+                const payload = {aircraftId: String(r.aircraftId), source: "aircraft-profitability"}
+                window.CentralHubBus.emit("focus-aircraft", payload)
+                window.CentralHubBus.emit("open-tile", {
+                    tileId: "aircraft-flight-plan",
+                    expand: true, scrollIntoView: true,
+                    filter: {type: "tail", aircraftId: String(r.aircraftId)},
+                    source: "aircraft-profitability"
+                })
+            })
             const profitFmt = (r.profit >= 0 ? "+" : "−") + Intl.NumberFormat().format(Math.abs(Math.round(r.profit)))
             tr.innerHTML =
                 "<td style='padding:" + T.sp[1] + " " + T.sp[2] + ";'>"

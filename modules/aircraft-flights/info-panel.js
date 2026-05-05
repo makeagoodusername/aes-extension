@@ -6,9 +6,17 @@ class InfoPanel {
 
     constructor() {
         this.#rows = this.#createRows()
-        
+
         this.#panel = document.querySelector(".as-page-aircraft .col-md-2 h3:first-child + .as-panel")
         this.#tbody = this.#panel.querySelector("tbody")
+        // F-9228-805: idempotent mount. On a re-entry (extension reload, or
+        // a future Wicket fragment re-render hitting the readyState gate)
+        // strip prior AES rows before appending; without this the panel
+        // would gain a duplicate ID + Registration row pair on every mount.
+        for (const stale of this.#tbody.querySelectorAll('tr[data-aes-info-row]')) stale.remove()
+        for (const row in this.#rows) {
+            this.#rows[row].element.dataset.aesInfoRow = row
+        }
         this.#addRows()
     }
     

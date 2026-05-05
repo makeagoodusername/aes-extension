@@ -34,6 +34,8 @@
 
     const TOP_N = 20
     const KM_PER_NM = 1.852
+    const PRESETS_DEP_RETRY_MS = 100
+    const PRESETS_DEP_MAX_WAIT_MS = 6000
 
     const _state = {
         ctxReady:        false,
@@ -50,6 +52,7 @@
         // aircraft's current location IATA are listed in the picker.
         // Toggle off to access cross-hub presets (e.g. ferry flights).
         hubFilterEnabled: true,
+        handoff:         null,   // last consumed wave-designer handoff metadata
         draft:           null,   // last AesAfpActiveDraftStore record (for apply/dismiss/edit overlay)
         draftListener:   null,   // chrome.storage listener for draft key
         draftReloadTimer: null
@@ -82,11 +85,17 @@
             return _emptyBuildWith("RouteAssistantWaveOverlay not loaded — manifest order?", preset)
         }
 
+        // F-9228-903: route-candidates filter/score against AesAfp.getActiveHub()
+        // (which honours the Plan-from override). Build the wave plan against
+        // the same hub so candidates from the override hub aren't placed as
+        // if they were rooted at the aircraft's actual location.
+        const activeHub = (window.AesAfp && typeof AesAfp.getActiveHub === "function")
+            ? AesAfp.getActiveHub() : null
         const scoredRows = candidates.map(_candidateToScoredRow)
         const buildCtx = {
             server:            ctx.server || "",
             airlineCode:       ctx.airlineCode || ctx.airlineId || "",
-            hubIata:           String(ctx.currentLocationIata || "").toUpperCase(),
+            hubIata:           String(activeHub || ctx.currentLocationIata || "").toUpperCase(),
             selectedSpec:      spec,
             topN:              TOP_N,
             carrierClassifier: null
@@ -111,22 +120,47 @@
             _renderEmpty(host, "Wave overlay not loaded."); return
         }
 
+        // Result-section header so the rendered Gantt has an obvious anchor
+        // (users had no visual cue that the Generate button's output landed
+        // here). Counts come from the build itself; falls back gracefully
+        // when fields are missing.
+        const flightCount = (build.flights || []).length
+        const waveCount   = new Set((build.flights || [])
+            .map(f => f && f.waveId).filter(v => v != null)).size
+        const presetName  = (build.preset && build.preset.name) || "(unnamed preset)"
+        const headerEl = document.createElement("div")
+        headerEl.style.cssText = "font-size:11px;font-weight:600;color:#cbd5e1;"
+            + "padding:4px 6px;margin-bottom:4px;"
+            + "background:#0f1623;border-left:3px solid #1d4ed8;border-radius:2px;"
+        headerEl.textContent = "Generated wave plan — " + presetName
+            + " · " + flightCount + " flight" + (flightCount === 1 ? "" : "s")
+            + (waveCount ? " · " + waveCount + " wave" + (waveCount === 1 ? "" : "s") : "")
+        host.appendChild(headerEl)
+
         const ganttHost = document.createElement("div")
         ganttHost.className = "aes-afp-wave-gantt"
         host.appendChild(ganttHost)
 
+        // F-9228-903: same override-aware lookup as buildFromCandidates so the
+        // Gantt's onFlightClick → applyLeg flows through the user's chosen hub.
+        const activeHub = (window.AesAfp && typeof AesAfp.getActiveHub === "function")
+            ? AesAfp.getActiveHub() : null
         const hubIata = String(
-            (window.AesAfp && AesAfp.ctx && AesAfp.ctx.currentLocationIata) || ""
+            activeHub || (window.AesAfp && AesAfp.ctx && AesAfp.ctx.currentLocationIata) || ""
         ).toUpperCase()
 
-        try {
-            RouteAssistantWaveOverlay.renderGantt(ganttHost, build, {
-                hubIata,
-                onFlightClick: (flight) => applyLeg(flight)
-            })
-        } catch (e) {
-            console.warn("[AFP-E] renderGantt threw", e)
-            _renderEmpty(ganttHost, "Gantt render failed: " + ((e && e.message) || e))
+        if (!build.preset || !Array.isArray(build.preset.waves)) {
+            _renderEmpty(ganttHost, "Draft preset metadata unavailable — regenerate to rebuild the Gantt.")
+        } else {
+            try {
+                RouteAssistantWaveOverlay.renderGantt(ganttHost, build, {
+                    hubIata,
+                    onFlightClick: (flight) => applyLeg(flight)
+                })
+            } catch (e) {
+                console.warn("[AFP-E] renderGantt threw", e)
+                _renderEmpty(ganttHost, "Gantt render failed: " + ((e && e.message) || e))
+            }
         }
 
         const flights = (build.flights) || []
@@ -147,29 +181,64 @@
 
     /**
      * Pre-fill the New Flight Number form for one leg by emitting
-     * candidate:selected on the bus. Slice D's stock subscriber maps that
-     * to AesAfpFormDriver.fill({destination: candidate.destIata}); the
-     * `__wave` hint bag attached here lets a future Slice D enhancement
-     * also pull origin / depTime when source === "wave-leg".
+     * candidate:selected on the bus. The wave hint bag carries the exact
+     * origin, destination, and departure time so inbound legs fill the AS
+     * form as route legs, not generic destination clicks.
      */
-    function applyLeg(flight) {
+    async function applyLeg(flight) {
         if (!flight) return
         const candidate = _flightToCandidate(flight)
+        const leg = {
+            origin:      flight.origin || null,
+            destination: flight.destination || null,
+            depTime:     flight.depTimeLocal || null,
+            dayMask:     Array.isArray(flight.dayMask) ? flight.dayMask.slice(0, 7) : undefined
+        }
+        const hasFormDriver = !!(window.AesAfpFormDriver
+            && typeof window.AesAfpFormDriver.fill === "function")
         if (window.AesAfp && AesAfp.bus) {
-            try { AesAfp.bus.emit("candidate:selected", {candidate, source: "wave-leg"}) }
+            try {
+                AesAfp.bus.emit("candidate:selected", {
+                    candidate,
+                    source: "wave-leg",
+                    originIata: leg.origin,
+                    destinationIata: leg.destination,
+                    depTime: leg.depTime,
+                    leg,
+                    skipFormFill: hasFormDriver
+                })
+            }
             catch (e) { console.warn("[AFP-E] bus emit failed", e) }
         }
-        if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.info) {
+        let filled = null
+        if (hasFormDriver) {
+            try { filled = await window.AesAfpFormDriver.fill(leg) }
+            catch (e) {
+                console.warn("[AFP-E] wave-leg fill threw", e)
+                filled = {ok: false, missed: ["fill-error"]}
+            }
+        }
+        const fillOk = !!(filled && filled.ok)
+        if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.info && fillOk) {
+            // F-9228-907: this path only PRE-FILLS the New Flight Number form;
+            // AS's green Submit still has to be clicked. Match the wording to
+            // the button title so the user doesn't think the leg shipped.
             const arrow = (flight.direction === "inbound") ? "←" : "→"
-            const msg = "Leg applied: " + (flight.origin || "?")
+            const msg = "Leg pre-filled: " + (flight.origin || "?")
                 + " " + arrow + " " + (flight.destination || "?")
                 + (flight.depTimeLocal ? " · " + flight.depTimeLocal : "")
+                + " — click Submit below to confirm"
             try { RouteAssistantToast.info(msg) } catch (_) { /* non-fatal */ }
+        } else if (!fillOk && typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.warn) {
+            const missed = (filled && filled.missed && filled.missed.length)
+                ? ": " + filled.missed.join(", ")
+                : ""
+            try { RouteAssistantToast.warn("Wave leg not applied to form" + missed) } catch (_) { /* non-fatal */ }
         }
         // Mirror the apply into the per-aircraft draft so the Fleet Hub
         // overlay's leg-list shows this leg as applied. We don't auto-submit
         // here — the AFP page's user clicks AS's green Submit themselves.
-        _markLegAppliedInDraft(flight && flight.seq)
+        if (fillOk) _markLegAppliedInDraft(flight && flight.seq)
     }
 
     function _dismissLeg(flight) {
@@ -191,6 +260,30 @@
         const root = document.createElement("div")
         root.className = "aes-afp-wave-root"
         root.style.cssText = "margin-top:10px;padding-top:8px;border-top:1px solid #1f2937;"
+
+        // Section title + one-line help so users understand what the
+        // preset/Generate flow does without having to dig into the manual.
+        const sectionHead = document.createElement("div")
+        sectionHead.style.cssText = "display:flex;align-items:baseline;gap:8px;margin-bottom:2px;"
+        const sectionTitle = document.createElement("span")
+        sectionTitle.textContent = "Wave plan"
+        sectionTitle.style.cssText = "font-weight:600;color:#cbd5e1;font-size:11px;"
+        sectionHead.appendChild(sectionTitle)
+        const help = document.createElement("span")
+        help.style.cssText = "font-size:10px;color:#6b7280;line-height:1.4;"
+        help.appendChild(document.createTextNode(
+            "Build a multi-leg schedule from the candidates above × a saved preset. "
+        ))
+        const presetsLink = document.createElement("a")
+        presetsLink.href = "/app/com/scheduling"
+        presetsLink.target = "_blank"
+        presetsLink.rel = "noopener"
+        presetsLink.textContent = "Manage presets"
+        presetsLink.style.cssText = "color:#60a5fa;text-decoration:underline;"
+        help.appendChild(presetsLink)
+        help.appendChild(document.createTextNode("."))
+        sectionHead.appendChild(help)
+        root.appendChild(sectionHead)
 
         _toolbarEl = document.createElement("div")
         _toolbarEl.className = "aes-afp-wave-toolbar"
@@ -214,8 +307,22 @@
         _renderStatus()
         // Re-mount path: if we already have a build, re-render it into the
         // newly-acquired _buildEl so the user's Gantt survives Wicket's
-        // sidebar re-render.
+        // sidebar re-render. Otherwise show the placeholder so the area
+        // explains what would land here.
         if (_state.lastBuild) renderPreview(_buildEl, _state.lastBuild)
+        else _renderBuildPlaceholder(_buildEl)
+    }
+
+    /** Placeholder shown in _buildEl before the user runs Generate, so the
+     *  area isn't a confusing empty void below the toolbar. */
+    function _renderBuildPlaceholder(host) {
+        if (!host) return
+        host.innerHTML = ""
+        const ph = document.createElement("div")
+        ph.style.cssText = "padding:10px;border:1px dashed #374151;border-radius:4px;"
+            + "color:#9ca3af;font-size:11px;font-style:italic;text-align:center;"
+        ph.textContent = "No wave plan yet. Pick a preset above and click Generate."
+        host.appendChild(ph)
     }
 
     function _renderToolbar() {
@@ -316,6 +423,104 @@
             || "Build a wave plan from the current candidates and preset."
         btn.addEventListener("click", () => { if (_generateEnabled()) _onGenerate() })
         _toolbarEl.appendChild(btn)
+
+        // Slice 8a — Fleet apply CTA. Visible only when a build exists +
+        // both fleet modules loaded. Disabled when the build is stale or
+        // empty so the user doesn't dispatch an obviously broken payload.
+        if (typeof window.AesAfpFleetPickerModal !== "undefined"
+                && typeof window.AesAfpFleetApplyOrchestrator !== "undefined") {
+            const flightCount = _state.lastBuild
+                && Array.isArray(_state.lastBuild.flights)
+                ? _state.lastBuild.flights.length : 0
+            const fleetEnabled = !!_state.lastBuild && flightCount > 0 && !_state.buildStale
+            const fleetBtn = document.createElement("button")
+            fleetBtn.type = "button"
+            fleetBtn.textContent = "Apply to fleet…"
+            fleetBtn.disabled = !fleetEnabled
+            fleetBtn.style.cssText = "background:" + (fleetEnabled ? "#7c2d12" : "#374151") + ";"
+                + "color:" + (fleetEnabled ? "#fed7aa" : "#9ca3af") + ";"
+                + "border:1px solid " + (fleetEnabled ? "#9a3412" : "#374151") + ";"
+                + "border-radius:3px;padding:3px 9px;font-size:11px;font-weight:600;"
+                + "cursor:" + (fleetEnabled ? "pointer" : "not-allowed") + ";"
+            fleetBtn.title = !_state.lastBuild
+                ? "Generate a wave plan first."
+                : _state.buildStale
+                    ? "Wave plan is stale — regenerate before fleet apply."
+                    : flightCount + " leg(s) will fan out to every selected aircraft."
+            fleetBtn.addEventListener("click", () => {
+                if (fleetEnabled) _onApplyToFleet()
+            })
+            _toolbarEl.appendChild(fleetBtn)
+        }
+    }
+
+    /**
+     * Slice 8a — open the fleet picker, then orchestrate per-aircraft
+     * apply across the picked aircraft using the current build's flights.
+     *
+     * Same legs go to every aircraft (the picker's range-fit filter
+     * keeps only fit-eligible aircraft visible). The orchestrator owns
+     * the serial loop + audit logging; this function just plumbs the
+     * picker → orchestrator handoff and surfaces a tiny progress toast.
+     */
+    async function _onApplyToFleet() {
+        if (!_state.lastBuild) return
+        const flights = (_state.lastBuild.flights) || []
+        if (!flights.length) return
+        const preset = _state.lastBuild.preset
+            || (_state.presets || []).find(p => p && p.id === _state.selectedPresetId)
+            || null
+        const ctx = (window.AesAfp && AesAfp.ctx) || {}
+        const hub = String(ctx.currentLocationIata || "").toUpperCase()
+
+        let pick
+        try {
+            pick = await window.AesAfpFleetPickerModal.open({
+                preset:        preset,
+                hub:           hub,
+                title:         "Apply wave plan to fleet",
+                server:        ctx.server || "",
+                airlineCode:   ctx.airlineCode || ""
+            })
+        } catch (e) {
+            console.warn("[AFP-8a] fleet picker threw", e)
+            if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.error) {
+                RouteAssistantToast.error("Fleet picker failed: " + ((e && e.message) || e))
+            }
+            return
+        }
+        if (!pick || pick.cancelled || !pick.aircraftIds || !pick.aircraftIds.length) return
+
+        const runs = pick.aircraftIds.map(aircraftId => ({
+            aircraftId: aircraftId,
+            legs:       flights.slice(),
+            hub:        hub
+        }))
+        if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.info) {
+            try { RouteAssistantToast.info("Fleet apply: " + runs.length + " aircraft × "
+                + flights.length + " legs queued.") } catch (_) { /* noop */ }
+        }
+        try {
+            const result = await window.AesAfpFleetApplyOrchestrator.start({
+                runs:   runs,
+                ctx:    {server: ctx.server || ""},
+                source: "wave-applier-fleet"
+            })
+            if (typeof RouteAssistantToast !== "undefined") {
+                const tone = result.aborted ? "warn" : (result.totalFailed ? "warn" : "success")
+                const fn = (tone === "warn") ? RouteAssistantToast.warn : RouteAssistantToast.success
+                if (typeof fn === "function") {
+                    fn.call(RouteAssistantToast, "Fleet apply " + (result.aborted ? "aborted" : "done")
+                        + " — " + (result.totalSucceeded || 0) + " ok / "
+                        + (result.totalFailed || 0) + " failed across " + runs.length + " aircraft.")
+                }
+            }
+        } catch (e) {
+            console.warn("[AFP-8a] fleet orchestrator threw", e)
+            if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.error) {
+                RouteAssistantToast.error("Fleet apply threw: " + ((e && e.message) || e))
+            }
+        }
     }
 
     function _renderStatus() {
@@ -347,8 +552,22 @@
                 tone: "warn"
             }
         }
-        if (!_state.spec)
-            return {text: "Waiting for aircraft spec…", tone: "info"}
+        if (_state.handoff && _state.handoff.hubMismatch) {
+            return {text: "Wave Designer handoff is for " + _state.handoff.hub
+                + ", but this aircraft is at " + (_state.handoff.currentHub || "another airport")
+                + ". Move/open an aircraft at " + _state.handoff.hub
+                + " before generating this wave plan.", tone: "warn"}
+        }
+        if (!_state.spec) {
+            // After spec-resolver attempted (success OR null), don't keep
+            // saying "Waiting…" forever — that misroutes the user toward
+            // hoping the system loads. The Spec card surfaces the real
+            // remediation (Retry / open type page).
+            const attempted = !!(window.AesAfpSpecResolver && AesAfpSpecResolver.attempted)
+            return attempted
+                ? {text: "Aircraft spec unavailable — see the Spec card.", tone: "warn"}
+                : {text: "Waiting for aircraft spec…", tone: "info"}
+        }
         if (!_state.candidates || !_state.candidates.length)
             return {text: "Waiting for route candidates…", tone: "info"}
         if (!_state.selectedPresetId)
@@ -356,6 +575,16 @@
         if (_state.buildStale && _state.lastBuild)
             return {text: "Underlying data changed — click Regenerate to refresh.", tone: "warn"}
         return null
+    }
+
+    function _tryAutoGenerateHandoff() {
+        if (!_state._handoffConsumed) return false
+        if (_state.lastBuild) return false
+        if (_state.handoff && _state.handoff.hubMismatch) return false
+        if (!_generateEnabled()) return false
+        try { _onGenerate() }
+        catch (e) { console.warn("[AFP-8c] deferred auto-generate threw", e) }
+        return true
     }
 
     function _generateEnabled() {
@@ -616,13 +845,14 @@
             notes:            ["Wave leg: "
                                   + (flight.waveLabel || flight.waveId || "?")
                                   + " " + (flight.direction || "?")],
-            // Hint bag for a future Slice D enhancement that can read
-            // origin / depTime when source === "wave-leg".  Slice D's stock
-            // subscriber today only reads candidate.destIata.
+            // Hint bag consumed by form-driver when source === "wave-leg".
+            // It preserves the exact O/D direction instead of treating the
+            // route as a generic destination click.
             __wave: {
                 origin:      flight.origin,
                 destination: flight.destination,
                 depTime:     flight.depTimeLocal,
+                dayMask:     Array.isArray(flight.dayMask) ? flight.dayMask.slice(0, 7) : undefined,
                 direction:   flight.direction,
                 waveId:      flight.waveId,
                 waveLabel:   flight.waveLabel,
@@ -648,13 +878,33 @@
     // ── Presets loader ─────────────────────────────────────────────────
 
     let _presetsPromise = null
+    let _presetsWaitStartedAt = 0
 
     function _loadPresets() {
         if (_presetsPromise) return _presetsPromise
         if (typeof SchedulePresets === "undefined") {
-            _state.presetsLoaded = true
-            _state.presetsError  = "SchedulePresets not loaded"
-            return Promise.resolve(null)
+            if (!_presetsWaitStartedAt) _presetsWaitStartedAt = Date.now()
+            _state.presetsLoaded = false
+            _state.presetsError  = null
+            _presetsPromise = new Promise(resolve => {
+                const retry = () => {
+                    if (typeof SchedulePresets !== "undefined") {
+                        _presetsPromise = null
+                        _loadPresets().then(resolve)
+                        return
+                    }
+                    if (Date.now() - _presetsWaitStartedAt >= PRESETS_DEP_MAX_WAIT_MS) {
+                        _state.presetsLoaded = true
+                        _state.presetsError  = "SchedulePresets not loaded"
+                        _presetsPromise = null
+                        resolve(null)
+                        return
+                    }
+                    setTimeout(retry, PRESETS_DEP_RETRY_MS)
+                }
+                setTimeout(retry, PRESETS_DEP_RETRY_MS)
+            })
+            return _presetsPromise
         }
         _presetsPromise = SchedulePresets.load().then(p => {
             _state.presets         = (p && Array.isArray(p.presets)) ? p.presets : []
@@ -721,11 +971,95 @@
         _renderRoot()
         _attachDraftListener()
         _hydrateFromDraft()
+        _maybeConsumeHandoff()
+    }
+
+    /**
+     * Slice 8c — read the cross-page handoff (set by route-assistant
+     * Wave Designer's "Open in flight plan…" CTA), pre-select the
+     * matching preset, and auto-Generate so the user lands on a
+     * populated Gantt without re-picking.
+     *
+     * Race-safe: requires both ctx:ready AND presets loaded. Called
+     * from _onCtxReady AND _loadPresets's resolve, whichever runs second
+     * is the one that actually triggers consume. Also checks the
+     * handoff is for THIS aircraft (consume() short-circuits otherwise).
+     */
+    async function _maybeConsumeHandoff() {
+        if (!_state.ctxReady || !_state.presetsLoaded) return
+        if (typeof window.AesHandoffStore === "undefined") return
+        const ctx = (window.AesAfp && AesAfp.ctx) || {}
+        if (!ctx.aircraftId) return
+        // Ensure we only consume once per mount lifecycle.
+        if (_state._handoffConsumed) return
+        // Track C — peek first so dnd-grid records (no presetId) stay in
+        // the store for route-candidates.js to consume. Only claim records
+        // that carry a presetId.
+        let rec
+        try { rec = await window.AesHandoffStore.peek() }
+        catch (e) { console.warn("[AFP-8c] handoff peek threw", e); return }
+        if (!rec) return
+        if (String(rec.aircraftId) !== String(ctx.aircraftId)) return
+        if (rec.source === "dnd-grid" || !rec.presetId) return
+        // F-9228-904: only flip the once-per-mount guard AFTER consume()
+        // succeeds. If consume rejects (transient chrome.storage error,
+        // listener throw, etc), the handoff record remains in the store —
+        // a subsequent ctx:ready / presets-loaded transition should retry
+        // rather than seeing _handoffConsumed=true and bailing forever.
+        try { rec = await window.AesHandoffStore.consume(ctx.aircraftId) }
+        catch (e) { console.warn("[AFP-8c] handoff consume threw", e); return }
+        if (!rec) return
+        _state._handoffConsumed = true
+        // Find the preset; if missing (deleted between handoff and arrival),
+        // surface a hint and bail.
+        const preset = (_state.presets || []).find(p => p && p.id === rec.presetId)
+        if (!preset) {
+            if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.warn) {
+                try { RouteAssistantToast.warn("Wave Designer handoff: preset "
+                    + rec.presetId + " no longer exists.") } catch (_) { /* noop */ }
+            }
+            return
+        }
+        const handoffHub = String(rec.hub || preset.hub || "").toUpperCase()
+        const currentHub = String(ctx.currentLocationIata || "").toUpperCase()
+        const hubMismatch = !!(handoffHub && currentHub && handoffHub !== currentHub)
+        _state.handoff = {
+            source:      rec.source || "wave-designer",
+            presetId:    preset.id,
+            hub:         handoffHub,
+            currentHub:  currentHub,
+            hubMismatch: hubMismatch
+        }
+        if (hubMismatch) {
+            // The handoff's preset must remain visible even when the AFP page
+            // defaults to filtering presets by the aircraft's current airport.
+            _state.hubFilterEnabled = false
+        }
+        _state.selectedPresetId = preset.id
+        _markBuildStale()
+        _renderToolbar()
+        _renderStatus()
+        if (hubMismatch) {
+            if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.warn) {
+                try { RouteAssistantToast.warn("Wave Designer handoff is for "
+                    + handoffHub + ", but this aircraft is at " + currentHub + ".") } catch (_) { /* noop */ }
+            }
+            return
+        }
+        if (typeof RouteAssistantToast !== "undefined" && RouteAssistantToast.info) {
+            try { RouteAssistantToast.info("Loaded from Wave Designer — "
+                + (preset.name || "preset") + (_generateEnabled() ? ". Generating…" : ".")) } catch (_) { /* noop */ }
+        }
+        // Auto-generate so the user lands on a Gantt, not a blank toolbar.
+        if (_generateEnabled()) {
+            try { _onGenerate() } catch (e) { console.warn("[AFP-8c] auto-generate threw", e) }
+        }
     }
 
     function _onSpecResolved(payload) {
         _state.spec = (payload && payload.spec) || null
         _markBuildStale()
+        if (_tryAutoGenerateHandoff()) return
         _renderToolbar()
         _renderStatus()
     }
@@ -734,6 +1068,7 @@
         _state.candidates = (payload && Array.isArray(payload.candidates))
             ? payload.candidates : []
         _markBuildStale()
+        if (_tryAutoGenerateHandoff()) return
         _renderToolbar()
         _renderStatus()
     }
@@ -855,6 +1190,10 @@
             // If ctx:ready fired before presets resolved, the toolbar is
             // already in the DOM (with "Loading…" state) — refresh it now.
             if (_state.ctxReady) { _renderToolbar(); _renderStatus() }
+            // Slice 8c — also try to consume a pending handoff once presets
+            // are loaded; the other direction (presets-then-ctx) is handled
+            // in _onCtxReady.
+            _maybeConsumeHandoff()
         })
     }
 

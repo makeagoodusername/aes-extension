@@ -1,0 +1,4176 @@
+{
+  "ok": false,
+  "port": "9451",
+  "outPath": "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-demand-seed-report-20260504-9451.json",
+  "startedAt": "2026-05-04T11:12:09.435Z",
+  "pageInfo": {
+    "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?5",
+    "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+    "aesMenu": true,
+    "centralHub": true,
+    "text": "DASHBOARD\nAIRLINESIM\nDENSITY: COMPACT\n⇧D\n DATABASE \n HELP \n COMMUNITY \n PRIVATE MESSAGES 27\n HALLEU \nCFLAIR \n1,233,409 AS$\nCOMMERCIAL \nOPERATIONS \nMANAGEMENT \nAES\nBRIDGE\nDASHBOARD\nAES HUB\nAirlineSim Enhancement Suite\nSCRAPE EVERYTHING\nSCRAPE CACHE\nno full scrape yet\nAUTO\n· F —\n· H —\n· A —\n· R —\nFREE"
+  },
+  "start": {
+    "started": true,
+    "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?5",
+    "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+    "hasScanner": "function",
+    "hasCountryScraper": "function",
+    "hasDemandStore": "function"
+  },
+  "snapshots": [
+    {
+      "polledAt": "2026-05-04T11:12:30.256Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 10,
+        "airportsSeeded": 337,
+        "failedCountries": 0,
+        "currentCountryId": "12",
+        "currentCountryName": "Australia",
+        "activeCountries": [
+          "Bahamas"
+        ],
+        "ts": 1777893149861
+      },
+      "eventCount": 22,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 7,
+          "airportsSeeded": 137,
+          "failedCountries": 0,
+          "currentCountryId": "10",
+          "currentCountryName": "Armenia",
+          "activeCountries": [],
+          "ts": 1777893144458
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 7,
+          "airportsSeeded": 137,
+          "failedCountries": 0,
+          "currentCountryId": "12",
+          "currentCountryName": "Australia",
+          "activeCountries": [
+            "Australia"
+          ],
+          "ts": 1777893145241
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 7,
+          "airportsSeeded": 137,
+          "failedCountries": 0,
+          "currentCountryId": "123",
+          "currentCountryName": "Austria",
+          "activeCountries": [
+            "Australia",
+            "Austria"
+          ],
+          "ts": 1777893145460
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 8,
+          "airportsSeeded": 143,
+          "failedCountries": 0,
+          "currentCountryId": "123",
+          "currentCountryName": "Austria",
+          "activeCountries": [
+            "Australia"
+          ],
+          "ts": 1777893146795
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 8,
+          "airportsSeeded": 143,
+          "failedCountries": 0,
+          "currentCountryId": "11",
+          "currentCountryName": "Azerbaijan",
+          "activeCountries": [
+            "Australia",
+            "Azerbaijan"
+          ],
+          "ts": 1777893147796
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 9,
+          "airportsSeeded": 150,
+          "failedCountries": 0,
+          "currentCountryId": "11",
+          "currentCountryName": "Azerbaijan",
+          "activeCountries": [
+            "Australia"
+          ],
+          "ts": 1777893148759
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 9,
+          "airportsSeeded": 150,
+          "failedCountries": 0,
+          "currentCountryId": "13",
+          "currentCountryName": "Bahamas",
+          "activeCountries": [
+            "Australia",
+            "Bahamas"
+          ],
+          "ts": 1777893149761
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 10,
+          "airportsSeeded": 337,
+          "failedCountries": 0,
+          "currentCountryId": "12",
+          "currentCountryName": "Australia",
+          "activeCountries": [
+            "Bahamas"
+          ],
+          "ts": 1777893149861
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:12:45.259Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 24,
+        "airportsSeeded": 573,
+        "failedCountries": 0,
+        "currentCountryId": "24",
+        "currentCountryName": "Brazil",
+        "activeCountries": [],
+        "ts": 1777893164598
+      },
+      "eventCount": 49,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 20,
+          "airportsSeeded": 421,
+          "failedCountries": 0,
+          "currentCountryId": "21",
+          "currentCountryName": "Bolivia",
+          "activeCountries": [
+            "Bosnia and Herzegovina"
+          ],
+          "ts": 1777893159878
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 21,
+          "airportsSeeded": 425,
+          "failedCountries": 0,
+          "currentCountryId": "22",
+          "currentCountryName": "Bosnia and Herzegovina",
+          "activeCountries": [],
+          "ts": 1777893160655
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 21,
+          "airportsSeeded": 425,
+          "failedCountries": 0,
+          "currentCountryId": "23",
+          "currentCountryName": "Botswana",
+          "activeCountries": [
+            "Botswana"
+          ],
+          "ts": 1777893160880
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 21,
+          "airportsSeeded": 425,
+          "failedCountries": 0,
+          "currentCountryId": "24",
+          "currentCountryName": "Brazil",
+          "activeCountries": [
+            "Botswana",
+            "Brazil"
+          ],
+          "ts": 1777893161656
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 22,
+          "airportsSeeded": 430,
+          "failedCountries": 0,
+          "currentCountryId": "23",
+          "currentCountryName": "Botswana",
+          "activeCountries": [
+            "Brazil"
+          ],
+          "ts": 1777893161824
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 22,
+          "airportsSeeded": 430,
+          "failedCountries": 0,
+          "currentCountryId": "25",
+          "currentCountryName": "Brunei",
+          "activeCountries": [
+            "Brazil",
+            "Brunei"
+          ],
+          "ts": 1777893162824
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 23,
+          "airportsSeeded": 431,
+          "failedCountries": 0,
+          "currentCountryId": "25",
+          "currentCountryName": "Brunei",
+          "activeCountries": [
+            "Brazil"
+          ],
+          "ts": 1777893164338
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 24,
+          "airportsSeeded": 573,
+          "failedCountries": 0,
+          "currentCountryId": "24",
+          "currentCountryName": "Brazil",
+          "activeCountries": [],
+          "ts": 1777893164598
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:13:00.261Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 35,
+        "airportsSeeded": 903,
+        "failedCountries": 0,
+        "currentCountryId": "32",
+        "currentCountryName": "China - Macao",
+        "activeCountries": [
+          "China",
+          "China - Macao"
+        ],
+        "ts": 1777893179955
+      },
+      "eventCount": 73,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 32,
+          "airportsSeeded": 872,
+          "failedCountries": 0,
+          "currentCountryId": "172",
+          "currentCountryName": "Chad",
+          "activeCountries": [
+            "Chad"
+          ],
+          "ts": 1777893175385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 32,
+          "airportsSeeded": 872,
+          "failedCountries": 0,
+          "currentCountryId": "29",
+          "currentCountryName": "Chile",
+          "activeCountries": [
+            "Chad",
+            "Chile"
+          ],
+          "ts": 1777893175711
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 33,
+          "airportsSeeded": 879,
+          "failedCountries": 0,
+          "currentCountryId": "172",
+          "currentCountryName": "Chad",
+          "activeCountries": [
+            "Chile"
+          ],
+          "ts": 1777893176345
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 34,
+          "airportsSeeded": 902,
+          "failedCountries": 0,
+          "currentCountryId": "29",
+          "currentCountryName": "Chile",
+          "activeCountries": [],
+          "ts": 1777893176875
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 34,
+          "airportsSeeded": 902,
+          "failedCountries": 0,
+          "currentCountryId": "30",
+          "currentCountryName": "China",
+          "activeCountries": [
+            "China"
+          ],
+          "ts": 1777893177347
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 34,
+          "airportsSeeded": 902,
+          "failedCountries": 0,
+          "currentCountryId": "31",
+          "currentCountryName": "China - Hong Kong",
+          "activeCountries": [
+            "China",
+            "China - Hong Kong"
+          ],
+          "ts": 1777893177876
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 35,
+          "airportsSeeded": 903,
+          "failedCountries": 0,
+          "currentCountryId": "31",
+          "currentCountryName": "China - Hong Kong",
+          "activeCountries": [
+            "China"
+          ],
+          "ts": 1777893178954
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 35,
+          "airportsSeeded": 903,
+          "failedCountries": 0,
+          "currentCountryId": "32",
+          "currentCountryName": "China - Macao",
+          "activeCountries": [
+            "China",
+            "China - Macao"
+          ],
+          "ts": 1777893179955
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:13:15.264Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 46,
+        "airportsSeeded": 1301,
+        "failedCountries": 0,
+        "currentCountryId": "173",
+        "currentCountryName": "Czech Republic",
+        "activeCountries": [
+          "Denmark"
+        ],
+        "ts": 1777893195166
+      },
+      "eventCount": 94,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 43,
+          "airportsSeeded": 1291,
+          "failedCountries": 0,
+          "currentCountryId": "85",
+          "currentCountryName": "Cuba",
+          "activeCountries": [],
+          "ts": 1777893191974
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 43,
+          "airportsSeeded": 1291,
+          "failedCountries": 0,
+          "currentCountryId": "192",
+          "currentCountryName": "Cyprus - \"TRNC\" (turkish)",
+          "activeCountries": [
+            "Cyprus - \"TRNC\" (turkish)"
+          ],
+          "ts": 1777893192164
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 43,
+          "airportsSeeded": 1291,
+          "failedCountries": 0,
+          "currentCountryId": "191",
+          "currentCountryName": "Cyprus - Republic of (greek)",
+          "activeCountries": [
+            "Cyprus - \"TRNC\" (turkish)",
+            "Cyprus - Republic of (greek)"
+          ],
+          "ts": 1777893192975
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 44,
+          "airportsSeeded": 1293,
+          "failedCountries": 0,
+          "currentCountryId": "192",
+          "currentCountryName": "Cyprus - \"TRNC\" (turkish)",
+          "activeCountries": [
+            "Cyprus - Republic of (greek)"
+          ],
+          "ts": 1777893192977
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 44,
+          "airportsSeeded": 1293,
+          "failedCountries": 0,
+          "currentCountryId": "173",
+          "currentCountryName": "Czech Republic",
+          "activeCountries": [
+            "Cyprus - Republic of (greek)",
+            "Czech Republic"
+          ],
+          "ts": 1777893193978
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 45,
+          "airportsSeeded": 1295,
+          "failedCountries": 0,
+          "currentCountryId": "191",
+          "currentCountryName": "Cyprus - Republic of (greek)",
+          "activeCountries": [
+            "Czech Republic"
+          ],
+          "ts": 1777893194066
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 45,
+          "airportsSeeded": 1295,
+          "failedCountries": 0,
+          "currentCountryId": "34",
+          "currentCountryName": "Denmark",
+          "activeCountries": [
+            "Czech Republic",
+            "Denmark"
+          ],
+          "ts": 1777893195067
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 46,
+          "airportsSeeded": 1301,
+          "failedCountries": 0,
+          "currentCountryId": "173",
+          "currentCountryName": "Czech Republic",
+          "activeCountries": [
+            "Denmark"
+          ],
+          "ts": 1777893195166
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:13:30.267Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 60,
+        "airportsSeeded": 1438,
+        "failedCountries": 0,
+        "currentCountryId": "47",
+        "currentCountryName": "France",
+        "activeCountries": [
+          "Finland",
+          "France"
+        ],
+        "ts": 1777893210136
+      },
+      "eventCount": 123,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 57,
+          "airportsSeeded": 1391,
+          "failedCountries": 0,
+          "currentCountryId": "44",
+          "currentCountryName": "Estonia",
+          "activeCountries": [
+            "Eswatini"
+          ],
+          "ts": 1777893206714
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 58,
+          "airportsSeeded": 1392,
+          "failedCountries": 0,
+          "currentCountryId": "163",
+          "currentCountryName": "Eswatini",
+          "activeCountries": [],
+          "ts": 1777893206853
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 58,
+          "airportsSeeded": 1392,
+          "failedCountries": 0,
+          "currentCountryId": "3",
+          "currentCountryName": "Ethiopia",
+          "activeCountries": [
+            "Ethiopia"
+          ],
+          "ts": 1777893207716
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 58,
+          "airportsSeeded": 1392,
+          "failedCountries": 0,
+          "currentCountryId": "45",
+          "currentCountryName": "Fiji",
+          "activeCountries": [
+            "Ethiopia",
+            "Fiji"
+          ],
+          "ts": 1777893207855
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 59,
+          "airportsSeeded": 1408,
+          "failedCountries": 0,
+          "currentCountryId": "45",
+          "currentCountryName": "Fiji",
+          "activeCountries": [
+            "Ethiopia"
+          ],
+          "ts": 1777893208890
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 60,
+          "airportsSeeded": 1438,
+          "failedCountries": 0,
+          "currentCountryId": "3",
+          "currentCountryName": "Ethiopia",
+          "activeCountries": [],
+          "ts": 1777893209134
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 60,
+          "airportsSeeded": 1438,
+          "failedCountries": 0,
+          "currentCountryId": "46",
+          "currentCountryName": "Finland",
+          "activeCountries": [
+            "Finland"
+          ],
+          "ts": 1777893209891
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 60,
+          "airportsSeeded": 1438,
+          "failedCountries": 0,
+          "currentCountryId": "47",
+          "currentCountryName": "France",
+          "activeCountries": [
+            "Finland",
+            "France"
+          ],
+          "ts": 1777893210136
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:13:45.272Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 75,
+        "airportsSeeded": 1672,
+        "failedCountries": 0,
+        "currentCountryId": "60",
+        "currentCountryName": "Honduras",
+        "activeCountries": [],
+        "ts": 1777893225024
+      },
+      "eventCount": 151,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 71,
+          "airportsSeeded": 1649,
+          "failedCountries": 0,
+          "currentCountryId": "57",
+          "currentCountryName": "Guinea-Bissau",
+          "activeCountries": [
+            "Guinea-Bissau"
+          ],
+          "ts": 1777893221847
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 71,
+          "airportsSeeded": 1649,
+          "failedCountries": 0,
+          "currentCountryId": "58",
+          "currentCountryName": "Guyana",
+          "activeCountries": [
+            "Guinea-Bissau",
+            "Guyana"
+          ],
+          "ts": 1777893222327
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 72,
+          "airportsSeeded": 1650,
+          "failedCountries": 0,
+          "currentCountryId": "57",
+          "currentCountryName": "Guinea-Bissau",
+          "activeCountries": [
+            "Guyana"
+          ],
+          "ts": 1777893222640
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 73,
+          "airportsSeeded": 1653,
+          "failedCountries": 0,
+          "currentCountryId": "58",
+          "currentCountryName": "Guyana",
+          "activeCountries": [],
+          "ts": 1777893223114
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 73,
+          "airportsSeeded": 1653,
+          "failedCountries": 0,
+          "currentCountryId": "59",
+          "currentCountryName": "Haiti",
+          "activeCountries": [
+            "Haiti"
+          ],
+          "ts": 1777893223642
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 73,
+          "airportsSeeded": 1653,
+          "failedCountries": 0,
+          "currentCountryId": "60",
+          "currentCountryName": "Honduras",
+          "activeCountries": [
+            "Haiti",
+            "Honduras"
+          ],
+          "ts": 1777893224116
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 74,
+          "airportsSeeded": 1659,
+          "failedCountries": 0,
+          "currentCountryId": "59",
+          "currentCountryName": "Haiti",
+          "activeCountries": [
+            "Honduras"
+          ],
+          "ts": 1777893224577
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 75,
+          "airportsSeeded": 1672,
+          "failedCountries": 0,
+          "currentCountryId": "60",
+          "currentCountryName": "Honduras",
+          "activeCountries": [],
+          "ts": 1777893225024
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:14:00.463Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 78,
+        "airportsSeeded": 1826,
+        "failedCountries": 0,
+        "currentCountryId": "64",
+        "currentCountryName": "Iran",
+        "activeCountries": [
+          "India",
+          "Iran"
+        ],
+        "ts": 1777893237576
+      },
+      "eventCount": 159,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 75,
+          "airportsSeeded": 1672,
+          "failedCountries": 0,
+          "currentCountryId": "180",
+          "currentCountryName": "Hungary",
+          "activeCountries": [
+            "Hungary"
+          ],
+          "ts": 1777893225579
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 75,
+          "airportsSeeded": 1672,
+          "failedCountries": 0,
+          "currentCountryId": "66",
+          "currentCountryName": "Iceland",
+          "activeCountries": [
+            "Hungary",
+            "Iceland"
+          ],
+          "ts": 1777893226025
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 76,
+          "airportsSeeded": 1677,
+          "failedCountries": 0,
+          "currentCountryId": "180",
+          "currentCountryName": "Hungary",
+          "activeCountries": [
+            "Iceland"
+          ],
+          "ts": 1777893226782
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 77,
+          "airportsSeeded": 1691,
+          "failedCountries": 0,
+          "currentCountryId": "66",
+          "currentCountryName": "Iceland",
+          "activeCountries": [],
+          "ts": 1777893227715
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 77,
+          "airportsSeeded": 1691,
+          "failedCountries": 0,
+          "currentCountryId": "61",
+          "currentCountryName": "India",
+          "activeCountries": [
+            "India"
+          ],
+          "ts": 1777893227783
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 77,
+          "airportsSeeded": 1691,
+          "failedCountries": 0,
+          "currentCountryId": "62",
+          "currentCountryName": "Indonesia",
+          "activeCountries": [
+            "India",
+            "Indonesia"
+          ],
+          "ts": 1777893228721
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 78,
+          "airportsSeeded": 1826,
+          "failedCountries": 0,
+          "currentCountryId": "62",
+          "currentCountryName": "Indonesia",
+          "activeCountries": [
+            "India"
+          ],
+          "ts": 1777893236574
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 78,
+          "airportsSeeded": 1826,
+          "failedCountries": 0,
+          "currentCountryId": "64",
+          "currentCountryName": "Iran",
+          "activeCountries": [
+            "India",
+            "Iran"
+          ],
+          "ts": 1777893237576
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:14:15.481Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 88,
+        "airportsSeeded": 2165,
+        "failedCountries": 0,
+        "currentCountryId": "77",
+        "currentCountryName": "Kazakhstan",
+        "activeCountries": [
+          "Kazakhstan"
+        ],
+        "ts": 1777893255285
+      },
+      "eventCount": 178,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 85,
+          "airportsSeeded": 2085,
+          "failedCountries": 0,
+          "currentCountryId": "42",
+          "currentCountryName": "Ivory Coast",
+          "activeCountries": [],
+          "ts": 1777893250509
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 85,
+          "airportsSeeded": 2085,
+          "failedCountries": 0,
+          "currentCountryId": "69",
+          "currentCountryName": "Jamaica",
+          "activeCountries": [
+            "Jamaica"
+          ],
+          "ts": 1777893251180
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 85,
+          "airportsSeeded": 2085,
+          "failedCountries": 0,
+          "currentCountryId": "70",
+          "currentCountryName": "Japan",
+          "activeCountries": [
+            "Jamaica",
+            "Japan"
+          ],
+          "ts": 1777893251510
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 86,
+          "airportsSeeded": 2091,
+          "failedCountries": 0,
+          "currentCountryId": "69",
+          "currentCountryName": "Jamaica",
+          "activeCountries": [
+            "Japan"
+          ],
+          "ts": 1777893253228
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 86,
+          "airportsSeeded": 2091,
+          "failedCountries": 0,
+          "currentCountryId": "72",
+          "currentCountryName": "Jordan",
+          "activeCountries": [
+            "Japan",
+            "Jordan"
+          ],
+          "ts": 1777893254229
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 87,
+          "airportsSeeded": 2162,
+          "failedCountries": 0,
+          "currentCountryId": "70",
+          "currentCountryName": "Japan",
+          "activeCountries": [
+            "Jordan"
+          ],
+          "ts": 1777893254283
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 88,
+          "airportsSeeded": 2165,
+          "failedCountries": 0,
+          "currentCountryId": "72",
+          "currentCountryName": "Jordan",
+          "activeCountries": [],
+          "ts": 1777893255130
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 88,
+          "airportsSeeded": 2165,
+          "failedCountries": 0,
+          "currentCountryId": "77",
+          "currentCountryName": "Kazakhstan",
+          "activeCountries": [
+            "Kazakhstan"
+          ],
+          "ts": 1777893255285
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:14:30.485Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 99,
+        "airportsSeeded": 2251,
+        "failedCountries": 0,
+        "currentCountryId": "93",
+        "currentCountryName": "Lithuania",
+        "activeCountries": [
+          "Libya",
+          "Lithuania"
+        ],
+        "ts": 1777893269422
+      },
+      "eventCount": 201,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 96,
+          "airportsSeeded": 2246,
+          "failedCountries": 0,
+          "currentCountryId": "90",
+          "currentCountryName": "Lebanon",
+          "activeCountries": [
+            "Lebanon"
+          ],
+          "ts": 1777893265140
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 96,
+          "airportsSeeded": 2246,
+          "failedCountries": 0,
+          "currentCountryId": "88",
+          "currentCountryName": "Lesotho",
+          "activeCountries": [
+            "Lebanon",
+            "Lesotho"
+          ],
+          "ts": 1777893265965
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 97,
+          "airportsSeeded": 2248,
+          "failedCountries": 0,
+          "currentCountryId": "90",
+          "currentCountryName": "Lebanon",
+          "activeCountries": [
+            "Lesotho"
+          ],
+          "ts": 1777893266024
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 97,
+          "airportsSeeded": 2248,
+          "failedCountries": 0,
+          "currentCountryId": "91",
+          "currentCountryName": "Liberia",
+          "activeCountries": [
+            "Lesotho",
+            "Liberia"
+          ],
+          "ts": 1777893267026
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 98,
+          "airportsSeeded": 2249,
+          "failedCountries": 0,
+          "currentCountryId": "88",
+          "currentCountryName": "Lesotho",
+          "activeCountries": [
+            "Liberia"
+          ],
+          "ts": 1777893268420
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 99,
+          "airportsSeeded": 2251,
+          "failedCountries": 0,
+          "currentCountryId": "91",
+          "currentCountryName": "Liberia",
+          "activeCountries": [],
+          "ts": 1777893268421
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 99,
+          "airportsSeeded": 2251,
+          "failedCountries": 0,
+          "currentCountryId": "92",
+          "currentCountryName": "Libya",
+          "activeCountries": [
+            "Libya"
+          ],
+          "ts": 1777893269421
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 99,
+          "airportsSeeded": 2251,
+          "failedCountries": 0,
+          "currentCountryId": "93",
+          "currentCountryName": "Lithuania",
+          "activeCountries": [
+            "Libya",
+            "Lithuania"
+          ],
+          "ts": 1777893269422
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:14:45.487Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 113,
+        "airportsSeeded": 2490,
+        "failedCountries": 0,
+        "currentCountryId": "108",
+        "currentCountryName": "Moldova",
+        "activeCountries": [
+          "Moldova"
+        ],
+        "ts": 1777893285379
+      },
+      "eventCount": 228,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 110,
+          "airportsSeeded": 2410,
+          "failedCountries": 0,
+          "currentCountryId": "103",
+          "currentCountryName": "Mauritania",
+          "activeCountries": [],
+          "ts": 1777893281693
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 110,
+          "airportsSeeded": 2410,
+          "failedCountries": 0,
+          "currentCountryId": "104",
+          "currentCountryName": "Mauritius",
+          "activeCountries": [
+            "Mauritius"
+          ],
+          "ts": 1777893281757
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 111,
+          "airportsSeeded": 2412,
+          "failedCountries": 0,
+          "currentCountryId": "104",
+          "currentCountryName": "Mauritius",
+          "activeCountries": [],
+          "ts": 1777893282646
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 111,
+          "airportsSeeded": 2412,
+          "failedCountries": 0,
+          "currentCountryId": "106",
+          "currentCountryName": "Mexico",
+          "activeCountries": [
+            "Mexico"
+          ],
+          "ts": 1777893282695
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 111,
+          "airportsSeeded": 2412,
+          "failedCountries": 0,
+          "currentCountryId": "107",
+          "currentCountryName": "Micronesia",
+          "activeCountries": [
+            "Mexico",
+            "Micronesia"
+          ],
+          "ts": 1777893283648
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 112,
+          "airportsSeeded": 2486,
+          "failedCountries": 0,
+          "currentCountryId": "106",
+          "currentCountryName": "Mexico",
+          "activeCountries": [
+            "Micronesia"
+          ],
+          "ts": 1777893284377
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 113,
+          "airportsSeeded": 2490,
+          "failedCountries": 0,
+          "currentCountryId": "107",
+          "currentCountryName": "Micronesia",
+          "activeCountries": [],
+          "ts": 1777893284618
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 113,
+          "airportsSeeded": 2490,
+          "failedCountries": 0,
+          "currentCountryId": "108",
+          "currentCountryName": "Moldova",
+          "activeCountries": [
+            "Moldova"
+          ],
+          "ts": 1777893285379
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:15:00.490Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 128,
+        "airportsSeeded": 2682,
+        "failedCountries": 0,
+        "currentCountryId": "121",
+        "currentCountryName": "North Korea",
+        "activeCountries": [
+          "North Macedonia"
+        ],
+        "ts": 1777893300339
+      },
+      "eventCount": 258,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 125,
+          "airportsSeeded": 2655,
+          "failedCountries": 0,
+          "currentCountryId": "117",
+          "currentCountryName": "Nicaragua",
+          "activeCountries": [],
+          "ts": 1777893296971
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 125,
+          "airportsSeeded": 2655,
+          "failedCountries": 0,
+          "currentCountryId": "119",
+          "currentCountryName": "Niger",
+          "activeCountries": [
+            "Niger"
+          ],
+          "ts": 1777893297628
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 125,
+          "airportsSeeded": 2655,
+          "failedCountries": 0,
+          "currentCountryId": "120",
+          "currentCountryName": "Nigeria",
+          "activeCountries": [
+            "Niger",
+            "Nigeria"
+          ],
+          "ts": 1777893297972
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 126,
+          "airportsSeeded": 2658,
+          "failedCountries": 0,
+          "currentCountryId": "119",
+          "currentCountryName": "Niger",
+          "activeCountries": [
+            "Nigeria"
+          ],
+          "ts": 1777893298526
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 127,
+          "airportsSeeded": 2680,
+          "failedCountries": 0,
+          "currentCountryId": "120",
+          "currentCountryName": "Nigeria",
+          "activeCountries": [],
+          "ts": 1777893299226
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 127,
+          "airportsSeeded": 2680,
+          "failedCountries": 0,
+          "currentCountryId": "121",
+          "currentCountryName": "North Korea",
+          "activeCountries": [
+            "North Korea"
+          ],
+          "ts": 1777893299528
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 127,
+          "airportsSeeded": 2680,
+          "failedCountries": 0,
+          "currentCountryId": "105",
+          "currentCountryName": "North Macedonia",
+          "activeCountries": [
+            "North Korea",
+            "North Macedonia"
+          ],
+          "ts": 1777893300228
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 128,
+          "airportsSeeded": 2682,
+          "failedCountries": 0,
+          "currentCountryId": "121",
+          "currentCountryName": "North Korea",
+          "activeCountries": [
+            "North Macedonia"
+          ],
+          "ts": 1777893300339
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:15:15.492Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 141,
+        "airportsSeeded": 2984,
+        "failedCountries": 0,
+        "currentCountryId": "137",
+        "currentCountryName": "Romania",
+        "activeCountries": [
+          "Romania"
+        ],
+        "ts": 1777893315318
+      },
+      "eventCount": 284,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 137,
+          "airportsSeeded": 2911,
+          "failedCountries": 0,
+          "currentCountryId": "133",
+          "currentCountryName": "Poland",
+          "activeCountries": [
+            "Philippines",
+            "Poland"
+          ],
+          "ts": 1777893311462
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 138,
+          "airportsSeeded": 2960,
+          "failedCountries": 0,
+          "currentCountryId": "132",
+          "currentCountryName": "Philippines",
+          "activeCountries": [
+            "Poland"
+          ],
+          "ts": 1777893311984
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 139,
+          "airportsSeeded": 2975,
+          "failedCountries": 0,
+          "currentCountryId": "133",
+          "currentCountryName": "Poland",
+          "activeCountries": [],
+          "ts": 1777893312776
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 139,
+          "airportsSeeded": 2975,
+          "failedCountries": 0,
+          "currentCountryId": "134",
+          "currentCountryName": "Portugal",
+          "activeCountries": [
+            "Portugal"
+          ],
+          "ts": 1777893312985
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 139,
+          "airportsSeeded": 2975,
+          "failedCountries": 0,
+          "currentCountryId": "135",
+          "currentCountryName": "Qatar",
+          "activeCountries": [
+            "Portugal",
+            "Qatar"
+          ],
+          "ts": 1777893313777
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 140,
+          "airportsSeeded": 2983,
+          "failedCountries": 0,
+          "currentCountryId": "134",
+          "currentCountryName": "Portugal",
+          "activeCountries": [
+            "Qatar"
+          ],
+          "ts": 1777893314317
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 141,
+          "airportsSeeded": 2984,
+          "failedCountries": 0,
+          "currentCountryId": "135",
+          "currentCountryName": "Qatar",
+          "activeCountries": [],
+          "ts": 1777893314938
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 141,
+          "airportsSeeded": 2984,
+          "failedCountries": 0,
+          "currentCountryId": "137",
+          "currentCountryName": "Romania",
+          "activeCountries": [
+            "Romania"
+          ],
+          "ts": 1777893315318
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:15:30.495Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 154,
+        "airportsSeeded": 3254,
+        "failedCountries": 0,
+        "currentCountryId": "149",
+        "currentCountryName": "Sierra Leone",
+        "activeCountries": [
+          "Singapore"
+        ],
+        "ts": 1777893330326
+      },
+      "eventCount": 310,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 150,
+          "airportsSeeded": 3212,
+          "failedCountries": 0,
+          "currentCountryId": "147",
+          "currentCountryName": "Serbia",
+          "activeCountries": [
+            "Saudi-Arabia",
+            "Serbia"
+          ],
+          "ts": 1777893327381
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 151,
+          "airportsSeeded": 3241,
+          "failedCountries": 0,
+          "currentCountryId": "143",
+          "currentCountryName": "Saudi-Arabia",
+          "activeCountries": [
+            "Serbia"
+          ],
+          "ts": 1777893327413
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 151,
+          "airportsSeeded": 3241,
+          "failedCountries": 0,
+          "currentCountryId": "148",
+          "currentCountryName": "Seychelles",
+          "activeCountries": [
+            "Serbia",
+            "Seychelles"
+          ],
+          "ts": 1777893328415
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 152,
+          "airportsSeeded": 3244,
+          "failedCountries": 0,
+          "currentCountryId": "147",
+          "currentCountryName": "Serbia",
+          "activeCountries": [
+            "Seychelles"
+          ],
+          "ts": 1777893328505
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 153,
+          "airportsSeeded": 3250,
+          "failedCountries": 0,
+          "currentCountryId": "148",
+          "currentCountryName": "Seychelles",
+          "activeCountries": [],
+          "ts": 1777893329267
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 153,
+          "airportsSeeded": 3250,
+          "failedCountries": 0,
+          "currentCountryId": "149",
+          "currentCountryName": "Sierra Leone",
+          "activeCountries": [
+            "Sierra Leone"
+          ],
+          "ts": 1777893329506
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 153,
+          "airportsSeeded": 3250,
+          "failedCountries": 0,
+          "currentCountryId": "150",
+          "currentCountryName": "Singapore",
+          "activeCountries": [
+            "Sierra Leone",
+            "Singapore"
+          ],
+          "ts": 1777893330268
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 154,
+          "airportsSeeded": 3254,
+          "failedCountries": 0,
+          "currentCountryId": "149",
+          "currentCountryName": "Sierra Leone",
+          "activeCountries": [
+            "Singapore"
+          ],
+          "ts": 1777893330326
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:15:45.498Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 168,
+        "airportsSeeded": 3463,
+        "failedCountries": 0,
+        "currentCountryId": "164",
+        "currentCountryName": "Syria",
+        "activeCountries": [
+          "Syria"
+        ],
+        "ts": 1777893345374
+      },
+      "eventCount": 338,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 164,
+          "airportsSeeded": 3398,
+          "failedCountries": 0,
+          "currentCountryId": "162",
+          "currentCountryName": "Suriname",
+          "activeCountries": [
+            "Sudan",
+            "Suriname"
+          ],
+          "ts": 1777893341642
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 165,
+          "airportsSeeded": 3408,
+          "failedCountries": 0,
+          "currentCountryId": "159",
+          "currentCountryName": "Sudan",
+          "activeCountries": [
+            "Suriname"
+          ],
+          "ts": 1777893341803
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 166,
+          "airportsSeeded": 3411,
+          "failedCountries": 0,
+          "currentCountryId": "162",
+          "currentCountryName": "Suriname",
+          "activeCountries": [],
+          "ts": 1777893342471
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 166,
+          "airportsSeeded": 3411,
+          "failedCountries": 0,
+          "currentCountryId": "144",
+          "currentCountryName": "Sweden",
+          "activeCountries": [
+            "Sweden"
+          ],
+          "ts": 1777893342805
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 166,
+          "airportsSeeded": 3411,
+          "failedCountries": 0,
+          "currentCountryId": "145",
+          "currentCountryName": "Switzerland",
+          "activeCountries": [
+            "Sweden",
+            "Switzerland"
+          ],
+          "ts": 1777893343473
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 167,
+          "airportsSeeded": 3454,
+          "failedCountries": 0,
+          "currentCountryId": "144",
+          "currentCountryName": "Sweden",
+          "activeCountries": [
+            "Switzerland"
+          ],
+          "ts": 1777893344373
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 168,
+          "airportsSeeded": 3463,
+          "failedCountries": 0,
+          "currentCountryId": "145",
+          "currentCountryName": "Switzerland",
+          "activeCountries": [],
+          "ts": 1777893344678
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 168,
+          "airportsSeeded": 3463,
+          "failedCountries": 0,
+          "currentCountryId": "164",
+          "currentCountryName": "Syria",
+          "activeCountries": [
+            "Syria"
+          ],
+          "ts": 1777893345374
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:16:00.502Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 182,
+        "airportsSeeded": 3638,
+        "failedCountries": 0,
+        "currentCountryId": "179",
+        "currentCountryName": "Ukraine",
+        "activeCountries": [
+          "Uganda",
+          "Ukraine"
+        ],
+        "ts": 1777893360453
+      },
+      "eventCount": 367,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 179,
+          "airportsSeeded": 3574,
+          "failedCountries": 0,
+          "currentCountryId": "176",
+          "currentCountryName": "Turkmenistan",
+          "activeCountries": [
+            "Türkiye"
+          ],
+          "ts": 1777893356768
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 180,
+          "airportsSeeded": 3630,
+          "failedCountries": 0,
+          "currentCountryId": "174",
+          "currentCountryName": "Türkiye",
+          "activeCountries": [],
+          "ts": 1777893357162
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 180,
+          "airportsSeeded": 3630,
+          "failedCountries": 0,
+          "currentCountryId": "177",
+          "currentCountryName": "Tuvalu",
+          "activeCountries": [
+            "Tuvalu"
+          ],
+          "ts": 1777893357770
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 180,
+          "airportsSeeded": 3630,
+          "failedCountries": 0,
+          "currentCountryId": "184",
+          "currentCountryName": "UAE",
+          "activeCountries": [
+            "Tuvalu",
+            "UAE"
+          ],
+          "ts": 1777893358163
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 181,
+          "airportsSeeded": 3631,
+          "failedCountries": 0,
+          "currentCountryId": "177",
+          "currentCountryName": "Tuvalu",
+          "activeCountries": [
+            "UAE"
+          ],
+          "ts": 1777893358577
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 182,
+          "airportsSeeded": 3638,
+          "failedCountries": 0,
+          "currentCountryId": "184",
+          "currentCountryName": "UAE",
+          "activeCountries": [],
+          "ts": 1777893359452
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 182,
+          "airportsSeeded": 3638,
+          "failedCountries": 0,
+          "currentCountryId": "178",
+          "currentCountryName": "Uganda",
+          "activeCountries": [
+            "Uganda"
+          ],
+          "ts": 1777893359577
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 182,
+          "airportsSeeded": 3638,
+          "failedCountries": 0,
+          "currentCountryId": "179",
+          "currentCountryName": "Ukraine",
+          "activeCountries": [
+            "Uganda",
+            "Ukraine"
+          ],
+          "ts": 1777893360453
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:16:15.504Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 191,
+        "airportsSeeded": 3853,
+        "failedCountries": 0,
+        "currentCountryId": "71",
+        "currentCountryName": "Yemen",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893375269
+      },
+      "eventCount": 384,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 187,
+          "airportsSeeded": 3759,
+          "failedCountries": 0,
+          "currentCountryId": "185",
+          "currentCountryName": "Vanuatu",
+          "activeCountries": [
+            "USA",
+            "Vanuatu"
+          ],
+          "ts": 1777893367099
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 188,
+          "airportsSeeded": 3788,
+          "failedCountries": 0,
+          "currentCountryId": "185",
+          "currentCountryName": "Vanuatu",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893368455
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 188,
+          "airportsSeeded": 3788,
+          "failedCountries": 0,
+          "currentCountryId": "186",
+          "currentCountryName": "Venezuela",
+          "activeCountries": [
+            "USA",
+            "Venezuela"
+          ],
+          "ts": 1777893369457
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "186",
+          "currentCountryName": "Venezuela",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893370863
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:16:30.506Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:16:45.509Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:17:00.512Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:17:15.516Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:17:30.518Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:17:45.521Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:18:00.524Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:18:15.528Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:18:30.531Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:18:45.533Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:19:00.539Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:19:15.542Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:19:30.545Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:19:45.548Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:20:00.551Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "polledAt": "2026-05-04T11:20:15.554Z",
+      "running": true,
+      "startedAt": 1777893135253,
+      "finishedAt": null,
+      "progress": {
+        "phase": "seeding",
+        "total": 194,
+        "fetched": 193,
+        "airportsSeeded": 3866,
+        "failedCountries": 0,
+        "currentCountryId": "190",
+        "currentCountryName": "Zimbabwe",
+        "activeCountries": [
+          "USA"
+        ],
+        "ts": 1777893379037
+      },
+      "eventCount": 388,
+      "eventsTail": [
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 189,
+          "airportsSeeded": 3821,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA",
+            "Viet Nam"
+          ],
+          "ts": 1777893371864
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "187",
+          "currentCountryName": "Viet Nam",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893373384
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 190,
+          "airportsSeeded": 3844,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA",
+            "Yemen"
+          ],
+          "ts": 1777893374385
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "71",
+          "currentCountryName": "Yemen",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893375269
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 191,
+          "airportsSeeded": 3853,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA",
+            "Zambia"
+          ],
+          "ts": 1777893376270
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "140",
+          "currentCountryName": "Zambia",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893377213
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 192,
+          "airportsSeeded": 3863,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA",
+            "Zimbabwe"
+          ],
+          "ts": 1777893378215
+        },
+        {
+          "phase": "seeding",
+          "total": 194,
+          "fetched": 193,
+          "airportsSeeded": 3866,
+          "failedCountries": 0,
+          "currentCountryId": "190",
+          "currentCountryName": "Zimbabwe",
+          "activeCountries": [
+            "USA"
+          ],
+          "ts": 1777893379037
+        }
+      ],
+      "result": null,
+      "error": null
+    }
+  ],
+  "result": null,
+  "error": "poll failed: cdpSession.send: Target page, context or browser has been closed",
+  "finishedAt": "2026-05-04T11:20:30.561Z"
+}

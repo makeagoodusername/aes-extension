@@ -1,0 +1,530 @@
+{
+  "startedAt": "2026-05-03T12:42:53.584Z",
+  "profile": "/private/tmp/aes-live-codex-20260503-cft",
+  "baseUrl": "https://free1.airlinesim.aero",
+  "loginFlow": {
+    "initial": {
+      "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?14",
+      "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+      "hasCasper": false,
+      "hasCflair": true,
+      "navText": "\n                        CFLAIR\n                        \n                    ",
+      "links": [
+        {
+          "text": "Casper Flight Logistics",
+          "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?select=770"
+        },
+        {
+          "text": "CFLAIR",
+          "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?select=775"
+        }
+      ]
+    },
+    "afterCasperSwitch": {
+      "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?15&select=770",
+      "title": "Dashboard: Casper Flight Logistics | Free1 | AirlineSim",
+      "hasCasper": true,
+      "hasCflair": true,
+      "navText": "\n                        Casper Flight Logistics\n                        \n                    ",
+      "links": [
+        {
+          "text": "Log out halleu",
+          "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?15-1.-base.accountMenu-logout&select=770"
+        },
+        {
+          "text": "Casper Flight Logistics",
+          "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?select=770"
+        },
+        {
+          "text": "CFLAIR",
+          "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?select=775"
+        },
+        {
+          "text": "",
+          "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?select=775"
+        }
+      ]
+    },
+    "afterCflairSwitch": {
+      "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?16&select=775",
+      "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+      "hasCasper": false,
+      "hasCflair": true,
+      "navText": "\n                        CFLAIR\n                        \n                    ",
+      "links": [
+        {
+          "text": "Log out halleu",
+          "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?16-1.-base.accountMenu-logout&select=775"
+        },
+        {
+          "text": "Casper Flight Logistics",
+          "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?select=770"
+        },
+        {
+          "text": "CFLAIR",
+          "href": "https://free1.airlinesim.aero/app/enterprise/dashboard?select=775"
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "label": "dashboard",
+      "path": "/app/enterprise/dashboard?select=775",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?17&select=775",
+        "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+        "h1": "Dashboard",
+        "aesNodes": 610,
+        "menuTrigger": 1,
+        "centralHub": 1,
+        "commandPalette": 0,
+        "routeAssistant": 0,
+        "fleetHubCells": 0,
+        "afpNodes": 0,
+        "perLegChips": 0,
+        "forms": 1,
+        "buttons": 143,
+        "textHead": "DASHBOARD AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE DASHBOARD AES HUB AirlineSim Enhancement Suite SCRAPE EVERYTHING SCRAPE CACHE no full scrape yet AUTO · F — · H — · A — · R — FREE1 · CFA V0.6.12-BETA CLASSIC CASCADE ACTIVITY QUIET SINCE LAST VISIT CASH AS$207.0k weekly net · 2026-05-08 FLEET 4 4 aircraft TOP ROUTE — open RA on a hub ALERTS 0 no rules ORS 0 below rank 3 · of 1 MAINTENANCE — no wear samples FLEET & AIRCRAFT Mainboard Family DNA drift Fleet Command Fleet Optimizer Fleet Hub Route Launcher Route Builder Flight Plan Used Scanner Profitability ROUTES & SCHEDULE Route Assis"
+      },
+      "isolated": {
+        "ok": true,
+        "ctx": 12,
+        "score": 10,
+        "value": {
+          "present": [
+            "AesSettings",
+            "AesDataBus",
+            "CentralHubBus",
+            "CentralHubTileRegistry",
+            "AESCommandRegistry",
+            "AESCommandPalette",
+            "AesCompetitorIntelHost",
+            "AesCompetitorIntelShell",
+            "AesUnifiedSettings",
+            "AesRoutePriceAutomator",
+            "RouteAssistantPricingApplier",
+            "AesAfpSubmitBridge",
+            "AesAfpScheduleStore",
+            "AesPricingCompass"
+          ],
+          "commandCount": 122
+        }
+      }
+    },
+    {
+      "label": "fleets",
+      "path": "/app/fleets",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/app/fleets?18",
+        "title": "Default fleet | Free1 | AirlineSim",
+        "h1": "CFLAIR Fleet Management",
+        "aesNodes": 47,
+        "menuTrigger": 1,
+        "centralHub": 0,
+        "commandPalette": 0,
+        "routeAssistant": 0,
+        "fleetHubCells": 16,
+        "afpNodes": 0,
+        "perLegChips": 0,
+        "forms": 3,
+        "buttons": 52,
+        "textHead": "FLEET AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE CFLAIR FLEET MANAGEMENT AES FLEET MANAGEMENT Currently 4 aircrafts stored in memory. Updated aircraft data for 4 from Default fleet ✈ OPEN FLEET SCHEDULE GRID ▦ OPEN SCHEDULE CANVAS Stacks every aircraft's Mon–Sun timeline; colors flights by route so you can spot overlaps and gaps across the fleet. 4 aircraft · 0 plans drafted · 0 hubs w/ live schedule · hubs: ? 3 · JFK 1 · last scrape 12:43 UTC FLEET COMMAND CENTER 4 aircraft · 1 hub · 0 plans drafted · 3 unassigned ▦ TIER · PREVIEW-ONLY plan 0s ago ⟳ ▸ no proposed changes Auto · OFF last"
+      },
+      "isolated": {
+        "ok": true,
+        "ctx": 15,
+        "score": 9,
+        "value": {
+          "present": [
+            "AesSettings",
+            "AesDataBus",
+            "CentralHubBus",
+            "AESCommandRegistry",
+            "AESCommandPalette",
+            "AesUnifiedSettings",
+            "AesRoutePriceAutomator",
+            "RouteAssistantPricingApplier",
+            "AesAfp",
+            "AesAfpSubmitBridge",
+            "AesAfpScheduleStore",
+            "FleetScheduleGridHost",
+            "AesPricingCompass"
+          ],
+          "commandCount": 24
+        }
+      }
+    },
+    {
+      "label": "afp-aircraft-22094",
+      "path": "/app/fleets/aircraft/22094/0",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/app/fleets/aircraft/22094/0?19",
+        "title": "N003CFA | Free1 | AirlineSim",
+        "h1": "\n        Aircraft:\n        N003CFA /\n        Boeing 767-300ER (winglets)\n        \n    ",
+        "aesNodes": 435,
+        "menuTrigger": 1,
+        "centralHub": 0,
+        "commandPalette": 0,
+        "routeAssistant": 0,
+        "fleetHubCells": 0,
+        "afpNodes": 14,
+        "perLegChips": 0,
+        "forms": 7,
+        "buttons": 100,
+        "textHead": "FLEET / AIRCRAFT / N003CFA | FREE1 | AIRLINESIM AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE AIRCRAFT: N003CFA / BOEING 767-300ER (WINGLETS) WITHDRAW PILOTS AIRCRAFT TYPE PERFORMANCE TOOL PREVIOUS BACK TO FLEET NEXT FLIGHT PLAN FLIGHTS HISTORY CONVERSION FLIGHT PLAN AES ROUTE BUILDER Plan from: Open station ▾ Open Route Assistant ↻ Update Overview ☆ Watchlist this hub AUTO-BUILD LIVE scoring × maintenance budget → weekly grid LEGS — WEEKLY — SCORE — MAINT NOW 113% Auto-build week Apply all flights… Route builder workbench airport set -> mock schedule -> apply FLIGHTS AUTO AIRPORTS STRUCTUR"
+      },
+      "isolated": {
+        "ok": true,
+        "ctx": 18,
+        "score": 10,
+        "value": {
+          "present": [
+            "AesSettings",
+            "AesDataBus",
+            "CentralHubBus",
+            "AESCommandRegistry",
+            "AESCommandPalette",
+            "AesUnifiedSettings",
+            "AesRoutePriceAutomator",
+            "RouteAssistantPricingApplier",
+            "AesAfp",
+            "AesAfpFormDriver",
+            "AesAfpSubmitBridge",
+            "AesAfpScheduleStore",
+            "FleetScheduleGridHost",
+            "AesPricingCompass"
+          ],
+          "commandCount": 24
+        }
+      }
+    },
+    {
+      "label": "scheduling-jfk-alm",
+      "path": "/app/com/scheduling/JFKALM",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/app/com/scheduling/JFKALM?20",
+        "title": "Scheduling | Free1 | AirlineSim",
+        "h1": "Scheduling",
+        "aesNodes": 92,
+        "menuTrigger": 1,
+        "centralHub": 0,
+        "commandPalette": 0,
+        "routeAssistant": 1,
+        "fleetHubCells": 0,
+        "afpNodes": 0,
+        "perLegChips": 0,
+        "forms": 4,
+        "buttons": 50,
+        "textHead": "AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE SCHEDULING QUICK AIRPORT PAIR SELECTION SELECT AIRPORT PAIR Origin New York John F. Kennedy (JFK) Aberdeen, SD, US (ABR) Abilene (ABI) Adak Island (ADK) Aguadilla (BQN) Akhiok (AKK) Akiak (AKI) Akron/Canton (CAK) Alakanuk (AUK) Alamogordo (ALM) Alamosa (ALS) Albany, GA, US (ABY) Albany, NY, US (ALB) Albuquerque (ABQ) Aleknagik (WKK) Alexandria, LA (AEX) Allakaket (AET) Allentown (ABE) Alliance (AIA) Alliance Ft. Worth (AFW) Alpena (APN) Altoona (AOO) Amarillo (AMA) Ambler (ABL) Anacortes (OTS) Anaktuvuk (AKP) Anchorage (ANC) Aniak (ANI) Anvik (A"
+      },
+      "isolated": {
+        "ok": true,
+        "ctx": 21,
+        "score": 6,
+        "value": {
+          "present": [
+            "AesSettings",
+            "AesDataBus",
+            "AESCommandRegistry",
+            "AESCommandPalette",
+            "AesUnifiedSettings",
+            "AesRoutePriceAutomator",
+            "RouteAssistantPricingApplier",
+            "AesAfpScheduleStore",
+            "AesPricingCompass"
+          ],
+          "commandCount": 13
+        }
+      }
+    },
+    {
+      "label": "markets-jfk-lhr",
+      "path": "/app/com/markets/JFKLHR",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/app/com/markets/JFKLHR?21",
+        "title": "Market Analysis | Free1 | AirlineSim",
+        "h1": "\n    Market Analysis\n    \n",
+        "aesNodes": 27,
+        "menuTrigger": 1,
+        "centralHub": 0,
+        "commandPalette": 0,
+        "routeAssistant": 0,
+        "fleetHubCells": 0,
+        "afpNodes": 0,
+        "perLegChips": 0,
+        "forms": 3,
+        "buttons": 17,
+        "textHead": "MARKETS / JFKLHR AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE MARKET ANALYSIS QUICK AIRPORT PAIR SELECTION SELECT AIRPORT PAIR Origin New York John F. Kennedy (JFK) Aberdeen, SD, US (ABR) Abilene (ABI) Adak Island (ADK) Aguadilla (BQN) Akhiok (AKK) Akiak (AKI) Akron/Canton (CAK) Alakanuk (AUK) Alamogordo (ALM) Alamosa (ALS) Albany, GA, US (ABY) Albany, NY, US (ALB) Albuquerque (ABQ) Aleknagik (WKK) Alexandria, LA (AEX) Allakaket (AET) Allentown (ABE) Alliance (AIA) Alliance Ft. Worth (AFW) Alpena (APN) Altoona (AOO) Amarillo (AMA) Ambler (ABL) Anacortes (OTS) Anaktuvuk (AKP) Anchorage (ANC"
+      },
+      "isolated": {
+        "ok": true,
+        "ctx": 24,
+        "score": 3,
+        "value": {
+          "present": [
+            "AesSettings",
+            "AesDataBus",
+            "AesUnifiedSettings"
+          ]
+        }
+      }
+    },
+    {
+      "label": "flight-number-9381",
+      "path": "/app/com/numbers/9381/0",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/app/com/numbers/9381/0?22",
+        "title": "CFA 1 | Free1 | AirlineSim",
+        "h1": "Flight Number Management",
+        "aesNodes": 29,
+        "menuTrigger": 1,
+        "centralHub": 0,
+        "commandPalette": 0,
+        "routeAssistant": 0,
+        "fleetHubCells": 0,
+        "afpNodes": 0,
+        "perLegChips": 5,
+        "forms": 7,
+        "buttons": 28,
+        "textHead": "AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE FLIGHT NUMBER MANAGEMENT BACK TO OVERVIEW QUICK FLIGHT NUMBER SEARCH SELECT CFA 1 FLIGHT NUMBER CLONE DELETE Legs ORIGIN DEP DESTINATION DIST New York (UTC - 05:00) 15:31 HT London Heathrow (UTC) 5,535 km Settings FLIGHT NUMBER FLIGHT NUMBER GROUP Unsorted flight numbers UPDATE Route Map JFK - LHR VIEW IN SCHEDULING VIEW IN INVENTORY VIEW MARKET ANALYSIS JFK STATION LHR STATION INVENTORY FILTER 12 ROWS FLIGHT DEP ARR SC CAP BKD LOAD PRICE STATUS CFA 1 (76W) 2026-05-02 06:00 12:56 Y 217 217 100% 407 AS$ finished CFA 1 (76W) 2026-05-02 06:00 12:56"
+      },
+      "isolated": {
+        "ok": true,
+        "ctx": 27,
+        "score": 5,
+        "value": {
+          "present": [
+            "AesSettings",
+            "AesDataBus",
+            "AesUnifiedSettings",
+            "RouteAssistantPricingApplier",
+            "AesPerLegAutopricer"
+          ]
+        }
+      }
+    },
+    {
+      "label": "flight-numbers-index",
+      "path": "/app/com/numbers",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/app/com/numbers?23",
+        "title": "Flight Number Management | Free1 | AirlineSim",
+        "h1": "Flight Number Management",
+        "aesNodes": 14,
+        "menuTrigger": 1,
+        "centralHub": 0,
+        "commandPalette": 0,
+        "routeAssistant": 0,
+        "fleetHubCells": 0,
+        "afpNodes": 0,
+        "perLegChips": 0,
+        "forms": 6,
+        "buttons": 14,
+        "textHead": "AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE FLIGHT NUMBER MANAGEMENT QUICK FLIGHT NUMBER SEARCH SELECT FLIGHT NUMBER GROUPS Unsorted flight numbers (42) CREATE NEW GROUP NAME CREATE GROUP CREATE NEW FLIGHT NUMBER FLIGHT NUMBER ORIGIN Choose One Choose One Aberdeen, SD, US (ABR) Abilene (ABI) Adak Island (ADK) Aguadilla (BQN) Akhiok (AKK) Akiak (AKI) Akron/Canton (CAK) Alakanuk (AUK) Alamogordo (ALM) Alamosa (ALS) Albany, GA, US (ABY) Albany, NY, US (ALB) Albuquerque (ABQ) Aleknagik (WKK) Alexandria, LA (AEX) Allakaket (AET) Allentown (ABE) Alliance (AIA) Alliance Ft. Worth (AFW) Alpena (A"
+      },
+      "isolated": {
+        "ok": true,
+        "ctx": 30,
+        "score": 5,
+        "value": {
+          "present": [
+            "AesSettings",
+            "AesDataBus",
+            "AesUnifiedSettings",
+            "RouteAssistantPricingApplier",
+            "AesPerLegAutopricer"
+          ]
+        }
+      }
+    },
+    {
+      "label": "accounting",
+      "path": "/app/finance/accounting",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/app/finance/accounting",
+        "title": "Free1 | AirlineSim",
+        "h1": "\n        Accounting\n    ",
+        "aesNodes": 65,
+        "menuTrigger": 1,
+        "centralHub": 0,
+        "commandPalette": 0,
+        "routeAssistant": 0,
+        "fleetHubCells": 0,
+        "afpNodes": 0,
+        "perLegChips": 0,
+        "forms": 1,
+        "buttons": 9,
+        "textHead": "FINANCE / ACCOUNTING AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE ACCOUNTING INCOME STATEMENT BALANCE SHEET BANK ACCOUNT FILTER 38 ROWS CURRENT PERIOD LAST PERIOD PREVIOUS PERIOD CHANGE TOTAL Passenger revenue 1,780,173 AS$ 3,443,958 AS$ 0 AS$ +100% 5,224,131 AS$ Cargo revenue 295,992 AS$ 633,481 AS$ 0 AS$ +100% 929,473 AS$ Passenger handling revenue 0 AS$ 0 AS$ 0 AS$ 0% 0 AS$ Cargo logistic revenue 0 AS$ 0 AS$ 0 AS$ 0% 0 AS$ Leasing revenue 0 AS$ 0 AS$ 0 AS$ 0% 0 AS$ Revenue 2,076,165 AS$ 4,077,439 AS$ 0 AS$ +100% 6,153,604 AS$ Fuel 320,013 AS$ 633,828 AS$ 0 AS$ +100% 953,841 AS$ Passenge"
+      },
+      "isolated": {
+        "ok": true,
+        "ctx": 33,
+        "score": 3,
+        "value": {
+          "present": [
+            "AesSettings",
+            "AesDataBus",
+            "AesUnifiedSettings"
+          ]
+        }
+      }
+    },
+    {
+      "label": "alliance",
+      "path": "/app/alliance",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/app/alliance?25",
+        "title": "Your alliance: United Alliance | Free1 | AirlineSim",
+        "h1": "Your alliance: United Alliance",
+        "aesNodes": 12,
+        "menuTrigger": 1,
+        "centralHub": 0,
+        "commandPalette": 0,
+        "routeAssistant": 0,
+        "fleetHubCells": 0,
+        "afpNodes": 0,
+        "perLegChips": 0,
+        "forms": 2,
+        "buttons": 7,
+        "textHead": "AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE YOUR ALLIANCE: UNITED ALLIANCE OVERVIEW MEMBERSHIP APPLICATIONS DISCUSSIONS FACTS AND FIGURES TIMETABLE MEMBERS ENTERPRISE CODE COUNTRY HEADQUARTERS REMARKS Casper Flight Logistics CFL USA New York (JFK) CFLAIR CFA USA New York (JFK) Fly Gemini FGM USA New York (JFK) FLY NYON. FN USA New York (JFK) FLYLOFI. FLF USA Orlando International (MCO) Gemini GEM USA New York (JFK) Director Lamda LAM USA New York (JFK) Director LongLamda LL USA New York (JFK) NYON. NY USA New York (JFK) LEAVE ALLIANCE You can leave the alliance at any time. Please keep in"
+      },
+      "isolated": null
+    },
+    {
+      "label": "bulk-flight-prices",
+      "path": "/action/enterprise/flightsPrices?adjust=true",
+      "dom": {
+        "url": "https://free1.airlinesim.aero/action/enterprise/flightsPrices?adjust=true",
+        "title": "AirlineSim",
+        "h1": "Modal title",
+        "aesNodes": 24,
+        "menuTrigger": 1,
+        "centralHub": 0,
+        "commandPalette": 0,
+        "routeAssistant": 0,
+        "fleetHubCells": 0,
+        "afpNodes": 0,
+        "perLegChips": 0,
+        "forms": 2,
+        "buttons": 11,
+        "textHead": "AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE TICKET PRICE ADJUSTMENT FROM anywhere Canada -- Toronto Pearson (YYZ) France -- Paris Charles de Gaulle (CDG) Italy -- Rome Fiumicino (FCO) United Kingdom -- London Heathrow (LHR) USA -- Atlanta (ATL) -- Miami International (MIA) -- New York John F. Kennedy (JFK) -- Orlando International (MCO) -- Washington Reagan National (DCA) TO anywhere Canada -- Toronto Pearson (YYZ) France -- Paris Charles de Gaulle (CDG) Italy -- Rome Fiumicino (FCO) United Kingdom -- London Heathrow (LHR) USA -- Atlanta (ATL) -- Miami International (MIA) -- New York John"
+      },
+      "isolated": null
+    }
+  ],
+  "interactions": {
+    "dashboard": {
+      "menuTriggerCount": 1,
+      "menuItems": 19,
+      "menuText": "WORKSPACE Command Bridge Open AES Settings Open command palette Route Planner N/A STRATEGY Open Strategy READY Pricing Decisions READY Strategy Settings READY Hub Network Designer READY Layered Overrides READY Strategy Journal READY SKIN Brutalist Skin ON Density COMFORT Shortcuts COMMUNITY Forum Topic Discord SUPPORT Report a Bug Handbook GitHub About AES",
+      "paletteByKeyboard": 1,
+      "paletteOpen": 1,
+      "paletteRows": 8,
+      "paletteInputFocused": true,
+      "settingsOpenEval": {
+        "ok": true,
+        "ctx": 12,
+        "score": 10,
+        "value": true
+      },
+      "settingsOverlayCount": 1,
+      "competitorOpenEval": {
+        "ok": true,
+        "ctx": 12,
+        "score": 10,
+        "value": {
+          "ok": true,
+          "shellOpen": true
+        }
+      },
+      "competitorOverlayCount": 1,
+      "competitorTabs": 8,
+      "competitorText": "Competitor Intel Server: free1 📋 Change log ✕ 🗺 Map 🏢 Companies ↔ Routes ◎ ORS 🔢 Flight numbers 🔍 Clear No competitor enterprises cached for this server yet. Name IATA Alliance Fleet Hubs Routes Threat ▼ Scraped Cache: 0 enterprises · 2 edges · 1 ORS routes · scanned 1s ago Esc close"
+    },
+    "fleets": {
+      "gridOpenEval": {
+        "ok": true,
+        "ctx": 15,
+        "score": 9,
+        "value": false
+      },
+      "gridOverlayCount": 0,
+      "overlayText": "FLEET AIRLINESIM DENSITY: COMFORTABLE ⇧D DATABASE HELP COMMUNITY PRIVATE MESSAGES 26 HALLEU CFLAIR 543,339 AS$ COMMERCIAL OPERATIONS MANAGEMENT AES BRIDGE CFLAIR FLEET MANAGEMENT AES FLEET MANAGEMENT Currently 4 aircrafts stored in memory. Updated aircraft data for 4 from Default fleet ✈ OPEN FLEET SCHEDULE GRID ▦ OPEN SCHEDULE CANVAS Stacks every aircraft's Mon–Sun timeline; colors flights by route so you can spot overlaps and gaps across the fleet. 4 aircraft · 0 plans drafted · 0 hubs w/ live schedule · hubs: ? 3 · JFK 1 · last scrape 12:43 UTC FLEET COMMAND CENTER 4 aircraft · 1 hub · 0 plans drafted · 3 unassigned ▦ TIER · PREVIEW-ONLY plan 0s ago ⟳ ▸ no proposed changes Auto · OFF last"
+    },
+    "afp": {
+      "ok": true,
+      "ctx": 18,
+      "score": 10,
+      "value": {
+        "hasAfp": true,
+        "hasFormDriver": true,
+        "hasSubmitBridge": true,
+        "hasMockStudio": true,
+        "slotCount": 11
+      }
+    }
+  },
+  "liveWrites": [
+    {
+      "label": "flight-number-9381-same-price",
+      "result": {
+        "ok": true,
+        "ctx": 42,
+        "score": 5,
+        "value": {
+          "ok": true,
+          "route": {
+            "hub": "JFK",
+            "dest": "LHR",
+            "source": "route-link"
+          },
+          "target": {
+            "flightNumberId": "9381",
+            "legIndex": 0,
+            "path": "/app/com/numbers/9381/0"
+          },
+          "requestedPrices": {
+            "Y": 431,
+            "C": 1091,
+            "F": 1946,
+            "Cargo": 247
+          },
+          "status": "verified",
+          "dryRun": false,
+          "applyGate": {
+            "applyEnabled": true,
+            "dryRunOnly": false,
+            "scopeName": "manual",
+            "scopeLiveAllowed": true,
+            "forcedDryRun": false,
+            "dryRun": false,
+            "liveWrites": true,
+            "reason": "live"
+          },
+          "prevPrices": {
+            "Y": 431,
+            "C": 1091,
+            "F": 1946,
+            "Cargo": 247
+          },
+          "newPrices": {
+            "Y": 431,
+            "C": 1091,
+            "F": 1946,
+            "Cargo": 247
+          },
+          "verifiedPrices": {
+            "Y": 431,
+            "C": 1091,
+            "F": 1946,
+            "Cargo": 247
+          },
+          "httpStatus": 200
+        }
+      }
+    }
+  ],
+  "consoleEvents": [],
+  "finishedAt": "2026-05-03T12:43:46.896Z"
+}

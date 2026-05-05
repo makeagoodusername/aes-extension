@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>AES T3 Harness Lite</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../css/design-tokens.css">
+</head>
+<body>
+  <div id="harness-banner" style="background:#fde68a;color:#7c2d12;padding:6px 12px;font-family:monospace;font-size:11px">T3 lite harness — no shell auto-mount</div>
+  <div id="main-content"></div>
+
+    <script>
+      if (typeof chrome === "undefined" || !chrome.storage) {
+        window._fakeStorage = {};
+        window.chrome = window.chrome || {};
+        window.chrome.storage = {
+          local: {
+            get: (keys) => new Promise((resolve) => {
+              if (keys === null || keys === undefined) { resolve({...window._fakeStorage}); return; }
+              const k = Array.isArray(keys) ? keys : (typeof keys === "string" ? [keys] : Object.keys(keys));
+              const out = {};
+              for (const key of k) {
+                if (key in window._fakeStorage) out[key] = window._fakeStorage[key];
+                else if (typeof keys === "object" && !Array.isArray(keys)) out[key] = keys[key];
+              }
+              resolve(out);
+            }),
+            set: (obj) => new Promise((resolve) => {
+              const changes = {};
+              for (const k in obj) {
+                changes[k] = {oldValue: window._fakeStorage[k], newValue: obj[k]};
+                window._fakeStorage[k] = obj[k];
+              }
+              for (const cb of (window._chromeStorageListeners || [])) {
+                try { cb(changes, "local"); } catch (_) {}
+              }
+              resolve();
+            }),
+            remove: (keys) => new Promise((resolve) => {
+              const arr = Array.isArray(keys) ? keys : [keys];
+              for (const k of arr) delete window._fakeStorage[k];
+              resolve();
+            })
+          },
+          onChanged: {
+            addListener: (cb) => {
+              window._chromeStorageListeners = window._chromeStorageListeners || [];
+              window._chromeStorageListeners.push(cb);
+            },
+            removeListener: (cb) => {
+              if (!window._chromeStorageListeners) return;
+              const i = window._chromeStorageListeners.indexOf(cb);
+              if (i >= 0) window._chromeStorageListeners.splice(i, 1);
+            }
+          }
+        };
+        window.chrome.runtime = window.chrome.runtime || {
+          getManifest: () => ({version: "0.0.0-harness", name: "AES T3 Harness", manifest_version: 3}),
+          getURL: (p) => "../" + p,
+          id: "harness",
+          sendMessage: () => Promise.resolve(),
+          onMessage: {addListener: () => {}}
+        };
+        window.chrome.alarms = window.chrome.alarms || {
+          create: () => {},
+          clear: () => Promise.resolve(),
+          onAlarm: {addListener: () => {}}
+        };
+      }
+    </script>
+
+    <script src="../modules/_shared/storage-fallback.js"></script>
+    <script src="../js/jquery-3.4.1.min.js"></script>
+    <script src="../helpers.js"></script>
+    <script src="../modules/_shared/account-registry.js"></script>
+    <script src="../modules/_shared/account-scoped-key.js"></script>
+    <script src="../modules/_shared/migrate-legacy.js"></script>
+    <script src="../modules/_shared/data-bus.js"></script>
+    <script src="../modules/_shared/data-bus-topics.js"></script>
+    <script src="../modules/_shared/utils.js"></script>
+    <script src="../modules/_shared/settings-bridge.js"></script>
+    <script src="../modules/_shared/prefix-store.js"></script>
+    <script src="../modules/_shared/fleet-roster.js"></script>
+    <script src="../modules/_shared/aircraft-spec.js"></script>
+    <script src="../modules/_shared/handoff-store.js"></script>
+    <script src="../modules/_shared/surface-stamp.js"></script>
+    <script src="../modules/_shared/vision.js"></script>
+    <script src="../modules/_shared/tools.js"></script>
+    <script src="../modules/_shared/read.js"></script>
+    <script src="../modules/_shared/view-engine.js"></script>
+    <script src="../modules/_shared/views-registry.js"></script>
+    <script src="../modules/_shared/views/routes-fuel-context.js"></script>
+    <script src="../modules/_shared/hub-feed.js"></script>
+    <script src="../modules/central-hub/feed/index.js"></script>
+    <script src="../modules/central-hub/feed/cash-feed.js"></script>
+    <script src="../modules/central-hub/feed/strategy-feed.js"></script>
+    <script src="../modules/_shared/drag-arbiter.js"></script>
+    <script src="../modules/_shared/price-diagnostics-store.js"></script>
+    <script src="../modules/_shared/ttl-cache.js"></script>
+    <script src="../modules/_shared/store-cache.js"></script>
+    <script src="../modules/_shared/cleanup-registry.js"></script>
+    <script src="../modules/strategy/game-time-watcher.js"></script>
+    <script src="../modules/canopy/role-store.js"></script>
+    <script src="../modules/canopy/role-detector.js"></script>
+    <script src="../modules/canopy/affiliations-store.js"></script>
+    <script src="../modules/canopy/roles-settings-page.js"></script>
+    <script src="../modules/canopy/orgs-store.js"></script>
+    <script src="../modules/canopy/orgs-settings-page.js"></script>
+    <script src="../modules/canopy/geography-base.js"></script>
+    <script src="../modules/canopy/geography-seeder.js"></script>
+    <script src="../modules/canopy/region-resolver.js"></script>
+    <script src="../modules/canopy/regions-store.js"></script>
+    <script src="../modules/canopy/regions-settings-page.js"></script>
+    <script src="../modules/canopy/dna-store.js"></script>
+    <script src="../modules/canopy/dna-fit-scorer.js"></script>
+    <script src="../modules/canopy/dna-drift-detector.js"></script>
+    <script src="../modules/canopy/dna-wizard.js"></script>
+    <script src="../modules/canopy/dna-account-editor.js"></script>
+    <script src="../modules/canopy/combined-supply.js"></script>
+    <script src="../js/design-tokens.js"></script>
+    <script src="../js/cubist-tokens.js"></script>
+    <script src="../js/cubist-primitives.js"></script>
+    <script src="../js/cubist-decomposition.js"></script>
+    <script src="../js/cubist-a11y.js"></script>
+    <script src="../modules/customization/token-registry.js"></script>
+    <script src="../modules/customization/presets.js"></script>
+    <script src="../modules/customization/store.js"></script>
+    <script src="../modules/customization/applier.js"></script>
+    <script src="../modules/customization/shortcut-registry.js"></script>
+    <script src="../modules/customization/host.js"></script>
+    <script src="../modules/customization/preset-codec.js"></script>
+    <script src="../modules/customization/widgets/slider.js"></script>
+    <script src="../modules/customization/widgets/swatch-grid.js"></script>
+    <script src="../modules/customization/widgets/chord-capture.js"></script>
+    <script src="../modules/customization/widgets/contrast-matrix.js"></script>
+    <script src="../modules/customization/widgets/bulk-shift.js"></script>
+    <script src="../modules/customization/widgets/scope-ribbon.js"></script>
+    <script src="../modules/customization/sections/theme.js"></script>
+    <script src="../modules/customization/sections/color.js"></script>
+    <script src="../modules/customization/sections/typography.js"></script>
+    <script src="../modules/customization/sections/spacing.js"></script>
+    <script src="../modules/customization/sections/motion.js"></script>
+    <script src="../modules/customization/sections/ornament.js"></script>
+    <script src="../modules/customization/sections/keybindings.js"></script>
+    <script src="../modules/customization/sections/numerals.js"></script>
+    <script src="../modules/customization/sections/dashboard.js"></script>
+    <script src="../modules/customization/panel-shell.js"></script>
+    <script src="../modules/unified-settings/registry.js"></script>
+    <script src="../modules/unified-settings/tab-customisation.js"></script>
+    <script src="../modules/unified-settings/tab-modules.js"></script>
+    <script src="../modules/unified-settings/tab-account.js"></script>
+    <script src="../modules/unified-settings/tab-data.js"></script>
+    <script src="../modules/unified-settings/tab-about.js"></script>
+    <script src="../modules/unified-settings/shell.js"></script>
+    <script src="../modules/unified-settings/host.js"></script>
+    <script src="../modules/unified-settings/adapters/_helpers.js"></script>
+    <script src="../modules/unified-settings/adapters/strategy.js"></script>
+    <script src="../modules/unified-settings/adapters/route-assistant.js"></script>
+    <script src="../modules/unified-settings/adapters/fleet-command.js"></script>
+    <script src="../modules/unified-settings/adapters/aircraft-flight-plan.js"></script>
+    <script src="../modules/unified-settings/adapters/schedule-management.js"></script>
+    <script src="../modules/unified-settings/adapters/competitor-intel.js"></script>
+    <script src="../modules/aes-menu.js"></script>
+    <script src="../modules/command-bridge/menu-installer.js"></script>
+    <script src="../modules/about-dialog.js"></script>
+    <script src="../modules/site-skin/keyboard-shortcuts.js"></script>
+    <script src="../modules/site-skin/density-toggle.js"></script>
+    <script src="../modules/site-skin/table-polish.js"></script>
+    <script src="../modules/site-skin/click-to-copy.js"></script>
+    <script src="../modules/site-skin/breadcrumb.js"></script>
+    <script src="../modules/station-automation/storage.js"></script>
+    <script src="../modules/station-automation/country-scraper.js"></script>
+    <script src="../modules/used-aircraft-scanner/type-family-map.js"></script>
+    <script src="../modules/used-aircraft-scanner/scan-session-store.js"></script>
+    <script src="../modules/used-aircraft-scanner/scan-diff-store.js"></script>
+    <script src="../modules/used-aircraft-scanner/bid-intent-store.js"></script>
+    <script src="../modules/used-aircraft-scanner/presets-store.js"></script>
+    <script src="../modules/used-aircraft-scanner/deal-metrics.js"></script>
+    <script src="../modules/used-aircraft-scanner/deal-narrative.js"></script>
+    <script src="../modules/used-aircraft-scanner/results-table.js"></script>
+    <script src="../modules/used-aircraft-scanner/scan-controller.js"></script>
+    <script src="../modules/used-aircraft-scanner/family-grid-panel.js"></script>
+    <script src="../modules/schedule-management/range-buckets.js"></script>
+    <script src="../modules/schedule-management/presets-store.js"></script>
+    <script src="../modules/schedule-management/schedule-store.js"></script>
+    <script src="../modules/schedule-management/schedule-builder.js"></script>
+    <script src="../modules/flightsfrom/data-store.js"></script>
+    <script src="../modules/flightsfrom/scan-controller.js"></script>
+    <script src="../modules/route-assistant/settings-store.js"></script>
+    <script src="../modules/route-assistant/fleet-store.js"></script>
+    <script src="../modules/route-assistant/demand-store.js"></script>
+    <script src="../modules/route-assistant/country-resolver.js"></script>
+    <script src="../modules/route-assistant/watchlist-store.js"></script>
+    <script src="../modules/route-assistant/toast-host.js"></script>
+    <script src="../modules/station-automation/status-strip.js"></script>
+    <script src="../modules/schedule-management/open-stations-modal.js"></script>
+    <script src="../modules/schedule-management/schedule-panel.js"></script>
+    <script src="../modules/central-hub/settings-store.js"></script>
+    <script src="../modules/central-hub/status-badges.js"></script>
+    <script src="../modules/central-hub/legacy-bridge.js"></script>
+    <script src="../modules/central-hub/bus.js"></script>
+    <script src="../modules/central-hub/tile.js"></script>
+    <script src="../modules/central-hub/tile-registry.js"></script>
+    <script src="../modules/central-hub/pin-affordance.js"></script>
+    <script src="../modules/central-hub/tile-section-overrider.js"></script>
+    <script src="../modules/conductor/signal-store.js"></script>
+    <script src="../modules/conductor/signal-layer.js"></script>
+    <script src="../modules/conductor/scenario-store.js"></script>
+    <script src="../modules/conductor/scenarios.js"></script>
+    <script src="../modules/conductor/scenario-engine.js"></script>
+    <script src="../modules/conductor/routine-store.js"></script>
+    <script src="../modules/conductor/routine-engine.js"></script>
+    <script src="../modules/conductor/routines/maintenance-rebalance.js"></script>
+    <script src="../modules/conductor/routines/route-profit-recovery.js"></script>
+    <script src="../modules/conductor/routines/cash-runway-defence.js"></script>
+    <script src="../modules/conductor/outcome-driver.js"></script>
+    <script src="../modules/conductor/trust-store.js"></script>
+    <script src="../modules/conductor/tier-gate.js"></script>
+    <script src="../modules/conductor/trust-driver.js"></script>
+    <script src="../modules/conductor/drift-detector.js"></script>
+    <script src="../modules/conductor/threshold-store.js"></script>
+    <script src="../modules/conductor/drift-driver.js"></script>
+    <script src="../modules/inventory/inventory-summary-store.js"></script>
+    <script src="../modules/inventory/quick-price-applier.js"></script>
+    <script src="../modules/aircraft-flight-plan/active-draft-store.js"></script>
+    <script src="../modules/aircraft-flight-plan/submit-bridge.js"></script>
+    <script src="../modules/route-launcher/log-store.js"></script>
+    <script src="../modules/route-launcher/defaults-store.js"></script>
+    <script src="../modules/route-launcher/destination-ranker.js"></script>
+    <script src="../modules/route-launcher/slot-finder.js"></script>
+    <script src="../modules/route-launcher/aircraft-picker.js"></script>
+    <script src="../modules/route-launcher/submit-dispatcher.js"></script>
+    <script src="../modules/route-launcher/status-feed.js"></script>
+    <script src="../modules/route-launcher/controller.js"></script>
+    <script src="../modules/central-hub/tiles/route-launcher-tile.js"></script>
+    <script src="../modules/central-hub/tiles/general-tile.js"></script>
+    <script src="../modules/central-hub/tiles/fleet-hub-tile.js"></script>
+    <script src="../modules/central-hub/tiles/fleet-command-tile.js"></script>
+    <script src="../modules/fleet-hub/optimizer-drilldown.js"></script>
+    <script src="../modules/central-hub/tiles/fleet-optimizer-tile.js"></script>
+    <script src="../modules/central-hub/tiles/aircraft-flight-plan-tile.js"></script>
+    <script src="../modules/central-hub/tiles/used-aircraft-scanner-tile.js"></script>
+    <script src="../modules/central-hub/tiles/aircraft-profitability-tile.js"></script>
+    <script src="../modules/central-hub/tiles/route-assistant-tile.js"></script>
+    <script src="../modules/canopy/cubist-map.js"></script>
+    <script src="../modules/route-assistant/service-profile-scraper.js"></script>
+    <script src="../modules/route-assistant/service-profile-apply-log.js"></script>
+    <script src="../modules/route-assistant/service-profile-applier.js"></script>
+    <script src="../modules/central-hub/tiles/service-profile-tile.js"></script>
+    <script src="../modules/central-hub/tiles/inventory-tile.js"></script>
+    <script src="../modules/central-hub/tiles/schedule-management-tile.js"></script>
+    <script src="../modules/central-hub/tiles/station-automation-tile.js"></script>
+    <script src="../modules/central-hub/tiles/competitor-monitoring-tile.js"></script>
+    <script src="../modules/aircraft-type-specs.js"></script>
+    <script src="../modules/route-assistant/profit-estimator.js"></script>
+    <script src="../modules/route-assistant/competitor-income-estimator.js"></script>
+    <script src="../modules/fleet-hub/aircraft-aggregator.js"></script>
+    <script src="../modules/fleet-hub/hub-management-store.js"></script>
+    <script src="../modules/competitor-intel/outline-aggregator.js"></script>
+    <script src="../modules/competitor-intel/counter-aircraft.js"></script>
+    <script src="../modules/competitor-intel/outline-panel.js"></script>
+    <script src="../modules/scrape-orchestrator/competitor-outline-runner.js"></script>
+    <script src="../modules/central-hub/tiles/competitor-outline-tile.js"></script>
+    <script src="../modules/central-hub/tiles/route-management-tile.js"></script>
+    <script src="../modules/central-hub/tiles/flightsfrom-tile.js"></script>
+    <script src="../modules/accounting/snapshot-store.js"></script>
+    <script src="../modules/central-hub/tiles/accounting-tile.js"></script>
+    <script src="../modules/crew-management/staff-pilots-scraper.js"></script>
+    <script src="../modules/crew-management/staff-pilots-applier.js"></script>
+    <script src="../modules/crew-management/staff-overview-scraper.js"></script>
+    <script src="../modules/crew-management/staff-overview-store.js"></script>
+    <script src="../modules/crew-management/pay-tier-apply-log.js"></script>
+    <script src="../modules/crew-management/personnel-cost-model.js"></script>
+    <script src="../modules/accounting/operating-leverage.js"></script>
+    <script src="../modules/central-hub/tiles/crew-management-tile.js"></script>
+    <script src="../modules/central-hub/tiles/settings-tile.js"></script>
+    <script src="../modules/central-hub/tiles/tools-tile.js"></script>
+    <script src="../modules/central-hub/tiles/data-flow-inspector-tile.js"></script>
+    <script src="../modules/alliance/alliance-overview-scraper.js"></script>
+    <script src="../modules/central-hub/tiles/alliance-tile.js"></script>
+    <script src="../modules/route-assistant/wave-overlay.js"></script>
+    <script src="../modules/route-assistant/wave-plan-diagnostics.js"></script>
+    <script src="../modules/route-assistant/wave-route-fitter.js"></script>
+    <script src="../modules/canopy/wave-preset-meta-store.js"></script>
+    <script src="../modules/route-assistant/wave-favorites-store.js"></script>
+    <script src="../modules/route-assistant/wave-keybinds-store.js"></script>
+    <script src="../modules/route-assistant/wave-registry.js"></script>
+    <script src="../modules/route-assistant/drag-affordance-store.js"></script>
+    <script src="../modules/route-assistant/wave-palette.js"></script>
+    <script src="../modules/route-assistant/interline-store.js"></script>
+    <script src="../modules/route-assistant/enterprise-meta-scraper.js"></script>
+    <script src="../modules/route-assistant/contractual-partners-scraper.js"></script>
+    <script src="../modules/competitor-intel/settings-store.js"></script>
+    <script src="../modules/competitor-intel/competitor-store.js"></script>
+    <script src="../modules/competitor-intel/snapshot-store.js"></script>
+    <script src="../modules/competitor-intel/diff.js"></script>
+    <script src="../modules/competitor-intel/threat-scorer.js"></script>
+    <script src="../modules/competitor-intel/watchlist.js"></script>
+    <script src="../modules/competitor-intel/enterprise-scraper.js"></script>
+    <script src="../modules/_shared/change-log-aggregator.js"></script>
+    <script src="../modules/_shared/change-log-modal.js"></script>
+    <script src="../modules/_shared/change-log-launcher.js"></script>
+    <script src="../modules/competitor-intel/change-log-adapter.js"></script>
+    <script src="../modules/competitor-intel/views/companies-view.js"></script>
+    <script src="../modules/competitor-intel/views/routes-view.js"></script>
+    <script src="../modules/competitor-intel/views/ors-view.js"></script>
+    <script src="../modules/competitor-intel/views/flight-numbers-view.js"></script>
+    <script src="../modules/competitor-intel/views/drilldown.js"></script>
+    <script src="../modules/competitor-intel/host.js"></script>
+    <script src="../modules/competitor-intel/hub-shell.js"></script>
+    <script src="../modules/central-hub/tiles/competitor-intel-hub-tile.js"></script>
+    <script src="../modules/world-view/airport-coords.js"></script>
+    <script src="../modules/world-view/settings-store.js"></script>
+    <script src="../modules/world-view/network-cache.js"></script>
+    <script src="../modules/world-view/styles.js"></script>
+    <script src="../modules/world-view/carrier-classifier.js"></script>
+    <script src="../modules/world-view/network-builder.js"></script>
+    <script src="../modules/world-view/recommend-alliance.js"></script>
+    <script src="../modules/world-view/recommend-interline.js"></script>
+    <script src="../modules/world-view/views/hub-picker.js"></script>
+    <script src="../modules/world-view/views/summary-strip.js"></script>
+    <script src="../modules/world-view/views/world-map.js"></script>
+    <script src="../modules/world-view/views/wave-pane.js"></script>
+    <script src="../modules/world-view/views/destinations-treemap.js"></script>
+    <script src="../modules/world-view/views/recommendations-pane.js"></script>
+    <script src="../modules/central-hub/tiles/world-view-tile.js"></script>
+    <script src="../modules/scrape-orchestrator/enumerators.js"></script>
+    <script src="../modules/scrape-orchestrator/phases.js"></script>
+    <script src="../modules/scrape-orchestrator/progress-modal.js"></script>
+    <script src="../modules/scrape-orchestrator/tos-confirmation.js"></script>
+    <script src="../modules/scrape-orchestrator/cadence-store.js"></script>
+    <script src="../modules/scrape-orchestrator/orchestrator.js"></script>
+    <script src="../modules/scrape-orchestrator/auto-driver.js"></script>
+    <script src="../modules/scrape-orchestrator/host.js"></script>
+    <script src="../modules/strategy/scoring-primitives.js"></script>
+    <script src="../modules/strategy/objective.js"></script>
+    <script src="../modules/strategy/aircraft-ors-modifier.js"></script>
+    <script src="../modules/strategy/congestion.js"></script>
+    <script src="../modules/strategy/route-objective-store.js"></script>
+    <script src="../modules/strategy/layered/migrations.js"></script>
+    <script src="../modules/strategy/layered/resolver.js"></script>
+    <script src="../modules/strategy/layered/family-store.js"></script>
+    <script src="../modules/strategy/layered/division-membership.js"></script>
+    <script src="../modules/strategy/layered/division-store.js"></script>
+    <script src="../modules/strategy/layered/fleet-store.js"></script>
+    <script src="../modules/strategy/layered/route-extras-store.js"></script>
+    <script src="../modules/strategy/layered/codec.js"></script>
+    <script src="../modules/strategy/layered/panel.js"></script>
+    <script src="../modules/strategy/fleet-optimizer-settings.js"></script>
+    <script src="../modules/strategy/fleet-utilization.js"></script>
+    <script src="../modules/strategy/pay-perception.js"></script>
+    <script src="../modules/strategy/fleet-command.js"></script>
+    <script src="../modules/strategy/region-map-view.js"></script>
+    <script src="../modules/strategy/fleet-command-bulk-apply.js"></script>
+    <script src="../modules/strategy/fleet-command-panel.js"></script>
+    <script src="../modules/strategy/default-settings.js"></script>
+    <script src="../modules/strategy/context.js"></script>
+    <script src="../modules/strategy/rank-target-solver.js"></script>
+    <script src="../modules/strategy/joint-rank-tuner.js"></script>
+    <script src="../modules/strategy/decide-routes.js"></script>
+    <script src="../modules/strategy/route-creation.js"></script>
+    <script src="../modules/strategy/price-moves.js"></script>
+    <script src="../modules/strategy/service-moves.js"></script>
+    <script src="../modules/strategy/crew-moves.js"></script>
+    <script src="../modules/strategy/service-tuner.js"></script>
+    <script src="../modules/strategy/crew-tuner.js"></script>
+    <script src="../modules/marketing/budget-store.js"></script>
+    <script src="../modules/strategy/marketing-tuner.js"></script>
+    <script src="../modules/slots/slot-store.js"></script>
+    <script src="../modules/slots/slot-scraper.js"></script>
+    <script src="../modules/slots/slot-scorer.js"></script>
+    <script src="../modules/slots/slot-bidder.js"></script>
+    <script src="../modules/strategy/slot-tuner.js"></script>
+    <script src="../modules/strategy/sister-coordination.js"></script>
+    <script src="../modules/strategy/rebalance-moves.js"></script>
+    <script src="../modules/strategy/fleet-renewal.js"></script>
+    <script src="../modules/strategy/elasticity-fit.js"></script>
+    <script src="../modules/strategy/pricing-engine.js"></script>
+    <script src="../modules/strategy/decision-dispatch.js"></script>
+    <script src="../modules/strategy/service-experiment-store.js"></script>
+    <script src="../modules/strategy/service-experiment-change-log-adapter.js"></script>
+    <script src="../modules/canopy/interline-gap-detector.js"></script>
+    <script src="../modules/strategy/kin-handoff-moves.js"></script>
+    <script src="../modules/strategy/allocate-fleet.js"></script>
+    <script src="../modules/strategy/diff-plan.js"></script>
+    <script src="../modules/strategy/outcomes.js"></script>
+    <script src="../modules/strategy/learn.js"></script>
+    <script src="../modules/strategy/journal-store.js"></script>
+    <script src="../modules/strategy/route-creation-applier.js"></script>
+    <script src="../modules/alliance/il-request-applier.js"></script>
+    <script src="../modules/strategy/rebalance-apply-log.js"></script>
+    <script src="../modules/strategy/rebalance-applier.js"></script>
+    <script src="../modules/strategy/apply-pipeline.js"></script>
+    <script src="../modules/strategy/alliance.js"></script>
+    <script src="../modules/strategy/competitor-prior-store.js"></script>
+    <script src="../modules/strategy/competitor-response.js"></script>
+    <script src="../modules/strategy/store-readiness.js"></script>
+    <script src="../modules/strategy/network-graph.js"></script>
+    <script src="../modules/strategy/hub-designer.js"></script>
+    <script src="../modules/strategy/hub-designer-modal.js"></script>
+    <script src="../modules/strategy/auto-driver.js"></script>
+    <script src="../modules/strategy/portfolio.js"></script>
+    <script src="../modules/strategy/portfolio-multi-world.js"></script>
+    <script src="../modules/strategy/cross-airline-opportunities.js"></script>
+    <script src="../modules/strategy/journal-panel.js"></script>
+    <script src="../modules/strategy/risk-profiles.js"></script>
+    <script src="../modules/strategy/tuning-panel.js"></script>
+    <script src="../modules/strategy/pricing-compass.js"></script>
+    <script src="../modules/strategy/backtest.js"></script>
+    <script src="../modules/strategy/panel.js"></script>
+    <script src="../modules/strategy/route-record.js"></script>
+    <script src="../modules/strategy/briefing.js"></script>
+    <script src="../modules/central-hub/tiles/strategy-tile.js"></script>
+    <script src="../modules/central-hub/tiles/strategy-briefing-tile.js"></script>
+    <script src="../modules/central-hub/tiles/strategy-hub-designer-tile.js"></script>
+    <script src="../modules/central-hub/tiles/strategy-portfolio-tile.js"></script>
+    <script src="../modules/central-hub/tiles/strategy-slot-trading-tile.js"></script>
+    <script src="../modules/central-hub/tiles/strategy-backtest-tile.js"></script>
+    <script src="../modules/central-hub/tiles/weekly-review-tile.js"></script>
+    <script src="../modules/central-hub/tiles/diagnostics-tile.js"></script>
+    <script src="../modules/central-hub/tiles/conductor-tile.js"></script>
+    <script src="../modules/central-hub/tiles/conductor-trust-tile.js"></script>
+    <script src="../modules/central-hub/tiles/drift-tile.js"></script>
+    <script src="../modules/central-hub/tiles/family-tile.js"></script>
+    <script src="../modules/central-hub/tiles/dna-drift-tile.js"></script>
+    <script src="../modules/command-palette/registry.js"></script>
+    <script src="../modules/command-palette/seed-navigation.js"></script>
+    <script src="../modules/command-palette/seed-actions.js"></script>
+    <script src="../modules/command-palette/host.js"></script>
+    <script src="../modules/command-palette/api.js"></script>
+    <script src="../modules/command-palette/legend.js"></script>
+    <script src="../modules/command-palette/derivers/tiles.js"></script>
+    <script src="../modules/command-palette/derivers/sections.js"></script>
+    <script src="../modules/command-palette/derivers/hotkeys.js"></script>
+</body>
+</html>

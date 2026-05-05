@@ -1,0 +1,148 @@
+{
+  "ok": true,
+  "attached": true,
+  "remoteDebuggingPort": 9222,
+  "profileDir": null,
+  "server": "free1.airlinesim.aero",
+  "dashboardUrl": "https://free1.airlinesim.aero/app/enterprise/dashboard?10&qa-price-automation=1",
+  "title": "Dashboard: FLY NYON. | Free1 | AirlineSim",
+  "loggedIn": true,
+  "manifest": {
+    "serviceWorker": "background.js",
+    "permissions": [
+      "activeTab",
+      "declarativeContent",
+      "storage",
+      "unlimitedStorage",
+      "tabs",
+      "notifications",
+      "alarms"
+    ],
+    "hostPermissions": [
+      "https://*.airlinesim.aero/*",
+      "https://www.flightsfrom.com/*"
+    ],
+    "dashboardPricingScripts": [
+      "modules/route-assistant/pricing-plumbing.js",
+      "modules/route-assistant/pricing-apply-log.js",
+      "modules/route-assistant/pricing-applier.js",
+      "modules/route-assistant/silent-auto-proposer-per-class.js",
+      "modules/route-assistant/silent-auto-proposers.js",
+      "modules/route-assistant/central-price-automator.js",
+      "modules/route-assistant/dashboard-auto-price-loop.js"
+    ]
+  },
+  "result": {
+    "ok": true,
+    "stage": "done",
+    "dryRunOnly": true,
+    "liveWritesDisabled": true,
+    "desc": {
+      "silentAutoEnabled": true,
+      "dryRun": true,
+      "liveWrites": false,
+      "tickMs": 5000,
+      "tickLabel": "5 sec",
+      "followMode": "all"
+    },
+    "preview": {
+      "counts": {
+        "routes": 1,
+        "watchlisted": 0,
+        "pinned": 0,
+        "proposed": 0,
+        "withOwnPricing": 1,
+        "withCompetitors": 1,
+        "withYieldHistory": 0,
+        "withOrs": 0,
+        "withActiveFlights": 0,
+        "cooldownBlocked": 0,
+        "capBlocked": 0,
+        "withOrsIndex": 0,
+        "withOrsPriceIndex": 0
+      },
+      "notices": [],
+      "proposals": []
+    },
+    "forcedTick": {
+      "dryRun": true,
+      "eligible": 1,
+      "proposed": 0,
+      "applied": 0,
+      "simulated": 0,
+      "error": {
+        "code": "noProposals",
+        "message": "no route met the min delta threshold"
+      },
+      "perRoute": [
+        {
+          "dest": "ATL",
+          "stage": "skipped",
+          "reason": "no class produced a move ([Y] |Δ%| 0.0 < min 3% (noise floor))"
+        }
+      ]
+    },
+    "samples": [
+      {
+        "at": 1777954494539,
+        "elapsedMs": 4331,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 1,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [
+            {
+              "dest": "ATL",
+              "reason": "no class produced a move ([Y] |Δ%| 0.0 < min 3% (noise floor))",
+              "stage": "skipped"
+            }
+          ],
+          "proposed": 0,
+          "ranAt": 1777954494539,
+          "simulated": 0,
+          "skipped": 1,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777954499538,
+        "elapsedMs": 9330,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 1,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [
+            {
+              "dest": "ATL",
+              "reason": "no class produced a move ([Y] |Δ%| 0.0 < min 3% (noise floor))",
+              "stage": "skipped"
+            }
+          ],
+          "proposed": 0,
+          "ranAt": 1777954499538,
+          "simulated": 0,
+          "skipped": 1,
+          "sourcePage": "dashboard"
+        }
+      }
+    ],
+    "intervals": [
+      4999
+    ],
+    "durationMs": 9662
+  },
+  "consoleRows": [],
+  "pageErrors": []
+}

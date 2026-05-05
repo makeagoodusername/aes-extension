@@ -14,35 +14,111 @@ class CentralHubRouteManagementTile extends window.CentralHubTile {
     constructor() {
         super()
         this.id = "route-management"
-        this.title = "Route Mgmt"
+        this.title = "Current Routes"
         this.section = "routes"
         this.priority = 50
         this.requiresAirline = false
     }
 
     watchedStorageKeys(ctx) {
-        return [String(ctx && ctx.server || "") + ""]
+        // content_fligthSchedule.js writes a single key shaped as
+        // `<server><airlineCode>schedule`. Watch that exact key when the
+        // airline is known; if only server is known, watch nothing — using
+        // the bare server prefix matches every other tile's <server>* keys
+        // and produces a refresh storm on unrelated writes (cf. F-DASH-406
+        // / F-9223-015). _loadSchedule still scans all keys on explicit
+        // refresh, so the tile never falls behind.
+        const server = (ctx && ctx.server) || ""
+        const airline = (ctx && ctx.airline) || ""
+        const keys = []
+        if (server && airline) keys.unshift(server + airline + "schedule")
+        return keys
     }
 
     openHandler() {
-        return () => CentralHubLegacy.switchDropdownTo("routeManagement")
+        return async () => {
+            let sched = null
+            try { sched = await this._loadSchedule() }
+            catch (_) { sched = null }
+            if (!sched || !sched.flights || !sched.flights.length) {
+                window.location.href = this._scheduleHref()
+                return
+            }
+            if (window.CentralHubLegacy && typeof window.CentralHubLegacy.switchDropdownTo === "function") {
+                window.CentralHubLegacy.switchDropdownTo("routeManagement")
+            }
+        }
     }
 
+    _scheduleHref() {
+        const links = Array.from(document.querySelectorAll("#enterprise-dashboard a[href]"))
+        const link = links.find(a => {
+            const href = a && a.href || ""
+            return href.indexOf("/app/info/enterprises/") !== -1
+                && /[?&]tab=3(?:&|$)/.test(href)
+        })
+        if (link && link.href) return link.href
+        return "/app/info/enterprises/me?tab=3"
+    }
+
+    /**
+     * Returns `{flights, dateStr}` for the most recent extracted schedule
+     * for the active server, or `null`. Legacy schema (see
+     * content_fligthSchedule.js): `{type:"schedule", server, airline,
+     * date:{<dateStr>: {schedule: [...legs]}}}` keyed by
+     * `<server><airline>schedule`.
+     */
     async _loadSchedule() {
         const server = (this.ctx && this.ctx.server) || ""
+        const airline = (this.ctx && this.ctx.airline) || ""
         if (!server) return null
+        // F-9230-004: when both server and airline are known the key is exact
+        // (`<server><airlineCode>schedule`, content_fligthSchedule.js:121).
+        // Skip the full-storage scan in that common case.
+        if (airline) {
+            const exactKey = server + airline + "schedule"
+            const blob = await chrome.storage.local.get([exactKey])
+            const v = blob[exactKey]
+            if (!v || typeof v !== "object" || v.type !== "schedule" || !v.date || typeof v.date !== "object") return null
+            let latestDate = ""
+            for (const ds in v.date) {
+                if (Number.isInteger(parseInt(ds, 10)) && ds > latestDate) latestDate = ds
+            }
+            if (!latestDate) return null
+            const entry = v.date[latestDate]
+            const flights = entry && Array.isArray(entry.schedule) ? entry.schedule : []
+            return {flights, dateStr: latestDate}
+        }
         const all = await chrome.storage.local.get(null)
-        let best = null
+        let bestFlights = null
         let bestDate = ""
         for (const k in all) {
             const v = all[k]
             if (!v || typeof v !== "object") continue
             if (v.type !== "schedule") continue
             if (v.server && v.server !== server) continue
-            const when = v.date || ""
-            if (!best || when > bestDate) { best = v; bestDate = when }
+            // Filter by airline when known so multi-airline accounts on the
+            // same server don't surface mixed schedules (cf. F-9223-012). When
+            // airline ctx is missing, fall through and pick the most recent
+            // record across the server.
+            if (airline && v.airline && v.airline !== airline) continue
+            if (!v.date || typeof v.date !== "object") continue
+            // Pick the latest (numeric) date entry — `v.date` is a map
+            // {<dateStr>: {schedule:[...]}} keyed by extraction day.
+            let latestDate = ""
+            for (const ds in v.date) {
+                if (Number.isInteger(parseInt(ds, 10)) && ds > latestDate) latestDate = ds
+            }
+            if (!latestDate) continue
+            const entry = v.date[latestDate]
+            const flights = entry && Array.isArray(entry.schedule) ? entry.schedule : []
+            if (!bestFlights || latestDate > bestDate) {
+                bestFlights = flights
+                bestDate = latestDate
+            }
         }
-        return best
+        if (bestFlights == null) return null
+        return {flights: bestFlights, dateStr: bestDate}
     }
 
     async loadStatus() {
@@ -51,15 +127,18 @@ class CentralHubRouteManagementTile extends window.CentralHubTile {
             return {
                 badge: "—",
                 badgeKind: window.CentralHubStatusBadges.KIND.MUTED,
-                summary: "No schedule extracted. Visit /app/info/enterprises/<id>?tab=3."
+                summary: "No current schedule extracted. Open Flight schedule and run Extract."
             }
         }
-        const flights = Array.isArray(sched.flights) ? sched.flights.length : 0
+        const flights = sched.flights.length
         const dest = new Set()
-        for (const f of (sched.flights || [])) {
+        for (const f of sched.flights) {
             if (f && f.destination) dest.add(f.destination)
         }
-        const when = sched.date ? AES.formatDateString(sched.date) : ""
+        const when = sched.dateStr
+            ? (typeof AES !== "undefined" && AES.formatDateString
+                ? AES.formatDateString(sched.dateStr) : sched.dateStr)
+            : ""
         return {
             badge: flights + " LEGS",
             badgeKind: window.CentralHubStatusBadges.KIND.DEFAULT,
@@ -72,13 +151,15 @@ class CentralHubRouteManagementTile extends window.CentralHubTile {
         const T = window.AESTokens
         host.textContent = ""
         const sched = await this._loadSchedule()
-        if (!sched || !Array.isArray(sched.flights) || !sched.flights.length) {
+
+        if (!sched || !sched.flights.length) {
             const empty = document.createElement("p")
             empty.style.cssText = "color:" + T.color.slate + ";margin:0;"
-            empty.textContent = "No flights stored. Run Extract from the enterprise schedule tab."
+            empty.textContent = "No current schedule stored. Run Extract from the enterprise Flight schedule tab."
             host.appendChild(empty)
             return
         }
+
         const byPair = new Map()
         for (const f of sched.flights) {
             if (!f || !f.origin || !f.destination) continue

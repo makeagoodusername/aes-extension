@@ -20,7 +20,9 @@ class CentralHubAfpTile extends window.CentralHubTile {
     }
 
     watchedStorageKeys(ctx) {
-        return ["aircraftFlightPlan:draft:" + (ctx && ctx.server || "") + ":"]
+        const server = (ctx && ctx.server) || ""
+        if (!server) return []
+        return ["aircraftFlightPlan:draft:" + server + ":"]
     }
 
     openHref() { return "/app/fleets" }
@@ -28,15 +30,12 @@ class CentralHubAfpTile extends window.CentralHubTile {
     async _loadDrafts() {
         const server = (this.ctx && this.ctx.server) || ""
         if (!server) return []
-        const prefix = "aircraftFlightPlan:draft:" + server + ":"
-        const all = await chrome.storage.local.get(null)
-        const drafts = []
-        for (const k in all) {
-            if (k.indexOf(prefix) !== 0) continue
-            const rec = all[k]
-            if (!rec || !rec.aircraftId) continue
-            drafts.push(rec)
-        }
+        // F-9228-906: trailing colon matches the watchedStorageKeys prefix and
+        // the actual key shape (`aircraftFlightPlan:draft:<server>:<id>`). Without
+        // it, "free1" would also match "free10:..." / "free11:..." keys when AS
+        // runs overlapping-prefix server names in the same browser profile.
+        const entries = await this._loadByPrefix("aircraftFlightPlan:draft:" + server + ":")
+        const drafts = entries.map(e => e.value).filter(rec => rec && rec.aircraftId)
         drafts.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
         return drafts
     }
@@ -63,18 +62,92 @@ class CentralHubAfpTile extends window.CentralHubTile {
         }
     }
 
-    async renderBody(ctx, host) {
+    async renderBody(ctx, host, focusFilter) {
         const T = window.AESTokens
+
+        // Guard against the race where the shell's open-tile handler kicks
+        // off two concurrent renders (the first via tile.toggle() with no
+        // filter, the second via _renderBodySafe(filter)). Both clear the
+        // host synchronously before awaiting `_loadDrafts`, then both
+        // append after their await resolves — duplicating the focus
+        // banner + draft list in the same body. Tag each invocation with
+        // a generation counter so only the latest one wins.
+        const gen = (this._renderGen = (this._renderGen || 0) + 1)
         host.textContent = ""
+
+        // CH-5d-3: pin tail filter on the instance.
+        if (focusFilter && focusFilter.type === "tail" && focusFilter.aircraftId) {
+            this._tailFilter = String(focusFilter.aircraftId)
+        }
+
         const drafts = await this._loadDrafts()
-        if (!drafts.length) {
-            const empty = document.createElement("p")
-            empty.style.cssText = "color:" + T.color.slate + ";margin:0;"
-            empty.textContent = "No drafts yet. Open an aircraft from /app/fleets and use Generate / Wave on the flight plan editor."
-            host.appendChild(empty)
+        if (gen !== this._renderGen) return
+
+        if (this._tailFilter) {
+            host.appendChild(this._renderTailBanner(T))
+            const match = drafts.filter(d => String(d.aircraftId) === this._tailFilter)
+            if (!match.length) {
+                const empty = this._renderEmptyState(host, "No draft yet for #" + this._tailFilter + ". ", {marginTop: T.sp[2]})
+                const link = document.createElement("a")
+                link.href = "/app/fleets/aircraft/" + encodeURIComponent(this._tailFilter) + "/0"
+                link.textContent = "Open #" + this._tailFilter + " to start a draft →"
+                link.style.cssText = "color:" + T.color.rust + ";text-decoration:none;"
+                empty.appendChild(link)
+                return
+            }
+            host.appendChild(this._renderDraftList(match, T))
             return
         }
 
+        if (!drafts.length) {
+            this._renderEmptyState(host, "No drafts yet. Open an aircraft from /app/fleets and use Generate / Wave on the flight plan editor.")
+            return
+        }
+
+        host.appendChild(this._renderDraftList(drafts.slice(0, 6), T))
+        if (drafts.length > 6) {
+            const more = document.createElement("p")
+            more.style.cssText = "margin:" + T.sp[2] + " 0 0 0;color:" + T.color.slate + ";font-style:italic;"
+            more.textContent = "+ " + (drafts.length - 6) + " more drafts — see Fleet Hub on /app/fleets."
+            host.appendChild(more)
+        }
+    }
+
+    _renderTailBanner(T) {
+        const banner = document.createElement("div")
+        banner.style.cssText = [
+            "display:flex",
+            "align-items:center",
+            "justify-content:space-between",
+            "gap:" + T.sp[2],
+            "padding:" + T.sp[1] + " " + T.sp[2],
+            "margin-bottom:" + T.sp[2],
+            "background:" + T.color.cobaltSoft,
+            "color:" + T.color.cobalt,
+            "border:" + T.geom.bw1 + " solid " + T.color.cobalt,
+            "border-radius:" + T.geom.radius,
+            "font-family:" + T.font.display,
+            "font-size:" + T.fs.body
+        ].join(";")
+        const label = document.createElement("span")
+        label.textContent = "Focused on aircraft #" + this._tailFilter
+        const clear = document.createElement("button")
+        clear.type = "button"
+        clear.textContent = "× clear"
+        clear.style.cssText = "background:transparent;color:" + T.color.cobalt
+            + ";border:" + T.geom.bw1 + " solid " + T.color.cobalt + ";border-radius:" + T.geom.radius
+            + ";padding:" + T.sp[0] + " " + T.sp[2] + ";font-family:" + T.font.display
+            + ";font-size:" + T.fs.micro + ";letter-spacing:" + T.track.caps
+            + ";text-transform:uppercase;cursor:pointer;"
+        clear.addEventListener("click", () => {
+            this._tailFilter = null
+            this._renderBodySafe()
+        })
+        banner.append(label, clear)
+        return banner
+    }
+
+    _renderDraftList(drafts, T) {
         const list = document.createElement("ul")
         list.style.cssText = [
             "list-style:none",
@@ -85,7 +158,7 @@ class CentralHubAfpTile extends window.CentralHubTile {
             "gap:" + T.sp[1]
         ].join(";")
 
-        for (const d of drafts.slice(0, 6)) {
+        for (const d of drafts) {
             const li = document.createElement("li")
             li.style.cssText = [
                 "display:flex",
@@ -125,14 +198,7 @@ class CentralHubAfpTile extends window.CentralHubTile {
             li.append(id, meta, link)
             list.appendChild(li)
         }
-        host.appendChild(list)
-
-        if (drafts.length > 6) {
-            const more = document.createElement("p")
-            more.style.cssText = "margin:" + T.sp[2] + " 0 0 0;color:" + T.color.slate + ";font-style:italic;"
-            more.textContent = "+ " + (drafts.length - 6) + " more drafts — see Fleet Hub on /app/fleets."
-            host.appendChild(more)
-        }
+        return list
     }
 }
 

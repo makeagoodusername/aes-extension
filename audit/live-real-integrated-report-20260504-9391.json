@@ -1,0 +1,11 @@
+{
+  "startedAt": "2026-05-04T11:36:57.996Z",
+  "port": "9391",
+  "base": "https://free1.airlinesim.aero",
+  "checks": {},
+  "errors": [],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "fatal": "Error: Runtime.enable timeout\n    at Timeout._onTimeout ([stdin]:5:1440)\n    at listOnTimeout (node:internal/timers:588:17)\n    at process.processTimers (node:internal/timers:523:7)",
+  "finishedAt": "2026-05-04T11:37:08.176Z"
+}

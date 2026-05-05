@@ -23,7 +23,11 @@
  *   AesAfp.host               — sidebar `.as-panel` root (back-compat)
  *   AesAfp.wideHost           — main-column `.as-panel` root
  *   AesAfp.slot(name)         — returns div[data-aes-afp-slot=name]
- *   AesAfp.getCurrentSchedule()  — VFP reader → Leg[]
+ *   AesAfp.getCurrentSchedule()  — VFP reader → Leg[] (legacy shape)
+ *   AesAfp.getSchedule()         — Slice 7a — full Schedule (every block
+ *                                  kind + planning matrix + summary)
+ *                                  via AesAfpVfpReader. null when 7a
+ *                                  modules aren't loaded.
  *   AesAfp.getNewFlightForm()    — form locator → FormHandles | null
  *   AesAfp.mount()            — idempotent; re-runs from MutationObserver
  */
@@ -34,12 +38,24 @@
     const VERSION = "0.2.0"
     const HOST_ATTR      = "data-aes-afp-host"
     const WIDE_HOST_ATTR = "data-aes-afp-wide-host"
+    const RELOCATED_NEW_FLIGHT_ATTR = "data-aes-afp-relocated-new-flight"
+    const OVERVIEW_CLASS = "aes-afp-overview-mode"
+    const OVERVIEW_STORAGE_KEY = "aes:afp:overviewMode"
     const SIDEBAR_SLOT_NAMES = ["header", "spec", "maintenance", "audit"]
     // "auto-preview" is owned by Track 5's preview-panel.js. Inserted right
     // under "tools" so the auto-build summary + Apply-all CTA become the
     // first thing the user sees in the wide host, sitting visually above
     // the candidate table and the legacy form-driver toolbar.
-    const WIDE_SLOT_NAMES    = ["tools", "auto-preview", "candidates", "driver", "wave"]
+    // "studio" is owned by Track 9's flight-studio/panel.js (Slice S1).
+    // Sits between auto-preview and candidates so the compose surface is
+    // visually adjacent to the auto-build readout — both are "what would
+    // be applied" surfaces.
+    // "mock-schedule" is owned by mock-schedule/studio.js — the multi-leg
+    // route builder GUI that composes a candidate weekly schedule from
+    // selected airports + flight-count target, then drives the live submit
+    // bridge per leg. Mounts under "studio" so the longer panel sits below
+    // the single-flight composer.
+    const WIDE_SLOT_NAMES    = ["tools", "auto-preview", "studio", "mock-schedule", "candidates", "driver", "wave"]
     const REMOUNT_DEBOUNCE_MS = 200
 
     /** Wrap a thunk; swallow errors and return null on throw. */
@@ -167,45 +183,187 @@
         }
     }
 
+    // ── Hub override (Plan-from picker) ──────────────────────────────────
+    //
+    // Aircraft sit at one airport but the user often wants to plan routes
+    // from a different one (e.g. their airline hub vs. the ramp the plane
+    // happened to overnight at). The tools-strip "Plan from" input writes
+    // a per-(server, aircraftId) override here; route-candidates reads it
+    // via AesAfp.getActiveHub() to decide which airport to source candidates
+    // from. Cleared by typing the aircraft's actual location or blank.
+    let _hubOverride = null   // {iata, server, aircraftId, ts} | null
+
+    function _hubOverrideKey(server, aircraftId) {
+        return "aircraftFlightPlan:planHub:" + server + ":" + aircraftId
+    }
+
+    async function _loadHubOverride() {
+        _hubOverride = null
+        if (typeof chrome === "undefined" || !chrome.storage || !AesAfp.ctx) return
+        const ctx = AesAfp.ctx
+        if (!ctx.server || !ctx.aircraftId) return
+        const key = _hubOverrideKey(ctx.server, ctx.aircraftId)
+        try {
+            const out = await chrome.storage.local.get([key])
+            const rec = out && out[key]
+            if (rec && typeof rec.iata === "string" && /^[A-Z]{3}$/.test(rec.iata)) {
+                _hubOverride = rec
+            }
+        } catch (_) { /* keep null */ }
+    }
+
+    async function _saveHubOverride(iata) {
+        if (typeof chrome === "undefined" || !chrome.storage || !AesAfp.ctx) return
+        const ctx = AesAfp.ctx
+        if (!ctx.server || !ctx.aircraftId) return
+        const key = _hubOverrideKey(ctx.server, ctx.aircraftId)
+        try {
+            if (!iata) {
+                _hubOverride = null
+                await chrome.storage.local.remove([key])
+            } else {
+                const rec = {iata, server: ctx.server, aircraftId: ctx.aircraftId, ts: Date.now()}
+                _hubOverride = rec
+                await chrome.storage.local.set({[key]: rec})
+            }
+        } catch (e) { console.warn("[AES AFP] hub override save threw", e) }
+    }
+
+    /** Returns the airport IATA the user wants candidates planned from.
+     *  Override (if any) wins over the aircraft's current location so the
+     *  user can plan routes from their airline hub even when the plane is
+     *  parked elsewhere. Public — exposed on AesAfp for slice consumers. */
+    function getActiveHub() {
+        if (_hubOverride && _hubOverride.iata) return _hubOverride.iata
+        return (AesAfp.ctx && AesAfp.ctx.currentLocationIata) || null
+    }
+
+    function _iata(v) {
+        const s = String(v || "").trim().toUpperCase()
+        return /^[A-Z]{3}$/.test(s) ? s : null
+    }
+
+    function _legEndpoint(leg, names) {
+        if (!leg) return null
+        for (const name of names) {
+            const hit = _iata(leg[name])
+            if (hit) return hit
+        }
+        return null
+    }
+
+    function _destForHubFromLeg(hub, leg) {
+        const origin = _legEndpoint(leg, ["origin", "originIata", "from", "fromIata"])
+        const dest   = _legEndpoint(leg, ["destination", "dest", "destIata", "to", "toIata"])
+        if (origin === hub && dest && dest !== hub) return dest
+        if (dest === hub && origin && origin !== hub) return origin
+        return null
+    }
+
+    async function _routeAssistantDestFromStoredSchedule(hub, ctx) {
+        if (typeof AesAfpScheduleStore === "undefined") return null
+        if (!ctx || !ctx.server || !ctx.aircraftId) return null
+        try {
+            const sched = await AesAfpScheduleStore.load(ctx.server, ctx.aircraftId)
+            const legs = sched && sched.legs
+            if (!Array.isArray(legs)) return null
+            for (const leg of legs) {
+                const dest = _destForHubFromLeg(hub, leg)
+                if (dest) return dest
+            }
+        } catch (_) { /* fall through */ }
+        return null
+    }
+
+    function _routeAssistantDestFromVisibleSchedule(hub) {
+        let legs = null
+        try { legs = readVisualFlightPlan() } catch (_) { legs = null }
+        if (!Array.isArray(legs)) return null
+        for (const leg of legs) {
+            const dest = _destForHubFromLeg(hub, leg)
+            if (dest) return dest
+        }
+        return null
+    }
+
+    function _routeAssistantDestFromCandidates(hub) {
+        const list = window.AesAfpRouteCandidates && window.AesAfpRouteCandidates.last
+        if (!Array.isArray(list)) return null
+        for (const c of list) {
+            const origin = _iata(c && (c.origin || c.originIata || c.hub))
+            const dest = _iata(c && (c.destIata || c.destination || c.dest))
+            if (dest && dest !== hub && (!origin || origin === hub)) return dest
+        }
+        return null
+    }
+
+    async function _routeAssistantDestFromTopRoutes(hub) {
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return null
+        const legacyKey = "routeAssistant:topRoutes:" + hub
+        const keys = [legacyKey]
+        try {
+            if (window.AesAccountKey && typeof AesAccountKey.acctKey === "function") {
+                const scoped = AesAccountKey.acctKey("routeAssistant:topRoutes", hub)
+                if (scoped && scoped !== legacyKey) keys.unshift(scoped)
+            }
+        } catch (_) { /* legacy key still works */ }
+        try {
+            const data = await chrome.storage.local.get(keys)
+            for (const key of keys) {
+                const rows = data && data[key] && data[key].rows
+                if (!Array.isArray(rows)) continue
+                for (const row of rows) {
+                    const dest = _iata(row && (row.destIata || row.dest || row.destination))
+                    if (dest && dest !== hub) return dest
+                }
+            }
+        } catch (_) { /* fall through */ }
+        return null
+    }
+
+    async function resolveRouteAssistantSchedulingUrl(hub, ctx) {
+        const hubU = _iata(hub)
+        if (!hubU) return "/app/com/scheduling"
+        const dest = await _routeAssistantDestFromStoredSchedule(hubU, ctx)
+            || _routeAssistantDestFromVisibleSchedule(hubU)
+            || _routeAssistantDestFromCandidates(hubU)
+            || await _routeAssistantDestFromTopRoutes(hubU)
+        return dest
+            ? "/app/com/scheduling/" + encodeURIComponent(hubU + dest)
+            : "/app/com/scheduling"
+    }
+
     /**
-     * Visual Flight Plan reader. Walks `.day .blocks` Mon-Sun and emits
-     * one entry per `.block.flight` child (skipping the location /
-     * turnaround / ready slivers around each flight bar).
-     *
-     * Time encoding: AS positions every block by CSS `margin-left` /
-     * `width` as a percentage of the 24h day. So a flight block with
-     * `margin-left: 25.0%` starts at 6:00 (25% × 1440min = 360min). The
-     * `<span class="start">` text inside is unreliable across short vs
-     * long bars (HHMM for long, just minutes for short), so we treat
-     * margin-left as the source of truth and round to the nearest minute.
-     *
-     * Origin / destination: the location bars sandwiching the flight bar
-     * carry the IATA in `<span class="outbound" title>` (the bar before)
-     * and `<span class="inbound" title>` (the bar after). We prefer the
-     * `title` attribute over textContent because AS sometimes wraps the
-     * label in extra elements.
-     *
-     * Each leg gets a synthetic 1-based `seq` ordered by (dayIdx, depTime)
-     * so callers (Track 6's ScheduleDiff) can refer to a current leg by
-     * an integer key the way ScheduleBuilder-produced legs do.
-     *
-     * Slice 6a-followup: a long-haul flight that visually splits across
-     * midnight (a `block flight started` half on day N + a
-     * `block flight ended` half on day N+1, sharing the same `flightId`)
-     * is now collapsed into ONE merged leg with `crossesMidnight: true`.
-     * The pre-followup `spansIntoNext` / `spansFromPrev` flags are
-     * stripped from output legs; only `crossesMidnight` survives. See
-     * `_collapseDayCrossPairs` for the pairing rules.
-     *
-     * Validated against:
-     * - `CLAUDE/...:13536:0?6 flight plan.html` — 14 same-day flights;
-     *   collapse is a no-op (no `started`/`ended` halves).
-     * - `CLAUDE/...:21944:0?13 MULTIDAYROUTES.html` — 20 raw flight bars
-     *   collapse to 14 logical legs (8 same-day + 6 cross-midnight).
-     * - The 6968 capture's empty .blocks paths still return [].
-     * See `CLAUDE/handover-fragments/AFP-VFP-parser.md` for the audit.
+     * Visual Flight Plan reader. Returns the legacy `Leg[]` shape — one
+     * entry per logical flight across Mon-Sun, sorted by (dayIdx, depTime),
+     * each with a 1-based `seq`. Day-crossing flights are collapsed into
+     * one merged leg with `crossesMidnight: true`. Callers that need the
+     * full schedule shape (location / maintenance / turnaround / ready /
+     * overlap blocks + planning-matrix) should use `AesAfp.getSchedule()`.
      */
     function readVisualFlightPlan() {
+        if (typeof window.AesAfpVfpReader     !== "undefined"
+         && typeof window.AesAfpScheduleModel !== "undefined") {
+            try {
+                const schedule = window.AesAfpVfpReader.read({
+                    server:     AesAfp && AesAfp.ctx ? AesAfp.ctx.server     : "",
+                    aircraftId: AesAfp && AesAfp.ctx ? AesAfp.ctx.aircraftId : "",
+                    hubIata:    AesAfp && AesAfp.ctx ? AesAfp.ctx.currentLocationIata : null
+                })
+                return _collapseDayCrossPairs(window.AesAfpScheduleModel.legsFromSchedule(schedule))
+            } catch (e) {
+                console.warn("[AES AFP] vfp-reader threw, falling back to legacy reader", e)
+            }
+        }
+        return _collapseDayCrossPairs(_legacyReadVisualFlightPlan())
+    }
+
+    /**
+     * Inline VFP reader fallback used only when AesAfpVfpReader or
+     * AesAfpScheduleModel haven't loaded — preserves the legacy Leg[]
+     * contract.
+     */
+    function _legacyReadVisualFlightPlan() {
         const out = []
         const days = document.querySelectorAll(".as-panel.visual-flight-plan .vfp.vfp-main .day")
         days.forEach((day, dayIdx) => {
@@ -226,7 +384,27 @@
             return (aMin == null ? 1e9 : aMin) - (bMin == null ? 1e9 : bMin)
         })
         for (let s = 0; s < out.length; s++) out[s].seq = s + 1
-        return _collapseDayCrossPairs(out)
+        return out
+    }
+
+    /**
+     * Returns the full Schedule shape (all block kinds + flat legs[] +
+     * summary), or null when AesAfpVfpReader hasn't loaded. Synchronous
+     * + DOM-bound — for an async store-backed read use
+     * AesAfpScheduleStore.load().
+     */
+    function readSchedule() {
+        if (typeof window.AesAfpVfpReader === "undefined") return null
+        try {
+            return window.AesAfpVfpReader.read({
+                server:     AesAfp && AesAfp.ctx ? AesAfp.ctx.server     : "",
+                aircraftId: AesAfp && AesAfp.ctx ? AesAfp.ctx.aircraftId : "",
+                hubIata:    AesAfp && AesAfp.ctx ? AesAfp.ctx.currentLocationIata : null
+            })
+        } catch (e) {
+            console.warn("[AES AFP] readSchedule threw", e)
+            return null
+        }
     }
 
     /** Internal: extract one flight leg from a `.block.flight` element. */
@@ -316,9 +494,10 @@
     /**
      * Internal: walk neighbours of a flight block looking for a `.block.location`
      * containing the requested IATA span. `direction` = -1 for previous siblings,
-     * +1 for next siblings. Stops at the first location bar found in each
-     * direction; returns the IATA via the span's `title` attr (preferred) with
-     * textContent as fallback.
+     * +1 for next siblings. AS can render overlapping location bars around
+     * same-time blocks, so keep scanning past location bars that only carry the
+     * opposite direction. Returns the IATA via the span's `title` attr
+     * (preferred) with textContent as fallback.
      */
     function _findAdjacentIata(children, idx, direction, spanSelector) {
         const step = direction < 0 ? -1 : 1
@@ -334,8 +513,9 @@
                     const m = txt.match(/\b([A-Z]{3})\b/)
                     if (m) return m[1]
                 }
-                return null
+                continue
             }
+            if (sib.classList.contains("flight")) return null
             // Skip turnaround / ready / odd-even background slivers.
         }
         return null
@@ -364,8 +544,8 @@
      * in the output as same-day legs (`crossesMidnight: false`) so
      * downstream consumers can still see them.
      *
-     * No-op when no leg carries the span flags (e.g. when a future
-     * upstream reader already collapsed pairs internally) — the
+     * No-op when no leg carries the span flags (e.g. when the Slice 7a
+     * `legsFromSchedule` already collapsed pairs internally) — the
      * function still strips the retired flags + stamps `crossesMidnight`
      * for shape consistency.
      */
@@ -453,6 +633,21 @@
         const priceSelect   = form.querySelector("select[name='price']")
         const serviceSelect = form.querySelector("select[name='service']")
 
+        // Flight-number text input + AS's two server-side helpers ("find
+        // available" / "find first available"). The input's `name` is
+        // `number:number_body:input` (Wicket path); we anchor on `name$=`
+        // because the prefix component path can shift across renders.
+        const flightNumberInput =
+               form.querySelector("input[name='number:number_body:input']")
+            || form.querySelector("input[name$=':number_body:input']")
+            || form.querySelector("input[type='text'][maxlength='4'][name*='number']")
+        const flightNumberFindFirstBtn =
+               form.querySelector("a[href*='number~find~first']")
+            || form.querySelector("a[title='find first available']")
+        const flightNumberFindBtn =
+               form.querySelector("a[href*='number~find']:not([href*='number~find~first'])")
+            || form.querySelector("a[title='find available']")
+
         // Reverse-O/D link sits in the same form's .as-action-bar.
         // Match by href (toggle~stations) first, fall back to text.
         let reverseBtn = form.querySelector("a.btn.btn-default[href*='toggle~stations']")
@@ -470,6 +665,9 @@
             minsSelect,
             priceSelect,
             serviceSelect,
+            flightNumberInput,
+            flightNumberFindFirstBtn,
+            flightNumberFindBtn,
             submitBtn,
             reverseBtn
         }
@@ -583,6 +781,90 @@
         return {fragment: wrap, panel}
     }
 
+    function installOverviewCss() {
+        if (document.getElementById("aes-afp-overview-mode-css")) return
+        const style = document.createElement("style")
+        style.id = "aes-afp-overview-mode-css"
+        style.textContent = [
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]{margin-bottom:6px;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]+h3{margin-top:6px;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]>.as-table-well{padding:6px!important;display:grid;grid-template-columns:repeat(3,minmax(320px,1fr));grid-template-areas:\"tools tools tools\" \"auto studio mock\" \"candidates driver wave\";gap:6px;align-items:stretch;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot]{min-width:0;margin-top:0!important;display:flex;flex-direction:column;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='tools']{grid-area:tools;display:block;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='auto-preview']{grid-area:auto;height:min(43vh,520px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='studio']{grid-area:studio;height:min(43vh,520px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='mock-schedule']{grid-area:mock;height:min(43vh,520px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='candidates']{grid-area:candidates;height:min(25vh,300px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='driver']{grid-area:driver;height:min(25vh,300px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='wave']{grid-area:wave;height:min(25vh,300px);overflow:auto;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host] h3{margin:4px 0!important;font-size:12px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host] button{font-size:10px!important;padding:2px 6px!important;line-height:1.2!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host] input,html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host] select{font-size:10px!important;padding:2px 4px!important;min-height:20px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench]{padding:6px!important;font-size:10px!important;line-height:1.25!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench]>div{margin-bottom:5px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench]>div:nth-child(2){grid-template-columns:repeat(auto-fit,minmax(68px,1fr))!important;gap:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench]>label{margin-bottom:5px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-route-builder-workbench] [style*='display:flex']{gap:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-root]{padding:6px 0!important;margin-top:0!important;font-size:10px!important;line-height:1.25!important;border-top:0!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-root]>div:first-child{margin-bottom:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-flex]{gap:6px!important;flex-wrap:nowrap!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-body]{flex:1 1 260px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-sidebar]{flex:0 1 190px!important;min-width:170px!important;padding:6px!important;font-size:10px!important;line-height:1.25!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-schedule-planner]{margin:4px 0!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-schedule-planner] summary{padding:4px 6px!important;font-size:10px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-schedule-planner]>div{padding:0 6px 6px!important;gap:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-planner-mock]{max-height:130px!important;overflow:auto!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio]{padding:6px!important;border-radius:3px!important;font-size:10px!important;line-height:1.25!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] h4{font-size:11px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] [style*='max-height:160px']{max-height:96px!important;grid-template-columns:repeat(auto-fill,minmax(126px,1fr))!important;padding:4px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] table{font-size:10px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] th,html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-mock-schedule-studio] td{padding:1px 3px!important;}",
+            "html." + OVERVIEW_CLASS + " .as-page-aircraft .as-panel.visual-flight-plan{margin-top:6px!important;}",
+            "@media (max-width:1500px){html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]>.as-table-well{grid-template-columns:repeat(2,minmax(300px,1fr));grid-template-areas:\"tools tools\" \"auto studio\" \"mock mock\" \"candidates driver\" \"wave wave\";}html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot='mock-schedule']{height:min(32vh,390px);}}",
+            "@media (max-width:900px){html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-wide-host]>.as-table-well{display:block;}html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-afp-slot]{display:block;height:auto!important;max-height:none!important;margin-top:6px!important;}html." + OVERVIEW_CLASS + " .as-page-aircraft [data-aes-studio-flex]{flex-wrap:wrap!important;}}"
+        ].join("\n")
+        document.head.appendChild(style)
+    }
+
+    function readOverviewMode() {
+        const v = safeCall(() => window.localStorage && window.localStorage.getItem(OVERVIEW_STORAGE_KEY))
+        return v === "1"
+    }
+
+    function writeOverviewMode(value) {
+        safeCall(() => {
+            if (!window.localStorage) return null
+            window.localStorage.setItem(OVERVIEW_STORAGE_KEY, value ? "1" : "0")
+            return null
+        })
+    }
+
+    function applyOverviewMode(value) {
+        installOverviewCss()
+        const root = document.documentElement
+        if (root && root.classList) root.classList.toggle(OVERVIEW_CLASS, !!value)
+        return !!value
+    }
+
+    function getOverviewMode() {
+        const root = document.documentElement
+        return !!(root && root.classList && root.classList.contains(OVERVIEW_CLASS))
+    }
+
+    function setOverviewMode(value, opts) {
+        const enabled = applyOverviewMode(!!value)
+        writeOverviewMode(enabled)
+        if (!(opts && opts.silent) && AesAfp && AesAfp.bus) {
+            try { AesAfp.bus.emit("overview-mode:changed", {enabled}) }
+            catch (_) { /* bus self-isolates elsewhere */ }
+        }
+        return enabled
+    }
+
+    function toggleOverviewMode() {
+        return setOverviewMode(!getOverviewMode())
+    }
+
     /** Render the header status strip — sidebar slot. */
     function renderHeaderStrip(slot, ctx) {
         if (!slot) return
@@ -623,36 +905,199 @@
         wrap.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;align-items:center;"
             + "font-size:11px;color:#cbd5e1;"
 
-        const hub = (ctx && ctx.currentLocationIata) || null
+        const ctxHub = (ctx && ctx.currentLocationIata) || null
+        const hub = getActiveHub()  // override-aware — drives every button below
 
-        // Hub label (no-op clickable that shows where actions are scoped).
-        const label = document.createElement("span")
-        label.style.cssText = "color:#9ca3af;margin-right:4px;"
-        label.textContent = hub ? ("Hub: " + hub) : "Hub: unresolved"
-        wrap.appendChild(label)
+        // Plan-from picker. Editable IATA input that overrides the
+        // aircraft's current location for candidate-planning purposes.
+        // Datalist is populated from FlightsFromStore so airports the
+        // user has scanned auto-complete; any 3-letter IATA is allowed.
+        // Blank or matching ctxHub clears the override.
+        const labelSpan = document.createElement("span")
+        labelSpan.textContent = "Plan from:"
+        labelSpan.style.cssText = "color:#9ca3af;"
 
-        // Open Stations modal — opens with the current hub pre-selected.
-        const stationsBtn = mkToolButton("Open stations…",
-            hub ? "Bulk-open stations using top routes / watchlist / FlightsFrom for " + hub
-                : "Hub not yet resolved — refresh once Slice A finds the aircraft's last airport.",
-            !!hub && typeof OpenStationsModal !== "undefined" && !!ctx.server && !!ctx.airlineCode,
-            () => {
-                if (typeof OpenStationsModal === "undefined") {
-                    console.warn("[AES AFP] OpenStationsModal not loaded — check manifest order")
-                    return
-                }
+        const hubInput = document.createElement("input")
+        hubInput.type = "text"
+        hubInput.value = hub || ""
+        hubInput.placeholder = ctxHub || "IATA"
+        hubInput.maxLength = 3
+        hubInput.spellcheck = false
+        hubInput.autocapitalize = "characters"
+        hubInput.style.cssText = "width:54px;padding:3px 6px;border-radius:3px;"
+            + "border:1px solid #374151;background:#0f1623;color:#cbd5e1;"
+            + "font-family:var(--aes-font-mono,monospace);font-size:11px;"
+            + "text-transform:uppercase;text-align:center;letter-spacing:1px;"
+        hubInput.title = ctxHub
+            ? ("Plan candidates from this airport. Aircraft is currently at "
+                + ctxHub + " — clear or type " + ctxHub + " to remove the override.")
+            : "Plan candidates from this airport (3-letter IATA)."
+
+        const datalistId = "aes-afp-hub-list"
+        let datalist = document.getElementById(datalistId)
+        if (!datalist) {
+            datalist = document.createElement("datalist")
+            datalist.id = datalistId
+            document.body.appendChild(datalist)
+        }
+        hubInput.setAttribute("list", datalistId)
+
+        // Populate datalist with cached airports. Idempotent across
+        // re-renders (the previous list is replaced wholesale).
+        ;(async () => {
+            const seen = new Set()
+            const opts = []
+            const addOpt = (iata) => {
+                const code = String(iata || "").toUpperCase()
+                if (!/^[A-Z]{3}$/.test(code) || seen.has(code)) return
+                seen.add(code)
+                opts.push(code)
+            }
+            if (ctxHub) addOpt(ctxHub)
+            if (typeof FlightsFromStore !== "undefined") {
                 try {
-                    const modal = new OpenStationsModal({
-                        server:      ctx.server,
-                        airlineCode: ctx.airlineCode || ctx.airlineId || "",
-                        currentHub:  hub
-                    })
-                    modal.open()
-                } catch (e) {
-                    console.warn("[AES AFP] OpenStationsModal threw", e)
-                }
+                    const list = await FlightsFromStore.listAirports()
+                    for (const a of (list || [])) addOpt(a && a.iata)
+                } catch (_) { /* noop */ }
+            }
+            if (typeof AesAfpScheduleStore !== "undefined"
+                && ctx && ctx.server && ctx.aircraftId) {
+                try {
+                    const sched = await AesAfpScheduleStore.load(ctx.server, ctx.aircraftId)
+                    if (sched) {
+                        addOpt(sched.hubIata)
+                        for (const leg of (sched.legs || [])) {
+                            addOpt(leg && leg.origin)
+                            addOpt(leg && leg.destination)
+                        }
+                    }
+                } catch (_) { /* noop */ }
+            }
+            if (typeof RouteAssistantWatchlistStore !== "undefined") {
+                try {
+                    const wl = await RouteAssistantWatchlistStore.loadAll()
+                    for (const key of wl.keys()) {
+                        const [hub, dest] = String(key || "").split("-")
+                        addOpt(hub)
+                        addOpt(dest)
+                    }
+                } catch (_) { /* noop */ }
+            }
+            datalist.innerHTML = ""
+            for (const code of opts) {
+                const opt = document.createElement("option")
+                opt.value = code
+                datalist.appendChild(opt)
+            }
+        })()
+
+        const commitHub = async () => {
+            const v = String(hubInput.value || "").trim().toUpperCase()
+            hubInput.value = v  // normalise displayed value
+            if (v && !/^[A-Z]{3}$/.test(v)) {
+                hubInput.style.borderColor = "#dc2626"
+                return
+            }
+            hubInput.style.borderColor = "#374151"
+            const newOverride = (!v || v === ctxHub) ? null : v
+            const currentOverride = _hubOverride && _hubOverride.iata
+            if (newOverride === currentOverride) return
+            await _saveHubOverride(newOverride)
+            if (AesAfp.bus) AesAfp.bus.emit("hub:changed", {hub: getActiveHub()})
+            renderToolsStrip(AesAfp.slot("tools"), AesAfp.ctx)
+        }
+
+        hubInput.addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); hubInput.blur() }
+            else if (e.key === "Escape") { hubInput.value = hub || ""; hubInput.blur() }
+        })
+        hubInput.addEventListener("blur", () => commitHub().catch(() => {}))
+
+        wrap.append(labelSpan, hubInput)
+
+        if (ctxHub && hub && hub !== ctxHub) {
+            const overrideNote = document.createElement("span")
+            overrideNote.textContent = "override; aircraft at " + ctxHub
+            overrideNote.style.cssText = "color:#fbbf24;font-size:10px;"
+
+            const useCurrentBtn = document.createElement("button")
+            useCurrentBtn.type = "button"
+            useCurrentBtn.textContent = "Use " + ctxHub
+            useCurrentBtn.style.cssText = "padding:3px 6px;border-radius:3px;"
+                + "border:1px solid #f59e0b;background:transparent;color:#fde68a;"
+                + "font-size:10px;cursor:pointer;"
+            useCurrentBtn.addEventListener("click", () => {
+                hubInput.value = ctxHub
+                commitHub().catch(() => {})
             })
-        wrap.appendChild(stationsBtn)
+
+            wrap.append(overrideNote, useCurrentBtn)
+        }
+
+        // F3b — primary "Open station" opens the per-airport drawer rooted
+        // on the active hub (demand, top routes, schedule conflicts). Caret
+        // ▾ keeps the legacy bulk-open modal (top routes / watchlist /
+        // FlightsFrom / demand) for users who still want the multi-station
+        // sweep view.
+        const drawerEnabled = !!hub && typeof window.AesAfpStationDrawer !== "undefined"
+        const legacyEnabled = !!hub && typeof OpenStationsModal !== "undefined"
+            && !!ctx.server && !!ctx.airlineCode
+        const openModal = (extraOpts) => {
+            if (typeof OpenStationsModal === "undefined") {
+                console.warn("[AES AFP] OpenStationsModal not loaded — check manifest order")
+                return
+            }
+            try {
+                const modal = new OpenStationsModal(Object.assign({
+                    server:      ctx.server,
+                    airlineCode: ctx.airlineCode || ctx.airlineId || "",
+                    currentHub:  hub
+                }, extraOpts || {}))
+                modal.open()
+            } catch (e) {
+                console.warn("[AES AFP] OpenStationsModal threw", e)
+            }
+        }
+
+        const group = document.createElement("span")
+        group.style.cssText = "display:inline-flex;gap:0;"
+
+        const stationsBtn = mkToolButton("Open station",
+            drawerEnabled
+                ? "Open the station drawer for " + hub + " (demand, top routes, conflicts)."
+                : (hub ? "Station drawer module not loaded — check manifest order."
+                       : "Hub not yet resolved — refresh once Slice A finds the aircraft's last airport."),
+            drawerEnabled,
+            () => {
+                if (!drawerEnabled) return
+                AesAfpStationDrawer.open(hub, {hub})
+            })
+        // Override the corner radius so it sits flush with the caret.
+        stationsBtn.style.borderTopRightRadius    = "0"
+        stationsBtn.style.borderBottomRightRadius = "0"
+        stationsBtn.style.borderRight             = "1px solid #1f2937"
+
+        // Caret = legacy bulk-open path (top routes / watchlist / FlightsFrom
+        // / demand). Single secondary action so we skip the dropdown menu —
+        // the tooltip carries the discovery weight.
+        const caretBtn = document.createElement("button")
+        caretBtn.type = "button"
+        caretBtn.textContent = "▾"
+        caretBtn.title = hub
+            ? `Bulk-open from watchlist / top routes / FlightsFrom / demand (scoped to ${hub} for the watchlist source).`
+            : "Bulk-open from watchlist / top routes / FlightsFrom / demand."
+        caretBtn.style.cssText = "background:" + (legacyEnabled ? "#0f1623" : "#1f2937") + ";"
+            + "color:" + (legacyEnabled ? "#cbd5e1" : "#6b7280") + ";"
+            + "border:1px solid #374151;border-left:none;"
+            + "border-top-left-radius:0;border-bottom-left-radius:0;"
+            + "border-top-right-radius:4px;border-bottom-right-radius:4px;"
+            + "padding:4px 6px;font-size:11px;font-weight:600;"
+            + "cursor:" + (legacyEnabled ? "pointer" : "not-allowed") + ";"
+        caretBtn.disabled = !legacyEnabled
+        if (legacyEnabled) caretBtn.addEventListener("click", () => openModal({}))
+
+        group.append(stationsBtn, caretBtn)
+        wrap.appendChild(group)
 
         // Jump to the full Route Assistant panel on the scheduling page,
         // pre-rooted at this aircraft's hub (the panel reads ?origin).
@@ -662,10 +1107,98 @@
             !!hub,
             () => {
                 if (!hub) return
-                try { window.open("/app/com/scheduling?origin=" + encodeURIComponent(hub), "_blank") }
-                catch (_) { /* noop */ }
+                const prevText = raBtn.textContent
+                raBtn.disabled = true
+                raBtn.textContent = "Opening…"
+                resolveRouteAssistantSchedulingUrl(hub, ctx)
+                    .then(url => { window.open(url, "_blank") })
+                    .catch(() => { window.open("/app/com/scheduling", "_blank") })
+                    .finally(() => {
+                        raBtn.disabled = false
+                        raBtn.textContent = prevText
+                    })
             })
         wrap.appendChild(raBtn)
+
+        // Force-recompute candidates + re-read the persisted schedule
+        // without leaving the page. Bypasses the bus-subscription debounce
+        // (see AesAfpRouteCandidates.refresh) so a click never gets
+        // swallowed by a near-simultaneous spec/ctx/schedule event.
+        // Read-only — preserves the panel-CTA write gateway invariant.
+        // Click feedback (⏳ → ✓) is the user-visible signal that the
+        // recompute ran even when the result is byte-identical to before.
+        const refreshBtn = document.createElement("button")
+        refreshBtn.type = "button"
+        refreshBtn.textContent = "↻ Update"
+        refreshBtn.title = "Re-fetch candidates and re-read the persisted schedule for this hub."
+        refreshBtn.style.cssText = toolButtonCss(true)
+        let _refreshFlashTimer = 0
+        const _flashRefresh = (text, bg, ms) => {
+            if (_refreshFlashTimer) clearTimeout(_refreshFlashTimer)
+            refreshBtn.textContent = text
+            refreshBtn.style.background = bg
+            _refreshFlashTimer = setTimeout(() => {
+                refreshBtn.textContent = "↻ Update"
+                refreshBtn.style.background = "#0f1623"
+                _refreshFlashTimer = 0
+            }, ms)
+        }
+        refreshBtn.addEventListener("click", () => {
+            _flashRefresh("⏳ Updating…", "#1e3a8a", 1500)
+            try {
+                if (typeof AesAfpRouteCandidates !== "undefined"
+                    && typeof AesAfpRouteCandidates.refresh === "function") {
+                    const refresh = AesAfpRouteCandidates.refresh()
+                    if (refresh && typeof refresh.then === "function") {
+                        refresh.then(() => _flashRefresh("✓ Updated", "#15803d", 900))
+                            .catch(() => _flashRefresh("Update failed", "#991b1b", 1200))
+                    }
+                }
+            } catch (_) { _flashRefresh("Update failed", "#991b1b", 1200) }
+        })
+        // Confirm completion via the existing candidates:updated event so
+        // the user sees explicit "✓ Updated" feedback after the compute
+        // finishes (works for both clicks AND background bus-driven runs,
+        // which is fine — the flash is short and benign). Wicket re-mounts
+        // this strip on every form submit, so detach the prior handler to
+        // avoid leaking closures on dead DOM nodes.
+        if (window.AesAfp && AesAfp.bus) {
+            try {
+                if (_refreshUpdatedHandler) AesAfp.bus.off("candidates:updated", _refreshUpdatedHandler)
+                const onUpdated = () => _flashRefresh("✓ Updated", "#15803d", 900)
+                AesAfp.bus.on("candidates:updated", onUpdated)
+                _refreshUpdatedHandler = onUpdated
+            } catch (_) { /* noop */ }
+        }
+        wrap.appendChild(refreshBtn)
+
+        const overviewBtn = document.createElement("button")
+        overviewBtn.type = "button"
+        const syncOverviewButton = () => {
+            const active = getOverviewMode()
+            overviewBtn.textContent = active ? "Overview On" : "Overview"
+            overviewBtn.title = active
+                ? "Return the route-builder modules to the standard vertical layout."
+                : "Use a compact multi-module layout for route-builder decisions."
+            overviewBtn.style.cssText = toolButtonCss(true)
+                + (active
+                    ? "background:#134e4a;color:#ccfbf1;border-color:#14b8a6;"
+                    : "")
+        }
+        overviewBtn.addEventListener("click", () => {
+            toggleOverviewMode()
+            syncOverviewButton()
+        })
+        syncOverviewButton()
+        if (window.AesAfp && AesAfp.bus) {
+            try {
+                if (_overviewModeHandler) AesAfp.bus.off("overview-mode:changed", _overviewModeHandler)
+                const onOverviewChanged = () => syncOverviewButton()
+                AesAfp.bus.on("overview-mode:changed", onOverviewChanged)
+                _overviewModeHandler = onOverviewChanged
+            } catch (_) { /* noop */ }
+        }
+        wrap.appendChild(overviewBtn)
 
         // Hub-watchlist toggle. Watchlist keys are "<HUB>-<DEST>"; we use
         // a synthetic "<HUB>-HUB" sentinel to mark the hub itself as a
@@ -720,6 +1253,64 @@
 
     let _observer = null
     let _remountTimer = null
+    let _refreshUpdatedHandler = null
+    let _overviewModeHandler = null
+
+    function normaliseHeadingText(s) {
+        return String(s || "").replace(/\s+/g, " ").trim().toLowerCase()
+    }
+
+    function isAssignNewFlightHeading(el) {
+        return !!(el && el.tagName && el.tagName.toLowerCase() === "h3"
+            && normaliseHeadingText(el.textContent) === "assign a new flight")
+    }
+
+    function findAssignNewFlightModule() {
+        const mainCol = document.querySelector(".as-page-aircraft .col-md-10")
+        if (!mainCol) return null
+
+        let heading = null
+        for (const h of mainCol.querySelectorAll("h3")) {
+            if (isAssignNewFlightHeading(h)) { heading = h; break }
+        }
+        if (!heading) return null
+
+        let panel = heading.nextElementSibling
+        while (panel && !(panel.classList && panel.classList.contains("as-panel"))) {
+            if (panel.tagName && panel.tagName.toLowerCase() === "h3") return null
+            panel = panel.nextElementSibling
+        }
+        if (!panel) return null
+        if (panel.hasAttribute(WIDE_HOST_ATTR) || panel.classList.contains("visual-flight-plan")) return null
+        return {heading, panel}
+    }
+
+    /**
+     * Keep AS's native new-flight module directly above the Visual Flight
+     * Plan. The form stays intact; this only moves the existing heading and
+     * panel so the user can confirm wave/route-builder fills in context.
+     */
+    function relocateAssignNewFlightModule() {
+        const vfp = document.querySelector(".as-page-aircraft .col-md-10 .as-panel.visual-flight-plan")
+        if (!vfp || !vfp.parentElement) return false
+
+        const mod = findAssignNewFlightModule()
+        if (!mod) return false
+        const {heading, panel} = mod
+        const parent = vfp.parentElement
+        const alreadyPlaced = heading.parentElement === parent
+            && panel.parentElement === parent
+            && heading.nextElementSibling === panel
+            && panel.nextElementSibling === vfp
+
+        heading.setAttribute(RELOCATED_NEW_FLIGHT_ATTR, "1")
+        panel.setAttribute(RELOCATED_NEW_FLIGHT_ATTR, "1")
+        if (alreadyPlaced) return false
+
+        parent.insertBefore(heading, vfp)
+        parent.insertBefore(panel, vfp)
+        return true
+    }
 
     /**
      * Attach a MutationObserver to the page row. Wicket re-renders the
@@ -739,6 +1330,7 @@
                 _remountTimer = null
                 const haveSidebar = !!document.querySelector("[" + HOST_ATTR + "]")
                 const haveWide    = !!document.querySelector("[" + WIDE_HOST_ATTR + "]")
+                relocateAssignNewFlightModule()
                 if (!haveSidebar || !haveWide) {
                     AesAfp.mount().catch(err => {
                         console.warn("[AES AFP] re-mount failed", err)
@@ -751,9 +1343,9 @@
 
     /**
      * Find the wide-host insertion target. We anchor on the Visual Flight
-     * Plan widget so the new panel sits between AS's Create-new-flight
-     * form and the VFP — i.e., the user can read the schedule then build
-     * candidates against it without scrolling. Returns the element to
+     * Plan widget; mount() later moves AS's Create-new-flight form back
+     * directly above the VFP so confirmation stays next to the schedule.
+     * Returns the element to
      * insertBefore as the second item in a tuple [parent, anchor]; the
      * anchor may be null to mean "append to parent".
      */
@@ -802,8 +1394,11 @@
             }
         }
         AesAfp.wideHost = widePanel || null
+        relocateAssignNewFlightModule()
+        setOverviewMode(readOverviewMode(), {silent: true})
 
         AesAfp.ctx = extractPageContext()
+        await _loadHubOverride()
         renderHeaderStrip(AesAfp.slot("header"), AesAfp.ctx)
         renderToolsStrip(AesAfp.slot("tools"),   AesAfp.ctx)
 
@@ -844,9 +1439,15 @@
         host: null,
         wideHost: null,
         slot: resolveSlot,
-        getCurrentSchedule: readVisualFlightPlan,
+        getCurrentSchedule: readVisualFlightPlan,   // legacy Leg[] shape
+        getSchedule:        readSchedule,           // Slice 7a — rich Schedule
         getNewFlightForm:   findNewFlightForm,
         getFormTabs:        findFormTabs,
+        getActiveHub,                               // override-aware hub for planning
+        getOverviewMode,
+        setOverviewMode,
+        toggleOverviewMode,
+        resolveRouteAssistantSchedulingUrl,
         mount
     }
 

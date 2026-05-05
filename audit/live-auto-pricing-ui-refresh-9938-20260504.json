@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "chipBefore": true,
+  "chipAfter": true,
+  "mutations": 3,
+  "excerpt": "ROUTE ASSISTANT\nNo top-routes cached. Open /app/com/scheduling/<HUB> to seed.\n—\nOPEN →\n☆\n▾\nAUTO PRICING\nSaved scope\nWatchlist\nAll cached\nPREVIEW\nDRY-RUN TICK\nRUN GATE\ndry-run gate\nper-class-elasticity\nwatchlist\n0 proposed\n0 cooldown\n0 capped\n0 priced\n0 ORS\n0 in-air\n0 history\nrefresh 5s\n\nNo cached route pricing inputs available yet.\n\nVisit a /app/com/scheduling/<HUB> page (e.g. ATL) to publish a topRoutes snapshot."
+}

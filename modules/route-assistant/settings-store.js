@@ -57,16 +57,78 @@ class RouteAssistantSettings {
             // createdAt}. Selecting one writes the snapshot back into
             // settings (deep-merge for filters.statuses) and re-renders.
             savedViews: [],
+            // Q7 strategy presets — named bookmarks of the FULL RA
+            // configuration (scoring weights, filters, economics, ORS,
+            // service profiles, columnPrefs, etc). Mirror of savedViews
+            // shape, but the snapshot scope is the whole settings tree
+            // minus per-route caches and self-references. Each entry:
+            // {id, name, createdAt, snapshot}. Apply via the existing
+            // import-diff modal so the user previews changes first.
+            strategyPresets: [],
+            // U7 + U3 + U8 — column visibility chooser + collapsible
+            // groups + drag-reorder.
+            //   hiddenFields:    Array<COLUMNS[].field> hidden in the
+            //                    table. "score" + "destIata" are frozen
+            //                    sticky-left and filtered out of any
+            //                    incoming list defensively (see
+            //                    _mergeColumnPrefs). Empty = all visible.
+            //   collapsedGroups: Array<COLUMN_GROUPS key> rendered as a
+            //                    single "…" placeholder cell with a
+            //                    chevron group-header. Empty = all
+            //                    expanded — DO NOT seed with all keys.
+            //   columnOrder:     Array<COLUMNS[].field> in the user's
+            //                    preferred order. Frozen columns are
+            //                    NOT included (always lead). Fields not
+            //                    in the list keep declaration order
+            //                    appended afterwards. Empty = use
+            //                    declaration order verbatim.
+            columnPrefs: {
+                hiddenFields:    [],
+                collapsedGroups: [],
+                columnOrder:     []
+            },
+            // Q16 — desktop notifications when long bulk-syncs finish.
+            //   enabled:           opt-in. Default off; OS may still
+            //                      require the user to grant a one-shot
+            //                      permission on the first ping.
+            //   longOpThreshold:   minimum route count for a sync to
+            //                      qualify. Below this (e.g. a 5-route
+            //                      Markets re-sync), no ping fires.
+            //   suppressWhenFocused: skip the ping when the AS tab is
+            //                      already in the foreground (the user
+            //                      can see the inline progress toast).
+            notifications: {
+                enabled:             false,
+                longOpThreshold:     30,
+                suppressWhenFocused: true
+            },
             // Tabbed view selector (Pax / Cargo / All). Default "all"
             // preserves the existing combined table for users without a
             // strong mode preference. Tab switches column visibility
             // and the scoring-field set; the underlying row data is
             // shared across all three.
             viewMode: "all",
+            // Restructure slice A — single-source-of-truth for which of the
+            // four panel render branches is active (table / waves / sandbox
+            // / heatmap). Replaces the three separate booleans below
+            // (`waveView`, `orsSandbox.enabled`, `heatmap.enabled`) which
+            // were hidden behind icon-only toggles in the header — easy to
+            // hit accidentally, hard to discover the way back. Slice B
+            // exposes this as a pill bar; the legacy booleans stay for one
+            // version so unmigrated saves still light up the right view.
+            panelMode: "table",
+            // Restructure slice F — master-detail inspector pane. When ON,
+            // the body splits horizontally with a 360px right pane that
+            // shows the selected route's full record (score breakdown,
+            // fleet fit, override, note, quick actions). Persists so the
+            // user doesn't have to re-open it each session.
+            inspectorOpen: false,
             // H slice 1 — Wave View toggle. When ON, _renderRows hands
             // the sorted scoredRows to RouteAssistantWaveOverlay which
             // replaces the table with a Gantt-style timeline of the
             // recommended schedule for the top-N rows.
+            // Deprecated by `panelMode` in slice A; kept as a one-time
+            // migration source.
             waveView: false,
             waveOverlay: {
                 lastPresetId:    null,   // user's last picked SchedulePresets id
@@ -80,7 +142,13 @@ class RouteAssistantSettings {
                 // Slice 2 — toggle the SVG connection-graph overlay. The legend
                 // still renders even when off, so the user knows the feature
                 // exists. Default ON since the graph is the whole point.
-                showConnections: true
+                showConnections: true,
+                // H slice 3 — connection-graph-maximising placement. Defaults
+                // OFF so the panel matches the user's existing greedy mental
+                // model on first run. Toggling on re-runs the build with
+                // `ScheduleBuilder.optimizeAssignment` (composition counts
+                // become caps, not floors).
+                optimize:        false
             },
             // Q13 yield heatmap — hubs × destinations matrix view. New
             // panel mode toggled by 🗺 in the panel header. Mutually
@@ -116,6 +184,11 @@ class RouteAssistantSettings {
                 // 30-day-old calibrations should be re-run).
                 perRouteTemperature:             {},  // {<HUB>-<DEST>: T}
                 perRouteTemperatureCalibratedAt: {},  // {<HUB>-<DEST>: ms epoch}
+                // Auto-run calibrateTemperature() against every route with
+                // usable inputs after each ORS cache load. Gated per-route by
+                // freshness (orsScrapedAt > calibratedAt) and by 6h floor so
+                // panel mounts on stale caches don't burn cycles.
+                autoCalibrateTOnScrape: true,
                 // Slice 2c — per-route per-class rating-price elasticity.
                 // Auto-log default `true` is STABLE across versions: flipping
                 // it would silently change user-observable behaviour (the
@@ -160,7 +233,24 @@ class RouteAssistantSettings {
                 crewCostPerHour:        0,       // AS$ per block hour (default 0 = disabled)
                 maintenanceCostPerHour: 0,       // AS$ per block hour (default 0 = disabled)
                 otherFixedPerFlight:    0,       // AS$ per round-trip — leasing/insurance amortised
-                falloffYieldMultiplier: 0.85
+                falloffYieldMultiplier: 0.85,
+
+                // Per-cabin pax economics. When set, the profit estimator
+                // partitions paxSeats across Y/C/F using `classShares` and
+                // prices each cabin with its own yield + LF range driven off
+                // the same paxScore. Cargo is sized via `cargoYieldPerKgKm`
+                // (above) and reported alongside in `breakdown.byClass.Cargo`.
+                // Defaults match a generic two-cabin widebody — adjust per
+                // route-class via the Settings → Economics panel.
+                classYields: {
+                    Y: { yieldPerKm: 0.10, loadFactorMin: 0.55, loadFactorMax: 0.92, demandSensitivity: 0 },
+                    C: { yieldPerKm: 0.32, loadFactorMin: 0.45, loadFactorMax: 0.85, demandSensitivity: 0 },
+                    F: { yieldPerKm: 0.65, loadFactorMin: 0.30, loadFactorMax: 0.75, demandSensitivity: 0 }
+                },
+                // Cabin allocation when AS aircraft config doesn't expose
+                // per-class seat counts. Auto-normalised, so values that
+                // don't sum to 1 still produce a sensible split.
+                classShares: { Y: 0.78, C: 0.16, F: 0.06 }
             },
             pricing: {
                 // Tier 1 — visibility layer.
@@ -170,16 +260,32 @@ class RouteAssistantSettings {
                 lastBulkScrapeAt:   null,    // unix-ms; surfaces in the expander
                 priceMaxAgeDays:    null,    // null = never expire; set to N to re-scrape entries older than N days
 
-                // Tier 3 — apply / write-back configuration. Two gates have to
-                // be cleared for a real POST: `apply.enabled` (top-level kill
-                // switch) AND `apply.dryRunOnly === false`. Tier 3.1 ships
-                // with `apply.dryRunOnly = true` so the user can rehearse the
-                // full pipeline (preflight, body construction, apply log)
-                // without any AS-side effect. Tier 3.2 flips dryRunOnly's
-                // default to false; Tier 3.3 adds the silent-auto loop.
+                // Tier 3 — apply / write-back configuration. Live POST is the
+                // default for the proven pricing surfaces; dry-run is now an
+                // explicit operator override, not the shipped stance.
                 apply: {
-                    enabled:               false,   // top-level kill switch — false = no writes regardless of dryRunOnly
-                    dryRunOnly:            true,    // 3.1 hard gate; 3.2 default flips to false
+                    // User-requested permanent-live mode. When true, the
+                    // merge path below keeps every existing pricing write
+                    // scope live even if older storage still has dry-run
+                    // flags from the audit era.
+                    permanentLiveMode:      true,
+                    enabled:               true,
+                    dryRunOnly:            false,   // 3.2 default; user can re-enable via Settings → Auto-Pricing toggle
+                    // Endpoint dispatch — "markets" (default) targets the
+                    // route-level form at `/app/com/markets/<HUB><DEST>`;
+                    // "flightNumbers" targets the per-leg form at
+                    // `/app/com/numbers/<flightNumberId>/<legIndex>`. The
+                    // leg form gives single-flight granularity (different
+                    // morning vs. evening flight numbers on the same route
+                    // can be priced independently). Resolver picks the
+                    // lowest flightNumberId on the route as the
+                    // representative target. When the resolver finds no
+                    // candidate (no scraped aircraftFlights data yet),
+                    // `flightNumbersFallbackToMarkets` decides whether to
+                    // fall through to the markets endpoint or surface a
+                    // preflight blocker.
+                    endpointMode:                  "markets",  // "markets" | "flightNumbers"
+                    flightNumbersFallbackToMarkets: true,
                     defaultScope: {
                         airportPair:         true,
                         flightNumbers:       true,
@@ -188,25 +294,146 @@ class RouteAssistantSettings {
                     },
                     roundPolicy:           "nearest",  // "nearest" | "floor" | "ceil"
                     cooldownMinPerRoute:   60,         // 0 = disabled
+                    // Tier 3.2 — second-axis cooldown across ALL routes.
+                    // Prevents rapid-fire chains of writes (key-repeat,
+                    // misclick a saved scenario) from racing through 5 hubs
+                    // in 30 seconds. Per-route stays the primary throttle;
+                    // this is the floor-level safety net. 0 = disabled.
+                    cooldownMinGlobal:     5,
                     warnAboveDeltaPct:     5,          // preflight warning threshold
                     requireConfirmAboveDeltaPct: 15,   // additional confirm step for large changes (3.2)
                     pricingApplyLogLimit:  200,        // global timeline cap
                     perRouteApplyLogLimit: 20,
                     submitButton:          "submit-prices",  // submit-prices | p::submit | submit-settings
                     showRecentApplies:     true,       // gate the "Recent applies" list under the expander
-                    recentApplyPreviewCount: 10
+                    recentApplyPreviewCount: 10,
+                    // Tier 3.2 — circuit breaker mirroring ors-scraper.js. Three
+                    // consecutive 429/503 responses persist trippedAt; while
+                    // Date.now() − trippedAt < cooldownMs, apply() short-circuits
+                    // to an aborted record without GET/POST. Reset on first
+                    // verified write or via the settings banner button.
+                    circuitBreakerThreshold:  3,
+                    circuitBreakerCooldownMs: 600000,  // 10 min
+                    circuitBreakerTrippedAt:  null,    // ms epoch; null = breaker armed
+                    circuitBreakerHaltReason: null,
+
+                    // Pre-apply orchestrator pass — runs schedule + ORS scrapes
+                    // before each apply so the user sees fresh ORS rank +
+                    // sandbox projections when picking Δ%, instead of stale
+                    // cache that may tag legs as "not ours" on freshly-added
+                    // routes (see route-sync-orchestrator.js header comment).
+                    // Two freshness floors: projection accepts hours-old data
+                    // for picking-time UI; apply gets a tighter floor since
+                    // it commits real money.
+                    refreshBeforeApply:           true,
+                    refreshMaxAgeMinProjection:   5,
+                    refreshMaxAgeMinApply:        1,
+
+                    // Tier 3.4 — live-writes scope. Manual = single-route
+                    // apply modal, Bulk = multi-row bulk modal, SilentAuto =
+                    // foreground/background loop, BulkRecommended = AS native
+                    // flightsPrices recommendation panel. Live-run builds keep
+                    // every existing pricing scope unlocked by default.
+                    // Read at the panel call site, not by the applier:
+                    // when a scope is locked, the call forces dryRun=true
+                    // regardless of the top-level toggle.
+                    liveScopes: {
+                        manual:           true,
+                        bulk:             true,
+                        silentAuto:       true,
+                        // Bulk-recommended apply scope used by the
+                        // flightsPrices?adjust=true page. Live-run builds
+                        // keep this unlocked with bulk + silent-auto.
+                        bulkRecommended:  true
+                    },
+
+                    // Hard floor anchored to the AS-stated Minimum Price
+                    // (variable + flight-related cost ÷ capacity), scraped
+                    // by content_flightInfo.js per scheduled flight. When
+                    // enabled, the applier clamps any per-class target up
+                    // to floor × (1 + safetyMarginPct/100) before posting,
+                    // so a recommendation can never push a class below
+                    // break-even. safetyMarginPct=5 gives a small cushion
+                    // for AS-side rounding + load-curve drift.
+                    minPriceFloor: {
+                        enabled:         true,
+                        safetyMarginPct: 5
+                    },
+
+                    // Tier 3.4 — advanced tunables surfaced in the
+                    // "Advanced" subsection of the settings drawer. All
+                    // had hard-coded equivalents in the old code; defaults
+                    // here exactly match the previous baked-in values so
+                    // existing setups don't drift on upgrade.
+                    pricingApplyLogDedupWindowMin:        5,
+                    preApplySyncTimeoutMs:                30000,
+                    silentAutoCompetitorMinCount:         2,
+                    silentAutoOrsMaxAgeMin:               60,
+                    silentAutoStaleCompetitorWarnDays:    7,
+                    silentAutoBlockOnStaleCompetitors:    false,
+                    silentAutoStrategySnapshotMaxAgeMin:  10,
+
+                    // Per-class apply gates. `enabled` skips the class
+                    // entirely (price preserved at AS-current); `deadband`
+                    // and `maxMove` override the route-level thresholds for
+                    // that one class only. null = inherit. The proposer
+                    // (price-moves.js) reads `enabled` to decide whether to
+                    // emit a move; the applier preflight reads `deadband`
+                    // for its largeDelta warning. Default cargo to enabled
+                    // since user explicitly asked for cargo coverage.
+                    classes: {
+                        Y:     { enabled: true,  deadband: null, maxMove: null },
+                        C:     { enabled: true,  deadband: null, maxMove: null },
+                        F:     { enabled: true,  deadband: null, maxMove: null },
+                        Cargo: { enabled: true,  deadband: null, maxMove: null }
+                    }
                 },
 
-                // Pre-staged for Tier 3.3 silent-auto loop. Both must be
-                // explicitly enabled by the user; the panel surfaces a
-                // confirm modal on the first flip.
-                autonomyMode:       "off",   // off | suggest | oneClick | batch
-                silentAutoEnabled:  false,   // separate explicit gate for silent auto-apply
-                silentAutoMaxPerDay:    20,
-                silentAutoMaxPerHour:   5,
-                silentAutoMinDeltaPct:  3,
+                // Silent auto-pricing loop. The first flip of
+                // `silentAutoEnabled` is gated behind a confirmation
+                // modal; the ack timestamp lands in `silentAutoConfirmedAt`
+                // so subsequent flips don't re-prompt. Loop runs only
+                // while the RA panel is mounted; each tick proposes a
+                // Δ% per eligible route via `silentAutoStrategy` and
+                // dispatches survivors through the shared pricing
+                // applier (so the breaker spans manual + bulk + auto).
+                // Setting any cap to 0 disables that axis.
+                autonomyMode:       "off",   // off | suggest | oneClick | batch (legacy/unused — kept for forward-compat)
+                silentAutoEnabled:  true,    // permanent-live mode starts the foreground/dashboard auto-pricer
+                silentAutoTickMin:      1 / 12,  // legacy minutes field; background alarm clamps sub-minute values
+                silentAutoTickSec:      5,       // foreground tab cadence override; 5s target for automatic updates
+                silentAutoMaxPerDay:    0,   // 0 = cap disabled
+                silentAutoMaxPerHour:   0,   // 0 = cap disabled
+                silentAutoMinDeltaPct:  3,   // |Δ%| below this is skipped (proposer noise floor)
+                silentAutoMaxStepPct:   10,  // |Δ%| clamp — single biggest move per route per tick
+                silentAutoStrategy:     "per-class-elasticity",  // Y/C/F/Cargo demand-aware default; existing users keep their persisted setting via deep-merge
+                silentAutoFollowMode:   "all",                // "watchlist" (★-only) | "all" (every eligible route)
+                silentAutoConfirmedAt:  1,                    // non-null skips the legacy confirm modal
+                silentAutoLastTickAt:   null,                 // ms epoch — last tick run; surfaces in the panel sub-block
+                silentAutoLastTickResult: null,               // {ranAt, eligible, proposed, applied, capped, blocked, skipped, error?}
+                silentAutoMutedUntil:   null,                 // ms epoch; while non-null and in the future, ticks no-op (auto-disable on N consecutive errors)
+                // Per-class proposer config (silentAutoStrategy="per-class-elasticity").
+                // Per-class enable lets users opt out of pricing a specific cabin
+                // even when the proposer runs (e.g. Cargo off if no freight ops).
+                // Per-class step cap overrides the global silentAutoMaxStepPct
+                // when present — null falls back to the global. Min demand pool
+                // gates pricing on that class behind a thin-data threshold so we
+                // don't price F off a 3-pax/wk historic.
+                silentAutoPerClassEnabled:        {Y: true, C: true, F: true, Cargo: true},
+                silentAutoPerClassMaxStepPct:     {Y: null, C: null, F: null, Cargo: null},
+                silentAutoPerClassMinDemandPool:  {Y: 50,   C: 10,   F: 5,    Cargo: 1000},
                 targetMargin:       null,
-                competitorAdjust:   null
+                competitorAdjust:   null,
+                // Schedule Canvas — continuous proposer tick. When enabled,
+                // the canvas Advisor rail polls `silent-auto-proposers.surface()`
+                // on a timer and emits suggestions (does NOT apply). Default
+                // OFF; opt-in via DevTools or a future settings UI. Blocked
+                // when the panel.js silent-auto loop is also enabled, so the
+                // two surfaces never double-fire on the same data.
+                canvasContinuousProposers: {
+                    enabled:     false,
+                    intervalMin: 5
+                }
             },
             // Letter K — deeper per-route demand from AS market analysis.
             // Surfaces real demand-pool size + price elasticity per route
@@ -273,7 +500,15 @@ class RouteAssistantSettings {
                 partnersMaxAgeDays:        30,     // less generous than meta — agreements move
                 lastPartnersSyncAt:        null,
                 showInterliningGlyph:      true,   // ⇄ next to IL partners in the popover
-                showAllianceGlyph:         false   // ✦ for alliance partners (off by default)
+                showAllianceGlyph:         false,  // ✦ for alliance partners (off by default)
+                // Cmp popover logo strip — alliance + enterprise banner
+                // images sourced directly from /app/logo/<id>/enterprise-s.png
+                // (enterprise) and the airport-overview Stations table
+                // (alliance ids). When showAllianceLogos is off the
+                // alliance slot is suppressed and the banner column takes
+                // the row's full width.
+                showAllianceLogos:         true,
+                airportOverviewMaxAgeDays: 7       // alliance membership churns slowly
             },
             marketAnalysis: {
                 // Tier 2a — markets-page scraper for /app/com/markets/<HUB><DEST>.
@@ -304,7 +539,7 @@ class RouteAssistantSettings {
                 // class), walks all result pages, computes per-class rank
                 // flavors + ratings, then projects a composite score using
                 // user-configurable class weights. Storage lives at
-                // `routeAssistant:ors:<HUB>-<DEST>.byClass.{ECONOMY,BUSINESS,FIRST}`.
+                // `routeAssistant:ors:<HUB>-<DEST>.byClass.{ECONOMY,BUSINESS,FIRST,CARGO}`.
                 showColumns:          true,
                 concurrency:          2,        // ORS = expensive AS solver, be gentle
                 staggerMs:            1500,
@@ -312,7 +547,8 @@ class RouteAssistantSettings {
                 rankMaxAgeDays:       null,
 
                 // Default scrape parameters (user-tunable in expander):
-                classesToScrape:      ["ECONOMY", "BUSINESS", "FIRST"],   // 1-3, multi-select
+                classesToScrape:      ["ECONOMY", "BUSINESS", "FIRST", "CARGO"],   // 1-4, multi-select
+                cargoClassMigrationSeen: false,
                 defaultDepartureH:    0,         // 0..48
                 defaultArrivalH:      72,        // 24..72
                 defaultUseGround:     true,
@@ -348,10 +584,49 @@ class RouteAssistantSettings {
                 // fallback. User can override comma-separated list e.g. "FN,NY".
                 airlineCarrierPrefixOverride: null,
 
+                // ORS playstyle. Adaptive mode damps ORS/service-profile
+                // spending on monopoly lanes and raises it on contested
+                // lanes. Strategy service + joint ORS tuners read these
+                // knobs from the same settings block the scraper uses.
+                playstyle:                 "adaptive",  // adaptive | balanced | monopoly | competitive | premium
+                monopolyOrsMultiplier:     0.35,
+                competitiveOrsMultiplier:  1.35,
+                competitiveRivalFlights:   6,
+                maxCompetitiveComfortDelta: 3,
+
+                // Aircraft type-spec ORS attraction. Parsed from the AS
+                // aircraft specs page when present; applied as a small rating
+                // shift in the ORS model so aircraft preference can differ
+                // by type without hand-editing each route.
+                aircraftAttractionNeutral:  500,
+                aircraftAttractionScale:    0.01,
+                aircraftAttractionMaxBonus: 3,
+
                 // Circuit breaker telemetry. If trip is recent, bulk button is
                 // disabled for 10 min and a red banner shows in the expander.
                 circuitBreakerTrippedAt: null,
-                circuitBreakerCooldownMs: 600000  // 10 min
+                circuitBreakerCooldownMs: 600000,  // 10 min
+
+                // Snapshot archival — when on, every successful ORS scrape
+                // (bulk-sync button + per-route + bulk pre-apply paths) is
+                // copied into `RouteAssistantOrsSnapshotStore` keyed by
+                // (hub, dest, ts). Builds a (config → ORS rank) calibration
+                // dataset over time — see ors-snapshot-store.js header.
+                // Off by default to avoid filling storage on the first run;
+                // user opts in via the ORS settings expander.
+                snapshotOnScrape:       false,
+                snapshotMaxPerRoute:    30,
+
+                // Velvet Cascade · PR 1B — auto-archive after every successful
+                // pricing or service-profile apply. Captures the (config →
+                // ORS) calibration pair the rank-target solver needs to
+                // measure prediction error in PR 2's outcomes attribution.
+                // Default ON because the user's recording ambition asks for
+                // it; gated by the per-route MAX_PER_ROUTE eviction so the
+                // store size stays bounded. Re-scrape delay tunable for
+                // installations where AS lazy-refreshes ORS slowly.
+                snapshotOnApply:           true,
+                postApplyRescrapeDelayMs:  5000
             },
             watchlist: {
                 // Daily-driver QoL — per-row star toggle persists in
@@ -393,11 +668,30 @@ class RouteAssistantSettings {
         }
     }
 
+    /**
+     * L2 — read namespaced first, fall back to legacy.
+     *
+     * Storage shape post-L2:
+     *   settings.routeAssistant                    (legacy — pre-L2)
+     *   settings.acct.<id>.routeAssistant          (namespaced — L2+)
+     *
+     * Reads prefer the namespaced slot when `currentAccountIdSync()` is
+     * set AND that slot is populated; otherwise fall back to the legacy
+     * slot (which holds either pre-L2 data or the per-area defaults
+     * after migration completes). Merges into defaults exactly as before
+     * — the only change is which sub-blob feeds the merge.
+     */
     static async load() {
         const data = await chrome.storage.local.get(["settings"])
         const settings = data.settings || {}
         const defaults = RouteAssistantSettings._defaults()
-        const block = settings.routeAssistant || {}
+        const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
+        let block = null
+        if (id && settings.acct && settings.acct[id] && typeof settings.acct[id] === "object") {
+            const ns = settings.acct[id].routeAssistant
+            if (ns && typeof ns === "object") block = ns
+        }
+        if (!block) block = settings.routeAssistant || {}
 
         // Top-level deep-fill, plus per-section deep-fill so each new field
         // arrives with its default without overwriting user-tuned siblings.
@@ -420,9 +714,15 @@ class RouteAssistantSettings {
             savedViews:            Array.isArray(block.savedViews)
                                        ? block.savedViews.filter(v => v && typeof v === "object" && typeof v.id === "string" && typeof v.name === "string")
                                        : defaults.savedViews,
+            strategyPresets:       Array.isArray(block.strategyPresets)
+                                       ? block.strategyPresets.filter(p => p && typeof p === "object" && typeof p.id === "string" && typeof p.name === "string" && p.snapshot && typeof p.snapshot === "object")
+                                       : defaults.strategyPresets,
+            columnPrefs:           RouteAssistantSettings._mergeColumnPrefs(defaults.columnPrefs, block.columnPrefs),
             viewMode:              (block.viewMode === "pax" || block.viewMode === "cargo" || block.viewMode === "all")
                                        ? block.viewMode
                                        : defaults.viewMode,
+            panelMode:             RouteAssistantSettings._resolvePanelMode(block, defaults.panelMode),
+            inspectorOpen:         !!block.inspectorOpen,
             waveView:              !!block.waveView,
             waveOverlay:           Object.assign({}, defaults.waveOverlay,   block.waveOverlay   || {}),
             heatmap:               Object.assign({}, defaults.heatmap,       block.heatmap       || {}),
@@ -436,6 +736,7 @@ class RouteAssistantSettings {
             demandDepth:           Object.assign({}, defaults.demandDepth,     block.demandDepth     || {}),
             ors:                   RouteAssistantSettings._mergeOrs(defaults.ors, block.ors),
             watchlist:             Object.assign({}, defaults.watchlist,       block.watchlist       || {}),
+            notifications:         Object.assign({}, defaults.notifications,   block.notifications   || {}),
             serviceProfiles:       RouteAssistantSettings._mergeServiceProfiles(defaults.serviceProfiles, block.serviceProfiles)
         }
         for (const key in defaults.scoring) {
@@ -445,10 +746,32 @@ class RouteAssistantSettings {
             (block.filters && block.filters.statuses) || {})
 
         if (!settings.routeAssistant) {
-            settings.routeAssistant = merged
-            await chrome.storage.local.set({settings: settings})
+            await window.AesSettings.saveArea("routeAssistant", merged)
         }
         return merged
+    }
+
+    /**
+     * Restructure slice A — resolve the active panel mode from either the
+     * new `panelMode` string or the legacy boolean trio. Priority:
+     *   1. explicit `panelMode` string (already migrated)
+     *   2. legacy `waveView` flag (Wave View was in mutex group, so it wins)
+     *   3. legacy `orsSandbox.enabled`
+     *   4. legacy `heatmap.enabled`
+     *   5. fall back to default ("table")
+     *
+     * The legacy booleans stay in storage for one release so a downgrade
+     * doesn't strand the user in an unrecognised mode.
+     */
+    static _resolvePanelMode(block, fallback) {
+        const VALID = {table: 1, waves: 1, sandbox: 1, heatmap: 1, compass: 1}
+        if (block && typeof block.panelMode === "string" && VALID[block.panelMode]) {
+            return block.panelMode
+        }
+        if (block && block.waveView) return "waves"
+        if (block && block.orsSandbox && block.orsSandbox.enabled) return "sandbox"
+        if (block && block.heatmap && block.heatmap.enabled) return "heatmap"
+        return fallback || "table"
     }
 
     /**
@@ -472,7 +795,74 @@ class RouteAssistantSettings {
             defApply.defaultScope || {},
             bApply.defaultScope   || {}
         )
+        out.apply.liveScopes = Object.assign(
+            {},
+            defApply.liveScopes || {},
+            bApply.liveScopes   || {}
+        )
+        if (out.apply.permanentLiveMode !== false) {
+            out.apply.permanentLiveMode = true
+            out.apply.enabled = true
+            out.apply.dryRunOnly = false
+            out.apply.liveScopes = Object.assign({}, out.apply.liveScopes || {}, {
+                manual: true,
+                bulk: true,
+                silentAuto: true,
+                bulkRecommended: true
+            })
+            out.silentAutoEnabled = true
+            out.silentAutoFollowMode = "all"
+            if (!out.silentAutoConfirmedAt) out.silentAutoConfirmedAt = 1
+        }
+        out.silentAutoTickSec = RouteAssistantSettings._normaliseSilentAutoTickSec(def, b)
+        out.silentAutoTickMin = out.silentAutoTickSec / 60
+        // Per-class proposer maps — deep-merge so a saved partial like
+        // {Cargo: false} doesn't wipe the Y/C/F defaults. Same pattern
+        // as serviceProfiles.classYieldMult / classCostPerPax above.
+        const mergeClassMap = (defMap, bMap, valueFilter) => {
+            const o = Object.assign({}, defMap || {})
+            for (const k in (bMap || {})) {
+                const v = bMap[k]
+                if (valueFilter(v)) o[k] = v
+            }
+            return o
+        }
+        out.silentAutoPerClassEnabled = mergeClassMap(
+            def.silentAutoPerClassEnabled,
+            b.silentAutoPerClassEnabled,
+            v => typeof v === "boolean"
+        )
+        out.silentAutoPerClassMaxStepPct = mergeClassMap(
+            def.silentAutoPerClassMaxStepPct,
+            b.silentAutoPerClassMaxStepPct,
+            v => v === null || (typeof v === "number" && isFinite(v) && v >= 0)
+        )
+        out.silentAutoPerClassMinDemandPool = mergeClassMap(
+            def.silentAutoPerClassMinDemandPool,
+            b.silentAutoPerClassMinDemandPool,
+            v => typeof v === "number" && isFinite(v) && v >= 0
+        )
         return out
+    }
+
+    static _normaliseSilentAutoTickSec(defaults, block) {
+        const def = defaults || {}
+        const b = block || {}
+        let seconds = null
+        if (typeof b.silentAutoTickSec === "number" && isFinite(b.silentAutoTickSec)) {
+            seconds = b.silentAutoTickSec
+        } else if (typeof b.silentAutoTickMin === "number" && isFinite(b.silentAutoTickMin)) {
+            // Legacy saves stored minutes. Preserve that cadence for
+            // already-configured profiles instead of silently migrating
+            // them to the new 5s default.
+            seconds = b.silentAutoTickMin * 60
+        } else if (typeof def.silentAutoTickSec === "number" && isFinite(def.silentAutoTickSec)) {
+            seconds = def.silentAutoTickSec
+        } else if (typeof def.silentAutoTickMin === "number" && isFinite(def.silentAutoTickMin)) {
+            seconds = def.silentAutoTickMin * 60
+        }
+        if (!isFinite(seconds) || seconds <= 0) seconds = 5
+        return Math.max(5, Math.min(14400, Number(seconds)))
     }
 
     /**
@@ -520,8 +910,15 @@ class RouteAssistantSettings {
         const VALID = {ECONOMY: 1, BUSINESS: 1, FIRST: 1, CARGO: 1}
         if (Array.isArray(block && block.classesToScrape)) {
             const filtered = block.classesToScrape.filter(c => VALID[c])
+            // Lazy one-time migration for users who saved settings before
+            // Cargo had its own checkbox. Once the migrated settings are
+            // saved, the sentinel lets a deliberate Cargo opt-out persist.
+            if (block.cargoClassMigrationSeen !== true && filtered.indexOf("CARGO") < 0) {
+                filtered.push("CARGO")
+            }
             out.classesToScrape = filtered.length ? filtered : defaults.classesToScrape
         }
+        out.cargoClassMigrationSeen = true
         // classWeights — merge with defaults so a partial save (e.g. only Y
         // changed) doesn't drop C/F. Renormalise to sum to 1.0 so a stored
         // partial like {ECONOMY: 1.00} doesn't end up as {1.00, 0.20, 0.05}
@@ -529,6 +926,20 @@ class RouteAssistantSettings {
         const merged = Object.assign({}, defaults.classWeights || {},
             (block && block.classWeights) || {})
         out.classWeights = RouteAssistantSettings._renormaliseWeights(merged, defaults.classWeights)
+        const validPlaystyles = {adaptive: 1, balanced: 1, monopoly: 1, competitive: 1, premium: 1}
+        if (!validPlaystyles[out.playstyle]) out.playstyle = defaults.playstyle || "adaptive"
+        const finite = (key, min, max) => {
+            const n = Number(out[key])
+            const fallback = defaults[key]
+            out[key] = isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback
+        }
+        finite("monopolyOrsMultiplier", 0, 2)
+        finite("competitiveOrsMultiplier", 0, 3)
+        finite("competitiveRivalFlights", 1, 100)
+        finite("maxCompetitiveComfortDelta", 0, 5)
+        finite("aircraftAttractionNeutral", 0, 1000)
+        finite("aircraftAttractionScale", 0, 1)
+        finite("aircraftAttractionMaxBonus", 0, 20)
         return out
     }
 
@@ -555,6 +966,7 @@ class RouteAssistantSettings {
             modelParams:   Object.assign({}, def.modelParams || {}, b.modelParams || {}),
             perRouteTemperature:             {},
             perRouteTemperatureCalibratedAt: {},
+            autoCalibrateTOnScrape: b.autoCalibrateTOnScrape !== false,
             // Slice 2c — deep-merge nested ratingObservations block. Booleans
             // pass through `!!` so a stored stale string can't break the
             // downstream auto-log gate. Numerics fall through Object.assign
@@ -613,6 +1025,43 @@ class RouteAssistantSettings {
     }
 
     /**
+     * U7 + U3 — coerce columnPrefs to the documented shape and drop
+     * frozen-column entries from `hiddenFields`. The chooser modal in
+     * panel.js renders `score` and `destIata` as disabled-checked but
+     * defensive layering keeps a malformed save from removing the
+     * sticky-left identity columns. `collapsedGroups` keys are NOT
+     * validated here against COLUMN_GROUPS — the panel filters at
+     * render time so a future group rename gets a graceful fallback
+     * (the unknown key is simply ignored, no rows lost).
+     */
+    static _mergeColumnPrefs(defaults, block) {
+        const def = defaults || {hiddenFields: [], collapsedGroups: [], columnOrder: []}
+        const b = block || {}
+        const FROZEN = {score: 1, destIata: 1}
+        const hidden = Array.isArray(b.hiddenFields)
+            ? b.hiddenFields.filter(f => typeof f === "string" && !FROZEN[f])
+            : (def.hiddenFields || []).slice()
+        const collapsed = Array.isArray(b.collapsedGroups)
+            ? b.collapsedGroups.filter(g => typeof g === "string")
+            : (def.collapsedGroups || []).slice()
+        // U8 — strip frozen entries (they're always lead) + dedupe so
+        // a stale list with a duplicated field doesn't ghost-stack the
+        // column twice on render.
+        let order
+        if (Array.isArray(b.columnOrder)) {
+            const seen = new Set()
+            order = b.columnOrder.filter(f => {
+                if (typeof f !== "string" || FROZEN[f] || seen.has(f)) return false
+                seen.add(f)
+                return true
+            })
+        } else {
+            order = (def.columnOrder || []).slice()
+        }
+        return {hiddenFields: hidden, collapsedGroups: collapsed, columnOrder: order}
+    }
+
+    /**
      * Coerce a saved per-route scenario into the slice 2 shape:
      *   priceMultipliers: {Y, C, F}, each in [0.30, 3.00].
      * Accepts the slice 1 shape (single `priceMultiplier` numeric) and
@@ -667,14 +1116,28 @@ class RouteAssistantSettings {
 
     /**
      * Partial update — pass only the keys you want to change.
+     *
+     * L2 — writes land in `settings.acct.<id>.routeAssistant` once the
+     * page bootstrap has set `window.__aesAccountId`. Pre-bootstrap
+     * writes (or off-AS-page callers) fall back to the legacy
+     * `settings.routeAssistant` slot, identical to pre-L2 behaviour —
+     * which `load()` will then surface via the legacy fallback.
      */
     static async save(partial) {
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
         const current = await RouteAssistantSettings.load()
         const next = Object.assign({}, current, partial || {})
-        settings.routeAssistant = next
-        await chrome.storage.local.set({settings: settings})
+        const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
+        await window.AesSettings.saveAreaScoped("routeAssistant", next, id)
+        // Slice-1 foundation — broadcast on the cross-module data bus so
+        // consumers in other surfaces (scanner panel, dashboard tiles) react
+        // without polling. Pure additive — chrome.storage.onChanged still
+        // fires for any tab that wants to listen the legacy way.
+        if (typeof AesDataBus !== "undefined") {
+            AesDataBus.emit("data:route-assistant:settings:saved", {
+                accountId: id || null,
+                sections:  Object.keys(partial || {})
+            })
+        }
         return next
     }
 }
@@ -703,4 +1166,8 @@ RouteAssistantSettings.ORS_WEIGHT_PRESETS = {
                          description: "Derived from picked aircraft's cabin config. Falls back to Standard when no aircraft selected."},
     "custom":           {label: "Custom",            weights: null,
                          description: "Manually tuned via the per-class weight inputs in More options."}
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantSettings = RouteAssistantSettings
 }

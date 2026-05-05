@@ -17,13 +17,30 @@
  *
  * Failures are non-fatal — an IATA that can't be resolved or whose country
  * page errors is added to `failedIatas` and the rest continue.
+ *
+ * Load-order: wrapped in idempotent IIFE guard (see audit FIX F-2 /
+ * streamline-A7.md). Manifest currently lists this file once; the guard
+ * matches the house style (silent-auto-proposers.js, AesAfpScheduleStore)
+ * so any future double-listing or SPA re-injection no-ops cleanly instead
+ * of throwing `SyntaxError: Identifier 'RouteAssistantParallelScanner'
+ * has already been declared`.
  */
+;(function () {
+    const root = (typeof window !== "undefined")
+        ? window
+        : ((typeof globalThis !== "undefined") ? globalThis : null)
+    if (typeof window !== "undefined") {
+        if (window.RouteAssistantParallelScanner) return
+    } else if (root && root.RouteAssistantParallelScanner) {
+        return
+    }
+
 class RouteAssistantParallelScanner {
     constructor(server, opts) {
         if (!server) throw new Error("RouteAssistantParallelScanner: server required")
         this.server = server
-        this.concurrency = (opts && opts.concurrency) || 3
-        this.staggerMs   = (opts && opts.staggerMs)   || 1500
+        this.concurrency = (opts && opts.concurrency != null) ? opts.concurrency : 3
+        this.staggerMs   = (opts && opts.staggerMs   != null) ? opts.staggerMs   : 1500
         this.resolver = new RouteAssistantCountryResolver(server)
         this.listeners = []
         this._aborted = false
@@ -45,52 +62,107 @@ class RouteAssistantParallelScanner {
      *   {phase: "seeding"|"done", total, fetched, failedCountries,
      *    currentCountryId?, currentCountryName?}
      */
-    async seedAllCountries() {
+    async seedAllCountries(opts) {
+        opts = opts || {}
         const countries = await CountryScraper.loadCountriesList(this.server)
+        const seededCountryIds = opts.force ? new Set() : await this._loadSeededCountryIds()
+        const todoCountries = countries.filter(c => !seededCountryIds.has(String(c && c.id)))
         const state = {
             phase: "seeding",
-            total: countries.length,
+            total: todoCountries.length,
+            allCountries: countries.length,
+            skippedCountries: countries.length - todoCountries.length,
             fetched: 0,
             airportsSeeded: 0,
             failedCountries: [],
             currentCountryId: null,
-            currentCountryName: null
+            currentCountryName: null,
+            activeCountries: []
         }
         this._notify(state)
-        if (!countries.length) {
+        if (!todoCountries.length) {
             state.phase = "done"
             this._notify(state)
             return state
         }
 
-        for (let i = 0; i < countries.length; i++) {
-            if (this._aborted) break
-            const c = countries[i]
-            state.currentCountryId = c.id
-            state.currentCountryName = c.name
-            this._notify(state)
-            try {
-                const airports = await CountryScraper._getAllAirportsForCountry(c.id, this.server)
-                if (airports && airports.length) {
-                    await RouteAssistantDemandStore.saveCountryAirports(c.id, airports)
-                    state.fetched++
-                    state.airportsSeeded += airports.length
-                } else {
-                    state.failedCountries.push({id: c.id, name: c.name})
+        let next = 0
+        const workerCount = Math.max(1, Math.min(this.concurrency || 1, todoCountries.length))
+        const active = new Map()
+        const workers = []
+        for (let w = 0; w < workerCount; w++) {
+            workers.push((async () => {
+                while (!this._aborted) {
+                    const i = next++
+                    if (i >= todoCountries.length) return
+                    const c = todoCountries[i]
+                    await this._seedOneCountry(c, state, active)
+                    if (i < todoCountries.length - 1 && !this._aborted) await sleep(this.staggerMs)
                 }
-            } catch (error) {
-                console.warn(`[AES routeAssistant] seed country ${c.id} (${c.name}) failed`, error)
-                state.failedCountries.push({id: c.id, name: c.name})
-            }
-            this._notify(state)
-            if (i < countries.length - 1 && !this._aborted) await sleep(this.staggerMs)
+            })())
         }
+        await Promise.all(workers)
 
         state.phase = "done"
         state.currentCountryId = null
         state.currentCountryName = null
+        state.activeCountries = []
         this._notify(state)
         return state
+    }
+
+    async _loadSeededCountryIds() {
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return new Set()
+        const demandStore = (typeof RouteAssistantDemandStore !== "undefined")
+            ? RouteAssistantDemandStore
+            : null
+        const prefix = (demandStore && demandStore.KEY_PREFIX)
+            || "routeAssistant:demand:"
+        const maxAgeMs = Number(demandStore && demandStore.MAX_AGE_MS)
+            || 30 * 24 * 60 * 60 * 1000
+        const cutoff = Date.now() - maxAgeMs
+        let all = {}
+        try { all = await chrome.storage.local.get(null) || {} }
+        catch (_) { return new Set() }
+        const seeded = new Set()
+        for (const key in all) {
+            if (key.indexOf(prefix) !== 0) continue
+            const rec = all[key]
+            const countryId = rec && rec.countryId
+            const scrapedAt = Number(rec && rec.scrapedAt) || 0
+            if (countryId != null && scrapedAt >= cutoff) seeded.add(String(countryId))
+        }
+        return seeded
+    }
+
+    async _seedOneCountry(c, state, active) {
+        if (!c || this._aborted) return
+        active.set(String(c.id), c.name || String(c.id))
+        state.currentCountryId = c.id
+        state.currentCountryName = c.name
+        state.activeCountries = Array.from(active.values())
+        this._notify(state)
+        try {
+            const airports = await CountryScraper._getAllAirportsForCountry(c.id, this.server)
+            if (airports && airports.length) {
+                await RouteAssistantDemandStore.saveCountryAirports(c.id, airports, {
+                    countryName: c.name || null
+                })
+                state.fetched++
+                state.airportsSeeded += airports.length
+            } else {
+                state.failedCountries.push({id: c.id, name: c.name})
+            }
+        } catch (error) {
+            console.warn(`[AES routeAssistant] seed country ${c.id} (${c.name}) failed`, error)
+            state.failedCountries.push({id: c.id, name: c.name})
+        } finally {
+            active.delete(String(c.id))
+            state.activeCountries = Array.from(active.values())
+            state.currentCountryId = c.id
+            state.currentCountryName = c.name
+            this._notify(state)
+        }
     }
 
     _notify(state) {
@@ -200,3 +272,8 @@ class RouteAssistantParallelScanner {
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms))
 }
+
+if (root) {
+    root.RouteAssistantParallelScanner = RouteAssistantParallelScanner
+}
+})()

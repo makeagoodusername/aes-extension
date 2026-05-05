@@ -1,0 +1,283 @@
+/*
+ * Release-notes dialog — fork-tokenised port of upstream's modal CSS.
+ *
+ * All visible color, typography, and spacing values resolve to design
+ * tokens from css/design-tokens.css. Hard-coded values are limited to
+ * z-indexes (Bootstrap stacking contract), backdrop opacity, and the
+ * close-button glyph size — none of which the design tokens cover.
+ *
+ * Theme variants (`.aes-release-notes-theme-{dark|classic|light}`) are
+ * applied by ReleaseNotesDialog#getTheme() reading window.frontendSettings
+ * or the fork's site-skin signal. Dark is default.
+ */
+
+#aes-release-notes-dialog {
+    z-index: 1051;
+    overflow: auto;
+}
+
+.aes-release-notes-backdrop {
+    background: rgba(0, 0, 0, 0.62);
+    z-index: 1050;
+}
+
+#aes-release-notes-dialog .modal-dialog {
+    margin: 6vh auto;
+    max-width: 760px;
+}
+
+#aes-release-notes-dialog .modal-content {
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: 2px solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    box-shadow: none;
+    font-family: var(--aes-font-display);
+}
+
+.aes-release-notes-header {
+    padding: 0;
+    border-bottom: 1px solid var(--aes-oxide);
+    position: relative;
+}
+
+.aes-release-notes-hero {
+    padding: var(--aes-sp-5) var(--aes-sp-5) var(--aes-sp-4);
+    background: var(--aes-bone-2);
+    position: relative;
+}
+
+.aes-release-notes-brand {
+    display: flex;
+    gap: var(--aes-sp-4);
+    align-items: flex-start;
+}
+
+.aes-release-notes-logo {
+    width: 64px;
+    height: 64px;
+    border: 2px solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    flex: 0 0 auto;
+    background: var(--aes-bone);
+}
+
+.aes-release-notes-title-wrap {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.aes-release-notes-badge {
+    display: inline-block;
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    font-weight: var(--aes-fw-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    margin-bottom: var(--aes-sp-2);
+    border-radius: var(--aes-radius);
+}
+
+.aes-release-notes-header .modal-title {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-h2);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+    line-height: var(--aes-lh-tight);
+    margin: 0;
+}
+
+.aes-release-notes-version {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-slate);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    margin: var(--aes-sp-1) 0 0;
+}
+
+.aes-release-notes-summary {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+    color: var(--aes-oxide-2);
+    margin: var(--aes-sp-3) 0 0;
+    line-height: var(--aes-lh-body);
+}
+
+.aes-release-notes-close {
+    position: absolute;
+    top: var(--aes-sp-3);
+    right: var(--aes-sp-3);
+    background: transparent;
+    border: 0;
+    color: var(--aes-oxide);
+    font-family: var(--aes-font-display);
+    font-size: 28px;
+    line-height: 1;
+    padding: 0 var(--aes-sp-2);
+    cursor: pointer;
+    z-index: 2;
+    opacity: 0.7;
+}
+
+.aes-release-notes-close:hover {
+    opacity: 1;
+}
+
+.aes-release-notes-body {
+    max-height: 60vh;
+    overflow: auto;
+    padding: var(--aes-sp-5);
+    background: var(--aes-bone);
+}
+
+.aes-release-notes-sections {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--aes-sp-4);
+}
+
+.aes-release-notes-card {
+    padding: var(--aes-sp-4);
+    background: var(--aes-bone);
+    border: 1px solid var(--aes-paper-rule);
+    border-radius: var(--aes-radius);
+}
+
+.aes-release-notes-card-title {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-h3);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+    margin: 0 0 var(--aes-sp-3);
+}
+
+.aes-release-notes-list {
+    margin: 0;
+    padding-left: var(--aes-sp-4);
+    color: var(--aes-oxide);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+    line-height: var(--aes-lh-body);
+    list-style: disc;
+}
+
+.aes-release-notes-list li + li {
+    margin-top: var(--aes-sp-2);
+}
+
+.aes-release-notes-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--aes-sp-3) var(--aes-sp-5);
+    border-top: 1px solid var(--aes-oxide);
+    background: var(--aes-bone-2);
+}
+
+.aes-release-notes-link {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    color: var(--aes-oxide-2);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    text-decoration: underline;
+    white-space: nowrap;
+}
+
+.aes-release-notes-link:hover,
+.aes-release-notes-link:focus {
+    color: var(--aes-rust);
+}
+
+.aes-release-notes-confirm {
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+    border: 2px solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    padding: var(--aes-sp-2) var(--aes-sp-5);
+    cursor: pointer;
+    min-width: 112px;
+}
+
+.aes-release-notes-confirm:hover,
+.aes-release-notes-confirm:focus {
+    background: var(--aes-rust-deep);
+}
+
+/* ── Theme overrides ─────────────────────────────────────────── */
+/* Dark theme (default) — already covered by token defaults; explicit
+ * variant just clarifies intent and lets the AS dark skin override
+ * specific tokens via .aes-release-notes-theme-dark scope. */
+
+#aes-release-notes-dialog.aes-release-notes-theme-dark .modal-content {
+    background: var(--aes-oxide-bg);
+    color: var(--aes-bone-fg);
+    border-color: var(--aes-bone-fg);
+}
+
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-hero,
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-footer {
+    background: var(--aes-oxide-bg-2);
+}
+
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-body {
+    background: var(--aes-oxide-bg);
+}
+
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-header,
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-footer {
+    border-color: var(--aes-oxide-rule);
+}
+
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-card {
+    background: var(--aes-oxide-bg-2);
+    border-color: var(--aes-oxide-rule);
+}
+
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-header .modal-title,
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-card-title,
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-list,
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-summary {
+    color: var(--aes-bone-fg);
+}
+
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-link {
+    color: var(--aes-bone-fg);
+}
+
+#aes-release-notes-dialog.aes-release-notes-theme-dark .aes-release-notes-close {
+    color: var(--aes-bone-fg);
+}
+
+/* Footer version link — sits in .as-footer-line beside #version. */
+#aes-footer-version {
+    margin-right: var(--aes-sp-3);
+}
+
+.aes-footer-version-link {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    color: var(--aes-rust);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    cursor: pointer;
+}
+
+.aes-footer-version-link:hover,
+.aes-footer-version-link:focus {
+    color: var(--aes-rust-deep);
+    text-decoration: underline;
+}

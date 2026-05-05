@@ -3,7 +3,7 @@
  * Assistant table. Pure: takes the data sources as inputs, returns an array
  * of rows. The panel decides how to render and score them.
  *
- *   buildRouteRows({hubIata, ffData, demandMap, ownSchedule, fleetContext})
+ *   buildRouteRows({hubIata, ffData, demandMap, ownSchedule, fleetContext, interlineByPair})
  *
  * Inputs:
  *   hubIata       — origin IATA the user is scheduling from.
@@ -11,10 +11,26 @@
  *                   {iata, scrapedAt, routes: [{destIata, destName,
  *                    weeklyFlights, seatsPerWeek, distanceKm, airlines, aircraft}]}
  *   demandMap     — Map<IATA, demandRecord> from RouteAssistantDemandStore.getMany.
+ *   interlineByPair — optional Map<"HUB-DEST", interlineRecord> (or plain
+ *                   object keyed the same way — the bulkLoad return shape)
+ *                   from RouteAssistantInterlineStore. When supplied, each
+ *                   row gets an `interlineShares: {paxPercent, cargoPercent}`
+ *                   field that the estimator uses to trim effective LF
+ *                   for capacity sold via codeshare partners.
  *   ownSchedule   — record from chrome.storage.local["<server><airlineCode>schedule"].
  *                   Shape: {date: {<dateYYYYMMDD>: {date, schedule:
  *                     [{origin, destination, flightNumber: {<n>: {paxFreq,
  *                     cargoFreq, ...}}}]}}}
+ *   afpSchedules  — array of per-aircraft AFP schedule records from
+ *                   `aircraftFlightPlan:schedule:<server>:<aircraftId>`
+ *                   keys (Track 7 / AesAfpScheduleStore). Each record
+ *                   carries `legs[]` with `{origin, destination, flightCode}`.
+ *                   The legacy ownSchedule is a manual snapshot that goes
+ *                   stale; AFP records are written live whenever the user
+ *                   visits an AFP page. Whichever source shows MORE weekly
+ *                   freq for a given (hub, dest) pair wins per-pair, so a
+ *                   route the user has built is correctly marked "operating"
+ *                   even if only one of the two sources knows about it.
  *   fleetContext  — optional Phase 2 input for aircraft-aware columns:
  *                   {selectedSpec, fleetSpecs, falloffPct, economics, overrides}
  *                     selectedSpec — chosen aircraft spec to evaluate every
@@ -35,7 +51,14 @@
  *   weeklyFlights, seatsPerWeek,
  *   paxScore, cargoScore (or null when demand is unresolved),
  *   ownPaxFreq, ownCargoFreq, ownTotalFreq,
- *   status — "NEW" | "OK" | "UNDER" | "OVER" | "OOR"
+ *   operating — boolean (true iff ownTotalFreq > 0)
+ *   health    — "OK" | "UNDER" | "OVER" | "OOR" — independent of operating;
+ *               an unflown route with paxScore ≥ 8 reads as UNDER (candidate),
+ *               an unreachable spec reads as OOR, etc.
+ *   status    — "NEW" | "OK" | "UNDER" | "OVER" | "OOR" — derived as
+ *               `operating ? health : "NEW"`. Kept for back-compat with the
+ *               status-history-store transition log + the right-click menu
+ *               that gates the opening-checklist on status === "NEW".
  *
  * When `fleetContext` is provided, rows additionally carry:
  *   aircraftFit ("optimal"|"falloff"|"oor"|null), blockHours,
@@ -53,18 +76,45 @@ class RouteAssistantAggregator {
         const serviceProfilesDef  = (input && input.serviceProfiles) || null
         const fleet               = (input && input.fleet) || null
         const ownByDest           = RouteAssistantAggregator._collectOwnFreq(input && input.ownSchedule, hubIata)
+        const afpByDest           = RouteAssistantAggregator._collectAfpFreq(input && input.afpSchedules, hubIata)
+        // Per-pair max merge — either source can undercount (legacy is a
+        // manual snapshot, AFP only covers aircraft the user has visited),
+        // so taking the max of each freq flips `operating` correctly when
+        // ANY source shows the route is flown. This is the fix for the
+        // "every route shows NEW" symptom: AFP-only users had ownTotalFreq=0.
+        for (const [dest, afp] of afpByDest) {
+            const cur = ownByDest.get(dest) || {paxFreq: 0, cargoFreq: 0}
+            cur.paxFreq   = Math.max(cur.paxFreq   || 0, afp.paxFreq   || 0)
+            cur.cargoFreq = Math.max(cur.cargoFreq || 0, afp.cargoFreq || 0)
+            ownByDest.set(dest, cur)
+        }
         const fleetCtx            = (input && input.fleetContext) || null
+        const interlineByPair     = (input && input.interlineByPair) || null
+        const ffDemandContext     = (typeof FlightsFromStore !== "undefined"
+            && typeof FlightsFromStore.buildDemandContext === "function")
+                ? FlightsFromStore.buildDemandContext(ffRoutes)
+                : null
 
         return ffRoutes.map(r => {
             const destIata = String(r.destIata || "").toUpperCase()
             const demand   = demandMap.get(destIata) || null
+            const hasPaxDemand = demand && demand.paxScore !== null && demand.paxScore !== undefined
+                && isFinite(Number(demand.paxScore))
+            const ffDemand = (!hasPaxDemand && ffDemandContext
+                    && typeof FlightsFromStore.demandForRoute === "function")
+                ? FlightsFromStore.demandForRoute(r, ffDemandContext)
+                : null
             const own      = ownByDest.get(destIata) || {paxFreq: 0, cargoFreq: 0}
             const totalFreq = (own.paxFreq || 0) + (own.cargoFreq || 0)
             const weeklyFlights = Number(r.weeklyFlights) || 0
-            const paxScore = demand ? demand.paxScore : null
+            const paxScore = hasPaxDemand ? demand.paxScore : (ffDemand ? ffDemand.paxScore : null)
             const distanceKm = typeof r.distanceKm === "number" ? r.distanceKm : null
             const override = overrideMap ? (overrideMap.get(hubIata + "-" + destIata) || null) : null
             const routeNote = routeNoteMap ? (routeNoteMap.get(hubIata + "-" + destIata) || null) : null
+            const interlineRec = interlineByPair
+                ? RouteAssistantAggregator._lookupInterlineRecord(interlineByPair, hubIata, destIata)
+                : null
+            const interlineShares = RouteAssistantAggregator._interlineSharesFromRecord(interlineRec)
 
             const row = {
                 destIata:      destIata,
@@ -72,16 +122,21 @@ class RouteAssistantAggregator {
                 airportId:     demand ? (demand.airportId || null) : null,
                 distanceKm:    distanceKm,
                 airlineCount:  Array.isArray(r.airlines) ? r.airlines.length : null,
+                airlines:      Array.isArray(r.airlines) ? r.airlines.slice() : null,
                 weeklyFlights: weeklyFlights || null,
                 seatsPerWeek:  typeof r.seatsPerWeek === "number" ? r.seatsPerWeek : null,
                 paxScore:      paxScore,
-                cargoScore:    demand ? demand.cargoScore : null,
+                cargoScore:    demand ? demand.cargoScore : (ffDemand ? ffDemand.cargoScore : null),
+                demandSource:  hasPaxDemand ? "route-assistant" : (ffDemand ? ffDemand.demandSource : null),
+                demandBasis:   hasPaxDemand ? null : (ffDemand ? ffDemand.demandBasis : null),
                 ownPaxFreq:    own.paxFreq || 0,
                 ownCargoFreq:  own.cargoFreq || 0,
                 ownTotalFreq:  totalFreq,
+                congestionIndex:  null,
                 override:         override,
                 routeNote:        routeNote,
                 routeNoteText:    (routeNote && typeof routeNote.text === "string") ? routeNote.text : null,
+                interlineShares:  interlineShares,
                 aircraftFit:      null,
                 blockHours:       null,
                 profitPerFlight:  null,
@@ -120,7 +175,19 @@ class RouteAssistantAggregator {
                 RouteAssistantAggregator._applyServiceProjection(row, serviceProfilesDef, svcRec, fleet)
             }
 
-            row.status = RouteAssistantAggregator._statusFor(totalFreq, paxScore, weeklyFlights, row.aircraftFit)
+            // Slice S1 — congestion signal for the strategy proposers.
+            // Pure function, no IO; safe to call always.
+            if (typeof window !== "undefined"
+                    && window.AesStrategyCongestion
+                    && typeof window.AesStrategyCongestion.computeCongestion === "function") {
+                try {
+                    const c = window.AesStrategyCongestion.computeCongestion(row, null)
+                    row.congestionIndex = c && typeof c.congestionIndex === "number"
+                        ? c.congestionIndex : null
+                } catch (_) { /* leave null */ }
+            }
+
+            RouteAssistantAggregator._assignStatus(row, totalFreq, paxScore, weeklyFlights)
             return row
         })
     }
@@ -166,11 +233,11 @@ class RouteAssistantAggregator {
             } else {
                 RouteAssistantAggregator._clearServiceProjection(row)
             }
-            row.status = RouteAssistantAggregator._statusFor(
+            RouteAssistantAggregator._assignStatus(
+                row,
                 row.ownTotalFreq || 0,
                 row.paxScore,
-                row.weeklyFlights || 0,
-                row.aircraftFit
+                row.weeklyFlights || 0
             )
         }
     }
@@ -267,7 +334,13 @@ class RouteAssistantAggregator {
                                    : (row.override || null),
             useDistanceFuel:   !!fleetCtx.useDistanceFuel,
             fuelPriceASc:      fleetCtx.fuelPriceASc,
-            fuelBurnOverrides: fleetCtx.fuelBurnOverrides
+            fuelBurnOverrides: fleetCtx.fuelBurnOverrides,
+            // H slice 3b.2 — per-route codeshare/interline share trims
+            // effective LF after source attribution. The row carries the
+            // pre-computed {paxPercent, cargoPercent} from buildRouteRows
+            // so the estimator stays Map-free and the re-applier (which
+            // doesn't have hubIata at hand) inherits the same shares.
+            interlineShares:   row.interlineShares || null
         })
 
         row.aircraftFit     = est.specOk ? est.fit : null
@@ -388,10 +461,24 @@ class RouteAssistantAggregator {
         // estimator's effective LF/yield/falloff so it stays internally
         // consistent with the displayed $/flt, then redistributes across
         // classes via classYieldMult and per-class costs.
+        //
+        // H slice 3b.2 follow-up — when an interline record is present,
+        // applying the estimator's flat post-interline LF to every class
+        // under-models C + F revenue when the codeshare is class-asymmetric
+        // (e.g. "30% Y interlined, no C interlined" loses 30% of C revenue
+        // it shouldn't). We resolve per-class accuracy by reading the
+        // pre-interline LF off the breakdown and re-applying the per-class
+        // share from `row.interlineShares.byClass`. The aggregate $/flt
+        // (which doesn't know the class split) still uses the flat
+        // reduction — that's the right call there because the breakdown
+        // for the aggregate is unobservable downstream.
         const baseYield = Number(breakdown.yieldPerKm) || 0
         const yDemand   = Number(breakdown.yieldDemandMultiplier) || 1
         const yMult     = Number(breakdown.yieldMultiplier) || 1
-        const lf        = Number(breakdown.paxLoadFactor) || 0
+        const lfPostInterline = Number(breakdown.paxLoadFactor) || 0
+        const lfPreInterline  = Number(breakdown.paxLoadFactorPreInterline)
+        const lfPre = isFinite(lfPreInterline) ? lfPreInterline : lfPostInterline
+        const interlineByClass = (row.interlineShares && row.interlineShares.byClass) || null
         const distRT    = Number(breakdown.distanceRoundTripKm) || 0
         const svcLevelMult = eff.serviceLevelYieldMult
         const svcLevelPerPaxCost = eff.serviceLevelCostPerPax
@@ -410,7 +497,18 @@ class RouteAssistantAggregator {
         for (const cls of ["Y", "C", "F"]) {
             const f = eff.classFares[cls]
             const seatsCls = seatsByClass[cls]
-            const filled = seatsCls * lf
+            const clsInterlinePct = interlineByClass
+                ? Math.max(0, Math.min(100, Number(interlineByClass[cls]) || 0))
+                : 0
+            // Per-class LF: pre-interline LF reduced by the class-specific
+            // share. Falls back to lfPostInterline (the estimator's flat
+            // figure) when no interline record is present, which preserves
+            // the previous behavior bit-for-bit on routes with no
+            // codeshare data.
+            const lfCls = (interlineByClass && lfPre)
+                ? lfPre * (1 - clsInterlinePct / 100)
+                : lfPostInterline
+            const filled = seatsCls * lfCls
             const scrapedFare = scrapedFares && scrapedFares[cls]
             const scrapedYield = (typeof scrapedFare === "number" && scrapedFare > 0 && distanceOneWay > 0)
                 ? (scrapedFare / distanceOneWay)
@@ -433,6 +531,8 @@ class RouteAssistantAggregator {
             classes[cls] = {
                 seats:           seatsCls,
                 seatsFilled:     Math.round(filled * 10) / 10,
+                loadFactor:      Math.round(lfCls * 1000) / 1000,
+                interlinePercent: clsInterlinePct,
                 yieldPerKm:      Math.round(yieldUsed * 10000) / 10000,
                 yieldOverride:   f.yieldPerKmOverride !== null,
                 yieldSource:     yieldSource,
@@ -511,6 +611,69 @@ class RouteAssistantAggregator {
         return {Y: y / total, C: c / total, F: f / total}
     }
 
+    /**
+     * H slice 3b.2 — fold the interline-store partner list into the
+     * shape the profit estimator + service-projection expect.
+     *
+     * Two views are surfaced together because they serve different math:
+     *   - `paxPercent` / `cargoPercent` — aggregate sums for the estimator,
+     *     which computes a single $/flt against an aggregate LF. PAX/Y/C/F
+     *     all reduce paxPercent; CARGO reduces cargoPercent.
+     *   - `byClass` — per-class shares for the service-projection, which
+     *     needs an accurate Y vs C vs F revenue split. A "PAX" partner is
+     *     the umbrella code that applies to all three pax classes equally;
+     *     specific Y/C/F partners only affect their class. This matters
+     *     when interline is class-asymmetric (e.g. 30% Y interlined, no C
+     *     interlined): the aggregate paxPercent under-models C + F revenue
+     *     because the LF reduction is uniform across all classes; byClass
+     *     restores precision in the service-projection layer.
+     *
+     * Returns null when the record is empty/missing so callers can skip
+     * cheaply with truthy checks.
+     */
+    static _interlineSharesFromRecord(record) {
+        if (!record || !Array.isArray(record.partners) || !record.partners.length) return null
+        let pax = 0
+        let cargo = 0
+        let umbrellaPax = 0  // PAX = applies to Y, C, F equally
+        const cls = {Y: 0, C: 0, F: 0}
+        for (const p of record.partners) {
+            const v = Number(p && p.sharePercent) || 0
+            if (v <= 0) continue
+            const k = p.productClass
+            if (k === "CARGO") {
+                cargo += v
+                continue
+            }
+            pax += v
+            if (k === "PAX") umbrellaPax += v
+            else if (k === "Y" || k === "C" || k === "F") cls[k] += v
+        }
+        if (pax <= 0 && cargo <= 0) return null
+        // Distribute the umbrella across each pax class — caps at 100 so an
+        // over-allocation in the popover doesn't escape into negative seats.
+        return {
+            paxPercent:   Math.min(100, pax),
+            cargoPercent: Math.min(100, cargo),
+            byClass: {
+                Y: Math.min(100, cls.Y + umbrellaPax),
+                C: Math.min(100, cls.C + umbrellaPax),
+                F: Math.min(100, cls.F + umbrellaPax)
+            }
+        }
+    }
+
+    /**
+     * Look up an interline record from a Map<"HUB-DEST", record> or a
+     * plain object keyed the same way (the bulkLoad return shape).
+     */
+    static _lookupInterlineRecord(interlineByPair, hubIata, destIata) {
+        if (!interlineByPair) return null
+        const key = String(hubIata || "").toUpperCase() + "-" + String(destIata || "").toUpperCase()
+        if (typeof interlineByPair.get === "function") return interlineByPair.get(key) || null
+        return interlineByPair[key] || null
+    }
+
     static _largestRemainder(raws, total) {
         const keys = Object.keys(raws)
         const out = {}
@@ -561,24 +724,74 @@ class RouteAssistantAggregator {
     }
 
     /**
-     * Status flag rules — kept conservative so they only highlight clear
-     * situations:
+     * Per-destination weekly frequency aggregated from per-aircraft AFP
+     * schedule records (the modern source written live whenever the user
+     * visits an AFP page). `afpSchedules` is an array of records loaded
+     * from `aircraftFlightPlan:schedule:<server>:<aircraftId>` — each
+     * carries a `legs[]` array. We only count legs whose `origin` matches
+     * the current hub (an aircraft based at hub X but flying through hub Y
+     * still has Y→Z legs that count for hub Y).
+     *
+     * AFP records carry no pax/cargo distinction per leg, so every leg
+     * counts as paxFreq. Downstream code that reads `ownTotalFreq` is
+     * correct either way; the rare consumer that needs a pax/cargo split
+     * gets pax-only from AFP and the legacy schedule's split when it's
+     * also present (max merge in `buildRouteRows`).
+     */
+    static _collectAfpFreq(afpSchedules, hubIata) {
+        const out = new Map()
+        if (!Array.isArray(afpSchedules) || !afpSchedules.length || !hubIata) return out
+        for (const rec of afpSchedules) {
+            if (!rec || !Array.isArray(rec.legs)) continue
+            for (const leg of rec.legs) {
+                if (!leg || !leg.origin || !leg.destination) continue
+                if (String(leg.origin).toUpperCase() !== hubIata) continue
+                const dest = String(leg.destination).toUpperCase()
+                const acc  = out.get(dest) || {paxFreq: 0, cargoFreq: 0}
+                acc.paxFreq += 1
+                out.set(dest, acc)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Health flag — orthogonal to operating. Computed for every route, flown
+     * or not, so the user can see UNDER/OVER/OK/OOR independently from "do I
+     * fly this":
      *   OOR   — selected aircraft can't reach the destination (overrides
      *           everything else; must fix fleet/aircraft choice first)
-     *   NEW   — you don't fly the route
-     *   UNDER — you fly it, demand is high (paxScore ≥ 8) but your weekly
-     *           freq is < 1/10 of real-world
-     *   OVER  — you fly it more than 1/5 of real-world
-     *   OK    — anything else
+     *   UNDER — demand is high (paxScore ≥ 8) and your weekly freq is < 1/10
+     *           of real-world. For an unflown route (ownTotalFreq = 0) this
+     *           collapses to "high demand and you're not flying it" — i.e. a
+     *           candidate to start.
+     *   OVER  — you fly it more than 1/5 of real-world. Unflown routes can
+     *           never be OVER (0 is not > anything).
+     *   OK    — anything else.
      * weeklyFlights = 0 means "no real-world reference", so we fall back to OK.
      */
-    static _statusFor(ownTotalFreq, paxScore, weeklyFlights, aircraftFit) {
+    static _healthFor(ownTotalFreq, paxScore, weeklyFlights, aircraftFit) {
         if (aircraftFit === "oor") return "OOR"
-        if (ownTotalFreq <= 0) return "NEW"
         if (!weeklyFlights) return "OK"
         if (typeof paxScore === "number" && paxScore >= 8 && ownTotalFreq < weeklyFlights / 10) return "UNDER"
         if (ownTotalFreq > weeklyFlights / 5) return "OVER"
         return "OK"
+    }
+
+    /**
+     * Sets the three correlated fields on `row`:
+     *   operating — boolean (true iff ownTotalFreq > 0)
+     *   health    — OK / UNDER / OVER / OOR (always)
+     *   status    — operating ? health : "NEW"  (legacy combined value)
+     */
+    static _assignStatus(row, ownTotalFreq, paxScore, weeklyFlights) {
+        const operating = (ownTotalFreq || 0) > 0
+        const health    = RouteAssistantAggregator._healthFor(
+            ownTotalFreq || 0, paxScore, weeklyFlights || 0, row.aircraftFit
+        )
+        row.operating = operating
+        row.health    = health
+        row.status    = operating ? health : "NEW"
     }
 }
 

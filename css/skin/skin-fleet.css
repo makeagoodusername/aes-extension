@@ -1,0 +1,121 @@
+/* ===========================================================
+   skin-fleet.css — /app/fleets and aircraft detail pages.
+
+   Brings fleet listing tables up to skin-info.css depth: tabular-nums
+   throughout, mono tail-numbers, header rhythm, zebra stripes via
+   --aes-bone-2, density-aware row padding. AES-injected toolbars and
+   the Fleet Hub panel keep their own theming — selectors here only
+   touch AS-native tables.
+   =========================================================== */
+
+body.aes-skin[data-aes-page="fleet"] .table > tbody > tr > td {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Aircraft registration / tail number cells render mono. AS marks them
+   with a class on the link wrapper; if not present, fall back to the
+   first-column cell on fleet listing tables. */
+body.aes-skin[data-aes-page="fleet"] .table a[href*="/fleets/aircraft/"],
+body.aes-skin[data-aes-page="fleet"] td.aircraft-registration,
+body.aes-skin[data-aes-page="fleet"] td.aes-mono {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* fleet-hub injected columns already use .aes-badge — make sure they
+   don't pick up the host .badge override (that ships via skin-global).
+   .aes-badge has higher specificity so this is mostly a safety net. */
+body.aes-skin[data-aes-page="fleet"] .table .aes-badge {
+    text-transform: uppercase;
+}
+
+/* ---- Header rhythm — caps tracking + mono numerals on column heads -- */
+body.aes-skin[data-aes-page="fleet"] .table > thead > tr > th {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-oxide);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    background: var(--aes-bone-2);
+}
+
+/* ---- Zebra stripes — bone-2 alternating, no rounded corners --------- */
+body.aes-skin[data-aes-page="fleet"] .table-striped > tbody > tr:nth-of-type(odd),
+body.aes-skin[data-aes-page="fleet"] .table > tbody > tr:nth-of-type(odd) {
+    background: var(--aes-bone-2);
+}
+body.aes-skin[data-aes-page="fleet"] .table > tbody > tr:hover {
+    background: var(--aes-rust-soft);
+}
+
+/* ---- Right-align numeric columns (price, hours, age, capacity) ------
+   AS doesn't class numeric cells consistently — match by content via the
+   common AS pattern of wrapping prices in a .text-right or .nowrap. */
+body.aes-skin[data-aes-page="fleet"] .table .text-right,
+body.aes-skin[data-aes-page="fleet"] .table .text-end,
+body.aes-skin[data-aes-page="fleet"] .table td.price,
+body.aes-skin[data-aes-page="fleet"] .table td.hours {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* ---- Density-aware row padding — compact tightens to 4px/8px -------- */
+body.aes-skin[data-aes-page="fleet"][data-aes-density="comfortable"] .table > tbody > tr > td,
+body.aes-skin[data-aes-page="fleet"][data-aes-density="comfortable"] .table > thead > tr > th {
+    padding-top: var(--aes-sp-2);
+    padding-bottom: var(--aes-sp-2);
+}
+body.aes-skin[data-aes-page="fleet"][data-aes-density="compact"] .table > tbody > tr > td,
+body.aes-skin[data-aes-page="fleet"][data-aes-density="compact"] .table > thead > tr > th {
+    padding-top: var(--aes-sp-1);
+    padding-bottom: var(--aes-sp-1);
+    font-size: var(--aes-fs-small);
+    line-height: var(--aes-lh-tight);
+}
+
+/* ---- Status pills inside fleet rows (AS uses .label .label-* utility) */
+body.aes-skin[data-aes-page="fleet"] .table .label {
+    display: inline-block;
+    padding: 2px var(--aes-sp-2);
+    border: var(--aes-bw-1) solid currentColor;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+    border-radius: var(--aes-radius);
+    background: transparent;
+}
+body.aes-skin[data-aes-page="fleet"] .table .label.label-success { color: var(--aes-moss); }
+body.aes-skin[data-aes-page="fleet"] .table .label.label-warning { color: var(--aes-amber); }
+body.aes-skin[data-aes-page="fleet"] .table .label.label-danger  { color: var(--aes-crimson); }
+body.aes-skin[data-aes-page="fleet"] .table .label.label-info    { color: var(--aes-cobalt); }
+
+/* ---- Aircraft detail page — tab strip and metadata blocks ---------- */
+body.aes-skin[data-aes-page="fleet"] .nav-tabs > li > a {
+    border-radius: var(--aes-radius);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-display);
+}
+body.aes-skin[data-aes-page="fleet"] .nav-tabs > li.active > a {
+    border-color: var(--aes-oxide) var(--aes-oxide) transparent;
+    color: var(--aes-oxide);
+    background: var(--aes-bone);
+}
+
+/* ---- Panel header rhythm in the detail card ------------------------- */
+body.aes-skin[data-aes-page="fleet"] .panel > .panel-heading {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+}

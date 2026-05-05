@@ -1,0 +1,110 @@
+{
+  "ok": true,
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "loggedIn": false,
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?1&select=775",
+  "title": "Dashboard: Fly Gemini | Free1 | AirlineSim",
+  "profileDir": "/var/folders/zx/0dqhlzq10hvc07_m0nq_jbvc0000gn/T/aes-chrome-autopricing-5s",
+  "remoteDebuggingPort": "9224",
+  "result": {
+    "ok": true,
+    "stage": "done",
+    "startedAt": 1777954283554,
+    "tickLabel": "5 sec",
+    "tickMs": 5000,
+    "liveWrites": true,
+    "dryRun": false,
+    "previewBefore": {
+      "counts": {
+        "routes": 0,
+        "watchlisted": 0,
+        "pinned": 0,
+        "proposed": 0,
+        "withOwnPricing": 0,
+        "withCompetitors": 0,
+        "withYieldHistory": 0,
+        "withOrs": 0,
+        "withActiveFlights": 0,
+        "cooldownBlocked": 0,
+        "capBlocked": 0,
+        "withOrsIndex": 0,
+        "withOrsPriceIndex": 0
+      },
+      "proposals": [],
+      "error": null
+    },
+    "observed": [
+      {
+        "at": 1777954287908,
+        "iso": "2026-05-05T04:11:27.908Z",
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": false,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777954287908,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777954292908,
+        "iso": "2026-05-05T04:11:32.908Z",
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": false,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777954292908,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777954297908,
+        "iso": "2026-05-05T04:11:37.908Z",
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": false,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777954297908,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      }
+    ],
+    "deltasMs": [
+      5000,
+      5000
+    ],
+    "restoredSettings": true
+  },
+  "consoleRows": [],
+  "pageErrors": []
+}

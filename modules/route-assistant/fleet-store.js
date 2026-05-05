@@ -32,6 +32,18 @@ class RouteAssistantFleetStore {
      */
     static async loadFleet(server, airlineCode) {
         if (!server) return RouteAssistantFleetStore._empty(null, false, server)
+
+        if (airlineCode) {
+            const directKey = String(server) + String(airlineCode) + "aircraftFleet"
+            try {
+                const direct = await chrome.storage.local.get([directKey])
+                const rec = direct && direct[directKey]
+                if (rec && rec.type === "aircraftFleet" && Array.isArray(rec.fleet)) {
+                    return RouteAssistantFleetStore._fromRecord(rec, false, server)
+                }
+            } catch (_) { /* fall back to legacy scan below */ }
+        }
+
         const all = await chrome.storage.local.get(null)
 
         const matching = []
@@ -49,7 +61,8 @@ class RouteAssistantFleetStore {
         let chosen = null
         let ambiguous = false
         if (airlineCode) {
-            chosen = matching.find(r => String(r.airline) === String(airlineCode)) || null
+            chosen = matching.find(r =>
+                RouteAssistantFleetStore._sameAirline(r.airline, airlineCode)) || null
         }
         if (!chosen) {
             // Pick the airline with the largest fleet — usually the user's
@@ -58,6 +71,13 @@ class RouteAssistantFleetStore {
             ambiguous = matching.length > 1
         }
 
+        return RouteAssistantFleetStore._fromRecord(chosen, ambiguous, server)
+    }
+
+    static _fromRecord(chosen, ambiguous, server) {
+        if (!chosen || !Array.isArray(chosen.fleet)) {
+            return RouteAssistantFleetStore._empty(null, false, server)
+        }
         const aircraft = chosen.fleet.slice()
         const byType = new Map()
         for (const a of aircraft) {
@@ -103,6 +123,16 @@ class RouteAssistantFleetStore {
             ambiguous: ambiguous,
             server:    server || null
         }
+    }
+
+    static _sameAirline(a, b) {
+        const aa = RouteAssistantFleetStore._normaliseAirlineKey(a)
+        const bb = RouteAssistantFleetStore._normaliseAirlineKey(b)
+        return !!aa && aa === bb
+    }
+
+    static _normaliseAirlineKey(value) {
+        return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "")
     }
 
     /**

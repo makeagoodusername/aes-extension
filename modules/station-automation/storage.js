@@ -13,7 +13,11 @@
  * Queue entry shape (one per country in the queue):
  *   {
  *     countryId, countryCode, countryName,
- *     paxThreshold, cargoThreshold,           // 0–10, ignored when airportWhitelist is set
+ *     filterMode?: "minimum"|"range",        // legacy entries omit this
+ *     paxThreshold, cargoThreshold,           // legacy minimums, 0–10
+ *     paxMin, paxMax, cargoMin, cargoMax,     // range mode, 0–10
+ *     sizeMin, sizeMax,                       // airport size/capacity range, 0–10
+ *                                             // all filters ignored when airportWhitelist is set
  *     exceptions: [iata...],                  // skip these IATAs
  *     airportWhitelist?: [iata...]            // optional — when set, only listed
  *                                             //   airports are opened; thresholds
@@ -170,19 +174,36 @@ class StationAutomationStorage {
         const keep = keepRunId ? StationAutomationStorage._runKey(server, airlineId, keepRunId) : null
         const keepPrefix = keep ? keep + ":r:" : null
         const runPrefix = StationAutomationStorage._runPrefix(server, airlineId)
+        // F-9228-102: two-pass cleanup. The first pass identifies session
+        // records to drop and seeds the deleted-set; the second pass walks
+        // the result blobs (`:r:<idx>`) and removes any whose owner is
+        // already gone OR is being dropped in this pass. Previously the
+        // orphan check tested the snapshot (`all[owner]`), which is still
+        // truthy in the same call, so blobs whose owners were marked for
+        // deletion were left behind indefinitely.
+        const deletedSessions = new Set()
         const toRemove = []
         for (const k in all) {
             if (k.indexOf(runPrefix) !== 0) continue
             if (keep && (k === keep || (keepPrefix && k.indexOf(keepPrefix) === 0))) continue
-            const isSession = k.indexOf(":r:") === -1
-            if (isSession) {
-                const rec = all[k]
-                if (!rec || !rec.startedAt || rec.startedAt < cutoff) toRemove.push(k)
-            } else {
-                const owner = k.split(":r:")[0]
-                if (!all[owner]) toRemove.push(k)
+            if (k.indexOf(":r:") !== -1) continue
+            const rec = all[k]
+            if (!rec || !rec.startedAt || rec.startedAt < cutoff) {
+                deletedSessions.add(k)
+                toRemove.push(k)
             }
+        }
+        for (const k in all) {
+            if (k.indexOf(runPrefix) !== 0) continue
+            if (k.indexOf(":r:") === -1) continue
+            if (keepPrefix && k.indexOf(keepPrefix) === 0) continue
+            const owner = k.split(":r:")[0]
+            if (!all[owner] || deletedSessions.has(owner)) toRemove.push(k)
         }
         if (toRemove.length) await chrome.storage.local.remove(toRemove)
     }
+}
+
+if (typeof window !== "undefined") {
+    window.StationAutomationStorage = StationAutomationStorage
 }

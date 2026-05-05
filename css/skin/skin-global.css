@@ -1,0 +1,1078 @@
+/* ===========================================================
+   AES "CONCRETE" — skin-global.css
+   Sitewide brutalist override for AirlineSim's native Wicket + Bootstrap
+   GUI. Every rule scoped to `body.aes-skin` so toggling the skin off in
+   options reverts to vanilla AS without a reload.
+
+   Discipline:
+   - Tokens only — no hardcoded hex / px / shadow.
+   - Restyle by class. Never strip / rename AS classes (Wicket behaviour
+     keys off them).
+   - Avoid !important except where Bootstrap's specificity ties or wins.
+   - All rules must coexist with the existing AES injected surfaces
+     (.aes-panel, .aes-modal, .aes-toast, #aes-route-assistant). Where
+     leakage is plausible, scope with :not(#aes-route-assistant).
+   =========================================================== */
+
+
+/* ===========================================================
+   1. TYPOGRAPHY BASELINE
+   =========================================================== */
+
+body.aes-skin {
+    font-family: var(--aes-font-display);
+    color: var(--aes-oxide);
+    background: var(--aes-bone);
+    line-height: var(--aes-lh-body);
+}
+
+body.aes-skin h1,
+body.aes-skin h2,
+body.aes-skin h3,
+body.aes-skin h4,
+body.aes-skin h5,
+body.aes-skin h6 {
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+    line-height: var(--aes-lh-tight);
+}
+
+body.aes-skin h1 { font-size: var(--aes-fs-h1); }
+body.aes-skin h2 { font-size: var(--aes-fs-h2); }
+body.aes-skin h3 { font-size: var(--aes-fs-h3); }
+body.aes-skin h4 { font-size: var(--aes-fs-lead); }
+body.aes-skin h5,
+body.aes-skin h6 { font-size: var(--aes-fs-body); }
+
+body.aes-skin code,
+body.aes-skin pre,
+body.aes-skin kbd,
+body.aes-skin samp {
+    font-family: var(--aes-font-mono);
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    padding: 0 var(--aes-sp-1);
+}
+
+body.aes-skin a {
+    color: var(--aes-oxide);
+    text-decoration: underline;
+    text-decoration-thickness: var(--aes-bw-1);
+    text-underline-offset: 2px;
+}
+body.aes-skin a:hover { color: var(--aes-rust); text-decoration-color: var(--aes-rust); }
+
+body.aes-skin hr {
+    border: 0;
+    border-top: var(--aes-bw-1) solid var(--aes-paper-rule);
+    margin: var(--aes-sp-3) 0;
+}
+
+
+/* ===========================================================
+   2. BUTTONS — Bootstrap .btn family
+   =========================================================== */
+
+body.aes-skin .btn {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    line-height: var(--aes-lh-tight);
+    color: var(--aes-oxide);
+    background: var(--aes-bone);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    box-shadow: none;
+    text-shadow: none;
+    transition: var(--aes-tr-fast);
+}
+body.aes-skin .btn:hover,
+body.aes-skin .btn:focus {
+    background: var(--aes-oxide);
+    color: var(--aes-bone);
+    border-color: var(--aes-oxide);
+    outline: 0;
+}
+body.aes-skin .btn:active,
+body.aes-skin .btn.active {
+    background: var(--aes-oxide-2);
+    color: var(--aes-bone);
+    border-color: var(--aes-oxide-2);
+    box-shadow: none;
+}
+body.aes-skin .btn[disabled],
+body.aes-skin .btn.disabled {
+    background: var(--aes-bone-3);
+    color: var(--aes-slate);
+    border-color: var(--aes-slate);
+    cursor: not-allowed;
+    opacity: 1;
+}
+
+body.aes-skin .btn-primary {
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+    border-color: var(--aes-rust);
+}
+body.aes-skin .btn-primary:hover,
+body.aes-skin .btn-primary:focus {
+    background: var(--aes-rust-deep);
+    border-color: var(--aes-rust-deep);
+    color: var(--aes-rust-fg);
+}
+
+body.aes-skin .btn-success {
+    background: var(--aes-moss);
+    color: var(--aes-bone-fg);
+    border-color: var(--aes-moss);
+}
+body.aes-skin .btn-success:hover,
+body.aes-skin .btn-success:focus {
+    background: var(--aes-oxide);
+    border-color: var(--aes-oxide);
+    color: var(--aes-bone-fg);
+}
+
+body.aes-skin .btn-warning {
+    background: var(--aes-amber);
+    color: var(--aes-oxide);
+    border-color: var(--aes-amber);
+}
+body.aes-skin .btn-warning:hover,
+body.aes-skin .btn-warning:focus {
+    background: var(--aes-oxide);
+    color: var(--aes-amber);
+    border-color: var(--aes-oxide);
+}
+
+body.aes-skin .btn-danger {
+    background: var(--aes-bone);
+    color: var(--aes-crimson);
+    border-color: var(--aes-crimson);
+}
+body.aes-skin .btn-danger:hover,
+body.aes-skin .btn-danger:focus {
+    background: var(--aes-crimson);
+    color: var(--aes-bone-fg);
+    border-color: var(--aes-crimson);
+}
+
+body.aes-skin .btn-info {
+    background: var(--aes-bone);
+    color: var(--aes-cobalt);
+    border-color: var(--aes-cobalt);
+}
+body.aes-skin .btn-info:hover,
+body.aes-skin .btn-info:focus {
+    background: var(--aes-cobalt);
+    color: var(--aes-bone-fg);
+    border-color: var(--aes-cobalt);
+}
+
+body.aes-skin .btn-default {
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border-color: var(--aes-oxide);
+}
+
+body.aes-skin .btn-link {
+    background: transparent;
+    border-color: transparent;
+    color: var(--aes-oxide);
+    text-transform: none;
+    letter-spacing: 0;
+}
+body.aes-skin .btn-link:hover {
+    background: transparent;
+    color: var(--aes-rust);
+    border-color: transparent;
+    text-decoration: underline;
+}
+
+body.aes-skin .btn-xs { font-size: var(--aes-fs-micro); padding: 1px var(--aes-sp-2); }
+body.aes-skin .btn-sm { font-size: var(--aes-fs-micro); padding: 2px var(--aes-sp-2); }
+body.aes-skin .btn-lg { font-size: var(--aes-fs-lead); padding: var(--aes-sp-2) var(--aes-sp-4); }
+
+body.aes-skin .btn-group > .btn {
+    border-radius: var(--aes-radius);
+}
+body.aes-skin .btn-group > .btn + .btn {
+    margin-left: calc(var(--aes-bw-2) * -1);
+}
+
+
+/* ===========================================================
+   3. FORMS — .form-control, label, input-group, help-block
+   =========================================================== */
+
+body.aes-skin .form-control,
+body.aes-skin select.form-control,
+body.aes-skin textarea.form-control {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-body);
+    line-height: var(--aes-lh-body);
+    color: var(--aes-oxide);
+    background: var(--aes-bone);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+    box-shadow: none;
+    transition: var(--aes-tr-fast);
+    height: auto;
+}
+body.aes-skin .form-control:focus {
+    border-color: var(--aes-rust);
+    box-shadow: none;
+    outline: 0;
+}
+body.aes-skin .form-control[disabled],
+body.aes-skin .form-control[readonly] {
+    background: var(--aes-bone-3);
+    color: var(--aes-slate);
+    cursor: not-allowed;
+}
+
+body.aes-skin label,
+body.aes-skin .control-label {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+}
+
+body.aes-skin .help-block,
+body.aes-skin .form-text {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    color: var(--aes-slate);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+body.aes-skin .input-group-addon,
+body.aes-skin .input-group-btn .btn {
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-body);
+}
+
+body.aes-skin .has-error .form-control { border-color: var(--aes-crimson); }
+body.aes-skin .has-error .control-label,
+body.aes-skin .has-error .help-block { color: var(--aes-crimson); }
+body.aes-skin .has-success .form-control { border-color: var(--aes-moss); }
+body.aes-skin .has-warning .form-control { border-color: var(--aes-amber); }
+
+
+/* ===========================================================
+   4. PANELS — .panel, .panel-heading, .panel-body, .panel-footer, .well
+   =========================================================== */
+
+body.aes-skin .panel,
+body.aes-skin .panel-default,
+body.aes-skin .panel-primary,
+body.aes-skin .panel-info,
+body.aes-skin .panel-success,
+body.aes-skin .panel-warning,
+body.aes-skin .panel-danger {
+    background: var(--aes-bone);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    box-shadow: none;
+    color: var(--aes-oxide);
+}
+
+body.aes-skin .panel-heading {
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+    border: 0;
+    /* Signature double-rule seam — single hairline + 4px gutter + oxide rule */
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    box-shadow: 0 var(--aes-sp-1) 0 0 var(--aes-bone),
+                0 calc(var(--aes-sp-1) + 1px) 0 0 var(--aes-oxide);
+    margin-bottom: calc(var(--aes-sp-1) + 1px);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    border-radius: 0;
+}
+
+body.aes-skin .panel-title {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-lead);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+    line-height: var(--aes-lh-tight);
+}
+
+body.aes-skin .panel-body { padding: var(--aes-sp-3); }
+
+body.aes-skin .panel-footer {
+    background: var(--aes-bone-2);
+    color: var(--aes-slate);
+    border-top: var(--aes-bw-1) solid var(--aes-paper-rule);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    border-radius: 0;
+}
+
+body.aes-skin .well {
+    background: var(--aes-bone-2);
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+    border-radius: var(--aes-radius);
+    box-shadow: none;
+    color: var(--aes-oxide);
+    padding: var(--aes-sp-3);
+}
+
+
+/* ===========================================================
+   5. ALERTS
+   =========================================================== */
+
+body.aes-skin .alert {
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-left-width: var(--aes-bw-3);
+    border-radius: var(--aes-radius);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+    box-shadow: none;
+}
+body.aes-skin .alert-info    { border-left-color: var(--aes-cobalt); }
+body.aes-skin .alert-success { border-left-color: var(--aes-moss); }
+body.aes-skin .alert-warning { border-left-color: var(--aes-amber); }
+body.aes-skin .alert-danger  { border-left-color: var(--aes-crimson); }
+
+
+/* ===========================================================
+   6. NAVBAR + TABS — top AS navbar and inline tabs
+   =========================================================== */
+
+body.aes-skin .navbar,
+body.aes-skin .navbar-default {
+    background: var(--aes-bone-2);
+    border: 0;
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: 0;
+    box-shadow: none;
+    margin-bottom: 0;
+    min-height: auto;
+}
+body.aes-skin .navbar .navbar-brand,
+body.aes-skin .navbar-default .navbar-brand {
+    color: var(--aes-oxide);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    text-shadow: none;
+}
+body.aes-skin .navbar-default .navbar-nav > li > a {
+    color: var(--aes-oxide);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    text-shadow: none;
+}
+body.aes-skin .navbar-default .navbar-nav > li > a:hover,
+body.aes-skin .navbar-default .navbar-nav > li > a:focus {
+    color: var(--aes-rust);
+    background: transparent;
+}
+body.aes-skin .navbar-default .navbar-nav > .active > a,
+body.aes-skin .navbar-default .navbar-nav > .active > a:hover,
+body.aes-skin .navbar-default .navbar-nav > .active > a:focus {
+    background: var(--aes-oxide);
+    color: var(--aes-bone);
+    box-shadow: none;
+}
+body.aes-skin .navbar-default .navbar-nav > .open > a,
+body.aes-skin .navbar-default .navbar-nav > .open > a:hover,
+body.aes-skin .navbar-default .navbar-nav > .open > a:focus {
+    background: var(--aes-oxide);
+    color: var(--aes-bone);
+}
+body.aes-skin .navbar-toggle {
+    background: transparent;
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: 0;
+}
+body.aes-skin .navbar-toggle .icon-bar { background: var(--aes-oxide); }
+
+body.aes-skin .nav-tabs {
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+}
+body.aes-skin .nav-tabs > li > a {
+    background: transparent;
+    color: var(--aes-oxide-2);
+    border: var(--aes-bw-1) solid transparent;
+    border-radius: 0;
+    margin-right: 0;
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+}
+body.aes-skin .nav-tabs > li > a:hover {
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+    border-color: transparent;
+}
+body.aes-skin .nav-tabs > li.active > a,
+body.aes-skin .nav-tabs > li.active > a:hover,
+body.aes-skin .nav-tabs > li.active > a:focus {
+    background: var(--aes-oxide);
+    color: var(--aes-bone);
+    border-color: var(--aes-oxide);
+}
+
+body.aes-skin .nav-pills > li > a {
+    border-radius: 0;
+    color: var(--aes-oxide);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+}
+body.aes-skin .nav-pills > li.active > a,
+body.aes-skin .nav-pills > li.active > a:hover,
+body.aes-skin .nav-pills > li.active > a:focus {
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+}
+
+/* Breadcrumb (Bootstrap) — flat brutalist row */
+body.aes-skin .breadcrumb {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    padding: var(--aes-sp-1) 0;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    color: var(--aes-slate);
+}
+body.aes-skin .breadcrumb > li + li:before { color: var(--aes-paper-rule); content: "/ "; }
+
+
+/* ===========================================================
+   7. TABLES — .table, .table-striped, .table-hover, .table-bordered
+   =========================================================== */
+
+body.aes-skin .table {
+    background: transparent;
+    border-collapse: collapse;
+    color: var(--aes-oxide);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-body);
+    margin-bottom: var(--aes-sp-3);
+}
+body.aes-skin .table > thead > tr > th,
+body.aes-skin .table > thead > tr > td {
+    background: var(--aes-oxide);
+    color: var(--aes-bone);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    border-top: 0;
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+    white-space: nowrap;
+    vertical-align: middle;
+}
+body.aes-skin .table > tbody > tr > td,
+body.aes-skin .table > tbody > tr > th {
+    border-top: 0;
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+    vertical-align: middle;
+}
+body.aes-skin .table > tfoot > tr > td,
+body.aes-skin .table > tfoot > tr > th {
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-bold);
+    border-top: var(--aes-bw-2) solid var(--aes-oxide);
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+}
+body.aes-skin .table-striped > tbody > tr:nth-of-type(even) > td,
+body.aes-skin .table-striped > tbody > tr:nth-of-type(even) > th {
+    background: var(--aes-bone-2);
+}
+body.aes-skin .table-hover > tbody > tr:hover > td,
+body.aes-skin .table-hover > tbody > tr:hover > th {
+    background: var(--aes-bone-3);
+}
+body.aes-skin .table-bordered,
+body.aes-skin .table-bordered > thead > tr > th,
+body.aes-skin .table-bordered > thead > tr > td,
+body.aes-skin .table-bordered > tbody > tr > td,
+body.aes-skin .table-bordered > tbody > tr > th {
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+}
+
+/* Sticky thead — applied by table-polish.js to long tables */
+body.aes-skin .aes-skin-sticky thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+
+/* ===========================================================
+   8. MODALS — .modal-dialog, .modal-content, .modal-header, .modal-body, .modal-footer
+   =========================================================== */
+
+body.aes-skin .modal-content {
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    box-shadow: none;
+}
+body.aes-skin .modal-header {
+    background: var(--aes-bone-2);
+    border: 0;
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    box-shadow: 0 var(--aes-sp-1) 0 0 var(--aes-bone),
+                0 calc(var(--aes-sp-1) + 1px) 0 0 var(--aes-oxide);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    margin-bottom: calc(var(--aes-sp-1) + 1px);
+}
+body.aes-skin .modal-title {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-lead);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+}
+body.aes-skin .modal-body {
+    padding: var(--aes-sp-3);
+}
+body.aes-skin .modal-footer {
+    background: var(--aes-bone-2);
+    border: 0;
+    border-top: var(--aes-bw-1) solid var(--aes-paper-rule);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+}
+body.aes-skin .modal-backdrop {
+    background: var(--aes-oxide-bg);
+}
+body.aes-skin .modal-backdrop.in { opacity: 0.55; }
+body.aes-skin .close {
+    color: var(--aes-oxide);
+    text-shadow: none;
+    opacity: 0.6;
+    transition: var(--aes-tr-fast);
+    font-family: var(--aes-font-display);
+}
+body.aes-skin .close:hover { color: var(--aes-rust); opacity: 1; }
+
+
+/* ===========================================================
+   9. DROPDOWNS — .dropdown-menu, .dropdown-header, dividers
+   (Folded in from former content.css legacy block.)
+   =========================================================== */
+
+body.aes-skin .dropdown-menu {
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    box-shadow: none;
+    padding: var(--aes-sp-1) 0;
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+    min-width: 200px;
+}
+body.aes-skin .dropdown-menu > li > a {
+    color: var(--aes-oxide);
+    background: transparent;
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+    text-transform: none;
+    letter-spacing: 0;
+}
+body.aes-skin .dropdown-menu > li > a:hover,
+body.aes-skin .dropdown-menu > li > a:focus,
+body.aes-skin .dropdown-menu > .active > a,
+body.aes-skin .dropdown-menu > .active > a:hover,
+body.aes-skin .dropdown-menu > .active > a:focus {
+    background: var(--aes-oxide);
+    color: var(--aes-bone);
+}
+body.aes-skin .dropdown-header {
+    color: var(--aes-slate);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-micro);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    padding: var(--aes-sp-1) var(--aes-sp-3) 2px;
+}
+body.aes-skin .dropdown-menu .divider {
+    height: 0;
+    margin: var(--aes-sp-1) 0;
+    border-top: var(--aes-bw-1) solid var(--aes-paper-rule);
+    background: transparent;
+}
+/* AS Bootstrap dropdown menu icon alignment (migrated from content.css) */
+body.aes-skin .dropdown-menu > li > a:has(.fa) {
+    display: grid;
+    grid-template-columns: 1em auto;
+    gap: var(--aes-sp-1);
+    align-items: center;
+}
+body.aes-skin .dropdown-menu > li > a > .fa { justify-self: center; }
+
+
+/* ===========================================================
+   10. BADGES + LABELS
+   =========================================================== */
+
+body.aes-skin .badge {
+    background: var(--aes-bone-3);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    font-weight: var(--aes-fw-medium);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    padding: 1px var(--aes-sp-1);
+    text-shadow: none;
+    box-shadow: none;
+}
+
+body.aes-skin .label {
+    background: var(--aes-bone-3);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    font-weight: var(--aes-fw-medium);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    padding: 1px var(--aes-sp-1);
+    text-shadow: none;
+}
+body.aes-skin .label-primary { background: var(--aes-rust-soft);     color: var(--aes-rust);     border-color: var(--aes-rust); }
+body.aes-skin .label-info    { background: var(--aes-cobalt-soft);   color: var(--aes-cobalt);   border-color: var(--aes-cobalt); }
+body.aes-skin .label-success { background: var(--aes-moss-soft);     color: var(--aes-moss);     border-color: var(--aes-moss); }
+body.aes-skin .label-warning { background: var(--aes-amber-soft);    color: var(--aes-amber);    border-color: var(--aes-amber); }
+body.aes-skin .label-danger  { background: var(--aes-crimson-soft);  color: var(--aes-crimson);  border-color: var(--aes-crimson); }
+
+
+/* ===========================================================
+   11. PAGINATION
+   =========================================================== */
+
+body.aes-skin .pagination > li > a,
+body.aes-skin .pagination > li > span {
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: 0;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-small);
+    margin-left: calc(var(--aes-bw-1) * -1);
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+}
+body.aes-skin .pagination > li > a:hover,
+body.aes-skin .pagination > li > span:hover {
+    background: var(--aes-oxide);
+    color: var(--aes-bone);
+}
+body.aes-skin .pagination > .active > a,
+body.aes-skin .pagination > .active > span,
+body.aes-skin .pagination > .active > a:hover,
+body.aes-skin .pagination > .active > span:hover {
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+    border-color: var(--aes-rust);
+}
+body.aes-skin .pagination > .disabled > a,
+body.aes-skin .pagination > .disabled > span {
+    background: var(--aes-bone-3);
+    color: var(--aes-slate);
+    border-color: var(--aes-paper-rule);
+}
+
+
+/* ===========================================================
+   12. PROGRESS BARS
+   =========================================================== */
+
+body.aes-skin .progress {
+    background: var(--aes-bone-3);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: 0;
+    box-shadow: none;
+    height: var(--aes-sp-3);
+    margin-bottom: var(--aes-sp-2);
+}
+body.aes-skin .progress-bar {
+    background: var(--aes-oxide);
+    color: var(--aes-bone);
+    text-shadow: none;
+    box-shadow: none;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    line-height: var(--aes-sp-3);
+}
+body.aes-skin .progress-bar-info    { background: var(--aes-cobalt); }
+body.aes-skin .progress-bar-success { background: var(--aes-moss); }
+body.aes-skin .progress-bar-warning { background: var(--aes-amber); color: var(--aes-oxide); }
+body.aes-skin .progress-bar-danger  { background: var(--aes-crimson); }
+
+
+/* ===========================================================
+   13. POPOVERS + TOOLTIPS (Bootstrap)
+   =========================================================== */
+
+body.aes-skin .popover {
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    box-shadow: none;
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+}
+body.aes-skin .popover-title {
+    background: var(--aes-bone-2);
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    color: var(--aes-oxide);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    border-radius: 0;
+}
+body.aes-skin .popover-content { padding: var(--aes-sp-2) var(--aes-sp-3); }
+body.aes-skin .popover .arrow,
+body.aes-skin .popover .arrow:after { display: none; }
+
+body.aes-skin .tooltip-inner {
+    background: var(--aes-oxide-bg);
+    color: var(--aes-bone-fg);
+    border: var(--aes-bw-1) solid var(--aes-oxide-rule);
+    border-radius: 0;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    padding: var(--aes-sp-1) var(--aes-sp-2);
+}
+body.aes-skin .tooltip.in { opacity: 1; }
+body.aes-skin .tooltip-arrow { display: none; }
+
+
+/* ===========================================================
+   14. LIST GROUP
+   =========================================================== */
+
+body.aes-skin .list-group {
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: 0;
+}
+body.aes-skin .list-group-item {
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: 0;
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    border-radius: 0;
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+}
+body.aes-skin .list-group-item:last-child { border-bottom: 0; }
+body.aes-skin .list-group-item.active,
+body.aes-skin .list-group-item.active:hover,
+body.aes-skin .list-group-item.active:focus {
+    background: var(--aes-rust);
+    color: var(--aes-rust-fg);
+    border-color: var(--aes-rust);
+}
+
+
+/* ===========================================================
+   15. AS-SPECIFIC PRIMITIVES
+   AS uses some non-Bootstrap class names (.as-panel, .as-table-well,
+   .as-fieldset, .as-button). Keep them in sync.
+   =========================================================== */
+
+body.aes-skin .as-panel {
+    background: var(--aes-bone);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+}
+body.aes-skin .as-fieldset {
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+    border-radius: 0;
+    padding: var(--aes-sp-3);
+    background: transparent;
+}
+body.aes-skin .as-fieldset legend {
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+    background: var(--aes-bone);
+    padding: 0 var(--aes-sp-2);
+    width: auto;
+    border: 0;
+    margin-bottom: var(--aes-sp-2);
+}
+body.aes-skin .as-table-well {
+    background: var(--aes-bone-2);
+    border: var(--aes-bw-1) solid var(--aes-paper-rule);
+    border-radius: 0;
+    padding: 0;
+}
+
+
+/* ===========================================================
+   16. DENSITY — compact mode tightens spacing on AS chrome
+   Compact applies to the densest AS surfaces (tables, forms, buttons).
+   Comfortable is the default and inherits the rules above.
+   =========================================================== */
+
+html[data-aes-density="compact"] body.aes-skin .panel-body { padding: var(--aes-sp-2); }
+html[data-aes-density="compact"] body.aes-skin .panel-heading { padding: var(--aes-sp-1) var(--aes-sp-2); }
+html[data-aes-density="compact"] body.aes-skin .table > thead > tr > th,
+html[data-aes-density="compact"] body.aes-skin .table > thead > tr > td,
+html[data-aes-density="compact"] body.aes-skin .table > tbody > tr > th,
+html[data-aes-density="compact"] body.aes-skin .table > tbody > tr > td {
+    padding: 2px var(--aes-sp-2);
+    line-height: var(--aes-lh-tight);
+}
+html[data-aes-density="compact"] body.aes-skin .form-control {
+    padding: 2px var(--aes-sp-1);
+    font-size: var(--aes-fs-small);
+    line-height: 1.3;
+}
+html[data-aes-density="compact"] body.aes-skin .btn {
+    padding: 2px var(--aes-sp-2);
+    border-width: var(--aes-bw-1);
+    font-weight: var(--aes-fw-medium);
+    text-transform: none;
+    letter-spacing: 0;
+}
+html[data-aes-density="compact"] body.aes-skin .panel-heading {
+    box-shadow: none;
+}
+html[data-aes-density="compact"] body.aes-skin .panel-title {
+    font-size: var(--aes-fs-body);
+    font-weight: var(--aes-fw-bold);
+    text-transform: none;
+    letter-spacing: 0;
+}
+html[data-aes-density="compact"] body.aes-skin label,
+html[data-aes-density="compact"] body.aes-skin .control-label {
+    font-size: var(--aes-fs-micro);
+    font-weight: var(--aes-fw-medium);
+    text-transform: none;
+    letter-spacing: 0;
+    margin-bottom: 2px;
+}
+html[data-aes-density="compact"] body.aes-skin .nav-tabs > li > a {
+    padding: 2px var(--aes-sp-2);
+    border-width: var(--aes-bw-1);
+    font-weight: var(--aes-fw-medium);
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+
+/* ===========================================================
+   17. SITE-SKIN CHROME — breadcrumb strip + filter row
+   =========================================================== */
+
+.aes-skin-breadcrumb {
+    position: sticky;
+    top: 0;
+    z-index: 5;            /* below Bootstrap .modal (1040) and .dropdown-menu */
+    background: var(--aes-bone-2);
+    border-top: var(--aes-bw-1) solid var(--aes-paper-rule);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    padding: var(--aes-sp-1) var(--aes-sp-3);
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-small);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    color: var(--aes-oxide);
+    display: flex;
+    align-items: center;
+    gap: var(--aes-sp-2);
+}
+.aes-skin-breadcrumb__sep {
+    color: var(--aes-paper-rule);
+    font-weight: var(--aes-fw-regular);
+}
+.aes-skin-breadcrumb__crumb { color: var(--aes-oxide); }
+.aes-skin-breadcrumb__crumb--leaf { color: var(--aes-rust); }
+
+.aes-skin-filter-wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--aes-sp-2);
+    margin: var(--aes-sp-1) 0 var(--aes-sp-2);
+}
+.aes-skin-filter-wrap label {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+    color: var(--aes-slate);
+    margin: 0;
+}
+.aes-skin-filter-wrap input {
+    flex: 1 1 240px;
+    max-width: 320px;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-body);
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-1) solid var(--aes-oxide);
+    border-radius: 0;
+    padding: 2px var(--aes-sp-2);
+    outline: 0;
+}
+.aes-skin-filter-wrap input:focus { border-color: var(--aes-rust); }
+.aes-skin-filter-wrap__count {
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    color: var(--aes-slate);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* Click-to-copy hover affordance — shows the user a cell will copy */
+body.aes-skin .aes-skin-copyable {
+    cursor: copy;
+    transition: var(--aes-tr-fast);
+}
+body.aes-skin .aes-skin-copyable:hover {
+    background: var(--aes-rust-soft);
+    outline: var(--aes-bw-1) dashed var(--aes-rust);
+    outline-offset: -2px;
+}
+
+/* Shortcut help popover — uses .aes-popover primitives, fixed centred */
+.aes-skin-help {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: var(--aes-z-modal);
+    min-width: 360px;
+    max-width: 92vw;
+    max-height: 80vh;
+    overflow: auto;
+    background: var(--aes-bone);
+    color: var(--aes-oxide);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    box-shadow: none;
+    font-family: var(--aes-font-display);
+    font-size: var(--aes-fs-body);
+}
+.aes-skin-help__header {
+    display: flex;
+    align-items: center;
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    background: var(--aes-bone-2);
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+    box-shadow: 0 var(--aes-sp-1) 0 0 var(--aes-bone),
+                0 calc(var(--aes-sp-1) + 1px) 0 0 var(--aes-oxide);
+    margin-bottom: calc(var(--aes-sp-1) + 1px);
+}
+.aes-skin-help__title {
+    flex: 1 1 auto;
+    margin: 0;
+    font-size: var(--aes-fs-lead);
+    font-weight: var(--aes-fw-display);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+}
+.aes-skin-help__body { padding: var(--aes-sp-3); }
+.aes-skin-help__row {
+    display: flex;
+    gap: var(--aes-sp-3);
+    align-items: baseline;
+    padding: var(--aes-sp-1) 0;
+    border-bottom: var(--aes-bw-1) solid var(--aes-paper-rule);
+}
+.aes-skin-help__row:last-child { border-bottom: 0; }
+.aes-skin-help__keys {
+    flex: 0 0 120px;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-rust);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-mono);
+}
+.aes-skin-help__desc { flex: 1 1 auto; }
+.aes-skin-help__overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(26, 22, 18, 0.55);
+    z-index: calc(var(--aes-z-modal) - 1);
+}
+
+
+/* ===========================================================
+   18. SAFETY — keep AS Bootstrap rules from leaking into the Route
+   Assistant root. RA paints itself with inline styles via Object.assign,
+   so inline specificity (1,0,0,0) already wins over body.aes-skin
+   (0,2,X). The two narrow guards below cover the few RA descendants
+   that don't carry inline styles yet (.aes-table inside the panel and
+   raw <a> nodes in dynamic rows).
+   =========================================================== */
+
+body.aes-skin #aes-route-assistant table,
+body.aes-skin #aes-route-assistant .table {
+    /* Cancel the global oxide-thead override so RA's own table chrome
+       (rendered via tokens with [data-aes-theme="dark"] re-binding) shows
+       through. RA's inline header styles re-apply on top of this. */
+    background: transparent;
+}
+body.aes-skin #aes-route-assistant a {
+    /* RA-internal links use a scoped style block (panel.js:1204+). Don't
+       force the global underline+rust treatment here. */
+    text-decoration: none;
+}

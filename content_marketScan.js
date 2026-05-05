@@ -37,20 +37,38 @@ const AES_MARKETSCAN = {
         typeSelect:      "select[name='tab:panel:filter-aircraftType']",
         offersContainer: "div.offers",
         offerItem:       "div.offers > div.even, div.offers > div.odd",
-        nextPageLink:    "div.navigator a.next[href]:not([disabled])"
+        nextPageLink:    "div.navigator a.next[href]:not([disabled])",
+        navigator:       "div.navigator",
+        pageNumberLink:  "div.navigator a"
     },
     SESSION_KEY:       "aesMarketScanCtx",
     STEP_TIMEOUT_MS:   15000,
     SCRAPE_TIMEOUT_MS:  8000,
     MAX_FILTER_ATTEMPTS: 3,
-    MAX_PAGES:          50
+    // Hard ceiling on pagination per variant. Raised from 50 → 200 so
+    // popular families (737-NG, A320 family) scrape fully on busy worlds
+    // without being silently truncated. The natural exit is the absence of
+    // a `next` link — the cap exists only to prevent runaway loops if AS's
+    // pagination ever returns a malformed navigator.
+    MAX_PAGES:          200
 }
 
 function log(...args) { console.log("AES marketScan:", ...args) }
 
 ;(async function aesMarketScanMain() {
     const ctx = loadOrCaptureContext()
-    if (!ctx) return
+    if (!ctx) {
+        // No scan / goto context — this is a normal user visit. Hand off to
+        // the in-page panel so the user gets the full deal-finding UI on
+        // their own market browse. Panel module guards against double-mount
+        // and against missing dependencies; failures stay quiet (a missing
+        // panel module is fine for legacy installs that haven't reloaded).
+        if (typeof MarketPanel !== "undefined" && MarketPanel.mount) {
+            try { MarketPanel.mount() }
+            catch (e) { console.error("AES marketScan: panel mount failed:", e) }
+        }
+        return
+    }
 
     log("entry", {mode: ctx.mode, type: ctx.type, family: ctx.family, page: ctx.page || 1, url: location.href})
 
@@ -316,7 +334,17 @@ async function scrapePageAndContinue(ctx) {
     await enrichRowsWithTypeSpecs(pageRows, ctx)
     ctx.rows = (ctx.rows || []).concat(pageRows)
     const variantLabel = ctx.variants[ctx.variantIdx]
-    log(`phase 3: scraped "${variantLabel}" page ${ctx.page} — ${pageRows.length} offers (total ${ctx.rows.length})`)
+    // Detect total pages once per variant so the user sees thoroughness in
+    // the log (e.g. "page 1/17") and downstream telemetry can spot cases
+    // where we hit the cap before the natural end.
+    if (!ctx.totalPagesByVariant) ctx.totalPagesByVariant = {}
+    if (!ctx.totalPagesByVariant[variantLabel]) {
+        const total = detectTotalPages()
+        if (total) ctx.totalPagesByVariant[variantLabel] = total
+    }
+    const total = ctx.totalPagesByVariant[variantLabel] || null
+    const pageStr = total ? `${ctx.page}/${total}` : `${ctx.page}`
+    log(`phase 3: scraped "${variantLabel}" page ${pageStr} — ${pageRows.length} offers (total ${ctx.rows.length})`)
 
     // Heartbeat — resets the controller's watchdog and surfaces progress.
     await writeHeartbeat(ctx)
@@ -331,7 +359,11 @@ async function scrapePageAndContinue(ctx) {
         return
     }
     if (nextLink && ctx.page >= AES_MARKETSCAN.MAX_PAGES) {
-        log(`  hit MAX_PAGES=${AES_MARKETSCAN.MAX_PAGES}; stopping pagination for this variant`)
+        log(`  hit MAX_PAGES=${AES_MARKETSCAN.MAX_PAGES}; stopping pagination for this variant`
+            + (total ? ` (would have continued to ${total})` : ""))
+    } else if (!nextLink) {
+        log(`  pagination ended naturally at page ${ctx.page}`
+            + (total && total !== ctx.page ? ` (detected total was ${total})` : ""))
     }
 
     // Variant exhausted — move to next variant
@@ -409,6 +441,7 @@ function extractOffer(offerEl, ctx) {
         bidInterval:       bidInterval,
         bidIntervalStatus: bidIntervalStatus,
         bidIntervalMs:     parseBidIntervalMs(bidInterval),
+        observedAt:        Date.now(),
         owner:             owner,
         registration:      registration,
         age:               ageText,
@@ -712,4 +745,24 @@ function triggerChange(el) {
 
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms))
+}
+
+/**
+ * Counts the highest numbered page link in the navigator. AS renders the
+ * pagination as `div.navigator > a` with numeric text content for page
+ * jumps. Reading the max number tells us how many pages this variant has
+ * before we start clicking through them. Returns null when the navigator
+ * is absent (single-page result) or doesn't contain numeric links.
+ */
+function detectTotalPages() {
+    const nav = document.querySelector(AES_MARKETSCAN.SELECTORS.navigator)
+    if (!nav) return null
+    let max = 1
+    const links = nav.querySelectorAll(AES_MARKETSCAN.SELECTORS.pageNumberLink)
+    for (const a of links) {
+        const text = (a.textContent || "").trim()
+        const n = parseInt(text, 10)
+        if (isFinite(n) && n > max) max = n
+    }
+    return max > 1 ? max : null
 }

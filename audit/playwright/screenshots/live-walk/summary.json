@@ -1,0 +1,43 @@
+{
+  "timestamp": "2026-05-03T11:40:35.526Z",
+  "mode": "walk-only",
+  "results": {
+    "dashboard": {
+      "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?0",
+      "title": "Dashboard: Casper Flight Logistics | Free1 | AirlineSim",
+      "hasAesMenu": false,
+      "hasAesAfp": false,
+      "hasRaPanel": false,
+      "hasPricingApplier": false,
+      "hasPerClassProposer": false,
+      "buttonsVisible": 133,
+      "h1Count": 2
+    },
+    "fleets": {
+      "url": "https://free1.airlinesim.aero/app/fleets?1",
+      "title": "Default fleet | Free1 | AirlineSim",
+      "hasAesMenu": false,
+      "hasAesAfp": false,
+      "hasRaPanel": false,
+      "hasPricingApplier": false,
+      "hasPerClassProposer": false,
+      "buttonsVisible": 5,
+      "h1Count": 2
+    },
+    "markets": {
+      "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?2&select=775",
+      "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+      "hasAesMenu": false,
+      "hasAesAfp": false,
+      "hasRaPanel": false,
+      "hasPricingApplier": false,
+      "hasPerClassProposer": false,
+      "buttonsVisible": 133,
+      "h1Count": 2
+    }
+  },
+  "consoleErrorsCount": 0,
+  "pageErrorsCount": 0,
+  "consoleErrors": [],
+  "pageErrors": []
+}

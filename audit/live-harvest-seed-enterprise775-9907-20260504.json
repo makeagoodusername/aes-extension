@@ -1,0 +1,236 @@
+{
+  "ok": false,
+  "mode": "standalone-demand-seed-first",
+  "profile": "/tmp/chrome-aes-codex-9907",
+  "port": "9907",
+  "server": "free1.airlinesim.aero",
+  "dashboardUrl": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "startedAt": "2026-05-04T11:59:12.920Z",
+  "progress": [
+    {
+      "at": "2026-05-04T11:59:43.070Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 5,
+      "airportsSeeded": 72,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Argentina"
+      ],
+      "currentCountryId": "7",
+      "currentCountryName": "Angola"
+    },
+    {
+      "at": "2026-05-04T11:59:53.078Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 7,
+      "airportsSeeded": 81,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Argentina",
+        "Australia"
+      ],
+      "currentCountryId": "123",
+      "currentCountryName": "Austria"
+    },
+    {
+      "at": "2026-05-04T12:00:03.086Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 11,
+      "airportsSeeded": 175,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Australia"
+      ],
+      "currentCountryId": "13",
+      "currentCountryName": "Bahamas"
+    },
+    {
+      "at": "2026-05-04T12:00:13.094Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 15,
+      "airportsSeeded": 195,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Australia",
+        "Belize",
+        "Benin"
+      ],
+      "currentCountryId": "19",
+      "currentCountryName": "Benin"
+    },
+    {
+      "at": "2026-05-04T12:00:23.104Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 21,
+      "airportsSeeded": 426,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Bosnia and Herzegovina",
+        "Brazil"
+      ],
+      "currentCountryId": "23",
+      "currentCountryName": "Botswana"
+    },
+    {
+      "at": "2026-05-04T12:00:33.116Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 26,
+      "airportsSeeded": 438,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Brazil",
+        "Cambodia"
+      ],
+      "currentCountryId": "73",
+      "currentCountryName": "Cambodia"
+    },
+    {
+      "at": "2026-05-04T12:00:43.132Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 31,
+      "airportsSeeded": 603,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Canada",
+        "Chad",
+        "Chile"
+      ],
+      "currentCountryId": "29",
+      "currentCountryName": "Chile"
+    },
+    {
+      "at": "2026-05-04T12:00:53.145Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 34,
+      "airportsSeeded": 634,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Canada",
+        "China",
+        "China - Macao"
+      ],
+      "currentCountryId": "32",
+      "currentCountryName": "China - Macao"
+    },
+    {
+      "at": "2026-05-04T12:01:04.077Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 36,
+      "airportsSeeded": 697,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Canada",
+        "China",
+        "Comoros"
+      ],
+      "currentCountryId": "82",
+      "currentCountryName": "Comoros"
+    },
+    {
+      "at": "2026-05-04T12:01:16.415Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 40,
+      "airportsSeeded": 996,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China"
+      ],
+      "currentCountryId": "33",
+      "currentCountryName": "Costa Rica"
+    },
+    {
+      "at": "2026-05-04T12:01:26.506Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 44,
+      "airportsSeeded": 1028,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Czech Republic"
+      ],
+      "currentCountryId": "173",
+      "currentCountryName": "Czech Republic"
+    },
+    {
+      "at": "2026-05-04T12:01:37.333Z",
+      "phase": "seeding",
+      "total": 194,
+      "allCountries": 194,
+      "skippedCountries": 0,
+      "fetched": 49,
+      "airportsSeeded": 1061,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "DR Congo"
+      ],
+      "currentCountryId": "38",
+      "currentCountryName": "Dominican Republic"
+    }
+  ],
+  "restarts": [
+    {
+      "at": "2026-05-04T12:01:47.335Z",
+      "reason": "browserContext.newCDPSession: Target page, context or browser has been closed",
+      "restart": 1
+    }
+  ],
+  "before": {
+    "demand": 0,
+    "topRoutes": 0,
+    "marketsCompetitors": 0,
+    "marketsOwnPricing": 0,
+    "inventory": 0,
+    "ors": 0,
+    "aircraftFleet": 0,
+    "aircraftFlights": 0,
+    "maintenance": 0,
+    "sampleDemand": []
+  },
+  "after": null,
+  "result": null,
+  "errors": [
+    "browserContext.newPage: Target page, context or browser has been closed"
+  ],
+  "loggedIn": true,
+  "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?2&select=775",
+  "start": {
+    "started": true,
+    "hasParallelScanner": true
+  },
+  "completedAt": "2026-05-04T12:01:47.335Z"
+}

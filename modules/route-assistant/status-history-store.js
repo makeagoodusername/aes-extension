@@ -14,7 +14,8 @@
  * `RouteAssistantRouteNoteStore`, etc. — status can drift independently
  * by direction (cargo-heavy outbound, pax-heavy inbound).
  *
- *   routeAssistant:statusHistory:<HUB>-<DEST>  →
+ *   routeAssistant:statusHistory:<HUB>-<DEST>  →                   (legacy)
+ *   routeAssistant:statusHistory:acct:<id>:<HUB>-<DEST>  →         (L2+)
  *     {hub, dest, transitions: [{from, to, at}, …], updatedAt}
  *
  * Each entry: `from` is the prior status the panel saw (or null for the
@@ -24,25 +25,40 @@
  * `from === to`. Transitions are pruned to the most recent
  * `MAX_TRANSITIONS` so a long-running game doesn't accumulate unbounded
  * storage per route.
+ *
+ * L2 — namespaced key + legacy fallback. Single appender, so no
+ * accountId round-trip needed (status drift is observed live in the
+ * current page lifecycle, not deferred-restored like an Undo).
  */
 class RouteAssistantStatusHistoryStore {
-    static PREFIX = "routeAssistant:statusHistory:"
+    static LEGACY_PREFIX = "routeAssistant:statusHistory:"
+    static SCOPE_PREFIX  = "routeAssistant:statusHistory"
     static MAX_TRANSITIONS = 20
-
-    static _key(hub, dest) {
-        return RouteAssistantStatusHistoryStore.PREFIX
-            + String(hub  || "").toUpperCase() + "-"
-            + String(dest || "").toUpperCase()
-    }
 
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
+    static _key(hub, dest) {
+        return acctKey(RouteAssistantStatusHistoryStore.SCOPE_PREFIX,
+            RouteAssistantStatusHistoryStore._pairKey(hub, dest))
+    }
+
+    static _legacyKey(hub, dest) {
+        return RouteAssistantStatusHistoryStore.LEGACY_PREFIX
+            + RouteAssistantStatusHistoryStore._pairKey(hub, dest)
+    }
+
     static async get(hub, dest) {
-        const key = RouteAssistantStatusHistoryStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+        const ns = RouteAssistantStatusHistoryStore._key(hub, dest)
+        const lg = RouteAssistantStatusHistoryStore._legacyKey(hub, dest)
+        if (ns === lg) {
+            const out = await chrome.storage.local.get([ns])
+            return out[ns] || null
+        }
+        const out = await chrome.storage.local.get([ns, lg])
+        if (out[ns] !== undefined) return out[ns]
+        return out[lg] || null
     }
 
     /**
@@ -51,14 +67,25 @@ class RouteAssistantStatusHistoryStore {
      */
     static async getMany(pairs) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(([h, d]) => RouteAssistantStatusHistoryStore._key(h, d))
-        const out = await chrome.storage.local.get(keys)
+        const nsKeys = []
+        const lgKeys = []
+        const pairKeys = []
+        for (const p of pairs) {
+            const [h, d] = Array.isArray(p) ? p : [p.hub, p.dest]
+            pairKeys.push(RouteAssistantStatusHistoryStore._pairKey(h, d))
+            nsKeys.push(RouteAssistantStatusHistoryStore._key(h, d))
+            lgKeys.push(RouteAssistantStatusHistoryStore._legacyKey(h, d))
+        }
+        const all = []
+        for (const k of nsKeys) all.push(k)
+        for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
+        const out = await chrome.storage.local.get(all)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
-            if (!rec) continue
-            const pair = k.substring(RouteAssistantStatusHistoryStore.PREFIX.length)
-            map.set(pair, rec)
+        for (let i = 0; i < pairs.length; i++) {
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            const rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+            if (rec) map.set(pairKeys[i], rec)
         }
         return map
     }
@@ -68,7 +95,9 @@ class RouteAssistantStatusHistoryStore {
      * the prior `to`. No-op when status hasn't moved.
      *
      * Returns the updated record, or null when no transition was recorded
-     * (status unchanged or `toStatus` is empty).
+     * (status unchanged or `toStatus` is empty). Reads via legacy fallback
+     * so a pre-L2 history continues forward into the namespaced slot
+     * with the next live transition.
      */
     static async appendTransition(hub, dest, toStatus, atMs) {
         const hubU  = String(hub  || "").toUpperCase()
@@ -77,8 +106,14 @@ class RouteAssistantStatusHistoryStore {
         if (!toStatus || typeof toStatus !== "string") return null
         const at = (typeof atMs === "number" && isFinite(atMs)) ? atMs : Date.now()
 
-        const key = RouteAssistantStatusHistoryStore._key(hubU, destU)
-        const existing = (await chrome.storage.local.get([key]))[key] || null
+        // Read both keys so a pre-L2 history seeds the namespaced
+        // record on the next live transition.
+        const ns = RouteAssistantStatusHistoryStore._key(hubU, destU)
+        const lg = RouteAssistantStatusHistoryStore._legacyKey(hubU, destU)
+        const reads = (ns === lg) ? [ns] : [ns, lg]
+        const out = await chrome.storage.local.get(reads)
+        const existing = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+
         const transitions = (existing && Array.isArray(existing.transitions))
             ? existing.transitions.slice()
             : []
@@ -105,7 +140,7 @@ class RouteAssistantStatusHistoryStore {
             transitions: transitions,
             updatedAt:   at
         }
-        await chrome.storage.local.set({[key]: record})
+        await chrome.storage.local.set({[ns]: record})
         return record
     }
 
@@ -119,9 +154,17 @@ class RouteAssistantStatusHistoryStore {
     }
 
     static async remove(hub, dest) {
-        const key = RouteAssistantStatusHistoryStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+        const hubU  = String(hub  || "").toUpperCase()
+        const destU = String(dest || "").toUpperCase()
+        if (!hubU || !destU) return
+        const ns = RouteAssistantStatusHistoryStore._key(hubU, destU)
+        const lg = RouteAssistantStatusHistoryStore._legacyKey(hubU, destU)
+        const keys = (ns === lg) ? [ns] : [ns, lg]
+        await chrome.storage.local.remove(keys)
     }
+
+    /** L2 deprecated — preserve for any reader still doing key arithmetic. */
+    static get PREFIX() { return RouteAssistantStatusHistoryStore.LEGACY_PREFIX }
 }
 
 if (typeof module !== "undefined" && module.exports) {

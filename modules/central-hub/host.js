@@ -10,14 +10,21 @@
  *
  * Idempotent: if a hub element is already in the DOM, this no-ops.
  */
-(function () {
+;(function () {
     if (typeof window === "undefined") return
+    // Subframes never host the hub. AS dashboard pages contain iframes that
+    // match the same content-script pattern; without this skip, the IIFE
+    // (and its mount path) re-fires per frame and the user sees N stacked
+    // hub roots in the top frame's DOM after subframe scripts inherit it.
+    if (window.top !== window) return
     if (window.__aesCentralHubMounted) return
     window.__aesCentralHubMounted = true
 
     const MAX_WAIT_MS = 15000
     const POLL_MS = 200
+    const MAX_MOUNT_ATTEMPTS = 3
     let waited = 0
+    let mountAttempts = 0
 
     function findAnchor() {
         return document.getElementById("enterprise-dashboard")
@@ -50,8 +57,16 @@
         }
         const {server, airline} = resolveContext()
         const shell = new window.CentralHubShell({server, airline})
-        shell.mount(anchor).catch(err => console.warn("[AES Hub] shell mount failed", err))
         window.__aesCentralHub = shell
+        mountAttempts++
+        shell.mount(anchor).catch(err => {
+            console.warn("[AES Hub] shell mount failed", err)
+            if (document.getElementById("aes-central-hub")) return
+            if (window.__aesCentralHub === shell) window.__aesCentralHub = null
+            if (mountAttempts >= MAX_MOUNT_ATTEMPTS) return
+            window.__aesCentralHubMounted = false
+            setTimeout(tick, POLL_MS)
+        })
         return true
     }
 

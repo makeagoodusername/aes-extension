@@ -93,6 +93,12 @@ class RouteAssistantServiceProfileScraper {
     static async saveList(profiles) {
         const rec = {profiles: profiles || [], scrapedAt: Date.now()}
         await chrome.storage.local.set({[RouteAssistantServiceProfileScraper.LIST_KEY]: rec})
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+            window.AesDataBus.emit("data:route-assistant:serviceProfile:updated", {
+                kind:  "list",
+                count: rec.profiles.length
+            })
+        }
         return rec
     }
 
@@ -101,6 +107,12 @@ class RouteAssistantServiceProfileScraper {
         const key = RouteAssistantServiceProfileScraper.DETAIL_PREFIX + String(detail.id)
         const rec = Object.assign({scrapedAt: Date.now()}, detail)
         await chrome.storage.local.set({[key]: rec})
+        if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+            window.AesDataBus.emit("data:route-assistant:serviceProfile:updated", {
+                kind: "detail",
+                id:   detail.id
+            })
+        }
         return rec
     }
 
@@ -336,4 +348,8 @@ class RouteAssistantServiceProfileScraper {
         const n = parseInt(s, 10)
         return isFinite(n) ? n : null
     }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantServiceProfileScraper = RouteAssistantServiceProfileScraper
 }

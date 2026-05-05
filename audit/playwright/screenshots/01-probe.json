@@ -1,0 +1,16 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets?0",
+  "title": "Default fleet | Free1 | AirlineSim",
+  "hasAesAfp": false,
+  "hasFormDriver": false,
+  "hasApplyBatch": false,
+  "hasPreview": false,
+  "hasFlightStudio": false,
+  "hasLegSpec": false,
+  "hasOrchestrator": false,
+  "hasDraftStore": false,
+  "wideHostExists": false,
+  "studioRoot": null,
+  "buttons": [],
+  "routeBuilderHeading": []
+}

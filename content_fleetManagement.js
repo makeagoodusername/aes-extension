@@ -3,13 +3,26 @@
 //Global vars
 var aircraftData = [];
 var server,aircraftFleetKey,aircraftFleetStorageData,airlineName;
-$(function(){
-  if(fltmng_fleetManagementPageOpen()){
-    fltmng_getData();
-    //Async start
-    fltmng_getStorageData();
+;(function fltmng_bootWhenReady(attempt){
+  attempt = attempt || 0;
+  const hasJquery = typeof window !== "undefined" && typeof window.$ === "function";
+  const hasHelpers = typeof AES !== "undefined" || (typeof window !== "undefined" && window.AES);
+  if(!hasJquery || !hasHelpers){
+    if(attempt < 120){
+      setTimeout(function(){ fltmng_bootWhenReady(attempt + 1); }, 50);
+    } else {
+      console.warn("[AES fleetManagement] dependencies not ready; skipping mount");
+    }
+    return;
   }
-});
+  $(function(){
+    if(fltmng_fleetManagementPageOpen()){
+      fltmng_getData();
+      //Async start
+      fltmng_getStorageData();
+    }
+  });
+})();
 function fltmng_fleetManagementPageOpen(){
   let a = $('.as-page-fleet-management');
   if(a.length){
@@ -26,6 +39,8 @@ function fltmng_getData(){
   let table = $('.as-page-fleet-management > .row > .col-md-9 > .as-panel:eq(0) table');
   let fleet = $('.as-page-fleet-management > .row > .col-md-9 > h2:eq(0)').text();
   $('tbody tr',table).each(function(){
+    let aircraftId = fltmng_getAircraftId($('td:eq(6) > div > div:eq(1) > a:eq(0)',this).attr('href'));
+    if(!fltmng_isValidAircraftId(aircraftId)) return;
     let data = {
       registration: $('td:eq(1) > span:eq(0)',this).text(),
       nickname: fltmng_getNickname($('td:eq(1) > div:eq(0)',this).text()),
@@ -36,8 +51,12 @@ function fltmng_getData(){
       seatsY:fltmng_getInt($('td:eq(5) > span:eq(0)',this).text()),
       seatsC:fltmng_getInt($('td:eq(5) > span:eq(1)',this).text()),
       seatsF:fltmng_getInt($('td:eq(5) > span:eq(2)',this).text()),
-      aircraftId:fltmng_getAircraftId($('td:eq(6) > div > div:eq(1) > a:eq(0)',this).attr('href')),
+      aircraftId:aircraftId,
       note:fltmng_getNickname($('td:eq(7) > span > span',this).text()),
+      // Home-base IATA from any /app/info/airports/<IATA> link in the row.
+      // Source for ScrapeOrchestratorEnumerators.enumerateHubs — without it
+      // the per-hub and per-route phases skip on a fresh install.
+      location:fltmng_getLocation($('a[href*="/app/info/airports/"]:eq(0)',this).attr('href')),
       fleet:fleet,
       date:date.date,
       time:date.time
@@ -82,8 +101,21 @@ function fltmng_getInt(text){
 function fltmng_getAircraftId(value){
     if (value) {
         value = value.split('/');
-        return parseInt(value[value.length-2],10);
+        const id = parseInt(value[value.length-2],10);
+        return fltmng_isValidAircraftId(id) ? id : null;
     }
+    return null;
+}
+function fltmng_isValidAircraftId(value){
+    return Number.isFinite(value) && value > 0;
+}
+function fltmng_isValidAircraftRecord(value){
+    return !!(value && fltmng_isValidAircraftId(Number(value.aircraftId)));
+}
+function fltmng_getLocation(href){
+    if (!href) return "";
+    const m = /\/app\/info\/airports\/([A-Za-z]{3,4})/.exec(href);
+    return m ? m[1].toUpperCase() : "";
 }
 function fltmng_getStorageData(){
   let keys = [];
@@ -119,7 +151,13 @@ function fltmng_getAircraftStorageFleetData(){
   });
 }
 function fltmng_getAirlineName(){
-  let name = $('#as-navbar-main-collapse > ul:eq(0) > li:eq(0) > a:eq(0) > span').text();
+  let el = document.querySelector("#as-navbar-main-collapse > ul:nth-of-type(1) > li:nth-of-type(1) > a:nth-of-type(1) > span")
+    || document.querySelector(".as-navbar-main a.name span:not(.caret)")
+    || document.querySelector("a.name span:not(.caret)");
+  let name = el ? (el.textContent || "") : "";
+  if(!name && typeof AES !== "undefined" && AES.getAirlineIdentity){
+    try { name = AES.getAirlineIdentity() || ""; } catch (_) {}
+  }
   name = name.trim().replace(/[^A-Za-z0-9]/g, '');
   return name;
 }
@@ -134,6 +172,7 @@ function fltmng_updateAircraftFleetStorageData(data){
     let newfleet = [];
     //Push all new aircrafts
     aircraftData.forEach(function(newvalue){
+      if(!fltmng_isValidAircraftRecord(newvalue)) return;
       newfleet.push({
         age:newvalue.age,
         aircraftId:newvalue.aircraftId,
@@ -141,6 +180,7 @@ function fltmng_updateAircraftFleetStorageData(data){
         equipment:newvalue.equipment,
         typeId:newvalue.typeId,
         fleet:newvalue.fleet,
+        location:newvalue.location,
         maintanance:newvalue.maintanance,
         nickname:newvalue.nickname,
         note:newvalue.note,
@@ -154,6 +194,7 @@ function fltmng_updateAircraftFleetStorageData(data){
 
     //push all old aircrafts that dont have new data
     data.fleet.forEach(function(value){
+      if(!fltmng_isValidAircraftRecord(value)) return;
       let found = 0;
       newfleet.forEach(function(newValue){
         if(value.aircraftId == newValue.aircraftId){
@@ -165,6 +206,7 @@ function fltmng_updateAircraftFleetStorageData(data){
           if(newValue.seatsY == null && value.seatsY != null) newValue.seatsY = value.seatsY;
           if(newValue.seatsC == null && value.seatsC != null) newValue.seatsC = value.seatsC;
           if(newValue.seatsF == null && value.seatsF != null) newValue.seatsF = value.seatsF;
+          if(!newValue.location && value.location) newValue.location = value.location;
           found = 1;
         }
       });
@@ -232,6 +274,9 @@ function fltmng_displaySavedAircrafts(){
   return 'Currently '+aircraftFleetStorageData.fleet.length+' aircrafts stored in memory.';
 }
 function fltmng_displayNewUpdates(){
+  if(!aircraftData.length){
+    return $('<span class="warning"></span>').text('No aircraft rows found on this fleet page.');
+  }
   let span = $('<span class="good"></span>').text('Updated aircraft data for '+aircraftData.length+ ' from '+aircraftData[0].fleet);
   return span;
 }

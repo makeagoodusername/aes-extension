@@ -2,7 +2,7 @@
 
 **Companion to HANDOVER.md.** HANDOVER captures session state and "where we are"; this MANUAL is the reference for *how the system works* — every formula, every storage key, every interaction. Read top to bottom or skip to the section you need.
 
-Repo root: `/Users/jihwan/Downloads/AES.v0.6.9-beta/`. Tech: Chrome MV3 extension, vanilla JS + jQuery 3.4.1, no build step. Target site: `https://*.airlinesim.aero/*` and `https://www.flightsfrom.com/*`.
+Repo root: `/Users/jihwan/Downloads/AIRLINESIMMOD/AES.v0.6.9/` (canonical); compatibility symlink `/Users/jihwan/Downloads/AES.v0.6.9` → canonical also resolves for legacy tooling. Tech: Chrome MV3 extension, vanilla JS + jQuery 3.4.1, no build step. Target site: `https://*.airlinesim.aero/*` and `https://www.flightsfrom.com/*`.
 
 ---
 
@@ -13,7 +13,7 @@ The Route Assistant is one feature inside the **AirlineSim Enhancement Suite (AE
 1. **Which destinations are worth flying from this hub?** — by blending real-world demand (flightsfrom.com), AS in-game station demand, the user's existing schedule, and a configurable scoring formula.
 2. **Which of my owned aircraft can fly each destination, and roughly what would it earn?** — by joining the user's fleet against route distance and a rough operating-margin estimator.
 
-The panel is **read-only**. It never writes to AirlineSim — the user creates flights manually in AS's scheduler. The panel is a decision-support overlay, not an auto-pilot.
+The panel is no longer read-only in live builds. Proven applier paths can write directly to AirlineSim: Route Assistant pricing applies, silent-auto pricing ticks, strategy-dispatched appliers, and AFP flight-number creation all run with live defaults unless an explicit dry-run override is passed.
 
 ---
 
@@ -66,7 +66,7 @@ AES.v0.6.9-beta/
 │   │   ├── fuel-price-scraper.js          World fuel-price scrape (table → SVG fallback).
 │   │   ├── fuel-burn-estimator.js         Per-type fuel burn heuristic + override.
 │   │   ├── profit-estimator.js            RouteAssistantProfitEstimator — pure profit math + pickEconomical.
-│   │   ├── ticket-price-scraper.js        Auto-Pricing T1 — scrapes /app/com/scheduling/<HUB><DEST> for live route data. Misnamed; rename deferred. See §18.
+│   │   ├── schedule-page-scraper.js       Auto-Pricing T1 — scrapes /app/com/scheduling/<HUB><DEST> for live route data. (Storage prefix retains legacy `ticketPrice:` for compat.) See §18.
 │   │   ├── markets-page-scraper.js        Auto-Pricing T2a — /app/com/markets/<HUB><DEST> scraper. 4 split key families. Plus K extension for per-payload historic. See §18 + §22.
 │   │   ├── inventory-page-scraper.js      Letter K — /app/com/inventory/<HUB><DEST> RM-bucket scraper. See §22.
 │   │   ├── demand-derivator.js            Letter K — pure-function pool/elasticity/RM-tightness derivation. See §22.
@@ -167,13 +167,13 @@ All Route Assistant state lives in `chrome.storage.local`. Keys are strings; val
 | `routeAssistant:fuelPriceIndex` | FuelPriceScraper | `{value, unit: "ASc$/l"\|"index", date, scrapedAt, source: "table"\|"svg", sourceUrl, history?}` |
 | `routeAssistant:fuelBurnOverride:<typeId>` | FuelBurn editor | `{typeId, cycleL, perKmL, source: "manual", updatedAt}` — overrides spec heuristic |
 | `routeAssistant:typeSpec:<typeId>` | TypeSpecsStore | `{typeId, typeName, seats, cargoCapacity, speed, range, paxSatisfaction, fetchedAt}` |
-| `routeAssistant:ticketPrice:<HUB>-<DEST>` | ticket-price-scraper.js (Auto-Pricing T1) | `{hub, dest, scrapedAt, source: "live"\|"fetch", flights[], primaryAircraftType, primaryAircraftTypeId, primaryAircraftReg, departureTime, weeklyFlights, dailyFlights[7], daysPerWeek, cruiseSpeedKmh, ourPrice: null, ourYield: null, orsRank: null, fareClasses: null}`. **Directional** — price/freq differ by direction. Tier 2 fields stay null until those scrapers fill them in. File is misnamed (scrapes the scheduling page, not prices) — rename deferred. |
+| `routeAssistant:ticketPrice:<HUB>-<DEST>` | schedule-page-scraper.js (Auto-Pricing T1) | `{hub, dest, scrapedAt, source: "live"\|"fetch", flights[], primaryAircraftType, primaryAircraftTypeId, primaryAircraftReg, departureTime, weeklyFlights, dailyFlights[7], daysPerWeek, cruiseSpeedKmh, ourPrice: null, ourYield: null, orsRank: null, fareClasses: null}`. **Directional** — price/freq differ by direction. Tier 2 fields stay null until those scrapers fill them in. File is misnamed (scrapes the scheduling page, not prices) — rename deferred. |
 | `routeAssistant:yieldHistory:<HUB>-<DEST>` | yield-snapshot.js (Roadmap G slice 1) | `{hub, dest, snapshots: [{timestamp, profitPerFlight, profitPerWeek, frequency, aircraftTypeNames, aircraftRegistrations, contributingTails, totalKnownTails, attributionMode}], lastSnapshotAt}`. **Directional**. Pruned to `historyLimit` (default 12) on each append. Profit attribution mode: frequency-weighted (default) / distance-weighted / equal. |
 | `routeAssistant:topRoutes` | route-assistant/panel.js (`_publishTopRoutes`) | `{hub, server, scrapedAt, count, rows: [{destIata, destName, distanceKm, score, status, paxScore, cargoScore, weeklyFlights}]}`. **Single global key** — overwritten on every panel render with up to 50 visible scored rows. Consumer: Used Aircraft Scanner deal-metrics (route-fit count + frequency-aware capacity check, J slice 4 v3). |
 | `routeAssistant:carriers:<HUB>-<DEST>` | carriers-scraper.js (F slice 1) | `{hub, dest, scrapedAt, source: "ff-detail", carriers: [{name, code?, weeklyFlights?, aircraftTypes?: []}], totalAirlines, totalWeeklyFlights, parserNotes?}`. **Directional**. Sourced from `flightsfrom.com/<HUB>-<DEST>` cross-origin fetch. `parserNotes` populated when no carrier markup matched (SPA didn't SSR the list). |
 | `routeAssistant:enterpriseMeta:<id>` | enterprise-meta-scraper.js (F slice 2) | `{enterpriseId, server, name, iata?, bannerUrl?, avatarUrl?, scrapedAt, parserNotes?}`. **NOT directional** — enterprise metadata is a property of the enterprise, not the route. Sourced from `/app/info/enterprises/<id>` cross-origin fetch. 90-day default TTL. |
 | `routeAssistant:contractualPartners:<enterpriseId>` | contractual-partners-scraper.js (F slice 3) | `{enterpriseId, server, scrapedAt, partners: [{partnerId, partnerName, partnerIata, hqCity?, hqIata?, country?, relations: ["INTERLINING", "ALLIANCE", "LESSOR", ...]}], parserNotes?}`. **NOT directional, AND keyed by *your-own* enterprise id** (not by competitor — opposite to `enterpriseMeta`). One fetch of `/app/info/enterprises/<your_id>?tab=1` yields every partnership the enterprise has. The Cmp popover unions all your-own records into `_partnersByEnterpriseId` and renders glyphs (⇄ for INTERLINING, ✦ for ALLIANCE) next to matching competitor names. 30-day default TTL. |
-| `routeAssistant:markets:competitors:<HUB>-<DEST>` | markets-page-scraper.js (Auto-Pricing T2a) | `{hub, dest, scrapedAt, source, competitors: [{flightCode, flightId, typeCode, typeId, depDateUtc, depDateLocal, depTimeUtc, depTimeLocal, arrTimeUtc, arrTimeLocal, serviceClass, availability, price, status, isOurs}]}`. **Directional**. Every competitor flight on the route with actual prices + availability + status. |
+| `routeAssistant:markets:competitors:<HUB>-<DEST>` | markets-page-scraper.js (Auto-Pricing T2a) | `{hub, dest, scrapedAt, source, competitors: [{flightCode, flightId, flightNumberId, carrierPrefix, operatorPrefix, typeCode, typeId, depDateUtc, depDateLocal, depTimeUtc, depTimeLocal, arrTimeUtc, arrTimeLocal, serviceClass, capacity, booked, loadPct, availability, price, status, isOurs}]}`. **Directional**. Every AS in-game competitor flight row on the route with actual price, departure time, aircraft, class capacity/bookings/load, and status. `panel.js` preserves these rows as `row.competitorMarketFlights`, groups them by flight-code prefix, and joins them to the Cmp popover's enterprise rows. |
 | `routeAssistant:markets:ownPricing:<HUB>-<DEST>` | markets-page-scraper.js (Auto-Pricing T2a) | `{hub, dest, scrapedAt, source, prices: {Y, C, F, Cargo}, defaults: {…}, sliderRanges: {Y: [1, 296], …}, generalSettings: {originTerminal, destinationTerminal, serviceProfile, serviceProfileId, boardingPreference, cargoPreference}}`. **Directional**. Snapshot of the markets-page Pricing fieldset; Auto-Pricing T3 write-back will POST against the same endpoint. |
 | `routeAssistant:markets:marketShare:<HUB>-<DEST>` | markets-page-scraper.js (Auto-Pricing T2a) | `{hub, dest, scrapedAt, source, period: "17/2026", pax: [{rank, name, enterpriseId, sharePct, change}], cargo: [{…}]}`. **Directional**. Default `shareMaxAgeDays: 7` (weekly cadence). |
 | `routeAssistant:markets:historic:<HUB>-<DEST>` | markets-page-scraper.js (Auto-Pricing T2a + K extension) | **K shape:** `{hub, dest, scrapedAt, source, byPayload: {ECONOMY: {periods, capacities, prices}, BUSINESS: …, FIRST: …, PAX: …, CARGO: …}}`. **Directional**. Parsed from inline `lineChart(…).setData([…])` calls. Legacy single-payload records auto-migrated on read by `_migrateHistoricRecord`. |
@@ -284,6 +284,7 @@ Lives at `chrome.storage.local["settings"].routeAssistant`. Defined in `modules/
         priceMaxAgeDays:    null,    // null = never expire
         autonomyMode:       "off",   // off | suggest | oneClick | batch (T2/T3 placeholders)
         silentAutoEnabled:  false,   // separate explicit gate for silent auto-apply (T3)
+        silentAutoTickSec:  5,       // foreground cadence; legacy silentAutoTickMin remains as fallback
         targetMargin:       null,
         competitorAdjust:   null
     },
@@ -617,6 +618,8 @@ Fetches `/app/info/airports/<airportId>` for both endpoints, parses lat/lon (3 s
 
 `content_flightsFrom.js` runs on `https://www.flightsfrom.com/<IATA>` pages spawned by the FlightsFromController.
 
+FlightsFrom is a real-world demand and carrier-presence source only. It feeds `weeklyFlights`, route breadth, airline count/name hints, and fallback `routeAssistant:topRoutes` records. It does **not** contain AirlineSim enterprise ids, AS ticket prices, AS flight ids, booked/load counts, or AS aircraft assignment. Those in-game per-enterprise facts must come from `/app/com/markets/<HUB><DEST>` via `markets-page-scraper.js`.
+
 ### Overall flow
 
 1. Read scan context from URL hash (`#aesFfScan=<scanId>|<IATA>`) or sessionStorage.
@@ -839,7 +842,7 @@ Letters are stable across commits and breakdown-tooltip references. Status refle
 | **E** | Per-route LF / yield override | ✅ Shipped Phase 2.6 |
 | **F** | Full carrier list per route + AS-native enterprise enrichment + contractual partners | ✅ **All slices shipped.** Slice 1: per-pair flightsfrom carriers scrape + colored intensity badge. Slice 2: AS-native banner/avatar enrichment via `/app/info/enterprises/<id>` cache. Slice 3 (this session): contractual partners (alliance / interlining / lessor) glyphs in the Cmp popover, sourced from your-own `?tab=1` page. See §19 (Carriers). |
 | **G** | Yield-timeline / actual-yields feedback | ✅ **Slice 1 shipped.** Closed-loop estimator-vs-actuals attribution; per-route snapshot history, ASCII sparkline + tail-mix tooltip extension, "Calibrate from actuals" affordance in the per-route override editor. Slice 2 (delta-mode + auto-snapshot + batch-calibrate) deferred. See §20 (Yield Feedback). |
-| **H** | Wave + interlining + slot management workspace | Tier 3, ~600 LOC, multi-session. Open. |
+| **H** | Wave + interlining + slot management workspace | ✅ **Slices 1 + 2 + 3a + 3b (store) shipped.** Slice 1: read-only Gantt. Slice 2: in-panel preset editor + drag-edit slot overrides + connection-graph SVG + `💾 Save schedule` CTA. Slice 3a: `ScheduleBuilder.optimizeAssignment` connection-graph-maximising hill-climb (toggle via `🎯 Optimise`). Slice 3b: `RouteAssistantInterlineStore` — directional `routeAssistant:interline:<HUB>-<DEST>` records with per-class share + relation type, dedup on `(partnerEnterpriseId, productClass)`. **Open:** 3b.1 (popover + bulk view UI), 3b.2 (wave-overlay annotation + profit-estimator integration), 3c (`slot-store.js`, multi-hub network view). See HANDOVER §9 rows "H slice 3a/3b/3b.1/3b.2/3c+". |
 | **I** | ORS-aware pricing simulation | ✅ **Slice 1 shipped.** New panel mode (🧪 toggle) + `modules/route-assistant/ors-model.js` (pure-function simulator). Closed-form rating shift (linear-in-percent) → numeric-stable softmax share → pool×share for pax/wk → existing profit estimator with overrides for revenue/profit. Per-route T calibration via cached marketShare leaderboard. Read-only against AS. **Slice 2 deferred:** cargo branch, Save-as-override CTA, multi-route batch sweep, sensitivity sparkline, three-class price sliders, frequency synthesis. See HANDOVER §1 + §10 for the full pipeline + invariants. |
 | **J** | Used Aircraft Scanner — GUI + smarter scoring + frequency-aware route-fit | ✅ **Slices 1–4 v3 shipped.** Family-card grid, six deal columns ($/seat, $/seat·km/yr, BE days, Maint pill, Fleet badge, Route-fit), tooltips on every column, and v3 route-fit reads `weeklyFlights` for a weekly-frequency capacity gate. See §23 (Used Aircraft Scanner). |
 | **K** | Deeper per-route demand from AS market analysis | ✅ **Shipped.** Per-class historic via `?payload=` query param on the markets page, inventory-page scraper for RM buckets, pure-function demand-derivator computing pool / elasticity / RM tightness. New "Demand depth" expander + 5 scoring fields + 6 columns. Profit estimator gains opt-in `useRealDemandForLF`. Unblocked I. See §22 (Demand Depth). |
@@ -857,7 +860,10 @@ Letters are stable across commits and breakdown-tooltip references. Status refle
 |---|---|---|---|
 | **Auto-Pricing T3 — Apply / write-back** | 3 | ~200 LOC | OPEN. Highest-risk gate in the auto-pricing roadmap. Confirmed posture: per-route Apply + batch-confirm modal default, silent auto-apply behind `settings.pricing.silentAutoEnabled`. |
 | ~~**I — ORS-aware pricing simulation**~~ | 3 | ~625 LOC | ✅ **Slice 1 shipped.** See HANDOVER §1 (ORS Sandbox) for the full pipeline. Slice 2 (cargo branch, Save-as-override CTA, batch sweep, sensitivity sparkline, three-class sliders, frequency synthesis) deferred. |
-| **H — Wave + interlining + slot workspace** | 3 | ~600 LOC | OPEN. Multi-session build. Reuses `modules/schedule-management/`. |
+| ~~**H slices 1 + 2 + 3a + 3b (store)**~~ | 3 | ~1700 LOC | ✅ **Shipped.** Foundation Gantt → drag-edit + connection-graph + Save CTA → auto-optimise hill-climb → per-route interline-store. See §16 status overview row. |
+| **H slice 3b.1 — interlining UI** | 3 | ~250 LOC | OPEN. Per-route popover (right-click → "Edit interlining…") modeled on `_openRouteNotePopover`; settings expander listing all interline routes; partner picker pre-populated from F slice 3 contractual-partners-scraper output. |
+| **H slice 3b.2 — interline-store consumers** | 3 | ~150 LOC | OPEN. Wave-overlay tooltip / curve annotation reading `RouteAssistantInterlineStore.totalShare`; `RouteAssistantProfitEstimator` extension that subtracts `interlineSharePercent` from effective LF on shared classes. |
+| **H slice 3c — slot management + multi-hub** | 3 | ~300 LOC | OPEN. `slot-store.js` for per-airport slot inventory + planned allocations; multi-hub network optimisation. The auto-optimiser's single-step climb covers the easy wins; 2-opt swaps are a 3a.1 follow-up only if a user reports the climb stuck on real presets. |
 | **G slice 2 — Yield-feedback delta-mode + auto-snapshot** | 2 | ~150 LOC | OPEN. Snapshot-to-snapshot deltas for true periodic yield (currently cumulative averages); auto-snapshot-on-mount; batch "calibrate all flagged" CTA. |
 | **J slice 5+ — Scanner roadmap continuation** | 2 | ~80–150 LOC each | OPEN buckets (e.g. break-even tooltip surfacing daily-revenue inputs already on the row). |
 | **F slice 4 — IL discovery beyond own enterprise** | 2 | ~80 LOC | OPEN — only relevant if user wants reciprocal-IL detection (currently only your-own page is scraped). |
@@ -967,7 +973,7 @@ From `HANDOVER.md §12` plus Phase 2 additions:
 - Phase 1 + QoL + Phase 1.5 + Phase 2 + Phase 2.5 are all in production. Don't rip out features without checking — the user has tuned settings.
 - Cargo revenue defaults to OFF (`cargoYieldPerKgKm: 0`). Don't change this default; existing users would see surprise number shifts.
 - The aggregator's `applyFleetContext(rows, null)` clears every fleet-derived field. Calling it with `null` must reset to a clean Phase-1-style row.
-- **Cache key direction rules.** Symmetric (alphabetically sorted): `distance-resolver.js`. Directional (`<HUB>-<DEST>`): `ticket-price-scraper.js`, `yield-history-store.js`, `route-overrides-store.js`, `carriers-scraper.js`, `markets-page-scraper.js` (all 4 families), `ors-scraper.js`, `inventory-page-scraper.js`. Per-enterprise non-directional: `enterpriseMeta:<id>` (keyed by competitor), `contractualPartners:<enterpriseId>` (keyed by *your-own*). Different rule per file; easy to mix up.
+- **Cache key direction rules.** Symmetric (alphabetically sorted): `distance-resolver.js`. Directional (`<HUB>-<DEST>`): `schedule-page-scraper.js`, `yield-history-store.js`, `route-overrides-store.js`, `carriers-scraper.js`, `markets-page-scraper.js` (all 4 families), `ors-scraper.js`, `inventory-page-scraper.js`. Per-enterprise non-directional: `enterpriseMeta:<id>` (keyed by competitor), `contractualPartners:<enterpriseId>` (keyed by *your-own*). Different rule per file; easy to mix up.
 - **`enterprise-meta-scraper.js` cache is keyed by competitor enterprise id.** Same record reused across every route the enterprise competes on. Don't add HUB/DEST.
 - **`contractual-partners-scraper.js` cache is keyed by *your-own* enterprise id.** The record's *contents* tell you who that enterprise's partners are; the popover then matches partner ids against visible competitor ids. Don't repurpose for competitor-pulls without changing the consumer logic.
 - **F slice 3 popover glyphs read `_partnersByEnterpriseId`** which is built by `_applyCachedContractualPartners()`. Called from `init()` after `_applyCachedEnterpriseMeta()` and again after every refresh. New ways for partners data to land must call it (or glyphs go stale until next mount).
@@ -985,14 +991,17 @@ From `HANDOVER.md §12` plus Phase 2 additions:
 
 ---
 
-## 18 · Auto-Pricing (Tier 1 + 2a + 2b shipped, Tier 3 open)
+## 18 · Auto-Pricing (Tier 1 + 2a + 2b + 3.1 + 3.2 + 3.3a + 3.3b shipped)
 
 End-to-end roadmap for the per-route pricing surface. Four-tier rollout, user-confirmed:
 
-- **Tier 1 — visibility (shipped).** `modules/route-assistant/ticket-price-scraper.js` scrapes `/app/com/scheduling/<HUB><DEST>` for live route data: assigned aircraft (registration + typeId + name), departure time, **per-day flight counts** (`dailyFlights[7]` Mon→Sun), weekly total (`weeklyFlights`), cruise speed. Live-capture on visit + bulk-sync CTA in the rose-tinted "Live route data" expander. Three columns under the `pricing` group: **Eq**, **Dep**, **Wk** (e.g. `12 2222211` = 12/wk, 2x Mon–Fri + 1x weekends). Multi-daily fully captured. Misnomer note: file is named `ticket-price-scraper.js` but currently scrapes the scheduling page (no prices on that page) — rename deferred until a real pricing scraper lands.
-- **Tier 2a — Markets page (shipped).** `modules/route-assistant/markets-page-scraper.js` covers `/app/com/markets/<HUB><DEST>` for: every competitor flight with prices + availability + status, your own pricing form snapshot (Y/C/F/Cargo current + default + slider ranges), market-share leaderboard (pax + cargo, with previous-period link), and 25-week historic capacity/price chart data. Storage **split across 4 directional key families** (`competitors`, `ownPricing`, `marketShare`, `historic`) so each can have its own freshness window. Live-capture via `content_markets.js` + bulk-sync CTA in the teal-tinted "Market Analysis" expander. Four columns under the `markets` group: **Mkt%**, **Cmp#**, **Cmp$**, **Drft** (drift vs AS defaults).
+- **Tier 1 — visibility (shipped).** `modules/route-assistant/schedule-page-scraper.js` scrapes `/app/com/scheduling/<HUB><DEST>` for live route data: assigned aircraft (registration + typeId + name), departure time, **per-day flight counts** (`dailyFlights[7]` Mon→Sun), weekly total (`weeklyFlights`), cruise speed. Live-capture on visit + bulk-sync CTA in the rose-tinted "Live route data" expander. Three columns under the `pricing` group: **Eq**, **Dep**, **Wk** (e.g. `12 2222211` = 12/wk, 2x Mon–Fri + 1x weekends). Multi-daily fully captured. Misnomer note: file is named `schedule-page-scraper.js` but currently scrapes the scheduling page (no prices on that page) — rename deferred until a real pricing scraper lands.
+- **Tier 2a — Markets page (shipped).** `modules/route-assistant/markets-page-scraper.js` covers `/app/com/markets/<HUB><DEST>` for: every competitor flight with prices + availability + status, your own pricing form snapshot (Y/C/F/Cargo current + default + slider ranges), market-share leaderboard (pax + cargo, with previous-period link), and 25-week historic capacity/price chart data. Storage **split across 4 directional key families** (`competitors`, `ownPricing`, `marketShare`, `historic`) so each can have its own freshness window. Live-capture via `content_markets.js` + bulk-sync CTA in the teal-tinted "Market Analysis" expander. Four columns under the `markets` group: **Mkt%**, **Cmp#**, **Cmp$**, **Drft** (drift vs AS defaults). The `Cmp$` tooltip now includes compact individual competitor flight rows grouped by enterprise prefix.
 - **Tier 2b — ORS rank (shipped).** See §21 (ORS Rank) for the full design. Per-route GET → POST handshake against `/app/info/ors`, walks every result page, parses each connection's overall rating + per-leg flight code/ID/aircraft/price/status. Stores **all rank flavors** + ratings + the **full connection list** so any metric is re-derivable at render time without re-scraping. Concurrency=2, stagger=1500ms, circuit breaker on 3× consecutive 429/503.
-- **Tier 3 — apply / write-back (OPEN, HIGH risk).** Target endpoint: the markets-page pricing form (`POST` to `/app/com/markets/<HUB><DEST>?<wicket>-pair~form` with `classes:prices:N:newPrice` body fields). Confirmed posture: one-click + batch-confirm by default; silent auto-apply behind `settings.pricing.silentAutoEnabled`. The Tier 2a `ownPricing` cache is the source of "what is currently set" so the apply diff can show before/after.
+- **Tier 3.1 — apply pipeline foundation (shipped).** `RouteAssistantPricingApplier` + `RouteAssistantPricingApplyLog` plus the per-route apply modal, sandbox-bridge, row context menu, and bulk-listing modal. The same pipeline always runs GET → preflight → form-body construction → POST/verify → audit log unless an explicit dry-run override is set.
+- **Tier 3.2 — live single-route writes (shipped).** `apply.enabled=true` and `apply.dryRunOnly=false` are now the default permanent-live stance. The per-route modal's Apply button POSTs to the markets-page form, awaits `getLastSuccessAt(hub, dest)` to enforce per-route cooldown, runs receipt-verify by re-fetching + comparing prices, fires a 6-second Undo toast on `verified` / `posted` that re-runs the applier with `prevPrices`. Circuit breaker mirrors `ors-scraper.js`: three consecutive 429 / 503 trips persist `circuitBreakerTrippedAt` to settings, render a red banner with Reset in the expander, and short-circuit subsequent applies until the 10-min cooldown expires. First successful write resets the breaker counter and clears trippedAt. The panel checkbox can still re-arm dry-run for a specific rehearsal.
+- **Tier 3.3a — bulk apply selection table (shipped).** The Auto-Pricing expander's "Open bulk apply…" CTA opens a selection table with per-class Δ% inputs (Y / C / F / Cargo), checkbox column, in-table `current → proposed` preview, per-row cooldown badge, confirmation sub-modal listing every change with required ack, serial Promise loop. The same `RouteAssistantPricingApplier` instance is reused across the batch so the circuit breaker spans rows (a 429 storm trips the breaker mid-batch and short-circuits subsequent rows until Reset). Per-row status badges surface every error code (`HTTP 429`, `breaker · 8m`, `cooldown`, `applierThrew`); final outcome toast reports ok/fail counts. Apply log entries carry `source: "bulk"`.
+- **Tier 3.3b — silent-auto loop (shipped, permanent-live default).** Two cooperating cadence drivers — an in-tab `setInterval` foreground loop (`silentAutoTickSec`, default 5 seconds) plus a `chrome.alarms` heartbeat (`aes:silent-auto:tick`, floored to Chrome's 30-second alarm minimum) registered in `background.js` with re-sync on any settings change. Background fires the alarm and broadcasts to the most-recently-active scheduling/dashboard tab; cross-tab dedup via `silentAutoLastTickAt` re-read on each tick. `silentAutoEnabled=true`, `silentAutoFollowMode="all"`, and `liveScopes.silentAuto=true` are the default. Hard caps via `silentAutoCap24h` + per-route/global cooldowns + the shared circuit breaker. Per-tick path uses serial `applier.apply()` calls (NOT `_runBulkPricingApply`) so the breaker stays monotonic. Strategy proposer pluggable via `RouteAssistantSilentAutoProposers` registry.
 - **Tier 4 — yield feedback.** Subsumed by Roadmap G; see §20 (Yield Feedback).
 
 **Order is fixed.** No skip-ahead between tiers — a write-back that ships before T2 visibility would be flying blind.
@@ -1004,7 +1013,7 @@ End-to-end roadmap for the per-route pricing surface. Four-tier rollout, user-co
 Three-slice progression of the Cmp column on the panel. Builds rich competitor identity from three independent sources.
 
 - **F slice 1 — flightsfrom carrier list** (`modules/route-assistant/carriers-scraper.js`). Per-pair detail-page scraper that the panel calls directly via `fetch(...)` (cross-origin, covered by `host_permissions`, same pattern as distance-resolver tier-3). Three-band competitive-intensity classifier (1 / 2-3 / 4+) feeds a colored pill on the Cmp column. Hover tooltip lists each carrier and weekly frequency. Cache: `routeAssistant:carriers:<HUB>-<DEST>` (directional). Defensive: when flightsfrom doesn't SSR the carrier list, the record stores `parserNotes` and an empty `carriers: []`; the panel falls back to the plain `airlineCount` integer in that case.
-- **F slice 2 — AS-native enterprise enrichment** (`modules/route-assistant/enterprise-meta-scraper.js`). Fetches `/app/info/enterprises/<id>` per AS competitor seen in the markets-page leaderboard. Caches `{name, iata, bannerUrl, avatarUrl}` at `routeAssistant:enterpriseMeta:<id>`. **NOT directional** — same record serves every route the enterprise competes on. 90-day default TTL (enterprises rarely rebrand). Cmp pill replaces its native `title=""` with a custom DOM popover (hover-open with 200ms delay, 250ms grace on leave, click-to-pin, Escape/outside-click dismiss). Each row in the popover shows avatar + clickable name link to `/app/info/enterprises/<id>` + banner + share% + ▲/▼ change + rank, sorted by share. Falls back to the plain-text tooltip when `marketSharePax` is empty.
+- **F slice 2 — AS-native enterprise enrichment** (`modules/route-assistant/enterprise-meta-scraper.js`). Fetches `/app/info/enterprises/<id>` per AS competitor seen in the markets-page leaderboard. Caches `{name, iata, bannerUrl, avatarUrl}` at `routeAssistant:enterpriseMeta:<id>`. **NOT directional** — same record serves every route the enterprise competes on. 90-day default TTL (enterprises rarely rebrand). Cmp pill replaces its native `title=""` with a custom DOM popover (hover-open with 200ms delay, 250ms grace on leave, click-to-pin, Escape/outside-click dismiss). Each row in the popover shows avatar + clickable name link to `/app/info/enterprises/<id>` + banner + share% + ▲/▼ change + rank, sorted by share. When `routeAssistant:markets:competitors:<HUB>-<DEST>` is cached, the row also includes a "Route flights" section with individual flight code links, per-class prices, departure time, equipment, seat/cargo capacity, availability, and status. Falls back to the plain-text tooltip when `marketSharePax` is empty.
 - **F slice 3 — Contractual partners glyphs** (`modules/route-assistant/contractual-partners-scraper.js`). Reads the user's own enterprise's "Contractual partners" tab (`/app/info/enterprises/<your_id>?tab=1`) and surfaces partner glyphs in the popover: ⇄ (green) for INTERLINING, ✦ (purple, off by default) for ALLIANCE. **NOT directional, AND keyed by your-own enterprise id** (opposite to F2). One fetch per own enterprise yields the entire partner list (alliance + interlining + lessor + any future relation types). Multi-enterprise (canopy-style) users can list multiple comma-separated IDs; `_partnersByEnterpriseId` unions every partner set. Captures relation tags verbatim so unknown future relation types still surface.
 
 **Open follow-up — F slice 4** (~80 LOC, OPEN): reciprocal-IL detection by also fetching each visible competitor's `?tab=1`. Currently only your-own page is scraped, so an asymmetric agreement (where they list you but you don't list them) wouldn't surface. Defer until requested.
@@ -1037,7 +1046,7 @@ For each tail in the user's fleet, look at its `aircraftFlights` cumulative `pro
 
 ### Limits (slice 1)
 
-- Snapshots only see routes whose ticket-price record has been scraped (run "Sync route data" first).
+- Snapshots only see routes whose ticket-price record has been scraped (run "Sync live route data" first).
 - Tails the user hasn't visited via `/app/fleets/aircraft/<id>/1` won't have profit data.
 - Profits are *cumulative* per tail — v1 stores cumulative averages.
 
@@ -1275,6 +1284,182 @@ The detail parser robustly walks any 2-letter category prefix + class letter nam
 ### Limits
 
 The coarse Budget/Standard/Premium service-level model is preserved for now — the scraped profile name + quality score is informational (surfaced in Svc tooltip + popover banner). A follow-up slice could let users *score* a route by its profile's classScore directly. Per-pax cost has no AS source — still inherited from settings or manual override.
+
+---
+
+## 25 · Aircraft Flight Plan Assistant (six slices — all shipped)
+
+A sidebar panel that mounts on the per-aircraft Flight Plan page (`/app/fleets/aircraft/<id>/0`) and guides you through opening a new flight number — without ever submitting the form for you. The user always confirms by clicking AS's own green Submit button.
+
+**What you see when you land on the page:**
+- A compact aircraft spec card (seats, range, cruise speed, pax satisfaction) — derived from the same RA fleet store + AS aircraft-type-specs the panel uses on /app/com/scheduling.
+- A scored route-candidate list (FlightsFrom + AS demand + the panel's Score function) with chip filters: Range-fit only, Hide already scheduled (against the page's Visual Flight Plan), Watchlist-only, plus a Top-N cycler (5 → 10 → 25 → 50 → all).
+- A form-driver toolbar above AS's New Flight Number form: Fill latest pick, Reverse O/D, Clear, "Show what'd post" (collapsible body preview — shows you exactly what would POST, but does NOT send).
+- A wave-applier panel with a preset selector (sourced from the dashboard's SchedulePresets) and a Generate-wave-plan button. Renders the same Gantt swimlane the RA panel's Wave View uses, with per-leg Apply buttons that pre-fill the form for one leg at a time.
+- An audit log expander showing the recent activity for THIS aircraft + a global timeline link.
+
+**What it doesn't do.** It never POSTs. It never clicks Submit. The form-driver mutates input values + dispatches `input`/`change` events so AS's own JS sees them; you are the only thing that fires the actual write. Reverse O/D is allowed because that's a same-page UI toggle, not a form submission.
+
+**Settings.** `settings.aircraftFlightPlan` (a sibling of `settings.routeAssistant`, not a child) — `enabled`, `defaultTopN`, `defaultPricePct`, `defaultService`, `showWavePreview`, `candidateChips: {rangeFitOnly, hideAlreadyScheduled, watchlistOnly}`, `lastSelectedPresetId`. Loaded by every AFP mount; deep-merged with defaults so existing storage survives schema additions.
+
+**Storage.** Three keys — `aircraftFlightPlan:settings`, `aircraftFlightPlan:state:<server>:<aircraftId>` (per-aircraft state read by the Fleet Hub for the Loc column), `aircraftFlightPlan:auditLog` (global timeline, cap 200) + `aircraftFlightPlan:auditLog:aircraft:<server>:<aircraftId>` (per-aircraft ring, cap 50, dual-written atomically with the global key).
+
+**Bus events (for module authors).** Slice files don't import each other; they emit/subscribe via `window.AesAfp.bus`. Events: `ctx:ready`, `spec:resolved`, `candidates:updated`, `candidate:selected`, `form:filled`, `form:cleared`, `wave:built`, `audit:logged`. New cross-slice features should follow the bus contract — direct module-to-module references break the slice-isolation that makes partial-load + partial-failure recovery possible.
+
+---
+
+## 26 · Schedule Control (Fleet Hub D chip — live apply)
+
+A modal overlay on the fleet management page (`/app/fleets*`) that lets you compose schedules and create "New Flight Number" entries for any aircraft in your fleet without leaving the fleet view. Companion to AFP §25.
+
+**Where it lives.** The Fleet Hub inline table now renders a fourth action chip per row: **R** (routes), **S** (schedule overlay), **P** (open Flight Plan tab), **D** (Schedule Control). Clicking **D** opens a 560-px modal pinned to the top-right of the page (z-index 99999, scrolls independently of the main page).
+
+**What you see when you click D:**
+- **Header.** Aircraft tail · equipment · current location · "↗ Open in AS" deep-link (constructs `https://<server>.airlinesim.aero/app/fleets/aircraft/<id>/0?aes-debug` — opens the AFP page with diagnostics auto-enabled) · close ×.
+- **Preset picker + Generate.** Same SchedulePresets the AFP wave applier uses; defaults to the preset hub-stamped to this aircraft's location. Generate runs a single proxy GET against the aircraft's own URL (`credentials: "include"`), parses the New Flight Number form context (selects, hidden Wicket fields, submit button name+value, current location, existing scheduled destinations), then runs the AFP candidate pipeline + wave-applier off-page to produce a build.
+- **Status line.** hub · destinations available on the form · already scheduled · candidates · build legs.
+- **Build preview.** One row per placed leg with direction arrow, O/D, dep time, distance, and an **Apply** button. Click Apply → confirm the one-leg write, compose the full URL-encoded POST body (origin, destination, departure:hours, departure:minutes, price, service, every hidden input, the submit name=value pair), POST to AS, verify by re-reading the aircraft VFP destination count, and write the receipt to the audit log.
+- **Recent applies (last 10).** Per-aircraft audit ring; expandable POST-body previews per entry.
+- **Gate footer.** A live indicator strip states that direct AS submit is enabled and receipts land in the per-aircraft apply log.
+
+**Live behavior.** The applier performs the aircraft page GET handshake, resolves the Wicket form action, POSTs with `credentials:"include"`, handles login/page-expired failures, and records `verified`, `posted`, `aborted`, or `failed`. Older stored dry-run settings are promoted by `permanentLiveMode:true`; pass an explicit `dryRun` override only when rehearsing a specific call. Drag/drop schedule Apply and Fleet Hub wave Apply use the same live AFP orchestrator defaults (`autoScheduler.enabled=true`, `tier="apply-on-confirm"`).
+
+**Storage.** Two new keys — `aircraftFlightPlan:fnApplyLog` (global timeline, cap 200, newest-first) + `aircraftFlightPlan:fnApplyLog:<server>:<aircraftId>` (per-aircraft ring, cap 20). 5-min dedup on `(fingerprint+status)` tuples mirrors `pricing-apply-log.js` so back-to-back identical clicks bump a `count` instead of polluting the timeline.
+
+**Architecture.** Nine files in `modules/aircraft-flight-plan-dashboard/`. The dashboard reuses the existing AFP candidate pipeline + wave-overlay machinery off-page — `AesAfpRouteCandidates.compute` and `AesAfpWaveApplier.buildFromCandidates` are headless-safe, and the form parser is a static helper lifted out of `host.js:findNewFlightForm()`. The live dashboard applier is separate from the AFP page `form-driver`, so the visible AFP page fill-only invariant remains scoped to that module.
+
+**Why the form-driver invariant is unchanged.** `modules/aircraft-flight-plan/form-driver.js` (Slice D on the AFP page itself) remains the fill/preview path it always was — see HANDOVER §10. The dashboard applier is a separate module that only runs on the fleet list view; the AFP page sidebar driver doesn't know it exists.
+
+---
+
+## 27 · Central Hub — Operations Tiles
+
+Mounted on `/app/enterprise/dashboard*` by `modules/central-hub/host.js` (the last entry before the legacy `content_dashboard.js` in the dashboard content-script block). The hub renders a vertical nav above the AS dashboard with sections grouping tiles by domain. The **Operations** section collects four AS-mutating surfaces in priority order so they share one entry point and one cache-refresh contract.
+
+Tiles register themselves with `modules/central-hub/tile-registry.js` at script load. Each tile owns its own data store (read from `chrome.storage.local`, populated by a per-page content script that scrapes when the user visits the source page) and declares `watchedStorageKeys` so the host re-renders the tile body whenever the underlying cache changes — no manual reload needed after a mutation.
+
+### Service Profiles (priority 10)
+
+Lists the enterprise's service profiles from `routeAssistant:serviceProfiles` (seeded by visiting `/action/enterprise/serviceProfiles` and `/action/enterprise/serviceProfile?id=<id>`). Each row exposes an inline editor for the per-class Y/C/F catering scores plus the Drinks-Y radio; saving runs `modules/route-assistant/service-profile-applier.js`, which does a fresh-GET-then-POST against the Wicket form (it must re-fetch each time because the `?N` page-version suffix rotates on every AS interaction). Successful applies append to `routeAssistant:serviceProfileApplyLog` and the tile re-renders via the watched-storage hook.
+
+### Inventory (priority 20)
+
+Surfaces the cached per-route inventory rows from `inventory:summaryStore` (populated by `content_inventory.js` on `/app/com/inventory/*`). Hovering a row reveals a quick-price field: typing a new Y price and confirming runs `modules/inventory/quick-price-applier.js`, which submits the inventory Wicket form scoped to the airport pair. The tile shows route, current Y/C/F prices, current load, and a status badge that flips healthy/warn/critical based on the same thresholds the route-assistant panel uses; AS reflects the new price on the next inventory page load and the tile badge updates from the next scrape.
+
+### Crew (priority 30)
+
+Reads the cached pilot pool from `crewManagement:staffPilots` (seeded by visiting `/action/enterprise/staffPilots`, scraped by `modules/crew-management/staff-pilots-scraper.js`). The body shows pilot counts by category (Captain / First Officer / training-in-progress) plus an inline "Hire 1" button per category that POSTs through `modules/crew-management/staff-pilots-applier.js` against the plain HTML form (no Wicket hidden state — simpler than service-profile / inventory). After hiring, AS shows the order on the staffPilots page and the tile badge updates after the next visit re-seeds the cache.
+
+### Alliance (priority 40)
+
+Read-only roster of current alliance members from `alliance:overviewSnapshot` (captured by `modules/alliance/content-alliance.js` on `/app/alliance*` via `alliance-overview-scraper.js`). Each row shows the member's airline name, IATA, headquarters, and joined date; the airline name is a link that opens the enterprise overview page in a new tab. No mutations — alliance state is managed entirely on AS and the tile only reflects what was last scraped.
+
+---
+
+## 28 · Schedule Canvas & Wave System
+
+A modal surface launched from `/app/fleets*` that folds wave editing, route candidates, demand + ORS overlays, pricing apply, and the auto-scheduler into one view. The wave is the spine: rows are aircraft (filtered to the active hub), columns are waves from the active preset, cells are summarised flights inside that wave's window.
+
+### 28.1 · How to open it
+
+- **Direct.** On `/app/fleets/...`, click the `▦ Open Schedule Canvas` button next to `✈ Open Fleet Schedule Grid`.
+- **Deep-link from Fleet Hub.** When a hub on the Fleet Hub Command Center has fewer drafted plans than aircraft AND a wave preset, a "Build wave schedule ▸" CTA appears on the hub card. Click → canvas opens to that hub with the rail in **Builder** mode.
+- **Bus emit.** Other surfaces can fire `CentralHubBus.emit("open-tile", {tileId: "fleet-schedule-canvas", filter: {hub, aircraftId?, railMode?}, source})` and `fleet-schedule-grid/host.js` will route the open. Late mounts pick up the most recent emit via `replay()`.
+
+The canvas is a single-instance modal — a second open closes the first. ESC, backdrop click, and the explicit Close button all dismiss.
+
+### 28.2 · Anatomy
+
+Three regions:
+
+- **Header.** Hub picker · view toggle (`Waves` | `Timeline`) · `Show/Hide assistant` rail toggle · `Advanced` pill · status caption.
+- **Main pane.**
+  - *Waves* view: wave-spine renderer + telemetry strip (when Advanced is on) + destinations dock at the bottom (the existing `FleetScheduleGridDndSourcePanel`). Drag a destination card from the dock onto a cell to schedule it.
+  - *Timeline* view: hands off to the legacy Fleet Schedule Grid via close-and-reopen. View choice persists, so reopening the canvas lands back on Waves.
+- **Assistant rail (320 px, right side).** Mode toggle [Builder | Advisor] · hub badge · close × · body (mode-specific) · footer (`N staged · [Discard] [Commit]`).
+
+### 28.3 · Storage shape
+
+Two new keys; everything else (presets, schedules, demand, top-routes, fleet, maintenance) is read through existing stores.
+
+| Key | Writer | Shape |
+|---|---|---|
+| `<acctKey("canvas","state")>` | `AesCanvasStateStore` | `{activeHub, view: "waves"\|"timeline", railMode: "builder"\|"advisor", railOpen, focusedAircraftId, focusedWaveId, advisorPrefs: {firstRunSeen, advancedOn, debouncedSuggestions: {[suggestionKey]: epochMs}}}` |
+| `_shared:handoff:wave-designer` (source `dnd-grid`) | `AesHandoffStore` (canvas commit-bar, on single `addRoute`) | `{aircraftId, destIata, hub?, dropMin?, source: "dnd-grid", writtenAt}` — TTL 60 s; consumed by the AFP page's wave-applier on next mount. |
+
+`debouncedSuggestions` keys take the form `<kind>:<signature>` (e.g. `auto-proposer:competitor-median:JFK-LAX`). Dismissed suggestions stay debounced for 1 hour.
+
+### 28.4 · Edit lifecycle
+
+Every staging path (Builder Adopt, drop-bridge, context-menu, demand-overlay badge, advisor-card action, auto-proposer surface) ends at the same bus event: `canvas:edit-staged` carrying `{kind, payload, batchId?}`. Edit kinds:
+
+- `applyPricing` — payload `{hub, dest, prices: {Y?, C?, F?, Cargo?}, scope?, source, reason?, rationale?, proposerStrategy?, projectedDelta?}`.
+- `addRoute` — payload `{aircraftId, waveId, destIata, destName, fares?, hub, dayMask?, paxScore?, profitPerWeek?}`.
+- `moveRoute` — payload `{aircraftId, waveId, destIata, destName, hub}`.
+- `removeRoute` — payload `{aircraftId, hub, destIata, source}`.
+
+The rail-controller picks up emits (with a `batchId` prefix guard against re-staging its own emits) and pushes to the in-memory staged list. The footer shows the running count and enables [Commit] / [Discard].
+
+**Builder Adopt vs. Advisor auto-flip.** The first non-fragment Adopt while the rail is in Builder mode auto-flips the rail to Advisor — the user has taken over driving and the engine becomes a reaction feed.
+
+### 28.5 · Commit dispositions (by kind)
+
+| Kind | Disposition |
+|---|---|
+| `applyPricing` | Real apply via `RouteAssistantPricingApplier.apply()`. Permanent-live defaults set `RouteAssistantSettings.pricing.apply.{enabled:true, dryRunOnly:false}` plus all pricing `liveScopes:true`; explicit dry-run overrides still log without POST. Pricing apply log writes through the same store the standalone RA panel uses. |
+| `addRoute` (single leg) | Written to `AesHandoffStore` with `source: "dnd-grid"`. Open the AFP page for that aircraft and the wave-applier consumes the record on mount, pre-selecting the candidate row. |
+| `addRoute` (multi-leg) | Deferred. The handoff store holds at most one record; the toast counts the queued legs. Sequential handoff queue is a planned follow-up. |
+| `moveRoute` | Deferred. AS's per-flight Wicket edit-page is fragile; the canvas surfaces the intent and routes the user to the AFP page for a delete + add via the existing pipeline. |
+| `removeRoute` | Deferred. AS's per-flight delete needs the markets/flight page; surfacing only. |
+
+After a commit the bus emits `canvas:edit-committed {batchId, edits, summary}`. The summary toast reads "Commit: N applied · M dry-run · K staged for AFP · L deferred · J failed."
+
+### 28.6 · Cell affordances
+
+- **Empty cell** — muted "+ open" hint; demand badge from `routeAssistant:topRoutes:<HUB>` if a route exists; ORS tooltip on hover. Drag a destination → fares modal → `addRoute` stages.
+- **Filled cell** — top destination + day-pill mask + leg count + total block hours, coloured by the existing `FleetScheduleGridColoring` mapping. Right-click → menu (Apply pricing / Remove flight / Open in RA).
+- **Builder preview tint** — cells targeted by an Adopted-but-not-committed proposal carry a dotted preview outline.
+
+### 28.7 · Keyboard shortcuts
+
+Modal-scoped (only fire while the canvas is open AND the user isn't typing in an input/textarea/select):
+
+| Key | Action |
+|---|---|
+| `B` | Toggle rail mode Builder ↔ Advisor |
+| `T` | Toggle main view Waves ↔ Timeline |
+| `R` | Toggle rail open/closed |
+| `Cmd/Ctrl + Enter` | Commit staged edits |
+| `Esc` | Close the canvas modal |
+
+### 28.8 · Bus events
+
+Constants live in `modules/canvas/canvas-events.js` as `window.AesCanvasEvents`. Always subscribe via the constants — the bus accepts arbitrary strings, so a typo silently fails to subscribe.
+
+| Event | Payload | Emitted by |
+|---|---|---|
+| `canvas:hub-changed` | `{hub}` | hub picker |
+| `canvas:view-changed` | `{view: "waves"\|"timeline"}` | view toggle |
+| `canvas:rail-mode-changed` | `{mode: "builder"\|"advisor"}` | mode toggle / Adopt auto-flip |
+| `canvas:rail-open-changed` | `{open}` | rail toggle |
+| `canvas:focus-aircraft` | `{aircraftId}` | row click |
+| `canvas:focus-wave` | `{presetId, waveId}` | wave-column click |
+| `canvas:builder-proposal` | `{proposalId, plan, rationale, scoreDelta}` | builder engine |
+| `canvas:advisor-suggestion` | `{id, kind, severity, message, signature, dedupeKey?, action?}` | advisor engine, demand overlay, auto-proposer surface |
+| `canvas:advisor-suggestion-resolved` | `{id, accepted}` | advisor card |
+| `canvas:edit-staged` | `{kind, payload, batchId?}` | every staging path |
+| `canvas:edit-committed` | `{batchId, edits, summary}` | commit-bar |
+| `canvas:edit-discarded` | `{batchId, count}` | commit-bar discard |
+
+The existing canonical events `open-tile`, `focus-route`, `focus-aircraft`, `focus-enterprise`, `focus-preset` (declared in `modules/central-hub/bus.js`) are the cross-surface contract — the canvas emits `focus-route` from the cell context-menu's Open in RA item and listens for `open-tile` with `tileId: "fleet-schedule-canvas"`.
+
+### 28.9 · Limitations and caveats
+
+- Single-leg `addRoute` only. Multi-add and `moveRoute` / `removeRoute` toast-and-defer to the AFP page.
+- Cell context-menu's "Add destination…" item currently toasts "drag instead" because the menu can't yet collect an IATA inline.
+- Suggestion history (Last 5 dismissed/accepted) is not yet rendered. Debouncing keeps dismissals quiet for 1 h but doesn't store the message body.
+- Auto-proposer surfacing is manual via the rail's "Run proposers now" CTA. The existing silent-auto loop in `panel.js` continues to apply silently — the canvas surface is opt-in.
+- Telemetry strip (Advanced toggle) is a freshness-indicator only. The standalone Route Assistant panel remains the canonical dense table view.
 
 ---
 

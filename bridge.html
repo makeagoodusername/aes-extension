@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>AES — Command Bridge</title>
+    <link rel="stylesheet" href="css/design-tokens.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/command-bridge.css">
+</head>
+<body>
+    <main class="aes-bridge" id="aes-bridge-root">
+        <header class="aes-bridge__masthead">
+            <h1 class="aes-bridge__h1">Command Bridge</h1>
+            <span class="aes-bridge__tagline">enterprise coordination · multi-subsidiary</span>
+            <div class="aes-bridge__masthead-stats" id="aes-bridge-masthead-stats"></div>
+            <span class="aes-bridge__version" id="aes-bridge-version">v?</span>
+        </header>
+
+        <section class="aes-bridge__section" id="aes-bridge-activity"></section>
+
+        <section class="aes-bridge__section" id="aes-bridge-subsidiaries"></section>
+
+        <section class="aes-bridge__section" id="aes-bridge-board"></section>
+
+        <section class="aes-bridge__section" id="aes-bridge-coalitions"></section>
+
+        <section class="aes-bridge__section" id="aes-bridge-opportunities"></section>
+
+        <footer class="aes-bridge__footer">
+            <span>AirlineSim Enhancement Suite</span>
+            <a id="aes-bridge-footer-options" href="#">Open Data Manager</a>
+            <a href="https://forums.airlinesim.aero/t/introducing-airlinesim-enhancement-suite-beta/" target="_blank" rel="noreferrer noopener">Forum</a>
+            <a href="https://github.com/ZoeBijl/airlinesim-enhancement-suite" target="_blank" rel="noreferrer noopener">GitHub</a>
+        </footer>
+    </main>
+
+    <script src="modules/_shared/account-registry.js"></script>
+    <script src="modules/_shared/fleet-roster.js"></script>
+    <script src="modules/canopy/affiliations-store.js"></script>
+    <script src="modules/canopy/orgs-store.js"></script>
+    <script src="modules/aircraft-flight-plan/schedule-store.js"></script>
+    <script src="modules/strategy/portfolio.js"></script>
+    <script src="modules/command-bridge/priority-store.js"></script>
+    <script src="modules/command-bridge/subsidiary-cards.js"></script>
+    <script src="modules/command-bridge/priority-board.js"></script>
+    <script src="modules/command-bridge/activity-ribbon.js"></script>
+    <script src="modules/command-bridge/coalitions-panel.js"></script>
+    <script src="modules/command-bridge/opportunities-panel.js"></script>
+    <script src="modules/command-bridge/bridge-app.js"></script>
+</body>
+</html>

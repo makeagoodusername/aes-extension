@@ -143,6 +143,7 @@ class AesAfpFnApplyLog {
             registration: r.registration || null,
             equipment:    r.equipment    || null,
             status:       r.status       || "unknown",
+            ok:           r.ok === true,
             source:       r.source       || "manual",
             leg:          r.leg ? Object.assign({}, r.leg) : null,
             postUrl:      r.postUrl      || null,
@@ -151,9 +152,13 @@ class AesAfpFnApplyLog {
             fingerprint:  r.fingerprint  || null,
             blockers:     Array.isArray(r.blockers) ? r.blockers.slice(0, 10).map(b => Object.assign({}, b)) : null,
             warnings:     Array.isArray(r.warnings) ? r.warnings.slice(0, 10).map(w => Object.assign({}, w)) : null,
+            warning:      r.warning ? String(r.warning).slice(0, 240) : null,
             error:        r.error ? Object.assign({}, r.error) : null,
             reason:       r.reason ? String(r.reason).slice(0, 240) : null,
             httpStatus:   r.httpStatus || null,
+            verifyAt:     r.verifyAt || null,
+            verifiedFlightNumberDests: Array.isArray(r.verifiedFlightNumberDests)
+                ? r.verifiedFlightNumberDests.slice(0, 40) : null,
             count:        isFinite(r.count) ? r.count : 1
         }
         for (const k in out) {

@@ -1,0 +1,2469 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+
+
+
+
+ 
+
+
+<!DOCTYPE html
+PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="de">
+<head>
+    <meta charset="utf-8">
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <meta name="description" content="AirlineSim - the online airline management simulation game for pros.">
+    <meta name="author" content="simulogics GmbH">
+
+    <link rel="shortcut icon" href="../../favicon.ico"/>
+    <link rel="search" type="application/opensearchdescription+xml" title="AirlineSim Search"
+          href="../../app/openSearchDescription.xml"/>
+
+    <title>AirlineSim</title>
+
+    <link rel="stylesheet" type="text/css" href="../../assets/css/jquery-ui.theme.min.css"/>
+
+    <script type="text/javascript" src="../../assets/js/jquery.min.js"></script>
+    <script type="text/javascript" src="../../assets/js/jquery-ui.min.js"></script>
+    <script type="text/javascript" src="../../assets/js/jquery-checkboxes.js"></script>
+    <script type="text/javascript" src="../../assets/js/bootstrap.min.js"></script>
+    <script type="text/javascript" src="../../assets/js/select2/select2.min.js"></script>
+    <script type="text/javascript" src="../../assets/js/d3.min.js"></script>
+
+    
+    
+        
+            <script type="module">
+                window.frontendSettings = {"server":{"name":"free1","time":"2026-05-03T10:20:18.891Z","end":{"close":"2026-05-18T00:00:00Z","end":"2026-06-01T00:00:00Z"}},"sessionCookieName":"as-sid","selectedEnterpriseCookieName":"airlinesim-selectedEnterpriseId-free1","theme":"dark","currentVersionNumber":"6.13.8","versionCookieDomain":"airlinesim.aero","versionCookieName":"seen-version","languageSettings":{"currentLanguageTag":"en","officialLanguageTags":["de","en"],"communityLanguageTags":["es","fr","hu","nl","pl","zh-TW","ja"],"languageCookieName":"GAME_LOCALE"}};
+
+            </script>
+        
+        
+        
+    
+
+    
+        
+        
+            <script type="module" src="/dist/assets/index-gNi_2OoR.js"></script>
+        
+        
+    
+
+    
+        
+        
+        
+            <link rel="stylesheet" type="text/css" href="/dist/assets/vendor-DjKU5o2j.css"/>
+        
+    
+
+    
+        
+        
+        
+            <link rel="stylesheet" type="text/css" href="/dist/assets/modulepreload-polyfill-CgAHsJyD.css"/>
+        
+    
+
+    
+        
+        
+        
+            <link rel="stylesheet" type="text/css" href="/dist/assets/index-DiEdqFUs.css"/>
+        
+    
+
+    
+        
+        
+        
+            <link rel="stylesheet" type="text/css" href="/dist/assets/theme-dark-44h3O3O4.css"/>
+        
+    
+
+
+
+    <link rel="stylesheet" type="text/css" href="../../assets/css/fixed-header-2.css"/>
+
+
+    
+</head>
+<body>
+
+<div class="bootstrap modal fade" id="help-modal">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <button type="button" class="close" data-dismiss="modal">
+                    <span aria-hidden="true">&times;</span>
+                    <span class="sr-only">Close</span>
+                </button>
+                <h1 class="modal-title">Modal title</h1>
+            </div>
+            <div class="modal-body">
+            </div>
+        </div><!-- /.modal-content -->
+    </div><!-- /.modal-dialog -->
+</div><!-- /.modal -->
+
+
+
+<nav class="bootstrap navbar navbar-default as-navbar-meta" role="navigation">
+    <div class="container-fluid">
+        <div class="navbar-header">
+            <button type="button" class="navbar-toggle" data-toggle="collapse"
+                    data-target="#as-navbar-meta-collapse">
+                <span class="sr-only">Toggle navigation</span>
+                <span class="fa fa-cog"></span>
+            </button>
+            <a class="navbar-brand" href="../portal/index">AirlineSim</a>
+        </div>
+
+        <!-- Collect the nav links, forms, and other content for toggling -->
+        <div class="collapse navbar-collapse" id="as-navbar-meta-collapse">
+            
+            <form class="navbar-form navbar-left" role="search" method="get" action="../../app/info/search">
+                <div class="form-group">
+                    <div class="input-group">
+                        <input type="text" name="query" class="form-control" placeholder="Search">
+                        <span class="input-group-btn">
+                            <button type="submit" class="btn btn-default">
+                                <span class="fa fa-search"></span>
+                            </button>
+                        </span>
+                    </div>
+                </div>
+            </form>
+            <ul class="nav navbar-nav navbar-right">
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle" data-toggle="dropdown" title="Database">
+                        <span class="fa fa-database fa-lg"></span>
+                        <span class="as-icon-label">Database</span>
+                        <span class="caret"></span>
+                    </a>
+                    <ul class="dropdown-menu" role="menu">
+                        <li class="dropdown-header">Directories</li>
+                        <li><a href="../info/countries">Countries</a></li>
+                        <li><a href="../../app/info/enterprises">Enterprises</a></li>
+                        <li><a href="../../app/info/alliances">Alliances</a></li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Other Resources</li>
+                        <li><a href="../info/fleets">Fleet Lists</a></li>
+                        <li><a href="../info/stats">Statistics</a></li>
+                        <li><a href="../../app/info/ors">Online Reservation System</a></li>
+                    </ul>
+                </li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle" data-toggle="dropdown" title="Help">
+                        <span class="fa fa-lightbulb-o fa-lg"></span>
+                        <span class="as-icon-label">Help</span>
+                        <span class="caret"></span>
+                    </a>
+                    <ul class="dropdown-menu" role="menu">
+                        <li>
+                            <a href="https://handbook.airlinesim.aero/" target="_blank">
+                                <span class="fa fa-external-link"></span>
+                                Handbook
+                            </a>
+                        </li>
+                        <li>
+                            <a href="../../app/portal/support" title="Support">
+                                <span class="fa fa-question"></span>
+                                <span class="as-icon-label">Support</span>
+                            </a>
+                        </li>
+                        <li>
+                            <a href="../../app/info/about">
+                                <span class="fa fa-info"></span>
+                                <span class="as-icon-label">About AirlineSim</span>
+                            </a>
+                        </li>
+                        <li>
+                            <a href="../../app/info/status">
+                                <span class="fa fa-heartbeat"></span>
+                                <span class="as-icon-label">Simulation Status</span>
+                            </a>
+                        </li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Game Rules</li>
+                        <li><a href="../../app/info/rules/general">General Rules</a></li>
+                        <li><a href="../../app/info/rules/naming">Naming Rules</a></li>
+                        <li><a href="../../app/info/rules/routes">Forbidden Routes</a></li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Legal</li>
+                        <li>
+                            <a href="https://simulogics.games/terms/" target="_blank">
+                                <span class="fa fa-external-link"></span>
+                                Terms & Conditions
+                            </a>
+                        </li>
+                        <li>
+                            <a href="https://simulogics.games/privacy/" target="_blank">
+                                <span class="fa fa-external-link"></span>
+                                Privacy Statement
+                            </a>
+                        </li>
+                        <li>
+                            <a href="https://simulogics.games/impressum/" target="_blank">
+                                <span class="fa fa-external-link"></span>
+                                Impressum
+                            </a>
+                        </li>
+                    </ul>
+                </li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle" data-toggle="dropdown" title="Community">
+                        <span class="fa fa-users"></span>
+                        <span class="as-icon-label">Community</span>
+                        <span class="caret"></span>
+                    </a>
+                    <ul class="dropdown-menu" role="menu">
+                        <li>
+                            <a href="https://www.airlinesim.aero/blog/" target="_blank">
+                                <span class="fa fa-external-link"></span>
+                                Blog
+                            </a>
+                        </li>
+                        <li>
+                            <a href="https://forums.airlinesim.aero" target="_blank">
+                                <span class="fa fa-external-link"></span>
+                                Forums
+                            </a>
+                        </li>
+                        <li>
+                            <a href="https://discord.gg/5K2Axks" target="_blank">
+                                <span class="fa fa-external-link"></span>
+                                Discord Chat
+                            </a>
+                        </li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Follow AirlineSim</li>
+                        <li>
+                            <a href="https://facebook.com/airlinesim" target="_blank">
+                                <span class="fa fa-fw fa-facebook"></span>
+                                Facebook
+                            </a>
+                        </li>
+                        <li>
+                            <a href="https://twitter.com/airlinesim" target="_blank">
+                                <span class="fa fa-fw fa-twitter"></span>
+                                Twitter
+                            </a>
+                        </li>
+                        <li>
+                            <a href="https://youtube.com/airlinesimofficial" target="_blank">
+                                <span class="fa fa-fw fa-youtube"></span>
+                                YouTube
+                            </a>
+                        </li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">More simulogics games</li>
+                        <li>
+                            <a href="https://prosperousuniverse.com/" target="_blank">
+                                <span class="fa fa-external-link"></span>
+                                Prosperous Universe
+                            </a>
+                        </li>
+                    </ul>
+                </li>
+                
+                    <li>
+                        <a href="../../app/user/mail" title="Private Messages">
+                            <span class="fa fa-envelope fa-lg"></span>
+                            <span class="as-icon-label">Private Messages</span>
+                            
+                                <span class="badge badge-unread">40</span>
+                            
+                        </a>
+                    </li>
+                
+                
+                
+    <li class="dropdown">
+        <a href="../../app/user/settings" class="dropdown-toggle" data-toggle="dropdown"
+           title="Settings">
+            <span class="fa fa-user fa-lg"></span>
+            <span class="as-icon-label">lapdank</span>
+            <span class="caret"></span>
+        </a>
+        <ul class="dropdown-menu" role="menu">
+            <li class="dropdown-header">Account</li>
+            <li><a href="https://airlinesim.aero/account">Settings/Game Worlds</a></li>
+            
+                <li>
+                    <a class="logout" href="../user/logout">
+                        
+                            
+                        Log out lapdank
+                    </a>
+                </li>
+            
+            
+                <li class="divider"></li>
+                <li class="dropdown-header">Game World</li>
+                <li><a href="../info/user?id=644">Your Profile</a></li>
+                <li><a href="../user/holdings">Your Holdings</a></li>
+                <li><a href="../../app/user/settings">Settings</a></li>
+                <li><a href="../../app/user/delete">Deactivation</a></li>
+            
+        </ul>
+    </li>
+
+                
+            </ul>
+        </div>
+        <!-- /.navbar-collapse -->
+    </div>
+    <!-- /.container-fluid -->
+</nav>
+
+<nav class="bootstrap navbar navbar-default as-navbar-main" role="navigation">
+    
+    <div class="container-fluid">
+        <div class="navbar-header">
+            <button type="button" class="navbar-toggle" data-toggle="collapse"
+                    data-target="#as-navbar-main-collapse">
+                <span class="sr-only">Toggle navigation</span>
+                <span class="icon-bar"></span>
+                <span class="icon-bar"></span>
+                <span class="icon-bar"></span>
+            </button>
+        </div>
+
+        <!-- Collect the nav links, forms, and other content for toggling -->
+        <div class="collapse navbar-collapse" id="as-navbar-main-collapse">
+            <ul class="nav navbar-nav">
+                <li class="dropdown">
+                    <a class="name" data-toggle="dropdown" href="../../app/enterprise/dashboard">
+                        Fly Gemini
+                        <span class="caret"></span>
+                    </a>
+                    <ul class="dropdown-menu" role="menu">
+                        <li><a href="../../app/enterprise/dashboard">Overview</a></li>
+                        <li><a href="../../app/enterprise/settings">Settings</a></li>
+                        <li><a href="../../app/enterprise/delete">Liquidation/Reset</a></li>
+                        
+                            <li class="divider"></li>
+                            <li class="dropdown-header">Switch Enterprise</li>
+                            
+                            <li>
+                                <a href="../../app/enterprise/dashboard?select=745">
+                                    Fly Gemini
+                                </a>
+                            </li>
+                            
+                            <li>
+                                <a href="../../app/enterprise/dashboard?select=744">
+                                    Gemini
+                                </a>
+                            </li>
+                            
+                        
+                        <li class="divider"></li>
+                        <li class="dropdown-header">New Enterprise</li>
+                        <li><a href="../../app/enterprise/new">Create new Enterprise</a></li>
+                    </ul>
+                </li>
+                <li>
+                    <a class="balance" href="../../app/finance/accounting">
+                        
+                            <span class="good">
+                                51,833
+                            </span>
+                        
+                        
+                        AS$
+                    </a>
+                </li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle" data-toggle="dropdown">
+                        Commercial
+                        <span class="caret"></span>
+                    </a>
+                    <ul class="dropdown-menu" role="menu">
+                        <li class="dropdown-header">Network Planning</li>
+                        <li><a href="../../app/com/scheduling">Scheduling</a></li>
+                        <li><a href="../../app/com/numbers">Flight Numbers</a></li>
+                        <li><a href="../../app/com/routes/evaluation">Route Evaluation</a></li>
+                        <li><a href="../../app/com/markets">Market Analysis</a></li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Sales & Distribution</li>
+                        <li><a href="../enterprise/flightsPrices">Pricing</a></li>
+                        <li><a href="../../app/com/inventory">Inventory</a></li>
+                        <li><a href="../../app/com/loads">Load Monitoring</a></li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Product & Customer Service</li>
+                        <li><a href="../../app/seating">Cabin Configurations</a></li>
+                        <li><a href="../enterprise/serviceProfiles">Service Profiles</a></li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Business Development</li>
+                        <li><a href="../enterprise/interlining">Interlining</a></li>
+                        
+                            <li><a href="../../app/alliance">Alliance</a></li>
+                            <li><a href="../../app/alliance/admin">Alliance Administration</a></li>
+                        
+                        
+                    </ul>
+                </li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle" data-toggle="dropdown">
+                        Operations
+                        <span class="caret"></span>
+                    </a>
+                    <ul class="dropdown-menu" role="menu">
+                        <li class="dropdown-header">Flight Operations</li>
+                        <li><a href="../../app/fleets">Fleet Management</a></li>
+                        <li><a href="../../app/aircraft/evaluation">Aircraft Type Evaluation</a></li>
+                        <li><a href="../enterprise/maintenance">Maintenance</a></li>
+                        <li><a href="../enterprise/operationsControl">Operations Control</a></li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Ground Operations</li>
+                        <li><a href="../../app/ops/stations">Stations</a></li>
+                        <li><a href="../enterprise/buildings">Facilities</a></li>
+                    </ul>
+                </li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle" data-toggle="dropdown">
+                        Management
+                        <span class="caret"></span>
+                    </a>
+                    <ul class="dropdown-menu" role="menu">
+                        <li class="dropdown-header">Procurement</li>
+                        <li><a href="../../app/aircraft/manufacturers">Aircraft Manufacturers</a></li>
+                        <li><a href="../../app/aircraft/market">Aircraft Market</a></li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Human Resources</li>
+                        <li><a href="../enterprise/staffOverview">Personnel Management</a></li>
+                        <li><a href="../enterprise/staffPilots">Crew Management</a></li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Investments</li>
+                        <li><a href="../holding/stockexchanges">Markets & Exchanges</a></li>
+                        <li><a href="../../app/enterprise/shares">Subsidiaries & Portfolio</a></li>
+                        <li><a href="../holding/orders">Order List</a></li>
+                        <li class="divider"></li>
+                        <li class="dropdown-header">Finance</li>
+                        <li><a href="../../app/finance/capital">Corporate Finance</a></li>
+                        <li><a href="../../app/finance/accounting">Accounting</a></li>
+                        <li><a href="../enterprise/schedule">Cash Flow</a></li>
+                        <li><a href="../../app/finance/assets">Asset Management</a></li>
+                        <li><a href="../../app/finance/leasing">Leasing</a></li>
+                    </ul>
+                </li>
+            </ul>
+        </div>
+        <!-- /.navbar-collapse -->
+    </div>
+    <!-- /.container-fluid -->
+    
+</nav>
+
+<div class="bootstrap container-fluid">
+
+    
+
+    
+
+    
+
+    
+
+
+
+
+ 
+
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+<h1>
+	
+		
+	Flight Information FGM 105
+</h1>
+
+<h3>General Flight Information</h3>
+<div class="as-panel">
+    <div class="as-table-well" style="max-width:950px;">
+        <table class="table table-bordered table-hover">
+            <tr>
+                <th style="width:20%;">Operator</th>
+                <td colspan="3">
+                    <a href="enterprise?id=745">Fly Gemini</a>
+                </td>
+                <td style="padding:0;">
+                    
+                        <img src="../image/smallLogo?id=745&amp;strict=true" alt="smalllogo" style="display:block;float:right;"/>
+                    
+                </td>
+            </tr>
+            <tr>
+                <th>Departure</th>
+                <td>
+                        New York John F. Kennedy (<a href="airport?id=3551">JFK</a>)
+                </td>
+                <td style="text-align:center;width:10%">
+                    dep
+                </td>
+                <td style="text-align:center;width:20%">
+                    06:05 LT
+                </td>
+                <td style="text-align:center;width:20%">
+                    11:05 UTC
+                </td>
+            </tr>
+            <tr>
+                <th>Arrival</th>
+                <td>
+                        Punta Cana (<a href="airport?id=753">PUJ</a>)
+                </td>
+                <td style="text-align:center;">
+                    arr
+                </td>
+                <td style="text-align:center;">
+                    10:29 LT
+                </td>
+                <td style="text-align:center;">
+                    14:29 UTC
+                </td>
+            </tr>
+            <tr>
+                <th>Flight Duration</th>
+                <td colspan="4">
+                        03:23
+                </td>
+            </tr>
+            <tr>
+                <th>Equipment</th>
+                <td colspan="2">
+                        Airbus A320-200 medium (<a href="../enterprise/aircraftsType?id=2600">320</a>)
+                </td>
+                <td style="text-align:center;">
+                    
+                        
+                            <a href="../../app/fleets/aircraft/3769">
+                                    N013FGM
+                            </a>
+                        
+                        
+                    
+                </td>
+                <td style="text-align:center;">
+                    
+                </td>
+            </tr>
+            <tr>
+                <th>Offered Classes</th>
+                <td colspan="4">
+                    
+                        Economy
+                    
+                        Business
+                    
+                </td>
+            </tr>
+        </table>
+    </div>
+</div>
+
+
+
+
+<h3 id="privInf">Private Information</h3>
+
+<ul class="as-panel as-action-bar">
+    <li>
+        <a href="../../app/com/numbers/18665/0" class="btn btn-default">
+            <span>Flight Number</span>
+        </a>
+        <a href="../../app/com/scheduling/JFKPUJ" class="btn btn-default">
+            <span>Scheduling</span>
+        </a>
+        <a href="../../app/com/inventory/JFKPUJ" class="btn btn-default">
+            <span>Inventory</span>
+        </a>
+        <a href="../../app/fleets/aircraft/3769" class="btn btn-default">
+            <span>Aircraft</span>
+        </a>
+        
+            <a href="../enterprise/serviceProfile?id=611&amp;display=rating" class="btn btn-default">
+                <span>On-board service</span>
+            </a>
+        
+    </li>
+</ul>
+
+<div class="as-panel">
+    <p>This information is only accessible to you, as you own the operating airline. For other players it remains invisible.</p>
+</div>
+
+<div class="as-panel" id="flight-page">
+    <ul class="nav nav-tabs">
+        
+            
+                <li class="active"><a href="flight?id=119086&amp;display=costing#privInf">Costing</a></li>
+                <li><a href="flight?id=119086&amp;display=rating#privInf">Flight Rating</a></li>
+            
+            
+        
+    </ul>
+
+    <div class="tab-content">
+        <div class="tab-pane active">
+
+        
+        
+
+        <div class="as-fieldset" style="max-width:950px;">
+            <span class="legend">Loads</span>
+
+            <div class="as-table-well">
+                <table class="table table-bordered table-hover costing">
+                    <thead>
+                    <tr>
+                        <th style="width:16%;">Classes</th>
+                        <th style="width:14%;">Economy</th>
+                        <th style="width:14%;">Business</th>
+                        <th style="width:14%;">First</th>
+                        <th style="width:14%;">Passengers</th>
+                        <th style="width:14%;">Cargo</th>
+                        <th style="width:14%;">&nbsp;</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr>
+                        <td>Capacity</td>
+                        <td style="text-align:center;">
+                            144
+                        </td>
+                        <td style="text-align:center;">
+                            18
+                        </td>
+                        <td style="text-align:center;">
+                            0
+                        </td>
+                        <td style="text-align:center;">
+                            162
+                        </td>
+                        <td style="text-align:center;">
+                            24 CU
+                        </td>
+                        <td class="empty" colspan="1" rowspan="7">&nbsp;</td>
+                    </tr>
+                    <tr>
+                        <td>Bookings</td>
+                        <td style="text-align:center;">
+                            144
+                        </td>
+                        <td style="text-align:center;">
+                            18
+                        </td>
+                        <td style="text-align:center;">
+                            0
+                        </td>
+                        <td style="text-align:center;">
+                            162
+                        </td>
+                        <td style="text-align:center;">
+                            24 CU
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Load</td>
+                        <td style="text-align:center;">
+                            <span class="good">100%</span>
+                        </td>
+                        <td style="text-align:center;">
+                            <span class="good">100%</span>
+                        </td>
+                        <td style="text-align:center;">
+                            <span class="bad">0%</span>
+                        </td>
+                        <td style="text-align:center;">
+                            <span class="good">100%</span>
+                        </td>
+                        <td style="text-align:center;">
+                            <span class="good">100%</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>From ext. feeder</td>
+                        <td colspan="3" class="empty">&nbsp;</td>
+                        <td style="text-align:center;">
+                            0
+                        </td>
+                        <td style="text-align:center;">
+                            3 CU
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>From own feeder</td>
+                        <td colspan="3" class="empty">&nbsp;</td>
+                        <td style="text-align:center;">
+                            0
+                        </td>
+                        <td style="text-align:center;">
+                            2 CU
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>To ext. connection</td>
+                        <td colspan="3" class="empty">&nbsp;</td>
+                        <td style="text-align:center;">
+                            0
+                        </td>
+                        <td style="text-align:center;">
+                            0 CU
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>To own connection</td>
+                        <td colspan="3" class="empty">&nbsp;</td>
+                        <td style="text-align:center;">
+                            0
+                        </td>
+                        <td style="text-align:center;">
+                            0 CU
+                        </td>
+                    </tr>
+                    </tbody>
+                    <tbody>
+                    <tr class="subhead">
+                        <th colspan="7">Further Information</th>
+                    </tr>
+                    <tr>
+                        <td>Price/Unit</td>
+                        <td class="number">
+                            225 AS$
+                        </td>
+                        <td class="number">
+                            525 AS$
+                        </td>
+                        <td class="number">
+                            976 AS$
+                        </td>
+                        <td class="number">&nbsp;</td>
+                        <td class="number">
+                            152 AS$
+                        </td>
+                        <td class="number">&nbsp;</td>
+                    </tr>
+                    <tr>
+                        <td>Minimum Price</td>
+                        
+                            
+                                <td class="number imputed">
+                                    59 AS$
+                                </td>
+                            
+                            
+                        
+                            
+                                <td class="number imputed">
+                                    97 AS$
+                                </td>
+                            
+                            
+                        
+                            
+                                <td class="number imputed">
+                                    49 AS$
+                                </td>
+                            
+                            
+                        
+                            
+                            
+                                <td class="empty">&nbsp;</td>
+                            
+                        
+                            
+                                <td class="number imputed">
+                                    67 AS$
+                                </td>
+                            
+                            
+                        
+                            
+                            
+                                <td class="empty">&nbsp;</td>
+                            
+                        
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="as-fieldset" style="max-width:950px;">
+            <span class="legend">Costing Summary</span>
+
+            <div class="as-table-well">
+                <table class="table table-bordered table-hover costing">
+                    <thead>
+                    <tr>
+                        <th style="width:16%;">Classes</th>
+                        <th style="width:14%;">Economy</th>
+                        <th style="width:14%;">Business</th>
+                        <th style="width:14%;">First</th>
+                        <th style="width:14%;">Passengers</th>
+                        <th style="width:14%;">Cargo</th>
+                        <th style="width:14%;">Total</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr class="subhead">
+                        <th colspan="7">Revenues</th>
+                    </tr>
+                    <tr>
+                        <td>Direct Revenues</td>
+                        <td class="number">
+                            32,400 AS$
+                        </td>
+                        <td class="number">
+                            9,450 AS$
+                        </td>
+                        <td class="number">
+                            0 AS$
+                        </td>
+                        <td class="number">
+                            41,850 AS$
+                        </td>
+                        <td class="number">
+                            3,648 AS$
+                        </td>
+                        <td class="number total">
+                            45,498 AS$
+                        </td>
+                    </tr>
+                    </tbody>
+                    <tbody>
+                    <tr class="subhead">
+                        <th colspan="7">Costs</th>
+                    </tr>
+                    
+                        <tr>
+                            <td>Variable Costs</td>
+                            
+                                <td class="number">
+                                    2,412 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    596 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    3,008 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    600 AS$
+                                </td>
+                            
+                                <td class="number total">
+                                    3,608 AS$
+                                </td>
+                            
+                        </tr>
+                    
+                        <tr>
+                            <td>Flight-related Costs</td>
+                            
+                                <td class="number">
+                                    8,503 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    1,615 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    10,118 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    1,420 AS$
+                                </td>
+                            
+                                <td class="number total">
+                                    11,538 AS$
+                                </td>
+                            
+                        </tr>
+                    
+                    <tr>
+                        <td>Fixed Costs</td>
+                        
+                            <td class="number">
+                                3,152 AS$
+                            </td>
+                        
+                            <td class="number">
+                                598 AS$
+                            </td>
+                        
+                            <td class="number">
+                                0 AS$
+                            </td>
+                        
+                            <td class="number">
+                                3,750 AS$
+                            </td>
+                        
+                            <td class="number">
+                                454 AS$
+                            </td>
+                        
+                            <td class="number total">
+                                4,204 AS$
+                            </td>
+                        
+                    </tr>
+                    </tbody>
+                    <tbody>
+                    <tr class="subhead">
+                        <th colspan="7">Result</th>
+                    </tr>
+                    <tr class="total">
+                        <th>Total</th>
+                        
+                            <td class="number">
+                                <span class="good">+18,333 AS$</span>
+                            </td>
+                        
+                            <td class="number">
+                                <span class="good">+6,641 AS$</span>
+                            </td>
+                        
+                            <td class="number">
+                                0 AS$
+                            </td>
+                        
+                            <td class="number">
+                                <span class="good">+24,975 AS$</span>
+                            </td>
+                        
+                            <td class="number">
+                                <span class="good">+1,174 AS$</span>
+                            </td>
+                        
+                            <td class="number">
+                                <span class="good">+26,149 AS$</span>
+                            </td>
+                        
+                    </tr>
+                    <tr class="margin">
+                        <th>Margin</th>
+                        
+                            
+                                <td class="number">
+                                    <span class="good">+57%</span>
+                                </td>
+                            
+                            
+                        
+                            
+                                <td class="number">
+                                    <span class="good">+70%</span>
+                                </td>
+                            
+                            
+                        
+                            
+                            
+                                <td class="number">-- %</td>
+                            
+                        
+                            
+                                <td class="number">
+                                    <span class="good">+60%</span>
+                                </td>
+                            
+                            
+                        
+                            
+                                <td class="number">
+                                    <span class="good">+32%</span>
+                                </td>
+                            
+                            
+                        
+                            
+                                <td class="number total">
+                                    <span class="good">+57%</span>
+                                </td>
+                            
+                            
+                        
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="as-fieldset" style="max-width:950px;">
+            <span class="legend">Contribution Margins</span>
+
+            <div class="as-table-well">
+                <table class="table table-bordered table-hover costing">
+                    <thead>
+                    <tr>
+                        <th style="width:16%;">Classes</th>
+                        <th style="width:14%;">Economy</th>
+                        <th style="width:14%;">Business</th>
+                        <th style="width:14%;">First</th>
+                        <th style="width:14%;">Passengers</th>
+                        <th style="width:14%;">Cargo</th>
+                        <th style="width:14%;">Total</th>
+                    </tr>
+                    </thead>
+
+                    <tr class="subhead">
+                        <th colspan="7">Revenues</th>
+                    </tr>
+                    <tr>
+                        <td>Direct Revenues</td>
+                        <td class="number">
+                            32,400 AS$
+                        </td>
+                        <td class="number">
+                            9,450 AS$
+                        </td>
+                        <td class="number">
+                            0 AS$
+                        </td>
+                        <td class="number">
+                            41,850 AS$
+                        </td>
+                        <td class="number">
+                            3,648 AS$
+                        </td>
+                        <td class="number total">
+                            45,498 AS$
+                        </td>
+                    </tr>
+                    </tbody>
+
+                    
+                        <tbody>
+                        <tr class="subhead">
+                            <th colspan="7">Variable Costs</th>
+                        </tr>
+                        
+                            <tr>
+                                <td>Catering</td>
+                                
+                                    
+                                        <td class="number ">
+                                            828 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            398 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            1,226 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            1,226 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Ground Handling</td>
+                                
+                                    
+                                        <td class="number ">
+                                            1,584 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            198 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            1,782 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            1,782 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Cargo Handling</td>
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            600 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            600 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Delay Penalties</td>
+                                
+                                    
+                                        <td class="number ">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                        <tr class="subtotal">
+                            <th>Subtotal</th>
+                            
+                                <td class="number">
+                                    2,412 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    596 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    3,008 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    600 AS$
+                                </td>
+                            
+                                <td class="number total">
+                                    3,608 AS$
+                                </td>
+                            
+                        </tr>
+                        <tr class="cm">
+                            <th>CM I</th>
+                            
+                                <td class="number">
+                                    <span class="good">+29,988 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+8,854 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+38,842 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+3,048 AS$</span>
+                                </td>
+                            
+                                <td class="number total">
+                                    <span class="good">+41,890 AS$</span>
+                                </td>
+                            
+                        </tr>
+                        </tbody>
+                    
+                        <tbody>
+                        <tr class="subhead">
+                            <th colspan="7">Flight-related Costs</th>
+                        </tr>
+                        
+                            <tr>
+                                <td>Fuel</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            3,977 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            755 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            4,732 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            664 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            5,396 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Aircraft Handling</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            189 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            36 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            224 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            32 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            256 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>ATC</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            1,168 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            222 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            1,390 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            195 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            1,585 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Landing Fees</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            703 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            133 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            836 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            117 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            953 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Maintenance</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            2,466 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            468 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            2,935 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            412 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            3,347 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                        <tr class="subtotal">
+                            <th>Subtotal</th>
+                            
+                                <td class="number">
+                                    8,503 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    1,615 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    10,118 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    1,420 AS$
+                                </td>
+                            
+                                <td class="number total">
+                                    11,538 AS$
+                                </td>
+                            
+                        </tr>
+                        <tr class="cm">
+                            <th>CM II</th>
+                            
+                                <td class="number">
+                                    <span class="good">+21,485 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+7,240 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+28,725 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+1,628 AS$</span>
+                                </td>
+                            
+                                <td class="number total">
+                                    <span class="good">+30,353 AS$</span>
+                                </td>
+                            
+                        </tr>
+                        </tbody>
+                    
+                        <tbody>
+                        <tr class="subhead">
+                            <th colspan="7">Costs of Capacity</th>
+                        </tr>
+                        
+                            <tr>
+                                <td>Cockpit Crew</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            320 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            61 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            380 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            53 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            434 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Cabin Crew</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            428 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            81 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            510 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            510 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Leasing/Depreciation</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            1,929 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            366 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            2,296 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            322 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            2,618 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Fleet Management</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            105 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            20 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            124 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            17 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            142 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                        <tr class="subtotal">
+                            <th>Subtotal</th>
+                            
+                                <td class="number">
+                                    2,782 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    528 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    3,310 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    393 AS$
+                                </td>
+                            
+                                <td class="number total">
+                                    3,703 AS$
+                                </td>
+                            
+                        </tr>
+                        <tr class="cm">
+                            <th>CM III</th>
+                            
+                                <td class="number">
+                                    <span class="good">+18,703 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+6,712 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+25,415 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+1,235 AS$</span>
+                                </td>
+                            
+                                <td class="number total">
+                                    <span class="good">+26,650 AS$</span>
+                                </td>
+                            
+                        </tr>
+                        </tbody>
+                    
+                        <tbody>
+                        <tr class="subhead">
+                            <th colspan="7">Station Costs</th>
+                        </tr>
+                        
+                            <tr>
+                                <td>Station Management</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Ramp Agents</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            20 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            4 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            23 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            3 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            27 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Check-In Agents</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            157 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            30 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            187 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            187 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Cargo Controllers</td>
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                    
+                                        <td class="empty">&nbsp;</td>
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            25 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            25 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                        <tr class="subtotal">
+                            <th>Subtotal</th>
+                            
+                                <td class="number">
+                                    177 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    34 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    210 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    28 AS$
+                                </td>
+                            
+                                <td class="number total">
+                                    239 AS$
+                                </td>
+                            
+                        </tr>
+                        <tr class="cm">
+                            <th>CM IV</th>
+                            
+                                <td class="number">
+                                    <span class="good">+18,526 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+6,678 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+25,204 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+1,207 AS$</span>
+                                </td>
+                            
+                                <td class="number total">
+                                    <span class="good">+26,411 AS$</span>
+                                </td>
+                            
+                        </tr>
+                        </tbody>
+                    
+                        <tbody>
+                        <tr class="subhead">
+                            <th colspan="7">Overhead</th>
+                        </tr>
+                        
+                            <tr>
+                                <td>Customer Relations</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            42 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            8 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            50 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            7 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            57 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Flight Planning / Operations</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            23 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            4 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            28 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            4 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            32 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Network Planning</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            12 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            2 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            14 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            2 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            16 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                            <tr>
+                                <td>Administration</td>
+                                
+                                    
+                                        <td class="number  imputed">
+                                            116 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            22 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            0 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            138 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number  imputed">
+                                            19 AS$
+                                        </td>
+                                    
+                                    
+                                
+                                    
+                                        <td class="number ">
+                                            157 AS$
+                                        </td>
+                                    
+                                    
+                                
+                            </tr>
+                        
+                        <tr class="subtotal">
+                            <th>Subtotal</th>
+                            
+                                <td class="number">
+                                    193 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    37 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    230 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    32 AS$
+                                </td>
+                            
+                                <td class="number total">
+                                    262 AS$
+                                </td>
+                            
+                        </tr>
+                        <tr class="cm">
+                            <th>CM V</th>
+                            
+                                <td class="number">
+                                    <span class="good">+18,333 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+6,641 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    0 AS$
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+24,975 AS$</span>
+                                </td>
+                            
+                                <td class="number">
+                                    <span class="good">+1,174 AS$</span>
+                                </td>
+                            
+                                <td class="number total">
+                                    <span class="good">+26,149 AS$</span>
+                                </td>
+                            
+                        </tr>
+                        </tbody>
+                    
+
+                    <tbody>
+                    <tr class="margin">
+                        <th>Margin</th>
+                        
+                            
+                                <td class="number">
+                                    <span class="good">+57%</span>
+                                </td>
+                            
+                            
+                        
+                            
+                                <td class="number">
+                                    <span class="good">+70%</span>
+                                </td>
+                            
+                            
+                        
+                            
+                            
+                                <td class="number">-- %</td>
+                            
+                        
+                            
+                                <td class="number">
+                                    <span class="good">+60%</span>
+                                </td>
+                            
+                            
+                        
+                            
+                                <td class="number">
+                                    <span class="good">+32%</span>
+                                </td>
+                            
+                            
+                        
+                            
+                                <td class="number total">
+                                    <span class="good">+57%</span>
+                                </td>
+                            
+                            
+                        
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        
+        
+        
+
+        </div>
+    </div>
+</div>
+
+
+
+
+
+
+
+</div>
+
+<nav id="footer" class="bootstrap navbar navbar-default navbar-fixed-bottom as-navbar-bottom" role="navigation"></nav>
+
+<script>
+    $(document).ready(function() {
+        var $modal = $('#help-modal');
+
+        var updateModal = function(data) {
+            var html = $.parseHTML(data);
+            var $article = $(html);
+            var title = $article.find("#help-article-title").text();
+            var body = $article.find("#help-article-body").html();
+            $modal.find(".modal-title").text(title);
+            $modal.find(".modal-body").html(body);
+        }
+
+        // Clicks on help links outside of modal.
+        $("body").on("click", ".help-link", function(e) {
+            e.preventDefault();
+            $.get($(this).attr("href"), function (data) {
+                updateModal(data);
+                $modal.modal();
+            });
+        });
+
+        // Clicks on help links within modal.
+        $modal.on("click", "a", function(e) {
+            e.preventDefault();
+            $.get($(this).attr("href"), updateModal);
+        });
+
+        // Unread news.
+        $("#unread-news-hide").click(function(e) {
+            e.preventDefault();
+            $.get("../user/news-read", function() {
+                $('#unread-news').hide();
+            });
+        });
+        $("#unread-news-view").click(function(e) {
+            $.get("../user/news-read", function() {
+                window.location = "https://www.airlinesim.aero/blog/";
+            });
+        });
+    });
+</script>
+
+<script type="application/javascript">
+    function stc(e){var n="_sl_";function t(t,o){return!(!o||function(e){return document.cookie.split(";").some(function(t){return 0===t.trim().indexOf(n+e+"=")})}(t))&&(function(t,o){var i=new Date;i.setTime(Date.now()+62208e6),document.cookie=n+t+"="+encodeURIComponent(o)+"; expires="+i.toUTCString()+"; path=/; domain="+e+"; SameSite=Lax"}(t,o),!0)}t("lp",document.location)&&t("ref",document.referrer)}
+</script>
+<script type="application/javascript">
+    stc('airlinesim.aero');
+</script>
+
+</body>
+</html>

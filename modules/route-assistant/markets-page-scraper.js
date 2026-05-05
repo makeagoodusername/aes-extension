@@ -8,7 +8,7 @@
  * (current + default + slider ranges), the market-share leaderboard for both
  * pax and cargo, and 25 weeks of historic capacity + price chart data.
  *
- * Two consumption paths (mirroring ticket-price-scraper.js):
+ * Two consumption paths (mirroring schedule-page-scraper.js):
  *
  *   1. Live-read — `parseFromDoc(document)` runs against the current markets
  *      page DOM when the user navigates to it (via content_markets.js).
@@ -20,9 +20,10 @@
  * Storage — one fetch writes 4 directional keys atomically:
  *   routeAssistant:markets:competitors:<HUB>-<DEST>
  *     → {hub, dest, scrapedAt, source, competitors: [{flightCode, flightId,
- *        typeCode, typeId, depDateUtc, depDateLocal, depTimeUtc, depTimeLocal,
- *        arrTimeUtc, arrTimeLocal, serviceClass, availability, price, status,
- *        isOurs}]}
+ *        flightNumberId, operatorPrefix, typeCode, typeId, depDateUtc,
+ *        depDateLocal, depTimeUtc, depTimeLocal, arrTimeUtc, arrTimeLocal,
+ *        serviceClass, capacity, booked, loadPct, availability, price,
+ *        status, isOurs}]}
  *
  *   routeAssistant:markets:ownPricing:<HUB>-<DEST>
  *     → {hub, dest, scrapedAt, source, prices: {Y, C, F, Cargo},
@@ -49,11 +50,38 @@
  * any subset of families, so the split costs no extra round trip.
  */
 class RouteAssistantMarketsPageScraper {
-    static CACHE_PREFIXES = {
+    /**
+     * L3 — Class B refactor: per-family namespacing via `acctKey()`.
+     * Markets-page records depend on which airline is "ours" (own
+     * pricing rows, our slice of the leaderboard), so per-account
+     * scoping prevents cross-account contamination.
+     */
+    static LEGACY_PREFIXES = {
         competitors: "routeAssistant:markets:competitors:",
         ownPricing:  "routeAssistant:markets:ownPricing:",
         marketShare: "routeAssistant:markets:marketShare:",
         historic:    "routeAssistant:markets:historic:"
+    }
+    static SCOPE_PREFIXES = {
+        competitors: "routeAssistant:markets:competitors",
+        ownPricing:  "routeAssistant:markets:ownPricing",
+        marketShare: "routeAssistant:markets:marketShare",
+        historic:    "routeAssistant:markets:historic"
+    }
+
+    /** L3 deprecated — preserve for any reader still doing key arithmetic. */
+    static get CACHE_PREFIXES() { return RouteAssistantMarketsPageScraper.LEGACY_PREFIXES }
+
+    static _key(family, hub, dest) {
+        const scope = RouteAssistantMarketsPageScraper.SCOPE_PREFIXES[family]
+        if (!scope) return null
+        return acctKey(scope, RouteAssistantMarketsPageScraper._pairKey(hub, dest))
+    }
+
+    static _legacyKey(family, hub, dest) {
+        const prefix = RouteAssistantMarketsPageScraper.LEGACY_PREFIXES[family]
+        if (!prefix) return null
+        return prefix + RouteAssistantMarketsPageScraper._pairKey(hub, dest)
     }
 
     static FAMILIES = ["competitors", "ownPricing", "marketShare", "historic"]
@@ -93,24 +121,25 @@ class RouteAssistantMarketsPageScraper {
             ? opts.families
             : RouteAssistantMarketsPageScraper.FAMILIES
         const maxAge = (opts && opts.maxAge) || {}
-        const keys = []
-        const keyMeta = []   // parallel: [{pair, family, key}]
+        const allKeys = []
+        const keyMeta = []   // parallel: [{pair, family, ns, lg}]
         for (const p of pairs) {
             const [a, b] = Array.isArray(p) ? p : [p.hub, p.dest]
             const pair = RouteAssistantMarketsPageScraper._pairKey(a, b)
             for (const fam of families) {
-                const prefix = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam]
-                if (!prefix) continue
-                const key = prefix + pair
-                keys.push(key)
-                keyMeta.push({pair, family: fam, key})
+                const ns = RouteAssistantMarketsPageScraper._key(fam, a, b)
+                const lg = RouteAssistantMarketsPageScraper._legacyKey(fam, a, b)
+                if (!ns || !lg) continue
+                if (allKeys.indexOf(ns) < 0) allKeys.push(ns)
+                if (allKeys.indexOf(lg) < 0) allKeys.push(lg)
+                keyMeta.push({pair, family: fam, ns, lg})
             }
         }
-        if (!keys.length) return new Map()
-        const out = await chrome.storage.local.get(keys)
+        if (!allKeys.length) return new Map()
+        const out = await chrome.storage.local.get(allKeys)
         const map = new Map()
         for (const meta of keyMeta) {
-            let rec = out[meta.key]
+            let rec = out[meta.ns] !== undefined ? out[meta.ns] : (out[meta.lg] || null)
             if (!rec) continue
             const ageDays = RouteAssistantMarketsPageScraper._normaliseMaxAge(maxAge[meta.family])
             if (RouteAssistantMarketsPageScraper._isExpired(rec, ageDays)) continue
@@ -159,8 +188,7 @@ class RouteAssistantMarketsPageScraper {
      * produced. Skips families where the parser returned null (e.g., no
      * pricing fieldset present on a sub-page).
      */
-    static async saveAllRecords(hub, dest, parsed, source) {
-        const pair = RouteAssistantMarketsPageScraper._pairKey(hub, dest)
+    static async saveAllRecords(hub, dest, parsed, source, server) {
         const ts = Date.now()
         const base = {
             hub:       String(hub || "").toUpperCase(),
@@ -168,20 +196,25 @@ class RouteAssistantMarketsPageScraper {
             scrapedAt: ts,
             source:    source || "fetch"
         }
+        if (server) base.server = String(server)
         const writes = {}
         const saved = {}
         // Read the existing historic record so a fresh single-payload
-        // scrape doesn't wipe out previously-cached payloads. We write
-        // the union under `byPayload`.
+        // scrape doesn't wipe out previously-cached payloads. Reads via
+        // namespaced + legacy fallback so a pre-L3 record seeds the
+        // namespaced slot on the next save.
         let prevHistoric = null
         if (parsed && parsed.historic) {
-            const histKey = RouteAssistantMarketsPageScraper.CACHE_PREFIXES.historic + pair
-            const cur = await chrome.storage.local.get([histKey])
-            prevHistoric = cur && cur[histKey] ? RouteAssistantMarketsPageScraper._migrateHistoricRecord(cur[histKey]) : null
+            const histNs = RouteAssistantMarketsPageScraper._key("historic", hub, dest)
+            const histLg = RouteAssistantMarketsPageScraper._legacyKey("historic", hub, dest)
+            const reads = (histNs === histLg) ? [histNs] : [histNs, histLg]
+            const cur = await chrome.storage.local.get(reads)
+            const raw = cur[histNs] !== undefined ? cur[histNs] : (cur[histLg] || null)
+            prevHistoric = raw ? RouteAssistantMarketsPageScraper._migrateHistoricRecord(raw) : null
         }
         for (const fam of RouteAssistantMarketsPageScraper.FAMILIES) {
             if (!parsed || !parsed[fam]) continue
-            const key = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam] + pair
+            const key = RouteAssistantMarketsPageScraper._key(fam, hub, dest)
             let payload = parsed[fam]
             if (fam === "historic") {
                 // Letter K — coerce parser output into the byPayload map
@@ -195,6 +228,13 @@ class RouteAssistantMarketsPageScraper {
         }
         if (Object.keys(writes).length) {
             await chrome.storage.local.set(writes)
+            if (window.AesDataBus && typeof window.AesDataBus.emit === "function") {
+                window.AesDataBus.emit("data:route-assistant:markets:updated", {
+                    hub:         base.hub,
+                    dest:        base.dest,
+                    keysTouched: Object.keys(saved)
+                })
+            }
         }
         return saved
     }
@@ -231,15 +271,20 @@ class RouteAssistantMarketsPageScraper {
      * — present families only.
      */
     static async loadAll(hub, dest) {
-        const pair = RouteAssistantMarketsPageScraper._pairKey(hub, dest)
-        const keys = RouteAssistantMarketsPageScraper.FAMILIES.map(
-            f => RouteAssistantMarketsPageScraper.CACHE_PREFIXES[f] + pair
-        )
-        const out = await chrome.storage.local.get(keys)
-        const result = {}
+        const allKeys = []
+        const meta = []
         for (const fam of RouteAssistantMarketsPageScraper.FAMILIES) {
-            const k = RouteAssistantMarketsPageScraper.CACHE_PREFIXES[fam] + pair
-            if (out[k]) result[fam] = out[k]
+            const ns = RouteAssistantMarketsPageScraper._key(fam, hub, dest)
+            const lg = RouteAssistantMarketsPageScraper._legacyKey(fam, hub, dest)
+            if (allKeys.indexOf(ns) < 0) allKeys.push(ns)
+            if (allKeys.indexOf(lg) < 0) allKeys.push(lg)
+            meta.push({fam, ns, lg})
+        }
+        const out = await chrome.storage.local.get(allKeys)
+        const result = {}
+        for (const m of meta) {
+            const rec = out[m.ns] !== undefined ? out[m.ns] : (out[m.lg] || null)
+            if (rec) result[m.fam] = rec
         }
         return result
     }
@@ -282,7 +327,7 @@ class RouteAssistantMarketsPageScraper {
             // other families.
             await RouteAssistantMarketsPageScraper.saveAllRecords(hubIata, destIata, {
                 competitors: null, ownPricing: null, marketShare: null, historic: parsed
-            }, "fetch")
+            }, "fetch", this.server)
             return {
                 periods:    parsed.periods,
                 capacities: parsed.capacities || [],
@@ -379,7 +424,7 @@ class RouteAssistantMarketsPageScraper {
             const html = await resp.text()
             const parsed = RouteAssistantMarketsPageScraper.parseFromHtml(html)
             const saved = await RouteAssistantMarketsPageScraper.saveAllRecords(
-                hubIata, destIata, parsed, "fetch"
+                hubIata, destIata, parsed, "fetch", this.server
             )
             this._sessionCache.set(pair, saved)
             return saved
@@ -465,57 +510,79 @@ class RouteAssistantMarketsPageScraper {
         const ourPrefix = RouteAssistantMarketsPageScraper._currentAirlinePrefixes()
         const list = []
         for (const tr of table.querySelectorAll("tbody tr")) {
-            const cells = tr.querySelectorAll("td")
+            const cells = Array.from(tr.querySelectorAll("td"))
             if (cells.length < 8) continue
+            const plan = RouteAssistantMarketsPageScraper._competitorColumnPlan(cells)
+            if (!plan) continue
 
-            // [0] flight code (span) + small (a typeId link)
-            const flightCodeEl = cells[0].querySelector("span")
-            const typeLinkEl   = cells[0].querySelector("a[href*='aircraftsType']")
-            const flightCode = flightCodeEl ? (flightCodeEl.textContent || "").trim() : null
-            let typeCode = typeLinkEl ? (typeLinkEl.textContent || "").trim() : null
-            let typeId   = null
-            if (typeLinkEl) {
-                const m = /aircraftsType\?id=(\d+)/.exec(typeLinkEl.getAttribute("href") || "")
-                if (m) typeId = parseInt(m[1], 10)
-            }
+            const flightCell = cells[plan.flight]
+            const typeInfo = RouteAssistantMarketsPageScraper._extractInventoryType(flightCell)
+            const flightCode = RouteAssistantMarketsPageScraper._extractInventoryFlightCode(flightCell)
+            const flightNumberId = RouteAssistantMarketsPageScraper._extractFlightNumberId(flightCell)
+            const carrierPrefix = RouteAssistantMarketsPageScraper._carrierPrefixFromFlightCode(flightCode)
+            let typeCode = typeInfo.typeCode
+            let typeId   = typeInfo.typeId
 
-            // [1] date — "2026-04-23" body, title="2026-04-24 UTC / 2026-04-23 HT / 2026-04-23 LT"
-            const dateBody = (cells[1].textContent || "").trim()
-            const dateTitle = cells[1].getAttribute("title") || ""
+            // Date title shape: "2026-04-24 UTC / 2026-04-23 HT / 2026-04-23 LT".
+            const dateBody = (cells[plan.date].textContent || "").trim()
+            const dateTitle = cells[plan.date].getAttribute("title") || ""
             const depDateUtc   = RouteAssistantMarketsPageScraper._extractTitlePart(dateTitle, "UTC")
             const depDateLocal = RouteAssistantMarketsPageScraper._extractTitlePart(dateTitle, "LT") || dateBody
 
-            // [2] depTime — "20:30" body, title="01:30 UTC / 20:30 HT / 20:30 LT"
-            const depTimeBody  = (cells[2].textContent || "").trim()
-            const depTimeTitle = cells[2].getAttribute("title") || ""
+            // Time title shape: "01:30 UTC / 20:30 HT / 20:30 LT".
+            const depTimeBody  = (cells[plan.depTime].textContent || "").trim()
+            const depTimeTitle = cells[plan.depTime].getAttribute("title") || ""
             const depTimeUtc   = RouteAssistantMarketsPageScraper._extractTitlePart(depTimeTitle, "UTC")
             const depTimeLocal = RouteAssistantMarketsPageScraper._extractTitlePart(depTimeTitle, "LT") || depTimeBody
 
-            // [3] arrTime — same shape
-            const arrTimeBody  = (cells[3].textContent || "").trim()
-            const arrTimeTitle = cells[3].getAttribute("title") || ""
+            const arrTimeBody  = (cells[plan.arrTime].textContent || "").trim()
+            const arrTimeTitle = cells[plan.arrTime].getAttribute("title") || ""
             const arrTimeUtc   = RouteAssistantMarketsPageScraper._extractTitlePart(arrTimeTitle, "UTC")
             const arrTimeLocal = RouteAssistantMarketsPageScraper._extractTitlePart(arrTimeTitle, "LT") || arrTimeBody
 
-            // [4] service class — Y / C / F / Cargo
-            const serviceClass = (cells[4].textContent || "").trim()
+            // Service class — Y / C / F / Cargo. Normalise long AS
+            // labels so downstream per-class pricing does not split
+            // "Business" and "C" into separate buckets.
+            const rawServiceClass = (cells[plan.serviceClass].textContent || "").trim()
+            const serviceClass = RouteAssistantMarketsPageScraper._normaliseClassKey(rawServiceClass) || rawServiceClass
 
-            // [5] availability — number inside good/warning/bad div
-            const availDiv = cells[5].querySelector("div")
-            const availability = availDiv
-                ? RouteAssistantMarketsPageScraper._parseInt(availDiv.textContent)
-                : RouteAssistantMarketsPageScraper._parseInt(cells[5].textContent)
+            const capacity = plan.capacity != null
+                ? RouteAssistantMarketsPageScraper._parseInt(cells[plan.capacity].textContent)
+                : null
+            const booked = plan.booked != null
+                ? RouteAssistantMarketsPageScraper._parseInt(cells[plan.booked].textContent)
+                : null
+            const loadPct = plan.load != null
+                ? RouteAssistantMarketsPageScraper._parsePct(cells[plan.load].textContent)
+                : null
 
-            // [6] price — "148 AS$"
-            const price = RouteAssistantMarketsPageScraper._parseInt(cells[6].textContent)
+            // Legacy layout exposed "availability"; current AirlineSim
+            // inventory exposes Cap/Bkd/Load. Preserve availability for
+            // old consumers by deriving remaining capacity when possible.
+            let availability = null
+            if (plan.availability != null) {
+                const availDiv = cells[plan.availability].querySelector("div")
+                availability = availDiv
+                    ? RouteAssistantMarketsPageScraper._parseInt(availDiv.textContent)
+                    : RouteAssistantMarketsPageScraper._parseInt(cells[plan.availability].textContent)
+            }
+            if (availability == null && capacity != null && booked != null) {
+                availability = Math.max(0, capacity - booked)
+            } else if (availability == null && capacity != null) {
+                availability = capacity
+            }
 
-            // [7] status — span text inside .flightStatusPanel
-            const statusSpan = cells[7].querySelector("span")
-            const status = statusSpan ? (statusSpan.textContent || "").trim() : (cells[7].textContent || "").trim()
+            // Price — "148 AS$" for pax, often decimal AS$/kg for cargo.
+            const price = RouteAssistantMarketsPageScraper._parsePrice(cells[plan.price].textContent, serviceClass)
 
-            // [8] flight detail link → flight ID
+            // Status — span text inside .flightStatusPanel on older pages,
+            // direct text on the current inventory table.
+            const statusSpan = cells[plan.status].querySelector("span")
+            const status = statusSpan ? (statusSpan.textContent || "").trim() : (cells[plan.status].textContent || "").trim()
+
+            // Flight detail link → flight ID.
             let flightId = null
-            const flightLink = cells[cells.length - 1].querySelector("a[href*='flight?id=']")
+            const flightLink = RouteAssistantMarketsPageScraper._firstAnchorMatching(cells[plan.link] || tr, /flight\?id=/)
             if (flightLink) {
                 const m = /flight\?id=(\d+)/.exec(flightLink.getAttribute("href") || "")
                 if (m) flightId = parseInt(m[1], 10)
@@ -524,13 +591,125 @@ class RouteAssistantMarketsPageScraper {
             const isOurs = RouteAssistantMarketsPageScraper.isOurFlightCode(flightCode, ourPrefix)
 
             list.push({
-                flightCode, flightId, typeCode, typeId,
+                flightCode, flightNumberId, flightId,
+                carrierPrefix, operatorPrefix: carrierPrefix,
+                typeCode, typeId,
                 depDateUtc, depDateLocal, depTimeUtc, depTimeLocal,
                 arrTimeUtc, arrTimeLocal,
-                serviceClass, availability, price, status, isOurs
+                serviceClass, capacity, booked, loadPct, availability,
+                price, status, isOurs
             })
         }
         return list
+    }
+
+    static _competitorColumnPlan(cells) {
+        if (!cells || cells.length < 8) return null
+        let hasLeadingCheckbox = false
+        try {
+            hasLeadingCheckbox = !!(cells[0] && cells[0].querySelector("input[type='checkbox']"))
+        } catch (e) { hasLeadingCheckbox = false }
+        const offset = hasLeadingCheckbox ? 1 : 0
+        let priceIdx = -1
+        for (let i = offset + 5; i < cells.length; i++) {
+            if (/\bAS\$/i.test(String(cells[i] && cells[i].textContent || ""))) {
+                priceIdx = i
+                break
+            }
+        }
+        if (priceIdx < 0) priceIdx = offset + 6
+        if (priceIdx >= cells.length) return null
+        const looksCurrent = priceIdx >= offset + 8
+        if (looksCurrent) {
+            return {
+                flight: offset, date: offset + 1, depTime: offset + 2, arrTime: offset + 3,
+                serviceClass: offset + 4, capacity: offset + 5, booked: offset + 6, load: offset + 7,
+                price: priceIdx, status: Math.min(priceIdx + 1, cells.length - 1), link: cells.length - 1
+            }
+        }
+        return {
+            flight: offset, date: offset + 1, depTime: offset + 2, arrTime: offset + 3,
+            serviceClass: offset + 4, availability: offset + 5,
+            price: priceIdx, status: Math.min(priceIdx + 1, cells.length - 1), link: cells.length - 1
+        }
+    }
+
+    static _anchors(scope) {
+        if (!scope) return []
+        try {
+            if (scope.querySelectorAll) {
+                const found = Array.from(scope.querySelectorAll("a"))
+                if (found.length) return found
+            }
+            if (scope.querySelector) {
+                const one = scope.querySelector("a")
+                if (one) return [one]
+            }
+        } catch (e) { /* ignore */ }
+        return []
+    }
+
+    static _firstAnchorMatching(scope, pattern) {
+        for (const a of RouteAssistantMarketsPageScraper._anchors(scope)) {
+            const href = a.getAttribute("href") || ""
+            if (pattern instanceof RegExp ? pattern.test(href) : href.indexOf(String(pattern)) !== -1) {
+                return a
+            }
+        }
+        return null
+    }
+
+    static _extractInventoryFlightCode(cell) {
+        if (!cell) return null
+        let source = null
+        for (const a of RouteAssistantMarketsPageScraper._anchors(cell)) {
+            const href = a.getAttribute("href") || ""
+            if (/aircraftsType|flight\?id=/.test(href)) continue
+            const txt = (a.textContent || "").trim()
+            if (txt) { source = txt; break }
+        }
+        if (!source) {
+            const span = cell.querySelector("span")
+            if (span) source = (span.textContent || "").trim()
+        }
+        if (!source) source = (cell.textContent || "").trim()
+        source = String(source || "").replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim()
+        if (!source) return null
+        const m = /^([A-Z0-9]{1,5}\s*\d+[A-Z]?)/i.exec(source)
+        return m ? m[1].replace(/\s+/, " ").toUpperCase() : source.toUpperCase()
+    }
+
+    static _extractFlightNumberId(cell) {
+        for (const a of RouteAssistantMarketsPageScraper._anchors(cell)) {
+            const href = a.getAttribute("href") || ""
+            if (/aircraftsType|flight\?id=/.test(href)) continue
+            let m = /\/(?:app\/)?com\/numbers\/(\d+)/.exec(href)
+            if (!m) m = /(?:^|\/)\.?\/?(\d+)(?:[/?#]|$)/.exec(href)
+            if (m) return parseInt(m[1], 10)
+        }
+        return null
+    }
+
+    static _extractInventoryType(cell) {
+        const typeLinkEl = RouteAssistantMarketsPageScraper._firstAnchorMatching(cell, /aircraftsType/)
+        let typeCode = typeLinkEl ? (typeLinkEl.textContent || "").trim() : null
+        let typeId   = null
+        if (typeLinkEl) {
+            const m = /aircraftsType\?id=(\d+)/.exec(typeLinkEl.getAttribute("href") || "")
+            if (m) typeId = parseInt(m[1], 10)
+        }
+        return {typeCode, typeId}
+    }
+
+    static _carrierPrefixFromFlightCode(flightCode) {
+        const code = String(flightCode || "").trim().toUpperCase()
+        if (!code) return null
+        const spaced = /^([A-Z0-9]{1,5})\s+\d/.exec(code)
+        if (spaced) return spaced[1]
+        const compact = /^([A-Z]{1,3}[A-Z0-9]?)\d/.exec(code)
+        if (compact) return compact[1]
+        const token = /^([A-Z0-9]{1,5})/.exec(code)
+        return token ? token[1] : null
     }
 
     static _currentAirlinePrefixes() {
@@ -566,9 +745,11 @@ class RouteAssistantMarketsPageScraper {
     static isOurFlightCode(flightCode, prefixes) {
         if (!flightCode || !prefixes || !prefixes.length) return false
         const code = String(flightCode).trim().toUpperCase()
+        const codePrefix = RouteAssistantMarketsPageScraper._carrierPrefixFromFlightCode(code)
         for (const p of prefixes) {
             if (!p) continue
             const pu = String(p).toUpperCase()
+            if (codePrefix && codePrefix === pu) return true
             if (code.startsWith(pu + " ") || code === pu) return true
         }
         return false
@@ -592,6 +773,44 @@ class RouteAssistantMarketsPageScraper {
         if (!m) return null
         const n = parseInt(m[0].replace(/[,.\s]/g, ""), 10)
         return isFinite(n) ? n : null
+    }
+
+    static _normaliseClassKey(label) {
+        const raw = String(label || "").trim()
+        if (!raw) return null
+        const compact = raw.toUpperCase().replace(/\s+/g, " ")
+        if (compact === "Y" || compact === "ECONOMY" || compact === "ECONOMY CLASS") return "Y"
+        if (compact === "C" || compact === "BUSINESS" || compact === "BUSINESS CLASS") return "C"
+        if (compact === "F" || compact === "FIRST" || compact === "FIRST CLASS") return "F"
+        if (compact === "CARGO" || compact === "FREIGHT" || compact === "MAIL") return "Cargo"
+        return null
+    }
+
+    static _isCargoClass(label) {
+        return RouteAssistantMarketsPageScraper._normaliseClassKey(label) === "Cargo"
+    }
+
+    static _parsePrice(text, classKey) {
+        if (!RouteAssistantMarketsPageScraper._isCargoClass(classKey)) {
+            return RouteAssistantMarketsPageScraper._parseInt(text)
+        }
+        if (text == null) return null
+        const m = /-?\d[\d,.]*/.exec(String(text).replace(/[^\d,.\-]/g, " "))
+        if (!m) return null
+        const raw = m[0]
+        const sign = raw.charAt(0) === "-" ? -1 : 1
+        const body = sign < 0 ? raw.slice(1) : raw
+        const sep = Math.max(body.lastIndexOf("."), body.lastIndexOf(","))
+        if (sep >= 0) {
+            const whole = body.slice(0, sep).replace(/\D/g, "")
+            const frac = body.slice(sep + 1).replace(/\D/g, "")
+            if (frac.length > 0 && frac.length <= 2) {
+                const n = Number((whole || "0") + "." + frac)
+                return isFinite(n) ? Math.round(sign * n * 100) / 100 : null
+            }
+        }
+        const n = Number(body.replace(/\D/g, ""))
+        return isFinite(n) ? sign * n : null
     }
 
     // ------------------------------------------------------------------
@@ -620,17 +839,17 @@ class RouteAssistantMarketsPageScraper {
             if (cells.length < 5) continue
             // [0] class label, [1] current price, [2] new-price input,
             // [3] slider div, [4] default price + reset link
-            const cls = (cells[0].textContent || "").trim()
-            const cur = RouteAssistantMarketsPageScraper._parseInt(cells[1].textContent)
+            const rawCls = (cells[0].textContent || "").trim()
+            const cls = RouteAssistantMarketsPageScraper._normaliseClassKey(rawCls)
+            if (!cls) continue
+            const cur = RouteAssistantMarketsPageScraper._parsePrice(cells[1].textContent, cls)
             const newInp = cells[2].querySelector("input[type='text']")
-            const newVal = newInp ? RouteAssistantMarketsPageScraper._parseInt(newInp.getAttribute("value")) : cur
+            const newVal = newInp ? RouteAssistantMarketsPageScraper._parsePrice(newInp.getAttribute("value"), cls) : cur
             const defSpan = cells[4].querySelector("span")
-            const defVal = defSpan ? RouteAssistantMarketsPageScraper._parseInt(defSpan.textContent)
-                                   : RouteAssistantMarketsPageScraper._parseInt(cells[4].textContent)
-            if (cls) {
-                prices[cls]   = newVal != null ? newVal : cur
-                defaults[cls] = defVal
-            }
+            const defVal = defSpan ? RouteAssistantMarketsPageScraper._parsePrice(defSpan.textContent, cls)
+                                   : RouteAssistantMarketsPageScraper._parsePrice(cells[4].textContent, cls)
+            prices[cls]   = newVal != null ? newVal : cur
+            defaults[cls] = defVal
         }
 
         // Slider ranges live in inline <script> body — regex out the slider({…}) calls.
@@ -639,11 +858,15 @@ class RouteAssistantMarketsPageScraper {
         // id back to a row, but for the storage shape we only need per-class ranges,
         // so we walk in document order and pair sliders to the rows we just parsed.
         const scriptText = RouteAssistantMarketsPageScraper._collectScriptText(doc)
-        const sliderRe = /slider\(\s*\{[^}]*?value:\s*(\d+)\s*,\s*min:\s*(\d+)\s*,\s*max:\s*(\d+)/g
+        const sliderRe = /slider\(\s*\{[^}]*?value:\s*(-?\d+(?:[.,]\d+)?)\s*,\s*min:\s*(-?\d+(?:[.,]\d+)?)\s*,\s*max:\s*(-?\d+(?:[.,]\d+)?)/g
         const sliderMatches = []
         let sm
         while ((sm = sliderRe.exec(scriptText)) !== null) {
-            sliderMatches.push({value: +sm[1], min: +sm[2], max: +sm[3]})
+            sliderMatches.push({
+                value: RouteAssistantMarketsPageScraper._parsePrice(sm[1], "Cargo"),
+                min:   RouteAssistantMarketsPageScraper._parsePrice(sm[2], "Cargo"),
+                max:   RouteAssistantMarketsPageScraper._parsePrice(sm[3], "Cargo")
+            })
         }
         const classOrder = Object.keys(prices)
         for (let i = 0; i < classOrder.length && i < sliderMatches.length; i++) {
@@ -740,8 +963,8 @@ class RouteAssistantMarketsPageScraper {
 
     static _parsePct(text) {
         if (!text) return null
-        const m = /(-?\d+(?:\.\d+)?)\s*%/.exec(text)
-        return m ? parseFloat(m[1]) : null
+        const m = /(-?\d+(?:[,.]\d+)?)\s*%/.exec(text)
+        return m ? parseFloat(m[1].replace(",", ".")) : null
     }
 
     // ------------------------------------------------------------------
@@ -795,7 +1018,7 @@ class RouteAssistantMarketsPageScraper {
     }
 
     // ------------------------------------------------------------------
-    // Bulk-scrape orchestrator (mirror of ticket-price-scraper.js 322–363)
+    // Bulk-scrape orchestrator (mirror of schedule-page-scraper.js 322–363)
     // ------------------------------------------------------------------
 
     /**
@@ -848,4 +1071,8 @@ class RouteAssistantMarketsPageScraper {
             tryDispatch()
         })
     }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantMarketsPageScraper = RouteAssistantMarketsPageScraper
 }

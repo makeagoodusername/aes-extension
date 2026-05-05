@@ -46,6 +46,13 @@
     // UI uses live timing once the pipeline runs; this constant only
     // drives the upfront estimate.
     const ESTIMATED_SECONDS_PER_LEG = 7
+    const DEFAULT_DAY_MASK = [true, true, true, true, true, true, true]
+
+    function _legDayMask(leg) {
+        return leg && Array.isArray(leg.dayMask) && leg.dayMask.length >= 7
+            ? leg.dayMask.slice(0, 7).map(Boolean)
+            : DEFAULT_DAY_MASK.slice()
+    }
 
     const _state = {
         ctxReady:      false,
@@ -60,6 +67,24 @@
         storageTimer:  null,
         storageListener: null,
         settings:      null,
+        planner: {
+            configLoaded: false,
+            error:        null,
+            running:      false,
+            editSavePromise: null,
+            result:       null,
+            config: {
+                includedIatas: [],
+                airportCount:  3,
+                scheduleType:  "hubShuttle",
+                targetFlights: 4,
+                baseDeparture: "09:00",
+                startDayIdx:   0,
+                turnaroundMin: 45,
+                sequentialLongHaul: true,
+                autoApplyImmediately: false
+            }
+        },
         // Slice 5d — live apply-batch mirror of AesAfpAutoApplyBatch.state.
         // Refreshed on every `auto-apply:start/progress/done/aborted/error`
         // bus event so the footer can render without polling.
@@ -85,23 +110,44 @@
             batchId:  null,
             legs:     [],
             loadedAt: null
+        },
+        // Slice 8a — fleet-apply orchestrator mirror. Refreshed on each
+        // `fleet-apply:*` bus event so the footer can render fleet-level
+        // progress (alongside the per-aircraft `apply` block above).
+        fleetApply: {
+            inFlight:        false,
+            runId:           null,
+            total:           0,
+            idx:             0,
+            currentAircraft: null,
+            startedAt:       null,
+            finishedAt:      null,
+            aborted:         false,
+            perAircraft:     []
         }
     }
 
     let _rootEl       = null   // container injected into the slot
     let _summaryEl    = null
     let _ctaEl        = null
+    let _workbenchEl  = null
     let _statusEl     = null
     let _previewEl    = null
     let _legsEl       = null
     let _footerEl     = null
+
+    function _finiteNumber(value) {
+        if (value === null || value === undefined || value === "") return null
+        const n = Number(value)
+        return Number.isFinite(n) ? n : null
+    }
 
     // Public surface (re-assigned at the bottom). Slices 5b-5e patch
     // additional handles onto this object as their CTAs / hooks ship.
     const AesAfpAutoSchedulerPreview = {
         render:           () => _scheduleRender(),
         runAutoBuild:     () => _runAutoBuild(),
-        openConfirmModal: () => _openConfirmModal(),
+        openConfirmModal: (legs, opts) => _openConfirmModal(legs, opts),
         applyAll:         (legs, opts) => _applyAll(legs, opts),
         abortApply:       () => _abortApply(),
         retryFailed:      () => _retryFailed(),
@@ -121,6 +167,22 @@
 
     function _ctx() {
         return (window.AesAfp && AesAfp.ctx) || {}
+    }
+
+    function _normaliseIata(value) {
+        const s = String(value || "").trim().toUpperCase()
+        return /^[A-Z]{3}$/.test(s) ? s : ""
+    }
+
+    function _activeHubIata() {
+        try {
+            const hub = window.AesAfp && typeof window.AesAfp.getActiveHub === "function"
+                ? window.AesAfp.getActiveHub()
+                : null
+            const norm = _normaliseIata(hub)
+            if (norm) return norm
+        } catch (_) { /* fall back to page ctx */ }
+        return _normaliseIata(_ctx().currentLocationIata)
     }
 
     /**
@@ -144,7 +206,7 @@
             + "font-size:11px;color:#cbd5e1;font-weight:600;"
             + "text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;"
         const hLabel = document.createElement("span")
-        hLabel.textContent = "Auto-build (preview)"
+        hLabel.textContent = "Auto-build live"
         heading.appendChild(hLabel)
         const hHint = document.createElement("span")
         hHint.style.cssText = "color:#6b7280;font-weight:400;text-transform:none;"
@@ -165,6 +227,11 @@
         _ctaEl.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;"
             + "gap:6px;font-size:11px;color:#cbd5e1;margin-bottom:6px;"
         root.appendChild(_ctaEl)
+
+        _workbenchEl = document.createElement("div")
+        _workbenchEl.className = "aes-afp-route-builder-workbench"
+        _workbenchEl.style.cssText = "margin-bottom:8px;"
+        root.appendChild(_workbenchEl)
 
         _statusEl = document.createElement("div")
         _statusEl.className = "aes-afp-auto-preview-status"
@@ -194,6 +261,7 @@
 
         _renderSummary()
         _renderCta()
+        _renderWorkbench()
         _renderStatus()
         _renderPreview()
         _renderLegs()
@@ -217,18 +285,44 @@
         ))
 
         // Weekly block hours.
-        const weeklyHours = meta && isFinite(meta.budgetUsedHours)
-            ? meta.budgetUsedHours.toFixed(1) + "h"
+        const flightOnlyHours = meta ? _finiteNumber(meta.flightOnlyHoursUsed) : null
+        const legacyBudgetUsedHours = meta ? _finiteNumber(meta.budgetUsedHours) : null
+        const budgetUsedHours = flightOnlyHours !== null ? flightOnlyHours : legacyBudgetUsedHours
+        const occupiedHours = meta
+            ? (_finiteNumber(meta.occupiedHoursUsed) || legacyBudgetUsedHours)
+            : null
+        const budgetMaxHours = meta ? _finiteNumber(meta.budgetMaxHours) : null
+        const weeklyHours = budgetUsedHours !== null
+            ? budgetUsedHours.toFixed(1) + "h"
             : "—"
-        const weeklyTitle = meta && isFinite(meta.budgetMaxHours)
-            ? "Used " + meta.budgetUsedHours.toFixed(1)
-              + "h of " + meta.budgetMaxHours.toFixed(0) + "h ceiling"
+        // Track 7 slice 7e — when the budget reserved hours for AS-managed
+        // maintenance windows, surface the breakdown in the tooltip so the
+        // user understands why the ceiling tightened.
+        const reservedMaint = (_state.budget
+            ? _finiteNumber(_state.budget.scheduledMaintenanceHoursPerWeek)
+            : null)
+            || (meta ? _finiteNumber(meta.maintenanceHoursReserved) : null)
+            || 0
+        const rawMax = (_state.budget ? _finiteNumber(_state.budget.rawMaxWeeklyBlockHours) : null)
+            || budgetMaxHours
+        const weeklyTitle = budgetUsedHours !== null && budgetMaxHours !== null
+            ? ("Flights " + budgetUsedHours.toFixed(1)
+              + "h of " + budgetMaxHours.toFixed(0) + "h ceiling"
+              + (reservedMaint > 0
+                  ? "; maintenance occupies " + reservedMaint.toFixed(1) + "h"
+                  : "")
+              + (occupiedHours !== null && occupiedHours > budgetUsedHours + 0.01
+                  ? "; total occupied " + occupiedHours.toFixed(1) + "h"
+                  : "")
+              + (reservedMaint > 0 && rawMax != null && rawMax > budgetMaxHours + 0.01
+                  ? " (raw " + rawMax.toFixed(0) + "h before maintenance reserve)"
+                  : ""))
             : null
         _summaryEl.appendChild(_summaryCell("Weekly", weeklyHours, weeklyTitle))
 
         // Projected revenue (best-effort — sum of placement gross from objective.parts).
         // For Phase-1 we don't have direct revenue; we show "objective" instead.
-        const totalScore = meta && isFinite(meta.totalScore) ? meta.totalScore : null
+        const totalScore = meta ? _finiteNumber(meta.totalScore) : null
         _summaryEl.appendChild(_summaryCell(
             "Score",
             totalScore != null ? totalScore.toFixed(0) : "—",
@@ -236,28 +330,46 @@
         ))
 
         // Maintenance forecast (Track 2).
-        if (_state.budget && isFinite(_state.budget.forecastRatio7d)) {
-            const ratio = _state.budget.forecastRatio7d.toFixed(0) + "%"
-            const color = (_state.budget.forecastRatio7d < 100)            ? "#f87171"
-                        : (_state.budget.forecastRatio7d < 105)            ? "#facc15"
-                        :                                                    "#34d399"
-            const cell = _summaryCell("Maint 7d", ratio,
-                "Projected maintenance ratio in 7 days at this load.")
+        const projectedMetaRatio = meta ? _finiteNumber(meta.projectedMaintenanceRatio) : null
+        const projectedBudgetRatio = _state.budget
+            ? _finiteNumber(_state.budget.forecastRatioTargetDays)
+            : null
+        const projectedRatio = projectedMetaRatio != null ? projectedMetaRatio : projectedBudgetRatio
+        if (projectedRatio != null) {
+            const metaWaitDays = meta ? _finiteNumber(meta.maintenanceWaitDays) : null
+            const budgetWaitDays = _state.budget ? _finiteNumber(_state.budget.maintenanceWaitDays) : null
+            const metaTargetRatio = meta ? _finiteNumber(meta.targetMaintenanceRatio) : null
+            const budgetTargetRatio = _state.budget ? _finiteNumber(_state.budget.targetMaintenanceRatio) : null
+            const waitDays = metaWaitDays !== null ? metaWaitDays
+                : (budgetWaitDays !== null ? budgetWaitDays : 3)
+            const targetRatio = metaTargetRatio !== null ? metaTargetRatio
+                : (budgetTargetRatio !== null ? budgetTargetRatio : 100)
+            const ratio = projectedRatio.toFixed(0) + "%"
+            const color = (projectedRatio < targetRatio)       ? "#f87171"
+                        : (projectedRatio < targetRatio + 5)   ? "#facc15"
+                        :                                        "#34d399"
+            const cell = _summaryCell("Maint " + waitDays + "d", ratio,
+                "Projected maintenance ratio after " + waitDays
+                + " days at the generated load. Target: "
+                + targetRatio.toFixed(0) + "%.")
             const valEl = cell.querySelector("[data-aes-cell-val]")
             if (valEl) valEl.style.color = color
             _summaryEl.appendChild(cell)
-        } else if (_state.budget && isFinite(_state.budget.currentRatio)) {
-            _summaryEl.appendChild(_summaryCell(
-                "Maint now",
-                _state.budget.currentRatio.toFixed(0) + "%",
-                "Current ratio — wear regression not fitted yet."
-            ))
         } else {
-            _summaryEl.appendChild(_summaryCell(
-                "Maint",
-                "—",
-                "Waiting on Track 2 budget."
-            ))
+            const currentRatio = _state.budget ? _finiteNumber(_state.budget.currentRatio) : null
+            if (currentRatio !== null) {
+                _summaryEl.appendChild(_summaryCell(
+                    "Maint now",
+                    currentRatio.toFixed(0) + "%",
+                    "Current ratio — wear regression not fitted yet."
+                ))
+            } else {
+                _summaryEl.appendChild(_summaryCell(
+                    "Maint",
+                    "—",
+                    "Waiting on Track 2 budget."
+                ))
+            }
         }
 
         // Algorithm + last-built timestamp.
@@ -378,8 +490,783 @@
         if (!_state.ctxReady)           return "Waiting for AFP context."
         if (!_ctx().aircraftId)         return "No aircraft id resolved."
         if (!_state.spec)               return "Waiting for aircraft spec (Track B)."
-        if (!_state.candidatesLen)      return "Waiting for route candidates (Slice C)."
+        if (!_state.candidatesLen)      return "Route candidates not ready yet — open the route candidates panel first."
         return ""
+    }
+
+    // ── Route-builder workbench ───────────────────────────────────────
+
+    function _renderWorkbench() {
+        if (!_workbenchEl) return
+        _workbenchEl.innerHTML = ""
+
+        const box = document.createElement("div")
+        box.setAttribute("data-aes-route-builder-workbench", "1")
+        box.style.cssText = "background:#0f1623;border:1px solid #1f2937;"
+            + "border-radius:3px;padding:8px;color:#cbd5e1;font-size:11px;"
+
+        const head = document.createElement("div")
+        head.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:8px;"
+        const title = document.createElement("div")
+        title.style.cssText = "font-weight:700;color:#f3f4f6;flex:1 1 auto;"
+        title.textContent = "Route builder workbench"
+        head.appendChild(title)
+        const meta = document.createElement("div")
+        meta.style.cssText = "color:#6b7280;font-size:10px;"
+        meta.textContent = "airport set -> mock schedule -> apply"
+        head.appendChild(meta)
+        box.appendChild(head)
+
+        if (typeof window.AesAfpRouteBuilderPlanner === "undefined") {
+            const miss = document.createElement("div")
+            miss.style.cssText = "color:#fca5a5;"
+            miss.textContent = "Route builder planner is not loaded."
+            box.appendChild(miss)
+            _workbenchEl.appendChild(box)
+            return
+        }
+
+        const cfg = _state.planner.config
+        const candidates = _plannerCandidates()
+        const selected = new Set((cfg.includedIatas || []).map(_normaliseIata).filter(Boolean))
+
+        const controls = document.createElement("div")
+        controls.style.cssText = "display:grid;grid-template-columns:repeat(7,minmax(78px,1fr));"
+            + "gap:6px;margin-bottom:8px;"
+        controls.appendChild(_plannerNumberField("Flights", cfg.targetFlights, 2, 56, 1, value =>
+            _updatePlannerConfig({targetFlights: value})))
+        controls.appendChild(_plannerNumberField("Auto airports", cfg.airportCount, 1, 30, 1, value =>
+            _updatePlannerConfig({airportCount: value})))
+        controls.appendChild(_plannerSelectField("Structure", [
+            ["hubShuttle", "Hub shuttle"],
+            ["chainLoop", "Chain loop"]
+        ], cfg.scheduleType || "hubShuttle", value =>
+            _updatePlannerConfig({scheduleType: value})))
+        controls.appendChild(_plannerTimeField("Start", cfg.baseDeparture, value =>
+            _updatePlannerConfig({baseDeparture: value})))
+        controls.appendChild(_plannerDayField("First day", cfg.startDayIdx, value =>
+            _updatePlannerConfig({startDayIdx: value})))
+        controls.appendChild(_plannerNumberField("Turn", cfg.turnaroundMin, 20, 360, 5, value =>
+            _updatePlannerConfig({turnaroundMin: value})))
+        controls.appendChild(_plannerToggleField("Long seq", cfg.sequentialLongHaul !== false, value =>
+            _updatePlannerConfig({sequentialLongHaul: value})))
+        controls.appendChild(_plannerToggleField("Direct apply", cfg.autoApplyImmediately === true, value =>
+            _updatePlannerConfig({autoApplyImmediately: value})))
+        box.appendChild(controls)
+
+        const manual = document.createElement("label")
+        manual.style.cssText = "display:flex;flex-direction:column;gap:2px;margin-bottom:8px;"
+        const manualLabel = document.createElement("span")
+        manualLabel.style.cssText = "color:#6b7280;font-size:10px;text-transform:uppercase;"
+        manualLabel.textContent = "Included airports"
+        manual.appendChild(manualLabel)
+        const manualInput = document.createElement("input")
+        manualInput.type = "text"
+        manualInput.value = (cfg.includedIatas || []).join(", ")
+        manualInput.placeholder = "Blank = use top scored candidates; or enter JFK, CDG, BOS in preferred order"
+        manualInput.style.cssText = "background:#111827;color:#f3f4f6;border:1px solid #374151;"
+            + "border-radius:3px;padding:4px 6px;font-size:11px;"
+        manualInput.addEventListener("change", () => {
+            _updatePlannerConfig({includedIatas: _parseIataList(manualInput.value)})
+        })
+        manual.appendChild(manualInput)
+        box.appendChild(manual)
+
+        const chipWrap = document.createElement("div")
+        chipWrap.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;"
+        if (candidates.length) {
+            candidates.slice(0, 24).forEach(c => {
+                const iata = _normaliseIata(c.destIata)
+                if (!iata) return
+                const on = selected.has(iata)
+                const chip = document.createElement("button")
+                chip.type = "button"
+                chip.textContent = iata + _plannerCandidateHint(c)
+                chip.title = "Toggle " + iata + " in the route-builder airport set."
+                chip.style.cssText = "background:" + (on ? "#1d4ed8" : "#111827") + ";"
+                    + "color:" + (on ? "#f8fafc" : "#cbd5e1") + ";"
+                    + "border:1px solid " + (on ? "#2563eb" : "#374151") + ";"
+                    + "border-radius:3px;padding:3px 6px;font-size:10px;cursor:pointer;"
+                    + "font-variant-numeric:tabular-nums;"
+                chip.addEventListener("click", () => {
+                    const next = new Set((cfg.includedIatas || []).map(_normaliseIata).filter(Boolean))
+                    if (next.has(iata)) next.delete(iata); else next.add(iata)
+                    _updatePlannerConfig({includedIatas: Array.from(next)})
+                })
+                chipWrap.appendChild(chip)
+            })
+        } else {
+            const empty = document.createElement("div")
+            empty.style.cssText = "color:#6b7280;font-style:italic;"
+            empty.textContent = "No route candidates are available yet."
+            chipWrap.appendChild(empty)
+        }
+        box.appendChild(chipWrap)
+
+        const actions = document.createElement("div")
+        actions.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;"
+        const clear = document.createElement("button")
+        clear.type = "button"
+        clear.textContent = "Use top scored"
+        clear.style.cssText = _buttonStyle(true, "#1f2937", "#374151")
+        clear.addEventListener("click", () => _updatePlannerConfig({includedIatas: []}))
+        actions.appendChild(clear)
+
+        const build = document.createElement("button")
+        build.type = "button"
+        build.textContent = _state.planner.running ? "Recommending..." : "Recommend schedule"
+        build.disabled = _state.planner.running || !candidates.length
+        build.style.cssText = _buttonStyle(!build.disabled, "#1d4ed8", "#1e3a8a")
+        build.addEventListener("click", () => { if (!build.disabled) _runPlannerWorkbench(false) })
+        actions.appendChild(build)
+
+        const hasPlannerBuild = !!(_state.lastBuild && _state.lastBuild.metadata
+            && _state.lastBuild.metadata.algo === "route-builder-planner-v1"
+            && Array.isArray(_state.lastBuild.flights)
+            && _state.lastBuild.flights.length)
+        const apply = document.createElement("button")
+        apply.type = "button"
+        apply.textContent = hasPlannerBuild ? "Apply mock schedule..." : "Recommend + apply..."
+        apply.disabled = _state.planner.running || (!hasPlannerBuild && !candidates.length)
+        apply.style.cssText = _buttonStyle(!apply.disabled, "#b91c1c", "#7f1d1d")
+        apply.title = hasPlannerBuild
+            ? "Apply the current mock schedule, including row time edits."
+            : "Build the mock schedule, persist it, then apply through the route-builder path."
+        apply.addEventListener("click", () => {
+            if (apply.disabled) return
+            if (hasPlannerBuild) _applyPlannerWorkbenchSchedule()
+            else _runPlannerWorkbench(true)
+        })
+        actions.appendChild(apply)
+
+        if (_state.planner.error) {
+            const err = document.createElement("span")
+            err.style.cssText = "color:#fca5a5;font-size:11px;"
+            err.textContent = _state.planner.error
+            actions.appendChild(err)
+        }
+        box.appendChild(actions)
+
+        const plannerResult = _state.planner.result || _plannerResultFromBuild(_state.lastBuild)
+        if (plannerResult && plannerResult.rows && plannerResult.rows.length) {
+            box.appendChild(_renderPlannerMockSchedule(plannerResult))
+        }
+
+        _workbenchEl.appendChild(box)
+    }
+
+    function _plannerNumberField(label, value, min, max, step, onChange) {
+        const wrap = _plannerFieldWrap(label)
+        const input = document.createElement("input")
+        input.type = "number"
+        input.min = String(min)
+        input.max = String(max)
+        input.step = String(step || 1)
+        input.value = String(value == null ? min : value)
+        input.style.cssText = _inputStyle()
+        input.addEventListener("change", () => {
+            const n = Number(input.value)
+            if (!isFinite(n)) return
+            onChange(Math.max(min, Math.min(max, Math.round(n))))
+        })
+        wrap.appendChild(input)
+        return wrap
+    }
+
+    function _plannerTimeField(label, value, onChange) {
+        const wrap = _plannerFieldWrap(label)
+        const input = document.createElement("input")
+        input.type = "time"
+        input.value = /^\d{2}:\d{2}$/.test(String(value || "")) ? value : "09:00"
+        input.style.cssText = _inputStyle()
+        input.addEventListener("change", () => {
+            if (/^\d{2}:\d{2}$/.test(input.value)) onChange(input.value)
+        })
+        wrap.appendChild(input)
+        return wrap
+    }
+
+    function _plannerSelectField(label, options, value, onChange) {
+        const wrap = _plannerFieldWrap(label)
+        const sel = document.createElement("select")
+        sel.style.cssText = _inputStyle()
+        ;(Array.isArray(options) ? options : []).forEach(pair => {
+            const opt = document.createElement("option")
+            opt.value = String(pair && pair[0] || "")
+            opt.textContent = String(pair && pair[1] || pair && pair[0] || "")
+            sel.appendChild(opt)
+        })
+        sel.value = String(value || "")
+        sel.addEventListener("change", () => onChange(sel.value))
+        wrap.appendChild(sel)
+        return wrap
+    }
+
+    function _plannerDayField(label, value, onChange) {
+        const wrap = _plannerFieldWrap(label)
+        const sel = document.createElement("select")
+        sel.style.cssText = _inputStyle()
+        const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        names.forEach((name, idx) => {
+            const opt = document.createElement("option")
+            opt.value = String(idx)
+            opt.textContent = name
+            sel.appendChild(opt)
+        })
+        sel.value = String(Math.max(0, Math.min(6, Number(value) || 0)))
+        sel.addEventListener("change", () => onChange(Number(sel.value)))
+        wrap.appendChild(sel)
+        return wrap
+    }
+
+    function _plannerToggleField(label, value, onChange) {
+        const wrap = _plannerFieldWrap(label)
+        const inner = document.createElement("label")
+        inner.style.cssText = "display:flex;align-items:center;gap:5px;background:#111827;"
+            + "border:1px solid #374151;border-radius:3px;padding:4px 6px;"
+        const input = document.createElement("input")
+        input.type = "checkbox"
+        input.checked = !!value
+        input.style.cssText = "margin:0;"
+        input.addEventListener("change", () => onChange(input.checked))
+        inner.appendChild(input)
+        const text = document.createElement("span")
+        text.textContent = input.checked ? "On" : "Off"
+        input.addEventListener("change", () => { text.textContent = input.checked ? "On" : "Off" })
+        inner.appendChild(text)
+        wrap.appendChild(inner)
+        return wrap
+    }
+
+    function _plannerFieldWrap(label) {
+        const wrap = document.createElement("label")
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:2px;min-width:0;"
+        const lbl = document.createElement("span")
+        lbl.style.cssText = "color:#6b7280;font-size:10px;text-transform:uppercase;"
+        lbl.textContent = label
+        wrap.appendChild(lbl)
+        return wrap
+    }
+
+    function _inputStyle() {
+        return "background:#111827;color:#f3f4f6;border:1px solid #374151;"
+            + "border-radius:3px;padding:4px 6px;font-size:11px;min-width:0;width:100%;"
+            + "box-sizing:border-box;font-variant-numeric:tabular-nums;"
+    }
+
+    function _buttonStyle(enabled, bg, border) {
+        return "background:" + (enabled ? bg : "#374151") + ";"
+            + "color:" + (enabled ? "#f8fafc" : "#9ca3af") + ";"
+            + "border:1px solid " + (enabled ? border : "#374151") + ";"
+            + "border-radius:3px;padding:4px 10px;font-size:11px;font-weight:600;"
+            + "cursor:" + (enabled ? "pointer" : "not-allowed") + ";"
+    }
+
+    function _renderPlannerMockSchedule(result) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "border-top:1px solid #1f2937;padding-top:8px;"
+        const hdr = document.createElement("div")
+        hdr.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:6px;"
+        const title = document.createElement("div")
+        title.style.cssText = "font-weight:600;color:#f3f4f6;flex:1 1 auto;"
+        const flights = result.build && Array.isArray(result.build.flights) ? result.build.flights.length : 0
+        title.textContent = "Mock schedule (" + flights + " flights)"
+        hdr.appendChild(title)
+        const info = document.createElement("div")
+        info.style.cssText = "color:#6b7280;font-size:10px;"
+        const meta = result.build && result.build.metadata || {}
+        const structure = meta.scheduleType === "chainLoop" ? "Chain loop" : "Hub shuttle"
+        info.textContent = structure + " · " + ((meta.selectedAirports || []).join(", ") || "top scored")
+        hdr.appendChild(info)
+        wrap.appendChild(hdr)
+
+        const table = document.createElement("div")
+        table.style.cssText = "display:flex;flex-direction:column;border:1px solid #1f2937;"
+            + "border-radius:3px;overflow:hidden;"
+        for (const row of result.rows) {
+            table.appendChild(_renderPlannerRow(row))
+        }
+        wrap.appendChild(table)
+        return wrap
+    }
+
+    function _renderPlannerRow(row) {
+        const outLeg = _effectiveFlight(row.outSeq)
+        const inLeg = _effectiveFlight(row.inSeq)
+        const hasInLeg = !!(row.inSeq && inLeg)
+        const el = document.createElement("div")
+        el.style.cssText = "display:grid;grid-template-columns:76px minmax(90px,1fr) 86px 82px 86px 82px 56px;"
+            + "gap:6px;align-items:center;padding:5px 6px;border-bottom:1px solid #0f172a;"
+            + "font-size:10px;color:#cbd5e1;"
+
+        const day = document.createElement("div")
+        day.style.cssText = "color:#9ca3af;"
+        day.textContent = _dayShort(_dayFromMask(outLeg && outLeg.dayMask, row.outDayIdx))
+            + (hasInLeg && row.inDayIdx !== row.outDayIdx
+                ? " / " + _dayShort(_dayFromMask(inLeg && inLeg.dayMask, row.inDayIdx))
+                : "")
+        el.appendChild(day)
+
+        const route = document.createElement("div")
+        route.style.cssText = "font-weight:600;color:#f8fafc;min-width:0;overflow:hidden;text-overflow:ellipsis;"
+        route.textContent = (outLeg && outLeg.origin || row.origin || "?")
+            + " -> " + (outLeg && outLeg.destination || row.destination || "?")
+        route.title = row.reason || ""
+        el.appendChild(route)
+
+        el.appendChild(_plannerLegTimeInput("Out day", _dayFromMask(outLeg && outLeg.dayMask, row.outDayIdx), value =>
+            _setLegEdit(row.outSeq, {dayMask: _singleDayMask(Number(value))}).then(() => {
+                _renderWorkbench(); _renderPreview()
+            }), true))
+        el.appendChild(_plannerLegTimeInput("Out dep", (outLeg && outLeg.depTimeLocal) || row.outDepTime, value =>
+            _setLegEdit(row.outSeq, {depTimeLocal: value}).then(() => {
+                _renderWorkbench(); _renderPreview()
+            })))
+        if (hasInLeg) {
+            el.appendChild(_plannerLegTimeInput("In day", _dayFromMask(inLeg && inLeg.dayMask, row.inDayIdx), value =>
+                _setLegEdit(row.inSeq, {dayMask: _singleDayMask(Number(value))}).then(() => {
+                    _renderWorkbench(); _renderPreview()
+                }), true))
+            el.appendChild(_plannerLegTimeInput("In dep", (inLeg && inLeg.depTimeLocal) || row.inDepTime, value =>
+                _setLegEdit(row.inSeq, {depTimeLocal: value}).then(() => {
+                    _renderWorkbench(); _renderPreview()
+                })))
+        } else {
+            el.appendChild(_plannerLegStatic("Arr day", _dayShort(row.arrDayIdx != null ? row.arrDayIdx : row.outDayIdx)))
+            el.appendChild(_plannerLegStatic("Arr", (outLeg && outLeg.arrTimeLocal) || row.outArrTime || "-"))
+        }
+
+        const bucket = document.createElement("div")
+        bucket.style.cssText = "color:#9ca3af;text-align:right;"
+        bucket.textContent = row.rangeBucket === "longHaul" ? "long"
+            : row.rangeBucket === "mediumHaul" ? "med"
+            : row.rangeBucket === "shortHaul" ? "short" : "-"
+        bucket.title = Math.round(row.distanceNm || 0) + "nm; " + Math.round(row.blockMin || 0) + "min round-trip block"
+        el.appendChild(bucket)
+        return el
+    }
+
+    function _plannerLegStatic(label, value) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:1px;min-width:0;"
+        const lbl = document.createElement("span")
+        lbl.style.cssText = "color:#6b7280;font-size:9px;"
+        lbl.textContent = label
+        wrap.appendChild(lbl)
+        const val = document.createElement("span")
+        val.style.cssText = "background:#0f172a;color:#9ca3af;border:1px solid #1f2937;"
+            + "border-radius:3px;padding:2px 4px;font-size:10px;min-height:18px;"
+            + "box-sizing:border-box;font-variant-numeric:tabular-nums;"
+        val.textContent = String(value || "-")
+        wrap.appendChild(val)
+        return wrap
+    }
+
+    function _plannerLegTimeInput(label, value, onChange, isDay) {
+        const wrap = document.createElement("label")
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:1px;min-width:0;"
+        const lbl = document.createElement("span")
+        lbl.style.cssText = "color:#6b7280;font-size:9px;"
+        lbl.textContent = label
+        wrap.appendChild(lbl)
+        if (isDay) {
+            const sel = document.createElement("select")
+            sel.style.cssText = _inputStyle() + "padding:2px 4px;font-size:10px;"
+            ;["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach((name, idx) => {
+                const opt = document.createElement("option")
+                opt.value = String(idx)
+                opt.textContent = name
+                sel.appendChild(opt)
+            })
+            sel.value = String(Math.max(0, Math.min(6, Number(value) || 0)))
+            sel.addEventListener("change", () => onChange(sel.value))
+            wrap.appendChild(sel)
+        } else {
+            const input = document.createElement("input")
+            input.type = "time"
+            input.value = /^\d{2}:\d{2}$/.test(String(value || "")) ? value : "00:00"
+            input.style.cssText = _inputStyle() + "padding:2px 4px;font-size:10px;"
+            input.addEventListener("change", () => {
+                if (/^\d{2}:\d{2}$/.test(input.value)) onChange(input.value)
+            })
+            wrap.appendChild(input)
+        }
+        return wrap
+    }
+
+    function _plannerCandidates() {
+        const list = (window.AesAfpRouteCandidates && Array.isArray(window.AesAfpRouteCandidates.last))
+            ? window.AesAfpRouteCandidates.last : []
+        const availability = _plannerFlightFormAvailability()
+        const hub = _activeHubIata()
+        return list.filter(c => c && _normaliseIata(c.destIata))
+            .filter(c => {
+                if (!availability) return true
+                const dest = _normaliseIata(c.destIata)
+                return availability.origins.has(hub)
+                    && availability.destinations.has(hub)
+                    && availability.origins.has(dest)
+                    && availability.destinations.has(dest)
+            })
+            .slice()
+            .sort((a, b) => _plannerScore(b) - _plannerScore(a)
+                || String(a.destIata || "").localeCompare(String(b.destIata || "")))
+    }
+
+    function _plannerFlightFormAvailability() {
+        try {
+            if (!window.AesAfp || typeof window.AesAfp.getNewFlightForm !== "function") return null
+            const form = window.AesAfp.getNewFlightForm()
+            if (!form || !form.originSelect || !form.destSelect) return null
+            return {
+                origins:      _iataSetFromSelect(form.originSelect),
+                destinations: _iataSetFromSelect(form.destSelect)
+            }
+        } catch (_) { return null }
+    }
+
+    function _iataSetFromSelect(select) {
+        const out = new Set()
+        const options = select && select.options ? Array.from(select.options) : []
+        for (const opt of options) {
+            const text = String((opt && (opt.textContent || opt.label || opt.value)) || "")
+            const match = text.match(/\(([A-Z]{3})\)\s*$/) || text.match(/\b([A-Z]{3})\b/)
+            if (match) out.add(match[1].toUpperCase())
+        }
+        return out
+    }
+
+    function _plannerScore(c) {
+        const direct = _finiteNumber(c && (c.scoreBlend != null ? c.scoreBlend : c.score))
+        if (direct != null) return direct
+        return (_finiteNumber(c && c.paxScore) || 0) * 10
+            + (_finiteNumber(c && c.cargoScore) || 0) * 4
+            + Math.min(40, _finiteNumber(c && c.weeklyFlights) || 0)
+    }
+
+    function _plannerCandidateHint(c) {
+        const dist = _finiteNumber(c && c.distanceNm)
+            || ((c && _finiteNumber(c.distanceKm) != null && typeof ScheduleFactors !== "undefined")
+                ? ScheduleFactors.kmToNm(Number(c.distanceKm)) : null)
+        return dist ? " " + Math.round(dist) + "nm" : ""
+    }
+
+    function _parseIataList(value) {
+        const out = []
+        const seen = new Set()
+        for (const part of String(value || "").split(/[,\s]+/)) {
+            const iata = _normaliseIata(part)
+            if (!iata || seen.has(iata)) continue
+            seen.add(iata)
+            out.push(iata)
+        }
+        return out
+    }
+
+    function _updatePlannerConfig(patch) {
+        _state.planner.config = Object.assign({}, _state.planner.config, patch || {})
+        _state.planner.error = null
+        _savePlannerConfig().catch(err => console.warn("[AES route-builder] config save failed", err))
+        _renderWorkbench()
+    }
+
+    async function _runPlannerWorkbench(openApply) {
+        if (_state.planner.running) return
+        const planner = window.AesAfpRouteBuilderPlanner
+        if (!planner || typeof planner.recommend !== "function") {
+            _state.planner.error = "Planner engine not loaded."
+            _renderWorkbench()
+            return
+        }
+        _state.planner.running = true
+        _state.planner.error = null
+        _renderWorkbench()
+        try {
+            const ctxR = _ctx()
+            const result = planner.recommend({
+                hubIata:    _activeHubIata(),
+                candidates: _plannerCandidates(),
+                spec:       _state.spec || undefined,
+                config:     _state.planner.config
+            })
+            _state.planner.result = result
+            _state.lastBuild = result.build || null
+            if (result.build && result.build.validation && result.build.validation.length) {
+                _state.planner.error = result.build.validation.join(" · ")
+            }
+            if (result.build && result.build.flights && result.build.flights.length
+                    && typeof AesAfpActiveDraftStore !== "undefined"
+                    && ctxR.server && ctxR.aircraftId) {
+                _state.draft = await AesAfpActiveDraftStore.setFlights(ctxR.server, ctxR.aircraftId, {
+                    hub:      _activeHubIata(),
+                    presetId: result.build.preset && result.build.preset.id,
+                    flights:  result.build.flights,
+                    metadata: result.build.metadata
+                }) || _state.draft
+            }
+            await _savePlannerConfig()
+            if (window.AesAfp && AesAfp.bus && result.build) {
+                try { AesAfp.bus.emit("auto-schedule:built", {build: result.build}) }
+                catch (_) { /* bus self-isolates */ }
+            }
+            _renderSummary()
+            _renderCta()
+            _renderWorkbench()
+            _renderStatus()
+            _renderPreview()
+            _renderLegs()
+            _renderFooter()
+            if (openApply && result.build && result.build.flights && result.build.flights.length) {
+                setTimeout(() => _applyPlannerWorkbenchSchedule(), 50)
+            }
+        } catch (e) {
+            _state.planner.error = (e && e.message) || String(e)
+            console.warn("[AES route-builder] recommend failed", e)
+            _renderWorkbench()
+        } finally {
+            _state.planner.running = false
+            _renderWorkbench()
+        }
+    }
+
+    async function _applyPlannerWorkbenchSchedule() {
+        if (!_state.lastBuild || !Array.isArray(_state.lastBuild.flights)
+                || !_state.lastBuild.flights.length) {
+            _toast("No mock route-builder schedule to apply.", "warn")
+            return
+        }
+        if (_state.planner.editSavePromise
+                && typeof _state.planner.editSavePromise.then === "function") {
+            try { await _state.planner.editSavePromise }
+            catch (_) { /* _setLegEdit already logs */ }
+        }
+        try { await _loadDraft() }
+        catch (_) { /* best effort */ }
+        const legs = _materialiseLegs(_state.lastBuild, _state.draft)
+        if (!legs.length) {
+            _toast("Mock route-builder schedule has no applyable legs.", "warn")
+            return
+        }
+        const opts = {source: "route-builder-workbench"}
+        if (_state.planner.config && _state.planner.config.autoApplyImmediately === true) {
+            _applyAll(legs, opts)
+        } else {
+            _openConfirmModal(legs, opts)
+        }
+    }
+
+    function _effectiveFlight(seq) {
+        const build = _state.lastBuild
+        const base = build && Array.isArray(build.flights)
+            ? build.flights.find(f => f && f.seq === seq) : null
+        if (!base) return null
+        const overlay = (_state.draft && _state.draft.perLegEdits
+            && _state.draft.perLegEdits[seq]) || null
+        return overlay ? Object.assign({}, base, overlay) : base
+    }
+
+    function _buildWithDraftOverlays(build, draft) {
+        if (!build || !Array.isArray(build.flights)) return build
+        const overlays = (draft && draft.perLegEdits) || {}
+        if (!Object.keys(overlays).length) return build
+        const flights = build.flights.map(f => {
+            const o = overlays[f.seq]
+            return o ? Object.assign({}, f, o) : f
+        })
+        const plannerPreset = build.metadata && build.metadata.algo === "route-builder-planner-v1"
+            ? _plannerPresetFromFlights(flights, build.metadata, build.preset && build.preset.hub)
+            : null
+        return Object.assign({}, build, {
+            flights,
+            preset: plannerPreset || build.preset
+        })
+    }
+
+    function _plannerResultFromBuild(build) {
+        if (!build || !build.metadata || build.metadata.algo !== "route-builder-planner-v1") return null
+        if (!Array.isArray(build.flights) || !build.flights.length) return null
+        const groups = new Map()
+        for (const f of build.flights) {
+            const key = f.waveId || ("seq-" + f.seq)
+            const arr = groups.get(key) || []
+            arr.push(f)
+            groups.set(key, arr)
+        }
+        const rows = []
+        for (const [waveId, flights] of groups) {
+            const out = flights.find(f => f.direction === "outbound") || flights[0]
+            const inbound = flights.find(f => f.direction === "inbound") || flights[1] || null
+            if (!out) continue
+            const outDay = _dayFromMask(out.dayMask, 0)
+            const inDay = inbound ? _dayFromMask(inbound.dayMask, outDay) : outDay
+            const outSpan = _minutesSpan(outDay, out.depTimeLocal, outDay, out.arrTimeLocal)
+            const inSpan = inbound ? _minutesSpan(inDay, inbound.depTimeLocal, inDay, inbound.arrTimeLocal) : 0
+            rows.push({
+                rowId: waveId,
+                waveId,
+                waveLabel: out.waveLabel || inbound && inbound.waveLabel || waveId,
+                origin: out.origin,
+                destination: out.destination,
+                distanceNm: out.distanceNm || inbound && inbound.distanceNm || null,
+                rangeBucket: out.rangeBucket || inbound && inbound.rangeBucket || null,
+                flightMin: Math.max(outSpan || 0, inSpan || 0),
+                blockMin: (outSpan || 0) + (inSpan || 0),
+                outSeq: out.seq,
+                inSeq: inbound ? inbound.seq : null,
+                outDayIdx: outDay,
+                inDayIdx: inDay,
+                arrDayIdx: inbound ? inDay : _arrivalDay(outDay, out.depTimeLocal, out.arrTimeLocal),
+                outDayName: _dayShort(outDay),
+                inDayName: _dayShort(inDay),
+                outDepTime: out.depTimeLocal,
+                outArrTime: out.arrTimeLocal,
+                inDepTime: inbound ? inbound.depTimeLocal : "",
+                inArrTime: inbound ? inbound.arrTimeLocal : "",
+                sequential: true,
+                scheduleType: inbound ? "hubShuttle" : "chainLoop",
+                reason: "persisted route-builder mock schedule"
+            })
+        }
+        if (!rows.length) return null
+        return {config: _state.planner.config, selectedCandidates: [], rows, build}
+    }
+
+    function _plannerPresetFromFlights(flights, metadata, hub) {
+        const list = Array.isArray(flights) ? flights : []
+        const groups = new Map()
+        for (const f of list) {
+            const key = f.waveId || ("seq-" + f.seq)
+            const arr = groups.get(key) || []
+            arr.push(f)
+            groups.set(key, arr)
+        }
+        const factors = (typeof ScheduleFactors !== "undefined" && ScheduleFactors.defaultFactors)
+            ? ScheduleFactors.defaultFactors()
+            : {slotWindow: {start: "00:00", end: "23:59"}, dayPattern: "custom", dayMask: [1, 1, 1, 1, 1, 1, 1]}
+        factors.slotWindow = {start: "00:00", end: "23:59"}
+        factors.dayPattern = "custom"
+        factors.dayMask = [1, 1, 1, 1, 1, 1, 1]
+        const waves = []
+        for (const [waveId, arr] of groups) {
+            const out = arr.find(f => f.direction === "outbound") || arr[0]
+            const inbound = arr.find(f => f.direction === "inbound") || arr[1] || out
+            const bucket = out && out.rangeBucket || "mediumHaul"
+            const composition = {shortHaul: 0, mediumHaul: 0, longHaul: 0}
+            composition[bucket] = 1
+            waves.push({
+                id: waveId,
+                label: out && out.waveLabel || waveId,
+                arrivalWindow: {
+                    start: inbound && inbound.arrTimeLocal || "00:00",
+                    end: inbound && inbound.arrTimeLocal || "00:00"
+                },
+                departureWindow: {
+                    start: out && out.depTimeLocal || "00:00",
+                    end: out && out.depTimeLocal || "00:00"
+                },
+                composition,
+                priority: bucket === "longHaul" ? 80 : 50,
+                pinDestinations: out && out.destination ? [out.destination] : [],
+                routePolicy: "lockedSet"
+            })
+        }
+        return {
+            id: "rbp-persisted",
+            name: "Route builder mock schedule",
+            hub: hub || (metadata && metadata.scheduleOriginIata) || "",
+            waves,
+            factors,
+            schedule: {weekPattern: "custom", dayMask: [1, 1, 1, 1, 1, 1, 1]}
+        }
+    }
+
+    function _minutesSpan(depDay, depTime, arrDay, arrTime) {
+        if (typeof ScheduleFactors === "undefined" || !ScheduleFactors.parseHHMM) return null
+        const dep = ScheduleFactors.parseHHMM(depTime)
+        const arr = ScheduleFactors.parseHHMM(arrTime)
+        if (!isFinite(dep) || !isFinite(arr)) return null
+        let delta = (Number(arrDay) - Number(depDay)) * 1440 + (arr - dep)
+        while (delta < 0) delta += 7 * 1440
+        return delta
+    }
+
+    function _arrivalDay(depDay, depTime, arrTime) {
+        if (typeof ScheduleFactors === "undefined" || !ScheduleFactors.parseHHMM) return depDay
+        const dep = ScheduleFactors.parseHHMM(depTime)
+        const arr = ScheduleFactors.parseHHMM(arrTime)
+        if (!isFinite(dep) || !isFinite(arr)) return depDay
+        const add = arr < dep ? 1 : 0
+        return (Math.max(0, Math.min(6, Math.round(Number(depDay) || 0))) + add) % 7
+    }
+
+    function _singleDayMask(dayIdx) {
+        const out = [false, false, false, false, false, false, false]
+        const idx = Math.max(0, Math.min(6, Math.round(Number(dayIdx) || 0)))
+        out[idx] = true
+        return out
+    }
+
+    function _dayFromMask(mask, fallback) {
+        if (Array.isArray(mask)) {
+            const idx = mask.findIndex(Boolean)
+            if (idx >= 0) return idx
+        }
+        return Math.max(0, Math.min(6, Math.round(Number(fallback) || 0)))
+    }
+
+    function _dayShort(idx) {
+        return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][
+            Math.max(0, Math.min(6, Math.round(Number(idx) || 0)))
+        ]
+    }
+
+    function _plannerKey() {
+        const ctxR = _ctx()
+        if (!ctxR.server || !ctxR.aircraftId) return null
+        return "aircraftFlightPlan:routeBuilderWorkbench:" + ctxR.server + ":" + ctxR.aircraftId
+    }
+
+    async function _loadPlannerConfig() {
+        const key = _plannerKey()
+        if (!key || typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return
+        try {
+            const got = await chrome.storage.local.get([key])
+            const rec = got && got[key]
+            if (rec && typeof rec === "object") {
+                _state.planner.config = Object.assign({}, _state.planner.config, {
+                    includedIatas: Array.isArray(rec.includedIatas) ? rec.includedIatas.map(_normaliseIata).filter(Boolean) : [],
+                    airportCount:  Math.max(1, Math.min(30, Math.round(Number(rec.airportCount) || _state.planner.config.airportCount))),
+                    scheduleType:  rec.scheduleType === "chainLoop" ? "chainLoop" : "hubShuttle",
+                    targetFlights: Math.max(2, Math.min(56, Math.round(Number(rec.targetFlights) || _state.planner.config.targetFlights))),
+                    baseDeparture: /^\d{2}:\d{2}$/.test(String(rec.baseDeparture || "")) ? rec.baseDeparture : _state.planner.config.baseDeparture,
+                    startDayIdx:   Math.max(0, Math.min(6, Math.round(Number(rec.startDayIdx) || 0))),
+                    turnaroundMin: Math.max(20, Math.min(360, Math.round(Number(rec.turnaroundMin) || _state.planner.config.turnaroundMin))),
+                    sequentialLongHaul: rec.sequentialLongHaul !== false,
+                    autoApplyImmediately: rec.autoApplyImmediately === true
+                })
+            }
+            _state.planner.configLoaded = true
+        } catch (err) {
+            console.warn("[AES route-builder] config load failed", err)
+        }
+    }
+
+    async function _savePlannerConfig() {
+        const key = _plannerKey()
+        if (!key || typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return
+        const cfg = _state.planner.config || {}
+        await chrome.storage.local.set({[key]: {
+            includedIatas: Array.isArray(cfg.includedIatas) ? cfg.includedIatas : [],
+            airportCount:  cfg.airportCount,
+            scheduleType:  cfg.scheduleType === "chainLoop" ? "chainLoop" : "hubShuttle",
+            targetFlights: cfg.targetFlights,
+            baseDeparture: cfg.baseDeparture,
+            startDayIdx:   cfg.startDayIdx,
+            turnaroundMin: cfg.turnaroundMin,
+            sequentialLongHaul: cfg.sequentialLongHaul !== false,
+            autoApplyImmediately: cfg.autoApplyImmediately === true,
+            updatedAt: Date.now()
+        }})
     }
 
     function _renderStatus() {
@@ -418,7 +1305,9 @@
                 + "border-radius:3px;"
             empty.textContent = build
                 ? "Auto-build returned no flights — see status above."
-                : "No build yet. Click \"Auto-build week\" to generate a proposal."
+                : !_state.candidatesLen
+                    ? "Route candidates not ready yet — open the route candidates panel first."
+                    : "No build yet. Click \"Auto-build week\" to generate a proposal."
             _previewEl.appendChild(empty)
             return
         }
@@ -429,9 +1318,17 @@
             _previewEl.appendChild(empty)
             return
         }
-        const hubIata = String(_ctx().currentLocationIata || "").toUpperCase()
+        if (!build.preset || !Array.isArray(build.preset.waves)) {
+            const empty = document.createElement("div")
+            empty.style.cssText = "padding:6px;color:#9ca3af;font-size:11px;"
+            empty.textContent = "Draft preset metadata unavailable — regenerate to rebuild the Gantt."
+            _previewEl.appendChild(empty)
+            return
+        }
+        const hubIata = _activeHubIata()
+        const renderBuild = _buildWithDraftOverlays(build, _state.draft)
         try {
-            RouteAssistantWaveOverlay.renderGantt(_previewEl, build, {
+            RouteAssistantWaveOverlay.renderGantt(_previewEl, renderBuild, {
                 hubIata,
                 onFlightClick: (flight) => _onLegClick(flight)
             })
@@ -623,6 +1520,19 @@
     function _renderFooter() {
         if (!_footerEl) return
         _footerEl.innerHTML = ""
+
+        // Slice 8a — fleet apply takes precedence over per-aircraft apply
+        // since the orchestrator runs them in serial and a per-aircraft
+        // `apply.inFlight` flips on between aircraft. Surface the fleet
+        // banner so the user sees the larger context.
+        if (_state.fleetApply.inFlight) {
+            _footerEl.appendChild(_renderFleetApplyProgress())
+            return
+        }
+        if (_state.fleetApply.finishedAt && !_state.apply.inFlight) {
+            _footerEl.appendChild(_renderFleetApplyResultBanner())
+            return
+        }
 
         // Live progress UI when a batch is in flight (slice 5d).
         if (_state.apply.inFlight) {
@@ -1165,7 +2075,7 @@
         for (const f of flights) {
             const o = overlays[f.seq] || {}
             const eff = Object.assign({}, f, o)
-            out.push({
+            const leg = {
                 seq:         f.seq,
                 waveId:      f.waveId,
                 waveLabel:   f.waveLabel,
@@ -1175,15 +2085,33 @@
                 depTime:     eff.depTimeLocal || f.depTimeLocal || null,
                 distanceNm:  f.distanceNm,
                 pricePct:    isFinite(Number(eff.pricePct)) ? Number(eff.pricePct) : dpct,
-                service:     (typeof eff.service === "string") ? eff.service : dsvc
-            })
+                service:     (typeof eff.service === "string") ? eff.service : dsvc,
+                dayMask:     _legDayMask(eff)
+            }
+            if (eff.flightNumberText != null) {
+                leg.flightNumberText = String(eff.flightNumberText).replace(/[^0-9]/g, "").slice(0, 4)
+            }
+            out.push(leg)
         }
         return out
     }
 
-    function _openConfirmModal() {
-        if (!_state.lastBuild) return
-        const legs = _materialiseLegs(_state.lastBuild, _state.draft)
+    /**
+     * Open the leg-confirmation modal. Without arguments, materialises legs
+     * from `_state.lastBuild` (the in-panel auto-build path). With
+     * `externalLegs`, opens against any caller-provided leg list — Flight
+     * Studio uses this so its "Apply" / "Automate" buttons reuse the same
+     * mandatory-ack gate and locked-leg detection without duplicating the
+     * modal markup. `externalOpts.source` flows through to the audit log.
+     */
+    function _openConfirmModal(externalLegs, externalOpts) {
+        let legs
+        if (Array.isArray(externalLegs) && externalLegs.length) {
+            legs = externalLegs
+        } else {
+            if (!_state.lastBuild) return
+            legs = _materialiseLegs(_state.lastBuild, _state.draft)
+        }
         if (!legs.length) return
         _closeConfirmModal()
 
@@ -1354,7 +2282,8 @@
             if (apply.disabled) return
             const selectedLegs = legs.filter(l => checked.has(l.seq))
             _closeConfirmModal()
-            _applyAll(selectedLegs, {source: "confirm-modal"})
+            const source = (externalOpts && externalOpts.source) || "confirm-modal"
+            _applyAll(selectedLegs, {source})
         })
         footer.appendChild(apply)
 
@@ -1410,8 +2339,20 @@
      * downstream wiring (audit log, retry queue) can observe the request
      * and toasts a "pipeline not loaded" message. Keeps the no-programmatic-
      * submit invariant intact — there is no AS POST here.
+     *
+     * Slice 6d (locked-confirm modal): before dispatch, run schedule-diff
+     * against the current VFP and surface AesAfpLockedConfirmModal when
+     * the request involves locked legs (proposed legs marked immutable +
+     * current locked legs that won't be deletable). Three outcomes:
+     *   - continue → original dispatch (apply-batch silently skips locked
+     *                proposed legs; current locked stay in place)
+     *   - override → run delete-batch on the current locked legs first,
+     *                then dispatch the apply (defensive: if delete-batch
+     *                refuses or partially fails, the apply still proceeds
+     *                so the user gets some progress)
+     *   - cancel   → bail completely; no apply, no delete
      */
-    function _applyAll(legs, opts) {
+    async function _applyAll(legs, opts) {
         const list = Array.isArray(legs) ? legs : []
         if (!list.length) return
         const ctxR = _ctx()
@@ -1426,6 +2367,58 @@
             try { AesAfp.bus.emit("auto-apply:requested", payload) }
             catch (_) { /* bus self-isolates */ }
         }
+
+        // Slice 6d — locked-leg pre-flight. Cheap synchronous detection on
+        // proposed legs runs unconditionally; the schedule-diff comparison
+        // (more expensive, requires the VFP reader) runs only if the AFP
+        // page has it loaded. When the modal isn't loaded (manifest order
+        // regression on a non-AFP page), fall through to the legacy path
+        // so the apply still works.
+        let diffResult = null
+        try {
+            if (typeof window.AesAfpScheduleDiff !== "undefined"
+                    && window.AesAfp && typeof window.AesAfp.getCurrentSchedule === "function") {
+                const currentLegs = window.AesAfp.getCurrentSchedule() || []
+                if (Array.isArray(currentLegs) && currentLegs.length) {
+                    const diffOpts = (_state.settings && _state.settings.autoScheduler
+                        && _state.settings.autoScheduler.diff) || null
+                    diffResult = window.AesAfpScheduleDiff.compare(currentLegs, list, diffOpts)
+                }
+            }
+        } catch (e) {
+            console.warn("[AES auto-6d] schedule-diff for locked-confirm failed", e)
+        }
+
+        const lockedSurface = (typeof window.AesAfpLockedConfirmModal !== "undefined"
+                && typeof window.AesAfpLockedConfirmModal.detect === "function")
+            ? window.AesAfpLockedConfirmModal.detect({legs: list, diffResult: diffResult})
+            : null
+
+        if (lockedSurface) {
+            let choice
+            try {
+                const r = await window.AesAfpLockedConfirmModal.open({
+                    proposedLockedLegs: lockedSurface.proposedLockedLegs,
+                    currentLockedStays: lockedSurface.currentLockedStays,
+                    aircraftId:         payload.ctx.aircraftId,
+                    hub:                payload.ctx.currentLocationIata,
+                    allowOverride:      lockedSurface.currentLockedStays.length > 0
+                })
+                choice = r && r.choice
+            } catch (e) {
+                console.warn("[AES auto-6d] locked-confirm modal threw; treating as cancel", e)
+                _toast("Locked-leg confirmation threw — apply cancelled.", "error")
+                return
+            }
+            if (choice === "cancel") {
+                _toast("Apply cancelled (locked-leg confirmation).", "info")
+                return
+            }
+            if (choice === "override" && lockedSurface.currentLockedStays.length) {
+                await _runOverrideDelete(lockedSurface.currentLockedStays, payload.ctx)
+            }
+        }
+
         const batch = window.AesAfpAutoApplyBatch
         if (batch && typeof batch.start === "function") {
             try { batch.start(payload) }
@@ -1438,6 +2431,46 @@
         // Slice 5c hasn't shipped — surface the dormant state so the user
         // doesn't think the click silently failed.
         _toast("Apply-batch pipeline not loaded yet (slice 5c).", "warn")
+    }
+
+    /**
+     * Slice 6d "override" path — fire a delete-batch for the current
+     * locked legs before continuing with the apply. Best-effort: AS may
+     * refuse to delete its own locked legs; per-leg errors land in the
+     * audit log via the flight-deleter pipeline. We always proceed to the
+     * apply step regardless, so the user gets the value of their other
+     * proposed legs even when the override partially fails.
+     */
+    async function _runOverrideDelete(lockedLegs, ctx) {
+        const flights = (lockedLegs || [])
+            .filter(l => l && l.flightId != null)
+            .map(l => ({
+                flightId:   String(l.flightId),
+                origin:     l.origin || "",
+                destination: l.destination || "",
+                depTime:    l.depTimeLocal || "",
+                seq:        l.seq != null ? l.seq : null
+            }))
+        if (!flights.length) {
+            _toast("Override skipped — no deletable flightIds on the locked legs.", "warn")
+            return
+        }
+        const deleter = window.AesAfpAutoFlightDeleter
+        if (!deleter || typeof deleter.start !== "function") {
+            _toast("Delete-batch pipeline not loaded; skipping override.", "warn")
+            return
+        }
+        try {
+            await deleter.start({
+                ctx:    {server: ctx.server, aircraftId: ctx.aircraftId,
+                         currentLocationIata: ctx.currentLocationIata},
+                flights: flights,
+                source: "locked-confirm-override"
+            })
+        } catch (e) {
+            console.warn("[AES auto-6d] override delete-batch threw", e)
+            _toast("Override delete-batch threw — continuing with apply.", "warn")
+        }
     }
 
     function _toast(msg, kind) {
@@ -1483,12 +2516,18 @@
         if (!ctxR.server || !ctxR.aircraftId) return
         if (typeof AesAfpActiveDraftStore === "undefined") return
         try {
-            const next = await AesAfpActiveDraftStore.setEdit(
+            const savePromise = AesAfpActiveDraftStore.setEdit(
                 ctxR.server, ctxR.aircraftId, seq, patch
             )
+            _state.planner.editSavePromise = savePromise.catch(() => {})
+            const next = await savePromise
             _state.draft = next || _state.draft
+            if (_state.planner.editSavePromise) _state.planner.editSavePromise = null
             _renderLegs()
+            _renderPreview()
+            _renderWorkbench()
         } catch (err) {
+            _state.planner.editSavePromise = null
             console.warn("[AES auto-5a] setEdit failed", err)
         }
     }
@@ -1503,6 +2542,8 @@
             )
             _state.draft = next || _state.draft
             _renderLegs()
+            _renderPreview()
+            _renderWorkbench()
         } catch (err) {
             console.warn("[AES auto-5a] clearEdit failed", err)
         }
@@ -1524,15 +2565,28 @@
         _renderStatus()
         try {
             const ctxR = _ctx()
+            const scheduleInputs = await _scheduleDerivedInputs(ctxR.server, ctxR.aircraftId)
+            if (typeof AesAfpMaintenanceBudget !== "undefined") {
+                _state.budget = await AesAfpMaintenanceBudget.compute({
+                    server:     ctxR.server,
+                    aircraftId: ctxR.aircraftId,
+                    spec:       _state.spec || undefined,
+                    settings:   _state.settings || undefined,
+                    schedule:   scheduleInputs.schedule || undefined
+                })
+            }
             const build = await AesAfpAutoScheduler.run({
-                aircraftId: ctxR.aircraftId,
-                spec:       _state.spec || undefined,
-                persist:    true
+                aircraftId:              ctxR.aircraftId,
+                hubIata:                 _activeHubIata(),
+                spec:                    _state.spec || undefined,
+                budget:                  _state.budget || undefined,
+                persist:                 true,
+                maintenanceWindows:      scheduleInputs.maintenanceWindows,
+                perStationTurnaroundMin: scheduleInputs.perStationTurnaroundMin
             })
             _state.lastBuild = build || null
             // Re-pull the draft so per-leg edits show against the new flights.
-            await _loadDraft()
-            await _loadBudget()
+            await Promise.all([_loadDraft(), _loadBudget(scheduleInputs.schedule || undefined)])
         } catch (e) {
             _state.runError = (e && e.message) || String(e)
             console.warn("[AES auto-5a] run threw", e)
@@ -1545,6 +2599,65 @@
             _renderLegs()
             _renderFooter()
         }
+    }
+
+    /** Track 7d — derive `maintenanceWindows` + `perStationTurnaroundMin`
+     *  from the cached Schedule so the allocator can pre-seed real
+     *  maintenance bars and use observed station turnarounds.
+     *  Returns `{maintenanceWindows: [], perStationTurnaroundMin: {}}`
+     *  when the schedule is missing/stale — allocator treats both as
+     *  empty and falls back to preset behaviour. */
+    async function _scheduleDerivedInputs(server, aircraftId) {
+        const empty = {maintenanceWindows: [], perStationTurnaroundMin: {}, schedule: null}
+        if (!server || !aircraftId) return empty
+        if (typeof AesAfpScheduleStore === "undefined") return empty
+        let schedule = null
+        try { schedule = await AesAfpScheduleStore.load(server, aircraftId) }
+        catch (e) { console.warn("[AES auto-7d] schedule load failed", e); return empty }
+        if (!schedule) return empty
+
+        const maintenanceWindows = []
+        const days = Array.isArray(schedule.days) ? schedule.days : []
+        for (const day of days) {
+            const blocks = (day && Array.isArray(day.blocks)) ? day.blocks : []
+            for (const b of blocks) {
+                if (!b || b.kind !== "maintenance") continue
+                if (!Number.isInteger(b.dayIdx)) continue
+                const sm = Number(b.startMin)
+                const em = Number(b.endMin)
+                if (!isFinite(sm) || !isFinite(em) || em <= sm) continue
+                maintenanceWindows.push({dayIdx: b.dayIdx, startMin: sm, endMin: em})
+            }
+        }
+
+        // Per-station turnaround: collect every observation of ground time
+        // at each IATA — `turnaroundAfterMin` (after landing at destination)
+        // and `turnaroundBeforeMin` (before departing from origin) — then
+        // take the median. Median resists the occasional ULB-padded outlier.
+        const samples = {}   // iata -> number[]
+        const legs = Array.isArray(schedule.legs) ? schedule.legs : []
+        for (const L of legs) {
+            if (!L) continue
+            const dest = String(L.destination || "").toUpperCase()
+            const orig = String(L.origin || "").toUpperCase()
+            const after  = Number(L.turnaroundAfterMin)
+            const before = Number(L.turnaroundBeforeMin)
+            if (dest && isFinite(after) && after > 0) {
+                (samples[dest] = samples[dest] || []).push(after)
+            }
+            if (orig && isFinite(before) && before > 0) {
+                (samples[orig] = samples[orig] || []).push(before)
+            }
+        }
+        const perStationTurnaroundMin = {}
+        for (const iata of Object.keys(samples)) {
+            const arr = samples[iata].slice().sort((a, b) => a - b)
+            const mid = Math.floor(arr.length / 2)
+            const median = (arr.length % 2 === 1) ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2
+            perStationTurnaroundMin[iata] = Math.round(median)
+        }
+
+        return {maintenanceWindows, perStationTurnaroundMin, schedule}
     }
 
     // ── Draft + budget loaders ─────────────────────────────────────────
@@ -1560,24 +2673,39 @@
             // Adopt the persisted flights when our in-memory build is empty —
             // the user might have generated on a previous session and is
             // returning to the page; otherwise keep the live build.
+            //
+            // F-9232-002: pull the metadata snapshot too (allocator now
+            // persists `build.metadata` alongside flights). Without it the
+            // WEEKLY (budgetUsedHours) and SCORE (totalScore) cells read as
+            // "—" until the user re-runs Auto-build, even though both
+            // values are deterministic from the very build that was
+            // persisted. Falls back to null when an older draft (written
+            // before this fix) has no metadata field.
             if (!_state.lastBuild && _state.draft
                     && Array.isArray(_state.draft.flights)
                     && _state.draft.flights.length) {
+                const metadata = (_state.draft.metadata && typeof _state.draft.metadata === "object")
+                    ? _state.draft.metadata
+                    : null
+                const plannerPreset = metadata && metadata.algo === "route-builder-planner-v1"
+                    ? _plannerPresetFromFlights(_state.draft.flights, metadata, _state.draft.hub)
+                    : null
                 _state.lastBuild = {
                     validation: [], routes: [], placements: [], unplaced: [],
                     shortfall: {}, skipped: [], connections: [],
                     flights:  _state.draft.flights.slice(),
                     warnings: [],
-                    preset:   null,
-                    metadata: null
+                    preset:   plannerPreset,
+                    metadata: metadata
                 }
+                _state.planner.result = _plannerResultFromBuild(_state.lastBuild)
             }
         } catch (err) {
             console.warn("[AES auto-5a] draft load failed", err)
         }
     }
 
-    async function _loadBudget() {
+    async function _loadBudget(schedule) {
         const ctxR = _ctx()
         if (!ctxR.server || !ctxR.aircraftId) return
         if (typeof AesAfpMaintenanceBudget === "undefined") return
@@ -1586,7 +2714,8 @@
                 server:     ctxR.server,
                 aircraftId: ctxR.aircraftId,
                 spec:       _state.spec || undefined,
-                settings:   _state.settings || undefined
+                settings:   _state.settings || undefined,
+                schedule:   schedule || undefined
             })
         } catch (err) {
             console.warn("[AES auto-5a] budget compute failed", err)
@@ -1611,6 +2740,7 @@
             } else {
                 _renderSummary()
                 _renderCta()
+                _renderWorkbench()
                 _renderStatus()
                 _renderPreview()
                 _renderLegs()
@@ -1634,6 +2764,8 @@
                 await _loadDraft()
                 _renderLegs()
                 _renderSummary()
+                _renderPreview()
+                _renderWorkbench()
             }, STORAGE_REPAINT_DEBOUNCE_MS)
         }
         chrome.storage.onChanged.addListener(_state.storageListener)
@@ -1641,7 +2773,7 @@
 
     function _onCtxReady() {
         _state.ctxReady = true
-        Promise.all([_loadSettings(), _loadDraft(), _loadBudget(), _loadRetryQueue()]).then(() => {
+        Promise.all([_loadSettings(), _loadDraft(), _loadBudget(), _loadRetryQueue(), _loadPlannerConfig()]).then(() => {
             _renderRoot()
             _attachStorageListener()
         }).catch(err => {
@@ -1681,12 +2813,168 @@
         bus.on("auto-schedule:built", _onAutoBuilt)
         bus.on("maintenance:scraped", () => _loadBudget().then(_scheduleRender))
         bus.on("wear:updated",        () => _loadBudget().then(_scheduleRender))
+        // Track 7 slice 7e — schedule edits change reserved-maintenance hours,
+        // so the wear ceiling shifts; reload the budget to repaint Weekly cell.
+        bus.on("schedule:updated",    () => _loadBudget().then(_scheduleRender))
         // Slice 5d — apply-batch lifecycle.
         bus.on("auto-apply:start",    _onApplyStart)
         bus.on("auto-apply:progress", _onApplyProgress)
         bus.on("auto-apply:done",     _onApplyDone)
         bus.on("auto-apply:aborted",  _onApplyAborted)
         bus.on("auto-apply:error",    _onApplyError)
+        // Slice 8a — fleet-apply orchestrator lifecycle.
+        bus.on("fleet-apply:start",          _onFleetApplyStart)
+        bus.on("fleet-apply:aircraft-start", _onFleetApplyAircraftStart)
+        bus.on("fleet-apply:aircraft-done",  _onFleetApplyAircraftDone)
+        bus.on("fleet-apply:done",           _onFleetApplyDone)
+        bus.on("fleet-apply:aborted",        _onFleetApplyAborted)
+
+        // Content scripts can attach after host.js has already emitted
+        // ctx:ready on hard reload / extension reinjection. Recover from
+        // that late-subscribe path by hydrating from the current snapshots.
+        if (!_state.ctxReady && _ctx().aircraftId) {
+            setTimeout(_onCtxReady, 0)
+        }
+        if (!_state.spec && window.AesAfpSpecResolver && window.AesAfpSpecResolver.last) {
+            _onSpecResolved({spec: window.AesAfpSpecResolver.last})
+        }
+        if (!_state.candidatesLen && window.AesAfpRouteCandidates
+                && Array.isArray(window.AesAfpRouteCandidates.last)) {
+            _onCandidatesUpdated({candidates: window.AesAfpRouteCandidates.last})
+        }
+    }
+
+    // ── Slice 8a — fleet-apply orchestrator handlers + renderers ─────
+
+    function _onFleetApplyStart(p) {
+        const f = _state.fleetApply
+        f.inFlight        = true
+        f.runId           = (p && p.runId) || null
+        f.total           = (p && Number(p.total)) || 0
+        f.idx             = 0
+        f.currentAircraft = null
+        f.startedAt       = Date.now()
+        f.finishedAt      = null
+        f.aborted         = false
+        f.perAircraft     = []
+        _renderFooter()
+    }
+    function _onFleetApplyAircraftStart(p) {
+        const f = _state.fleetApply
+        if (!p || (f.runId && p.runId && p.runId !== f.runId)) return
+        f.idx             = (typeof p.idx === "number") ? p.idx : f.idx
+        f.currentAircraft = p.aircraftId || null
+        _renderFooter()
+    }
+    function _onFleetApplyAircraftDone(p) {
+        const f = _state.fleetApply
+        if (!p || (f.runId && p.runId && p.runId !== f.runId)) return
+        f.perAircraft.push({
+            aircraftId: p.aircraftId,
+            ok:         !!p.ok,
+            succeeded:  Number(p.succeeded) || 0,
+            failed:     Number(p.failed)    || 0,
+            error:      p.error || null
+        })
+        _renderFooter()
+    }
+    function _onFleetApplyDone(p) {
+        const f = _state.fleetApply
+        if (!p || (f.runId && p.runId && p.runId !== f.runId)) return
+        f.inFlight    = false
+        f.finishedAt  = Date.now()
+        f.aborted     = false
+        if (p.perAircraft) f.perAircraft = p.perAircraft.slice()
+        _renderFooter()
+    }
+    function _onFleetApplyAborted(p) {
+        const f = _state.fleetApply
+        if (!p || (f.runId && p.runId && p.runId !== f.runId)) return
+        f.inFlight    = false
+        f.finishedAt  = Date.now()
+        f.aborted     = true
+        _renderFooter()
+    }
+
+    function _renderFleetApplyProgress() {
+        const f = _state.fleetApply
+        const wrap = document.createElement("div")
+        wrap.className = "aes-afp-fleet-apply-progress"
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:4px;"
+            + "padding:6px 8px;background:rgba(124,45,18,0.12);"
+            + "border:1px solid rgba(154,52,18,0.55);border-radius:3px;"
+        const head = document.createElement("div")
+        head.style.cssText = "font-size:11px;font-weight:600;color:#fdba74;"
+            + "display:flex;align-items:center;gap:8px;"
+        const title = document.createElement("span")
+        title.textContent = "Fleet apply — aircraft "
+            + ((f.idx | 0) + 1) + " of " + (f.total | 0)
+            + (f.currentAircraft ? " (" + f.currentAircraft + ")" : "")
+        head.appendChild(title)
+        const abortBtn = document.createElement("button")
+        abortBtn.type = "button"
+        abortBtn.textContent = "Abort"
+        abortBtn.style.cssText = "background:transparent;color:#f87171;"
+            + "border:1px solid #b91c1c;border-radius:3px;padding:1px 7px;"
+            + "font-size:10px;cursor:pointer;"
+        abortBtn.addEventListener("click", () => {
+            if (typeof window.AesAfpFleetApplyOrchestrator !== "undefined"
+                    && typeof window.AesAfpFleetApplyOrchestrator.abort === "function") {
+                window.AesAfpFleetApplyOrchestrator.abort()
+            }
+        })
+        head.appendChild(abortBtn)
+        wrap.appendChild(head)
+
+        // Per-aircraft mini-results so far.
+        if (f.perAircraft.length) {
+            const list = document.createElement("div")
+            list.style.cssText = "font-size:10px;color:#cbd5e1;font-family:monospace;"
+            for (const r of f.perAircraft.slice(-5)) {
+                const line = document.createElement("div")
+                line.textContent = (r.ok ? "✓ " : "✗ ") + r.aircraftId
+                    + " — " + (r.succeeded || 0) + "/" + ((r.succeeded || 0) + (r.failed || 0))
+                    + (r.error ? " · " + r.error : "")
+                line.style.color = r.ok ? "#10b981" : "#f87171"
+                list.appendChild(line)
+            }
+            wrap.appendChild(list)
+        }
+        return wrap
+    }
+
+    function _renderFleetApplyResultBanner() {
+        const f = _state.fleetApply
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "padding:6px 8px;border-radius:3px;font-size:11px;"
+            + "display:flex;align-items:center;gap:10px;"
+        const totalSucc = f.perAircraft.reduce((s, r) => s + (r.succeeded || 0), 0)
+        const totalFail = f.perAircraft.reduce((s, r) => s + (r.failed    || 0), 0)
+        const allOk = totalFail === 0 && !f.aborted
+        wrap.style.background = allOk
+            ? "rgba(16,185,129,0.10)"
+            : "rgba(239,68,68,0.10)"
+        wrap.style.border = "1px solid " + (allOk ? "rgba(16,185,129,0.35)" : "rgba(239,68,68,0.40)")
+        wrap.style.color = allOk ? "#34d399" : "#fca5a5"
+        const text = document.createElement("span")
+        text.style.flex = "1 1 auto"
+        text.textContent = "Fleet apply " + (f.aborted ? "aborted" : "done")
+            + " — " + totalSucc + " ok / " + totalFail + " failed"
+            + " across " + f.perAircraft.length + " aircraft"
+        wrap.appendChild(text)
+        const dismiss = document.createElement("button")
+        dismiss.type = "button"
+        dismiss.textContent = "Dismiss"
+        dismiss.style.cssText = "background:transparent;color:inherit;"
+            + "border:1px solid currentColor;border-radius:3px;padding:1px 7px;"
+            + "font-size:10px;cursor:pointer;opacity:0.7;"
+        dismiss.addEventListener("click", () => {
+            _state.fleetApply.finishedAt  = null
+            _state.fleetApply.perAircraft = []
+            _renderFooter()
+        })
+        wrap.appendChild(dismiss)
+        return wrap
     }
 
     // ── Helpers ────────────────────────────────────────────────────────

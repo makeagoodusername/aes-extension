@@ -85,6 +85,10 @@ class RouteAssistantDemandDerivator {
             paxElasticity:   null,
             cargoElasticity: null,
             rmTightness:     null,
+            demandPoolByClass:     {Y: null, C: null, F: null, Cargo: null},
+            avgPriceByClass:       {Y: null, C: null, F: null, Cargo: null},
+            priceElasticityByClass: {Y: null, C: null, F: null, Cargo: null},
+            rmTightnessByClass:    {Y: null, C: null, F: null, Cargo: null},
             ratingPriceElasticityByClass: {Y: null, C: null, F: null},
             ratingObservationCounts:      {Y: 0,    C: 0,    F: 0},
             ratingDerivationNotes:        ratingNotes,
@@ -111,7 +115,7 @@ class RouteAssistantDemandDerivator {
             const pooled = RouteAssistantDemandDerivator._averageWindow(cargoSeries.capacities, window)
             const avgFare = RouteAssistantDemandDerivator._averageWindow(cargoSeries.prices, window)
             out.cargoDemandPool = pooled !== null ? Math.round(pooled) : null
-            out.cargoAvgPrice   = avgFare !== null ? Math.round(avgFare) : null
+            out.cargoAvgPrice   = avgFare !== null ? RouteAssistantDemandDerivator._roundAvgPrice("Cargo", avgFare) : null
             out.cargoElasticity = RouteAssistantDemandDerivator._elasticity(
                 cargoSeries.capacities, cargoSeries.prices, window, notes, "cargo"
             )
@@ -119,8 +123,34 @@ class RouteAssistantDemandDerivator {
             notes.push("no cargo historic series")
         }
 
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
+            const series = RouteAssistantDemandDerivator._pickClassSeries(historic, cls)
+            if (!series) continue
+            const pooled = RouteAssistantDemandDerivator._averageWindow(series.capacities, window)
+            const avgFare = RouteAssistantDemandDerivator._averageWindow(series.prices, window)
+            out.demandPoolByClass[cls] = pooled !== null ? Math.round(pooled) : null
+            out.avgPriceByClass[cls] = avgFare !== null ? RouteAssistantDemandDerivator._roundAvgPrice(cls, avgFare) : null
+            out.priceElasticityByClass[cls] = RouteAssistantDemandDerivator._elasticity(
+                series.capacities,
+                series.prices,
+                window,
+                notes,
+                "class " + cls
+            )
+        }
+        if (out.demandPoolByClass.Cargo == null && out.cargoDemandPool != null) {
+            out.demandPoolByClass.Cargo = out.cargoDemandPool
+        }
+        if (out.avgPriceByClass.Cargo == null && out.cargoAvgPrice != null) {
+            out.avgPriceByClass.Cargo = out.cargoAvgPrice
+        }
+        if (out.priceElasticityByClass.Cargo == null && out.cargoElasticity != null) {
+            out.priceElasticityByClass.Cargo = out.cargoElasticity
+        }
+
         // ---------- Inventory-derived (RM tightness) ----------
         out.rmTightness = RouteAssistantDemandDerivator._rmTightness(inventory, notes)
+        out.rmTightnessByClass = RouteAssistantDemandDerivator._rmTightnessByClass(inventory)
 
         // ---------- Observation-derived rating-price elasticity (slice 2c) ----------
         // Pure function of the observation log — runs the per-class
@@ -204,6 +234,15 @@ class RouteAssistantDemandDerivator {
         const c = historic.byPayload.CARGO
         if (!Array.isArray(c.periods) || !c.periods.length) return null
         return c
+    }
+
+    static _pickClassSeries(historic, cls) {
+        if (!historic || !historic.byPayload) return null
+        const payload = ({Y: "ECONOMY", C: "BUSINESS", F: "FIRST", Cargo: "CARGO"})[cls]
+        if (!payload) return null
+        const s = historic.byPayload[payload]
+        if (!s || !Array.isArray(s.periods) || !s.periods.length) return null
+        return s
     }
 
     /**
@@ -323,6 +362,46 @@ class RouteAssistantDemandDerivator {
         }
         notes && notes.push("rm tightness unavailable (no class summary or departure list)")
         return null
+    }
+
+    static _rmTightnessByClass(inventory) {
+        const out = {Y: null, C: null, F: null, Cargo: null}
+        if (!inventory) return out
+        if (inventory.classes) {
+            for (const cls of ["Y", "C", "F", "Cargo"]) {
+                const slot = inventory.classes[cls]
+                if (!slot) continue
+                const total = Number(slot.totalSeats)
+                const sold = Number(slot.soldSeats)
+                if (isFinite(total) && total > 0 && isFinite(sold)) {
+                    out[cls] = Math.round((sold / total) * 1000) / 1000
+                }
+            }
+        }
+        if (Array.isArray(inventory.departures) && inventory.departures.length) {
+            const acc = {Y: {sold: 0, total: 0}, C: {sold: 0, total: 0}, F: {sold: 0, total: 0}, Cargo: {sold: 0, total: 0}}
+            for (const d of inventory.departures) {
+                const byClass = d && d.classBreakdown
+                if (!byClass) continue
+                for (const cls of ["Y", "C", "F", "Cargo"]) {
+                    const slot = byClass[cls]
+                    if (!slot) continue
+                    const total = Number(slot.totalSeats)
+                    const sold = Number(slot.sold)
+                    if (isFinite(total) && total > 0 && isFinite(sold)) {
+                        acc[cls].total += total
+                        acc[cls].sold += sold
+                    }
+                }
+            }
+            for (const cls of ["Y", "C", "F", "Cargo"]) {
+                if (out[cls] != null) continue
+                if (acc[cls].total > 0) {
+                    out[cls] = Math.round((acc[cls].sold / acc[cls].total) * 1000) / 1000
+                }
+            }
+        }
+        return out
     }
 
     /**
@@ -505,6 +584,18 @@ class RouteAssistantDemandDerivator {
         }
         return set.size
     }
+
+    static _roundAvgPrice(cls, value) {
+        const n = Number(value)
+        if (!isFinite(n)) return null
+        return cls === "Cargo" && Math.abs(n) < 10
+            ? Math.round(n * 100) / 100
+            : Math.round(n)
+    }
+}
+
+if (typeof globalThis !== "undefined") {
+    globalThis.RouteAssistantDemandDerivator = RouteAssistantDemandDerivator
 }
 
 if (typeof module !== "undefined" && module.exports) {

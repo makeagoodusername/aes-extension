@@ -17,6 +17,12 @@ class AircraftStatisticsPanel {
     
     #addToPage() {
         const target = document.querySelector(".as-page-aircraft .col-md-2 h3:first-child + .as-panel")
+        // F-9228-805: idempotent mount. Remove any prior AES statistics
+        // container before re-inserting; on extension reload the readyState
+        // re-entry would otherwise stack duplicate "Statistics" headings
+        // and panels under the Aircraft Info card.
+        for (const stale of document.querySelectorAll('[data-aes-stats-panel]')) stale.remove()
+        this.container.dataset.aesStatsPanel = "1"
         target.after(this.container)
     }
     

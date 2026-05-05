@@ -2,6 +2,12 @@
 //MAIN
 //Global vars
 var settings,server,airline;
+
+function savePersonelManagementSettings(done){
+  Promise.resolve(window.AesSettings.saveArea('personelManagement', settings.personelManagement))
+    .then(function(){ if(typeof done === 'function') done(); });
+}
+
 $(function(){
   chrome.storage.local.get(['settings'], function(result) {
     settings = result.settings;
@@ -66,11 +72,11 @@ function displayPersonelManagement(){
   //actions
   select.change(function(){
     settings.personelManagement.type = select.val();
-    chrome.storage.local.set({settings: settings}, function(){});
+    savePersonelManagementSettings();
   });
   input.change(function(){
-    settings.personelManagement.value = AES.cleanCurrency(input.val());
-    chrome.storage.local.set({settings: settings}, function(){});
+    settings.personelManagement.value = AES.cleanInteger(input.val());
+    savePersonelManagementSettings();
   });
 
 
@@ -99,7 +105,7 @@ function displayPersonelManagement(){
   });
 }
 function priceUpdate(span){
-  chrome.storage.local.set({settings: settings}, function(){
+  savePersonelManagementSettings(function(){
     let value = settings.personelManagement.value;
     let type = settings.personelManagement.type;
     let found = 0;
@@ -111,8 +117,8 @@ function priceUpdate(span){
         }
 
         let salaryInput = $(this).find('form input:eq(2)');
-        let salary = AES.cleanCurrency(salaryInput.val());
-        let average = AES.cleanCurrency($(this).find('td:eq(9)').text());
+        let salary = AES.cleanInteger(salaryInput.val());
+        let average = AES.cleanInteger($(this).find('td:eq(9)').text());
         let salaryBtn = $(this).find('td:eq(8) > form .input-group-btn input');
         let newSalary;
         switch(type) {
@@ -127,7 +133,7 @@ function priceUpdate(span){
         }
         if(newSalary != salary){
           settings.personelManagement.alreadyUpdated.push(index);
-          chrome.storage.local.set({settings: settings}, function(){});
+          savePersonelManagementSettings();
           salaryInput.val(newSalary);
           salaryBtn.click();
           found = 1;
@@ -138,7 +144,7 @@ function priceUpdate(span){
     if(!found){
       settings.personelManagement.auto = 0;
       settings.personelManagement.alreadyUpdated = [];
-      chrome.storage.local.set({settings: settings}, function(){
+      savePersonelManagementSettings(function(){
 
         //Save into memory
 

@@ -111,6 +111,43 @@ class RouteAssistantOrsModel {
         const observedPrices = (route.ownPricing && route.ownPricing.prices) || {}
         const observedY = _safeNumber(observedPrices.Y)
 
+        // Aircraft-fit bonus (passenger preference for the right airframe on
+        // this route's distance bucket). Caller may pass `route.aircraftBonus`
+        // explicitly; otherwise we auto-derive from the strategy heuristic
+        // table when it's loaded. Stays 0 when the modifier module isn't on
+        // the page (route-assistant runs standalone in some surfaces).
+        let aircraftBonus = Number(route.aircraftBonus)
+        if (!isFinite(aircraftBonus)) aircraftBonus = 0
+        const modifierRoot = (typeof window !== "undefined")
+            ? window
+            : ((typeof globalThis !== "undefined") ? globalThis : null)
+        const aircraftModifier = modifierRoot && modifierRoot.AesStrategyAircraftOrsModifier
+        if (!aircraftBonus
+            && aircraftModifier
+            && typeof aircraftModifier.lookup === "function") {
+            try {
+                const spec = route.spec || (route.aircraft && route.aircraft.spec)
+                const dist = _safeNumber(route.distanceKm)
+                const derived = aircraftModifier.lookup(
+                    spec, dist,
+                    (input.modelParams && input.modelParams.aircraftOrsModifier) || null
+                )
+                if (Number.isFinite(derived) && derived !== 0) {
+                    aircraftBonus = derived
+                    notes.push("aircraft-fit bonus " + (derived > 0 ? "+" : "")
+                        + derived + " pts ("
+                        + (aircraftModifier.categoryFor(spec && spec.seats) || "?")
+                        + " on " + (aircraftModifier.distanceBucketFor(dist) || "?")
+                        + " route)")
+                }
+            } catch (_) { /* never let modifier lookup break the projection */ }
+        }
+        aircraftBonus += RouteAssistantOrsModel._aircraftAttractionBonus(
+            route.spec || (route.aircraft && route.aircraft.spec) || route.aircraft,
+            params,
+            notes
+        )
+
         for (const cls of ["Y", "C", "F"]) {
             const payload  = RouteAssistantOrsModel.CLASS_PAYLOAD[cls]
             const classRec = byClass[payload]
@@ -137,6 +174,7 @@ class RouteAssistantOrsModel {
                 observedPrice: observed,
                 newPrice:      newPrice,
                 comfortDelta:  Number(scenario.comfortDelta) || 0,
+                aircraftBonus: aircraftBonus,
                 params:        params,
                 T:             T,
                 notes:         notes,
@@ -321,11 +359,36 @@ class RouteAssistantOrsModel {
                 C: (_safeNumber(observedPrices.C) != null)
                     ? _safeNumber(observedPrices.C) * (Number(scenario.priceMultipliers.C) || 1) : null,
                 F: (_safeNumber(observedPrices.F) != null)
-                    ? _safeNumber(observedPrices.F) * (Number(scenario.priceMultipliers.F) || 1) : null
+                    ? _safeNumber(observedPrices.F) * (Number(scenario.priceMultipliers.F) || 1) : null,
+                Cargo: (_safeNumber(observedPrices.Cargo) != null)
+                    ? _safeNumber(observedPrices.Cargo) * cargoMult : null
             },
             elasticity: elast,
             adjustedPool: projPool
         }
+    }
+
+    static _aircraftAttractionBonus(spec, params, notes) {
+        if (!spec) return 0
+        const raw = _safeNumber(
+            spec.orsAttraction != null ? spec.orsAttraction
+                : (spec.customerAttraction != null ? spec.customerAttraction : spec.paxSatisfaction)
+        )
+        if (raw == null) return 0
+        const neutral = _safeNumber(params && params.aircraftAttractionNeutral)
+        const scale = _safeNumber(params && params.aircraftAttractionScale)
+        const cap = _safeNumber(params && params.aircraftAttractionMaxBonus)
+        const n = neutral != null ? neutral : 50
+        const s = scale != null ? scale : 0.04
+        const c = cap != null ? Math.max(0, cap) : 3
+        if (s <= 0 || c <= 0) return 0
+        const bonus = Math.max(-c, Math.min(c, (raw - n) * s))
+        if (bonus !== 0) {
+            notes && notes.push("aircraft ORS attraction "
+                + (bonus > 0 ? "+" : "") + Math.round(bonus * 100) / 100
+                + " pts (spec " + raw + ", neutral " + n + ")")
+        }
+        return bonus
     }
 
     /**
@@ -493,6 +556,7 @@ class RouteAssistantOrsModel {
             ? params.ratingPriceElasticityByClass[cls]
             : params.ratingPriceElasticity
         let clampedHigh = false, clampedLow = false
+        const aircraftBonus = Number(arg.aircraftBonus) || 0
         const projectedRatings = tagged.map(t => {
             if (!t.oursAll) return t.rating  // leave competitors + mixed-ownership rows fixed
             const base = t.rating
@@ -500,12 +564,16 @@ class RouteAssistantOrsModel {
             const shifted = base
                 - alphaForClass * priceRatio
                 + params.ratingComfortLift * (arg.comfortDelta || 0)
+                + aircraftBonus
             const lo = base * RouteAssistantOrsModel.RATING_CLAMP_LOW
             const hi = base * RouteAssistantOrsModel.RATING_CLAMP_HIGH
             if (shifted < lo) { clampedLow  = true; return lo }
             if (shifted > hi) { clampedHigh = true; return hi }
             return shifted
         })
+        if (aircraftBonus !== 0) {
+            notes && notes.push("class " + cls + ": aircraft ORS bonus " + (aircraftBonus > 0 ? "+" : "") + aircraftBonus + " pts")
+        }
         if (clampedLow)  notes && notes.push("class " + cls + ": projected rating clamped low")
         if (clampedHigh) notes && notes.push("class " + cls + ": projected rating clamped high")
 
@@ -629,6 +697,143 @@ class RouteAssistantOrsModel {
     }
 
     /**
+     * Slice 4a — sweet-spot finder. Scan a uniform price multiplier across
+     * `[lo, hi]` in `step` increments, calling `project()` for each step
+     * and returning the profit-maximising multiplier alongside the full
+     * sweep so callers can render a preview / sparkline (slice 5a reuses
+     * this for inline charts).
+     *
+     * Inputs match `project()` exactly; the scan overrides the scenario's
+     * `priceMultipliers` to {Y:m, C:m, F:m} for each step but keeps cargo /
+     * frequency / comfort fixed at their current values. Y is the only
+     * channel that drives the demand-pool elasticity inside `project()`,
+     * so a uniform sweep already exercises the dominant lever.
+     *
+     * Returns null when the baseline projection has no profit signal
+     * (typically: no own connection or missing fuel/spec input).
+     *
+     * @param {object} input — same shape as `project()`
+     * @param {object} [input.scan] — {lo, hi, step} (defaults 0.7 / 1.3 / 0.05)
+     * @return {object|null} {points, baselineMultiplier, optimal}
+     */
+    static scanPriceCurve(input) {
+        input = input || {}
+        const scanCfg = input.scan || {}
+        const lo   = isFinite(scanCfg.lo)   && scanCfg.lo   > 0   ? Number(scanCfg.lo)   : 0.7
+        const hi   = isFinite(scanCfg.hi)   && scanCfg.hi   > lo  ? Number(scanCfg.hi)   : 1.3
+        const step = isFinite(scanCfg.step) && scanCfg.step > 0   ? Number(scanCfg.step) : 0.05
+        const baseScenario = RouteAssistantOrsModel._normaliseScenario(input.scenario)
+        const baseRes = RouteAssistantOrsModel.project(Object.assign({}, input, {
+            scenario: Object.assign({}, baseScenario, {priceMultipliers: {Y: 1, C: 1, F: 1}})
+        }))
+        const baseProfit = baseRes && baseRes.baseline ? _safeNumber(baseRes.baseline.profitPerWeek) : null
+        const points = []
+        // Iterate via integer steps to dodge float drift (0.7 + 0.05 × 12 = 1.3).
+        const steps = Math.round((hi - lo) / step)
+        let optimal = null
+        for (let i = 0; i <= steps; i++) {
+            const m = Math.round((lo + i * step) * 10000) / 10000
+            const scenarioStep = Object.assign({}, baseScenario, {
+                priceMultipliers: {Y: m, C: m, F: m}
+            })
+            const res = RouteAssistantOrsModel.project(Object.assign({}, input, {scenario: scenarioStep}))
+            const profit = res && res.projected ? _safeNumber(res.projected.profitPerWeek) : null
+            const deltaProfit = (profit != null && baseProfit != null) ? (profit - baseProfit) : null
+            const point = {multiplier: m, profitPerWeek: profit, deltaProfit: deltaProfit}
+            points.push(point)
+            if (profit != null && (optimal == null || profit > optimal.profitPerWeek)) {
+                optimal = point
+            }
+        }
+        if (!optimal) return null
+        const deltaPct = (baseProfit != null && baseProfit !== 0)
+            ? (optimal.profitPerWeek - baseProfit) / Math.abs(baseProfit) : null
+        return {
+            points:             points,
+            baselineMultiplier: 1,
+            baselineProfit:     baseProfit,
+            optimal: {
+                multiplier:     optimal.multiplier,
+                profitPerWeek:  optimal.profitPerWeek,
+                deltaProfit:    optimal.deltaProfit,
+                deltaPct:       deltaPct
+            }
+        }
+    }
+
+    /**
+     * Slice 5c — sensitivity sweep heatmap. 2-D scan over a uniform price
+     * multiplier (applied to Y/C/F together) crossed with a frequency axis
+     * derived from the route's current frequency. Returns one cell per
+     * (price, freq) pair with the projected profit/wk and delta vs the
+     * (1.0×, current frequency) baseline.
+     *
+     * Default grid is 5 × 5 — price ±20% in 10% steps, freq ×0.6/0.8/1.0/
+     * 1.2/1.4 (rounded, floored to 1). Callers can pass `grid.priceMultipliers`
+     * or `grid.freqMultipliers` arrays to override.
+     *
+     * Pure — same purity contract as `scanPriceCurve`. Returns null on
+     * degenerate input (no baseline profit signal).
+     *
+     * @param {object} input — same shape as `project()`
+     * @param {object} [input.grid] — `{priceMultipliers?, freqMultipliers?}`
+     * @return {object|null} `{cells, priceMultipliers, frequencies,
+     *                         baselineFreq, baselineProfit, optimal}`
+     */
+    static scanPriceFreqGrid(input) {
+        input = input || {}
+        const cfg = input.grid || {}
+        const baseScenario = RouteAssistantOrsModel._normaliseScenario(input.scenario)
+        const baseFreq = (input.route && _safeNumber(input.route.currentFrequency)) || 0
+        const priceMults = (Array.isArray(cfg.priceMultipliers) && cfg.priceMultipliers.length)
+            ? cfg.priceMultipliers.map(Number).filter(v => isFinite(v) && v > 0)
+            : [0.80, 0.90, 1.00, 1.10, 1.20]
+        const freqMults = (Array.isArray(cfg.freqMultipliers) && cfg.freqMultipliers.length)
+            ? cfg.freqMultipliers.map(Number).filter(v => isFinite(v) && v > 0)
+            : [0.60, 0.80, 1.00, 1.20, 1.40]
+        // Round to integers; clamp to ≥1 so the synthesiser always has at
+        // least one own-connection to work with. Dedup adjacent collisions
+        // (a base of 1/wk produces 1/1/1/1/1 across the whole row).
+        const frequencies = []
+        for (const fm of freqMults) {
+            const f = Math.max(1, Math.round(baseFreq * fm) || 1)
+            if (frequencies.length === 0 || frequencies[frequencies.length - 1] !== f) frequencies.push(f)
+        }
+        if (!frequencies.length) frequencies.push(Math.max(1, Math.round(baseFreq) || 1))
+
+        const baseRes = RouteAssistantOrsModel.project(Object.assign({}, input, {
+            scenario: Object.assign({}, baseScenario, {priceMultipliers: {Y: 1, C: 1, F: 1}})
+        }))
+        const baseProfit = baseRes && baseRes.baseline ? _safeNumber(baseRes.baseline.profitPerWeek) : null
+
+        const cells = []
+        let optimal = null
+        for (const m of priceMults) {
+            for (const f of frequencies) {
+                const scenarioStep = Object.assign({}, baseScenario, {
+                    priceMultipliers: {Y: m, C: m, F: m},
+                    frequency:        f
+                })
+                const res = RouteAssistantOrsModel.project(Object.assign({}, input, {scenario: scenarioStep}))
+                const profit = res && res.projected ? _safeNumber(res.projected.profitPerWeek) : null
+                const deltaProfit = (profit != null && baseProfit != null) ? (profit - baseProfit) : null
+                const cell = {priceMultiplier: m, frequency: f, profitPerWeek: profit, deltaProfit: deltaProfit}
+                cells.push(cell)
+                if (profit != null && (optimal == null || profit > optimal.profitPerWeek)) optimal = cell
+            }
+        }
+        if (!optimal) return null
+        return {
+            cells:            cells,
+            priceMultipliers: priceMults,
+            frequencies:      frequencies,
+            baselineFreq:     baseFreq,
+            baselineProfit:   baseProfit,
+            optimal:          optimal
+        }
+    }
+
+    /**
      * Solve for T given an observed share and the rating list. Bisection
      * over [1, 200] — share is monotonic in T (higher T = more uniform).
      * Returns T (rounded to 1 decimal) or null on degenerate input.
@@ -713,6 +918,56 @@ class RouteAssistantOrsModel {
         }
         return null
     }
+
+    /**
+     * End-to-end T calibration for a route. Resolves the observed share
+     * from the leaderboard, picks the primary class with cached connections,
+     * builds the ratings + ourIndices vectors, and runs calibrateTemperature.
+     *
+     * Returns `{ok: true, T, observedShare, ourRow}` on success or
+     * `{ok: false, code}` on any precondition miss. Codes are stable —
+     * UX layers map them to user copy; the auto-loop ignores all of them.
+     *
+     * Codes: "no-marketShare" | "no-ourEnterpriseId" | "not-in-leaderboard"
+     *      | "no-share" | "no-connections" | "no-own-connections"
+     *      | "solver-failed"
+     */
+    static calibrateRouteT(arg) {
+        const orsByClass      = arg && arg.orsByClass
+        const marketSharePax  = arg && arg.marketSharePax
+        const ourEnterpriseId = arg && arg.ourEnterpriseId
+
+        if (!marketSharePax || !marketSharePax.length) return {ok: false, code: "no-marketShare"}
+        if (!ourEnterpriseId)                          return {ok: false, code: "no-ourEnterpriseId"}
+        const ourRow = RouteAssistantOrsModel.findOurInLeaderboard(marketSharePax, ourEnterpriseId)
+        if (!ourRow) return {ok: false, code: "not-in-leaderboard"}
+        const observedShare = (ourRow.sharePct != null) ? Number(ourRow.sharePct) / 100 : null
+        if (observedShare == null || !isFinite(observedShare) || observedShare <= 0) {
+            return {ok: false, code: "no-share"}
+        }
+
+        const byClass = orsByClass || {}
+        const primary = byClass.ECONOMY || byClass.BUSINESS || byClass.FIRST
+        if (!primary || !Array.isArray(primary.connections) || !primary.connections.length) {
+            return {ok: false, code: "no-connections"}
+        }
+        const conns = primary.connections.slice(0, RouteAssistantOrsModel.MAX_FOR_SOFTMAX)
+        const ratings = conns.map(c => Number(c.rating) || 0)
+        const ourIndices = []
+        for (let i = 0; i < conns.length; i++) {
+            const legs = (conns[i].legs || []).filter(l => !l.isGround)
+            if (legs.length && legs.every(l => !!l.isOurs)) ourIndices.push(i)
+        }
+        if (!ourIndices.length) return {ok: false, code: "no-own-connections"}
+
+        const T = RouteAssistantOrsModel.calibrateTemperature({
+            allRatings:    ratings,
+            ourIndices:    ourIndices,
+            observedShare: observedShare
+        })
+        if (T == null || !isFinite(T) || T <= 0) return {ok: false, code: "solver-failed"}
+        return {ok: true, T, observedShare, ourRow}
+    }
 }
 
 // ---------- Helpers ----------
@@ -749,6 +1004,10 @@ function _revenueWeek(econ, freq) {
     const f = _safeNumber(freq) || 0
     if (f <= 0) return null
     return Math.round((econ.breakdown.revenue || 0) * f)
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantOrsModel = RouteAssistantOrsModel
 }
 
 if (typeof module !== "undefined" && module.exports) {

@@ -1,0 +1,51 @@
+{
+  "url": "https://free1.airlinesim.aero/action/user/invalidParameter",
+  "title": "AirlineSim",
+  "h3": [],
+  "slots": [],
+  "buttons": [
+    {
+      "i": 18,
+      "tag": "A",
+      "text": "Forbidden Routes",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 39,
+      "tag": "A",
+      "text": "CASPER FLIGHT LOGISTICS",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 43,
+      "tag": "A",
+      "text": "Casper Flight Logistics",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 49,
+      "tag": "A",
+      "text": "Flight Numbers",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 50,
+      "tag": "A",
+      "text": "Route Evaluation",
+      "title": "",
+      "disabled": false
+    },
+    {
+      "i": 65,
+      "tag": "A",
+      "text": "Stations",
+      "title": "",
+      "disabled": false
+    }
+  ],
+  "candidates": []
+}

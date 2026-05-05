@@ -2,13 +2,13 @@
 
 /**
  * AFP Dashboard — programmatic-POST applier for AS's "New Flight Number"
- * form (Tier 1: dry-run only).
+ * form.
  *
  * MIRRORS `RouteAssistantPricingApplier` (modules/route-assistant/pricing-applier.js).
  * Same `dryRunOnly` / `applyEnabled` double-gate, same fingerprint dedup,
- * same audit-log integration. The Tier 1 ship in this slice has BOTH gates
- * hard-coded false in the constructor — `apply()` always returns
- * `{status: "dry-run", ...}`. Tier 2 will accept settings overrides.
+ * same audit-log integration. Live writes are the default; pass
+ * `{dryRunOnly: true}` or `apply(..., {dryRun: true})` to rehearse without
+ * posting.
  *
  * SAFETY INVARIANT (HANDOVER §10):
  *   - This applier never runs on the AFP page itself. The dashboard only
@@ -21,7 +21,7 @@
  * Public API:
  *   const applier = new AesAfpFnApplier(server, {applyLog})
  *   const result  = await applier.apply(aircraftId, leg, {source})
- *   // → {status:"dry-run", body, formContext, fingerprint, blockers?}
+ *   // → {status:"verified"|"posted"|"dry-run"|"failed"|"aborted", ...}
  *
  * Static helpers (pure):
  *   AesAfpFnApplier.parseFormContext(html)
@@ -50,10 +50,13 @@ class AesAfpFnApplier {
     constructor(server, opts) {
         if (!server) throw new Error("AesAfpFnApplier: server required")
         opts = opts || {}
+        const liveMode = opts.permanentLiveMode !== false
         this.server = server
-        // Tier 1: hard-coded gates. Tier 2 will read from settings.
-        this.dryRunOnly   = opts.dryRunOnly !== false
-        this.applyEnabled = !!opts.applyEnabled
+        this.dryRunOnly   = liveMode ? false : opts.dryRunOnly === true
+        this.applyEnabled = liveMode ? true : opts.applyEnabled !== false
+        this.cooldownMinPerAircraft = isFinite(opts.cooldownMinPerAircraft)
+            ? Math.max(0, Number(opts.cooldownMinPerAircraft))
+            : 5
         this.applyLog     = opts.applyLog || null
     }
 
@@ -158,9 +161,13 @@ class AesAfpFnApplier {
         // Flight Plan blocks list each destination's IATA inside the
         // .visual-flight-plan widget.
         const existingDests = new Set()
+        const existingDestCounts = {}
         for (const block of doc.querySelectorAll(".as-panel.visual-flight-plan .vfp .day .blocks > *")) {
             const m = /\b([A-Z]{3})\b/.exec(block.textContent || "")
-            if (m) existingDests.add(m[1])
+            if (m) {
+                existingDests.add(m[1])
+                existingDestCounts[m[1]] = (existingDestCounts[m[1]] || 0) + 1
+            }
         }
 
         return {
@@ -179,7 +186,8 @@ class AesAfpFnApplier {
             registration,
             equipment,
             typeId,
-            existingFlightNumberDests: Array.from(existingDests)
+            existingFlightNumberDests: Array.from(existingDests),
+            existingFlightNumberDestCounts: existingDestCounts
         }
     }
 
@@ -315,10 +323,36 @@ class AesAfpFnApplier {
         return out.join("&")
     }
 
+    static _resolvePostUrl(server, aircraftId, formContext) {
+        const base = AesAfpFnApplier.aircraftPageUrl(server, aircraftId)
+        const raw = (formContext && formContext.formActionUrl) || ""
+        if (raw) {
+            try { return new URL(raw, base).toString() }
+            catch (_) { /* fall through */ }
+        }
+        if (formContext && formContext.formActionPath) {
+            return base + "?" + formContext.formActionPath
+        }
+        return base
+    }
+
+    static _destCount(formContext, dest) {
+        if (!formContext || !dest) return 0
+        const key = String(dest).toUpperCase()
+        const counts = formContext.existingFlightNumberDestCounts || {}
+        if (isFinite(counts[key])) return Number(counts[key])
+        return Array.isArray(formContext.existingFlightNumberDests)
+            && formContext.existingFlightNumberDests.indexOf(key) >= 0
+            ? 1 : 0
+    }
+
+    static _successStatus(status) {
+        return status === "dry-run" || status === "verified" || status === "posted"
+    }
+
     // ------------------------------------------------------------------
-    // Apply pipeline — Tier 1 short-circuits to dry-run after the body
-    // is composed. Tier 2 will add the POST + verify branches mirroring
-    // pricing-applier's _completeAsVerified / _completeAsPostedUnverified.
+    // Apply pipeline — compose the AS form body, optionally dry-run, then
+    // POST and verify the aircraft's VFP destination count changed.
     // ------------------------------------------------------------------
 
     /**
@@ -328,18 +362,19 @@ class AesAfpFnApplier {
      *
      * @param {string|number} aircraftId
      * @param {object} leg     {origin, destination, depTime, pricePct, service}
-     * @param {object} [opts]  {source, formContext, reason}
+     * @param {object} [opts]  {source, formContext, reason, dryRun}
      */
     async apply(aircraftId, leg, opts) {
         opts = opts || {}
         const source    = opts.source || "manual"
         const reason    = (opts.reason || "").toString().slice(0, 240) || null
         const startedAt = Date.now()
-        const dryRun    = !!opts.dryRun || this.dryRunOnly || !this.applyEnabled
+        const dryRun    = opts.dryRun === true || this.dryRunOnly || !this.applyEnabled
 
         const fingerprint = AesAfpFnApplier.fingerprint(aircraftId, leg)
 
         const baseEnvelope = {
+            ok:           false,
             ts:           startedAt,
             server:       this.server,
             aircraftId:   String(aircraftId || ""),
@@ -355,12 +390,14 @@ class AesAfpFnApplier {
             blockers:     null,
             warnings:     null,
             error:        null,
-            reason
+            reason,
+            httpStatus:   null,
+            verifyAt:     null
         }
 
         // formContext can be passed through (avoids a second proxy GET when
         // the panel already pre-fetched). Otherwise we'd require Tier 2's
-        // proxy fetcher right here; Tier 1 always pre-fetches in panel.js.
+        // proxy fetcher right here; the dashboard pre-fetches in panel.js.
         const formContext = opts.formContext || null
         if (!formContext) {
             const fail = Object.assign({}, baseEnvelope, {
@@ -404,6 +441,29 @@ class AesAfpFnApplier {
                 code:    "alreadyScheduled",
                 message: leg.destination + " already appears in the Visual Flight Plan — duplicate flight numbers are allowed by AS but you may not want one."
             })
+        }
+        if (!dryRun && this.applyLog && this.cooldownMinPerAircraft > 0
+                && typeof this.applyLog.getLastSuccessAt === "function") {
+            try {
+                const lastSuccess = await this.applyLog.getLastSuccessAt(this.server, aircraftId)
+                if (lastSuccess) {
+                    const minsSince = (Date.now() - lastSuccess) / 60000
+                    if (minsSince < this.cooldownMinPerAircraft) {
+                        blockers.push({
+                            code: "cooldownActive",
+                            message: "A flight-number apply landed "
+                                + Math.round(minsSince) + " min ago on this aircraft; cooldown is "
+                                + this.cooldownMinPerAircraft + " min.",
+                            remainingMin: Math.ceil(this.cooldownMinPerAircraft - minsSince)
+                        })
+                    }
+                }
+            } catch (e) {
+                warnings.push({
+                    code: "cooldownCheckFailed",
+                    message: "Could not read last apply cooldown: " + ((e && e.message) || String(e))
+                })
+            }
         }
 
         if (blockers.length) {
@@ -456,17 +516,15 @@ class AesAfpFnApplier {
         baseEnvelope.bodyPreview = AesAfpFnApplier._summariseBody(body)
         baseEnvelope.warnings    = warnings.length ? warnings : null
 
-        // Tier 1 — always dry-run. Tier 2 will branch on
-        // (this.dryRunOnly === false && this.applyEnabled === true) and
-        // execute the POST + verify pipeline.
         if (dryRun) {
             const final = Object.assign({}, baseEnvelope, {status: "dry-run"})
             return await this._writeLog(final)
         }
 
-
-        // Tier 2 path: execute POST and verify
-        const postUrl = baseEnvelope.postUrl
+        const postUrl = AesAfpFnApplier._resolvePostUrl(this.server, aircraftId, formContext)
+        baseEnvelope.postUrl = postUrl
+        const dest = leg && leg.destination ? String(leg.destination).toUpperCase() : ""
+        const beforeCount = AesAfpFnApplier._destCount(formContext, dest)
         let respHtml = null
         let httpStatus = null
         try {
@@ -474,92 +532,82 @@ class AesAfpFnApplier {
                 method:      "POST",
                 credentials: "include",
                 headers:     {"Content-Type": "application/x-www-form-urlencoded"},
-                body:        body.toString()
+                body:        body.toString(),
+                referrer:    AesAfpFnApplier.aircraftPageUrl(this.server, aircraftId)
             })
             httpStatus = resp.status
+            baseEnvelope.httpStatus = httpStatus
             respHtml = await resp.text()
             if (!resp.ok) {
-                return await this._completeAsFailure(baseEnvelope, {
-                    code:    "postFailed",
-                    message: "POST " + postUrl + " returned HTTP " + resp.status,
-                    httpStatus
-                })
+                return await this._writeLog(Object.assign({}, baseEnvelope, {
+                    status: "failed",
+                    error: {
+                        code: "postFailed",
+                        message: "POST " + postUrl + " returned HTTP " + resp.status,
+                        httpStatus
+                    }
+                }))
             }
         } catch (e) {
-            return await this._completeAsFailure(baseEnvelope, {
-                code:    "postThrew",
-                message: "POST threw: " + (e && e.message || String(e))
-            })
+            return await this._writeLog(Object.assign({}, baseEnvelope, {
+                status: "failed",
+                error: {
+                    code: "postThrew",
+                    message: "POST threw: " + ((e && e.message) || String(e))
+                }
+            }))
         }
 
-        if (AesAfpFnApplier.PAGE_EXPIRED_RE.test(respHtml)) {
-            return await this._completeAsFailure(baseEnvelope, {
-                code:    "pageExpired",
-                message: "Wicket session expired between GET and POST — retry."
-            })
+        if (AesAfpFnApplier.AUTHENTICATION_RE.test(respHtml || "")) {
+            return await this._writeLog(Object.assign({}, baseEnvelope, {
+                status: "failed",
+                error: {
+                    code: "notLoggedIn",
+                    message: "POST returned a login form — sign into AS in this browser tab and retry."
+                }
+            }))
+        }
+        if (AesAfpFnApplier.PAGE_EXPIRED_RE.test(respHtml || "")) {
+            return await this._writeLog(Object.assign({}, baseEnvelope, {
+                status: "failed",
+                error: {
+                    code: "pageExpired",
+                    message: "Wicket session expired between GET and POST — retry."
+                }
+            }))
         }
 
-        let verifiedOk = false
-        const respContext = AesAfpFnApplier.parseFormContext(respHtml)
-        if (respContext && respContext.existingFlightNumberDests) {
-            // A simple verification: check if the destination we just scheduled
-            // now appears in the Visual Flight Plan
-            verifiedOk = respContext.existingFlightNumberDests.indexOf(String(leg.destination).toUpperCase()) >= 0
-        } else {
-             // Fallback verification
-             verifiedOk = await this._verify(aircraftId, leg.destination)
+        let verifyContext = AesAfpFnApplier.parseFormContext(respHtml)
+        if (!verifyContext) {
+            try {
+                const verifyResp = await fetch(AesAfpFnApplier.aircraftPageUrl(this.server, aircraftId), {
+                    credentials: "include"
+                })
+                const verifyHtml = await verifyResp.text()
+                if (verifyResp.ok && !AesAfpFnApplier.AUTHENTICATION_RE.test(verifyHtml)) {
+                    verifyContext = AesAfpFnApplier.parseFormContext(verifyHtml)
+                }
+            } catch (_) { /* posted-unverified is still a useful terminal state */ }
         }
 
-        baseEnvelope.verifyAt   = Date.now()
-        baseEnvelope.httpStatus = httpStatus
-
-        if (verifiedOk) return await this._completeAsVerified(baseEnvelope)
-        return await this._completeAsPostedUnverified(baseEnvelope)
-
-    }
-
-    async _verify(aircraftId, dest) {
-        try {
-            const url = AesAfpFnApplier.aircraftPageUrl(this.server, aircraftId)
-            const resp = await fetch(url, {credentials: "include"})
-            if (!resp.ok) return false
-            const html = await resp.text()
-            const ctx = AesAfpFnApplier.parseFormContext(html)
-            return ctx && ctx.existingFlightNumberDests && ctx.existingFlightNumberDests.indexOf(String(dest).toUpperCase()) >= 0
-        } catch (e) {
-            return false
+        baseEnvelope.verifyAt = Date.now()
+        if (verifyContext) {
+            baseEnvelope.verifiedFlightNumberDests = verifyContext.existingFlightNumberDests || null
         }
-    }
-
-    async _completeAsDryRun(envelope) {
-        const final = Object.assign({}, envelope, {status: "dry-run"})
-        return await this._writeLog(final)
-    }
-
-    async _completeAsVerified(envelope) {
-        const final = Object.assign({}, envelope, {status: "verified"})
-        return await this._writeLog(final)
-    }
-
-    async _completeAsPostedUnverified(envelope) {
-        const final = Object.assign({}, envelope, {
+        const afterCount = AesAfpFnApplier._destCount(verifyContext, dest)
+        if (dest && afterCount > beforeCount) {
+            return await this._writeLog(Object.assign({}, baseEnvelope, {status: "verified"}))
+        }
+        return await this._writeLog(Object.assign({}, baseEnvelope, {
             status: "posted",
-            warning: "POST returned 200 but post-write verification didn't match."
-        })
-        return await this._writeLog(final)
-    }
-
-    async _completeAsFailure(envelope, error) {
-        const final = Object.assign({}, envelope, {status: "failed", error})
-        return await this._writeLog(final)
-    }
-
-    async _completeAsAborted(envelope, reason) {
-        const final = Object.assign({}, envelope, {status: "aborted", error: reason})
-        return await this._writeLog(final)
+            warning: "POST returned " + (httpStatus || "OK")
+                + " but the follow-up VFP count did not prove the new destination."
+        }))
     }
 
     async _writeLog(record) {
+        record = record || {}
+        record.ok = AesAfpFnApplier._successStatus(record.status)
         if (this.applyLog && typeof this.applyLog.add === "function") {
             try {
                 const saved = await this.applyLog.add(record)

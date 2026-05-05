@@ -9,7 +9,7 @@
  *
  *   chrome.storage.local["routeAssistant:typeSpec:<typeId>"] = {
  *       typeId, typeName, seats, cargoCapacity, speed, range,
- *       paxSatisfaction, fetchedAt
+ *       paxSatisfaction, orsAttraction, customerAttraction, fetchedAt
  *   }
  *
  * Failed fetches are NOT cached — `save()` rejects records that have no usable
@@ -19,8 +19,15 @@
 class RouteAssistantTypeSpecsStore {
     static PREFIX = "routeAssistant:typeSpec:"
 
-    static _key(typeId) {
-        return RouteAssistantTypeSpecsStore.PREFIX + String(typeId)
+    static _store() {
+        // Lazy: createPrefixStore loads earlier in the manifest, but build on
+        // first use so the class is safe to evaluate at import time too.
+        if (!RouteAssistantTypeSpecsStore.__store) {
+            RouteAssistantTypeSpecsStore.__store = window.createPrefixStore({
+                prefix: RouteAssistantTypeSpecsStore.PREFIX
+            })
+        }
+        return RouteAssistantTypeSpecsStore.__store
     }
 
     /**
@@ -28,9 +35,7 @@ class RouteAssistantTypeSpecsStore {
      */
     static async get(typeId) {
         if (!typeId) return null
-        const key = RouteAssistantTypeSpecsStore._key(typeId)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+        return await RouteAssistantTypeSpecsStore._store().get(typeId)
     }
 
     /**
@@ -40,11 +45,11 @@ class RouteAssistantTypeSpecsStore {
     static async getMany(typeIds) {
         const ids = (typeIds || []).filter(Boolean)
         if (!ids.length) return new Map()
-        const keys = ids.map(id => RouteAssistantTypeSpecsStore._key(id))
-        const out = await chrome.storage.local.get(keys)
+        const raw = await RouteAssistantTypeSpecsStore._store().bulkGet(ids)
+        // Re-key by record.typeId so callers don't depend on suffix being the typeId,
+        // matching the prior contract.
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
+        for (const [, rec] of raw) {
             if (!rec || !rec.typeId) continue
             map.set(rec.typeId, rec)
         }
@@ -65,11 +70,16 @@ class RouteAssistantTypeSpecsStore {
         const hasAnyData = (record.seats != null && record.seats > 0)
                         || (record.range != null && record.range > 0)
                         || (record.cargoCapacity != null && record.cargoCapacity > 0)
+                        || (record.orsAttraction != null && record.orsAttraction > 0)
+                        || (record.customerAttraction != null && record.customerAttraction > 0)
         if (!hasAnyData) return false
 
         const stamped = Object.assign({fetchedAt: Date.now()}, record)
-        const key = RouteAssistantTypeSpecsStore._key(record.typeId)
-        await chrome.storage.local.set({[key]: stamped})
+        await RouteAssistantTypeSpecsStore._store().set(record.typeId, stamped)
         return true
     }
+}
+
+if (typeof window !== "undefined") {
+    window.RouteAssistantTypeSpecsStore = RouteAssistantTypeSpecsStore
 }

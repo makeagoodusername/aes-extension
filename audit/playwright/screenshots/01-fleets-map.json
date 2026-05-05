@@ -1,0 +1,39 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets?0",
+  "aircraftCount": 0,
+  "aircraftLinks": [],
+  "aesButtons": [
+    {
+      "tag": "A",
+      "text": "AES",
+      "id": "",
+      "cls": "dropdown-toggle aes-menu__trigger"
+    },
+    {
+      "tag": "A",
+      "text": "Open AES Settings",
+      "id": "",
+      "cls": ""
+    },
+    {
+      "tag": "A",
+      "text": "About AES",
+      "id": "",
+      "cls": ""
+    },
+    {
+      "tag": "BUTTON",
+      "text": "✈ Open Fleet Schedule Grid",
+      "id": "",
+      "cls": ""
+    },
+    {
+      "tag": "BUTTON",
+      "text": "▦ Open Schedule Canvas",
+      "id": "",
+      "cls": ""
+    }
+  ],
+  "navLinks": [],
+  "hasAesMenu": false
+}

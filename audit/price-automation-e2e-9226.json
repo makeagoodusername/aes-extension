@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "attached": false,
+  "remoteDebuggingPort": 9226,
+  "profileDir": "/tmp/aes-price-profile-9226",
+  "error": "page.waitForSelector: Timeout 45000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.aes-menu__trigger, #aes-central-hub') to be visible\u001b[22m\n\n    at /Users/jihwan/Downloads/AES.v0.6.9/scripts/qa-price-automation-e2e.mjs:68:16",
+  "consoleRows": [],
+  "pageErrors": []
+}

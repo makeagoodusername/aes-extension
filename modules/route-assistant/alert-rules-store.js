@@ -10,8 +10,10 @@
  * that hit. Rules can be scoped to the watchlist (default) or all
  * visible routes.
  *
- * Storage: single global key `routeAssistant:alertRules` →
- *   {rules: [<RuleRecord>, ...], updatedAt}
+ * Storage:
+ *   routeAssistant:alertRules  →                                   (legacy)
+ *   routeAssistant:alertRules:acct:<id>  →                         (L2+)
+ *     {rules: [<RuleRecord>, ...], updatedAt}
  *
  * RuleRecord shape:
  *   {
@@ -37,17 +39,39 @@
  *
  * The store does not evaluate rules itself; it only persists them.
  * Evaluation lives in `RouteAssistantAlertEvaluator`.
+ *
+ * L2 — namespaced key + legacy fallback.
  */
 class RouteAssistantAlertRulesStore {
-    static STORAGE_KEY = "routeAssistant:alertRules"
+    static LEGACY_KEY   = "routeAssistant:alertRules"
+    static SCOPE_PREFIX = "routeAssistant:alertRules"
 
     static VALID_OPERATORS = ["increased_by", "decreased_by", "above", "below"]
     static VALID_SCOPES    = ["watchlist", "all"]
     static VALID_SEVERITIES = ["info", "warn", "error"]
 
+    static _key() {
+        return acctKey(RouteAssistantAlertRulesStore.SCOPE_PREFIX, "")
+    }
+
+    static _legacyKey() {
+        return RouteAssistantAlertRulesStore.LEGACY_KEY
+    }
+
+    static async _loadRecord() {
+        const ns = RouteAssistantAlertRulesStore._key()
+        const lg = RouteAssistantAlertRulesStore._legacyKey()
+        if (ns === lg) {
+            const out = await chrome.storage.local.get([ns])
+            return out[ns] || null
+        }
+        const out = await chrome.storage.local.get([ns, lg])
+        if (out[ns] !== undefined) return out[ns]
+        return out[lg] || null
+    }
+
     static async load() {
-        const data = await chrome.storage.local.get([RouteAssistantAlertRulesStore.STORAGE_KEY])
-        const rec = data[RouteAssistantAlertRulesStore.STORAGE_KEY]
+        const rec = await RouteAssistantAlertRulesStore._loadRecord()
         if (!rec || !Array.isArray(rec.rules)) return {rules: [], updatedAt: null}
         return {
             rules:     rec.rules.map(r => RouteAssistantAlertRulesStore._normalise(r)).filter(Boolean),
@@ -58,7 +82,8 @@ class RouteAssistantAlertRulesStore {
     static async saveAll(rules) {
         const cleaned = (rules || []).map(r => RouteAssistantAlertRulesStore._normalise(r)).filter(Boolean)
         const rec = {rules: cleaned, updatedAt: Date.now()}
-        await chrome.storage.local.set({[RouteAssistantAlertRulesStore.STORAGE_KEY]: rec})
+        const key = RouteAssistantAlertRulesStore._key()
+        await chrome.storage.local.set({[key]: rec})
         return rec
     }
 
@@ -161,6 +186,9 @@ class RouteAssistantAlertRulesStore {
         }[op] || op
         return field + " " + opLabel + " " + threshold
     }
+
+    /** L2 deprecated — preserve for any reader still doing key arithmetic. */
+    static get STORAGE_KEY() { return RouteAssistantAlertRulesStore.LEGACY_KEY }
 }
 
 if (typeof module !== "undefined" && module.exports) {

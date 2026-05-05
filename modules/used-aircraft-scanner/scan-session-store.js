@@ -27,7 +27,7 @@ class MarketScanSession {
 
     /**
      * Builds a fresh session record. Caller must persist via save().
-     * @param {object} args - {server, presetId, presetName, queue: [{type, family, status?, error?}], concurrency, staggerMs}
+     * @param {object} args - {server, presetId, presetName, queue: [{type, family, familyFallback?, status?, error?}], concurrency, staggerMs}
      */
     static create(args) {
         const scanId = Date.now().toString(36)
@@ -35,6 +35,7 @@ class MarketScanSession {
             idx: idx,
             type: entry.type,
             family: entry.family,
+            familyFallback: !!entry.familyFallback,
             status: entry.status || "pending",
             error: entry.error || null,
             startedAt: null,
@@ -69,13 +70,26 @@ class MarketScanSession {
     }
 
     /**
-     * Reads every per-type result blob for a session. Returns an object keyed by
+     * Reads per-type result blobs for a session. Returns an object keyed by
      * the type name → {status, rows, error}.
+     *
+     * `knownTypes` (optional) caps the read to those exact result keys, so we
+     * skip a full-storage scan during in-flight refreshes. Falls back to the
+     * legacy prefix sweep when the caller doesn't know the type set.
      */
-    static async loadResults(server, scanId) {
+    static async loadResults(server, scanId, knownTypes) {
+        const out = {}
+        if (Array.isArray(knownTypes) && knownTypes.length) {
+            const keys = knownTypes.map(t => MarketScanSession._resultKey(server, scanId, t))
+            const data = await chrome.storage.local.get(keys)
+            for (const k in data) {
+                const blob = data[k]
+                if (blob && blob.type) out[blob.type] = blob
+            }
+            return out
+        }
         const all = await chrome.storage.local.get(null)
         const prefix = server + "marketScan:" + scanId + ":r:"
-        const out = {}
         for (const k in all) {
             if (k.indexOf(prefix) === 0) {
                 const blob = all[k]
@@ -136,4 +150,8 @@ class MarketScanSession {
         }
         if (toRemove.length) await chrome.storage.local.remove(toRemove)
     }
+}
+
+if (typeof window !== "undefined") {
+    window.MarketScanSession = MarketScanSession
 }

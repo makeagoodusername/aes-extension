@@ -152,13 +152,20 @@ class StationAutomationStatusStrip {
         }
 
         if (queue.length) {
+            // F-9228-101: count whitelist airports and threshold-only countries
+            // separately so the display can surface mixed-mode queues honestly.
+            // The previous shape silently dropped threshold-only countries from
+            // any summary that included an airport count.
             let airports = 0
+            let thresholdCountries = 0
             for (const e of queue) {
                 if (e && e.airportWhitelist && e.airportWhitelist.length) {
                     airports += e.airportWhitelist.length
+                } else if (e) {
+                    thresholdCountries++
                 }
             }
-            return {kind: "queued", countries: queue.length, airports}
+            return {kind: "queued", countries: queue.length, airports, thresholdCountries}
         }
 
         return {kind: "empty"}
@@ -230,9 +237,19 @@ class StationAutomationStatusStrip {
 
         if (s.kind === "queued") {
             label.textContent = "QUEUED"
-            const cw = s.airports
-                ? `${s.airports} airport${s.airports === 1 ? "" : "s"} across ${s.countries} ${s.countries === 1 ? "country" : "countries"}`
-                : `${s.countries} ${s.countries === 1 ? "country" : "countries"} (threshold-based)`
+            // F-9228-101: split airports vs threshold-only countries so the
+            // user sees both populations when the queue is mixed-mode.
+            const aw = s.airports || 0
+            const tc = s.thresholdCountries || 0
+            const cText = `${s.countries} ${s.countries === 1 ? "country" : "countries"}`
+            let cw
+            if (aw && tc) {
+                cw = `${aw} airport${aw === 1 ? "" : "s"} + ${tc} threshold-only · across ${cText}`
+            } else if (aw) {
+                cw = `${aw} airport${aw === 1 ? "" : "s"} across ${cText}`
+            } else {
+                cw = `${cText} (threshold-based)`
+            }
             detail.textContent = "— " + cw.toUpperCase()
             head.append(dot, label, detail, this._spacer(), this._dashboardLink())
             wrap.append(head)
@@ -336,8 +353,19 @@ class StationAutomationStatusStrip {
 
         if (s.kind === "queued") {
             span.classList.add("aes-badge--cobalt")
-            span.textContent = `${s.airports || s.countries} QUEUED`
-            span.title = `${s.airports || s.countries} airports waiting in the Station Automation queue. Click to open.`
+            // F-9228-101: in mixed-mode, show airports + threshold-only
+            // countries so the badge reflects the real queue cardinality.
+            const aw = s.airports || 0
+            const tc = s.thresholdCountries || 0
+            const text = (aw && tc) ? `${aw}+${tc} QUEUED`
+                : aw ? `${aw} QUEUED`
+                : `${s.countries} QUEUED`
+            span.textContent = text
+            span.title = aw && tc
+                ? `${aw} airport(s) + ${tc} threshold-only countries waiting in the Station Automation queue. Click to open.`
+                : aw
+                    ? `${aw} airports waiting in the Station Automation queue. Click to open.`
+                    : `${s.countries} threshold-only countries queued for Station Automation. Click to open.`
         } else if (s.kind === "running") {
             span.classList.add("aes-badge--amber")
             span.textContent = `${s.done}/${s.total} ⏵`
@@ -359,8 +387,18 @@ class StationAutomationStatusStrip {
     // ---------- Helpers ----------
 
     _navigateToDashboard() {
+        // F-9228-100: if we're already on the dashboard, just flip the
+        // legacy dropdown — that's the same affordance station-automation
+        // tile.js uses and avoids opening a redundant new tab. Otherwise
+        // navigate with #aes-section=stationAutomation so content_dashboard.js
+        // can land the user on the right pane regardless of their
+        // settings.general.defaultDashboard preference.
+        if (window.CentralHubLegacy && window.CentralHubLegacy.hasLegacy()) {
+            window.CentralHubLegacy.switchDropdownTo("stationAutomation")
+            return
+        }
         const host = window.location.hostname
-        const url = `https://${host}/app/enterprise/dashboard`
+        const url = `https://${host}/app/enterprise/dashboard#aes-section=stationAutomation`
         window.open(url, "_blank")
     }
 

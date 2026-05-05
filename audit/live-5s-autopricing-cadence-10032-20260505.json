@@ -1,0 +1,88 @@
+{
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "port": "10032",
+  "loggedIn": true,
+  "attached": false,
+  "profileDir": "/var/folders/zx/0dqhlzq10hvc07_m0nq_jbvc0000gn/T/aes-live-5s-10032",
+  "result": {
+    "ok": true,
+    "stage": "done",
+    "server": "free1",
+    "tickSec": 5,
+    "samples": [
+      {
+        "at": 1777938528354,
+        "elapsedMs": 3601,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777938528354,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777938533352,
+        "elapsedMs": 8599,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777938533352,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777938538353,
+        "elapsedMs": 13600,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777938538353,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      }
+    ],
+    "intervals": [
+      4998,
+      5001
+    ],
+    "dryRunOnly": true,
+    "liveWritesDisabled": true,
+    "durationMs": 14079
+  },
+  "consoleRows": [],
+  "pageErrors": []
+}

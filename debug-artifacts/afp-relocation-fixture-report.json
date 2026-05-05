@@ -1,0 +1,99 @@
+{
+  "url": "https://free1.airlinesim.aero/app/fleets/aircraft/99999/0?fixture=relocate",
+  "title": "N123AES | Free1 | AirlineSim",
+  "hasWideHost": true,
+  "hasVisualWaveOverlayControls": true,
+  "visualWaveOverlayText": "Wave overlay no presetPlanDensity OnOverviewHide",
+  "assignHeadingRelocated": true,
+  "assignPanelRelocated": true,
+  "assignPanelHasSubmit": true,
+  "assignPanelImmediatelyBeforeVfp": true,
+  "orderIndexes": {
+    "aesRouteBuilderPanel": 3,
+    "assignHeading": 4,
+    "assignPanel": 5,
+    "visualFlightPlan": 6
+  },
+  "relevantOrder": [
+    {
+      "i": 1,
+      "tag": "H3",
+      "text": "Flight Plan",
+      "className": "",
+      "isWideHost": false,
+      "isAssignHeading": false,
+      "isAssignPanel": false,
+      "isVfp": false,
+      "relocated": false
+    },
+    {
+      "i": 2,
+      "tag": "H3",
+      "text": "AES Route Builder",
+      "className": "",
+      "isWideHost": false,
+      "isAssignHeading": false,
+      "isAssignPanel": false,
+      "isVfp": false,
+      "relocated": false
+    },
+    {
+      "i": 3,
+      "tag": "DIV",
+      "text": "Plan from:Open station▾Open Route Assistant↻ UpdateOverview☆ Watchlist this hubAuto-build livescorin",
+      "className": "as-panel",
+      "isWideHost": true,
+      "isAssignHeading": false,
+      "isAssignPanel": false,
+      "isVfp": false,
+      "relocated": false
+    },
+    {
+      "i": 4,
+      "tag": "H3",
+      "text": "Assign a new flight",
+      "className": "",
+      "isWideHost": false,
+      "isAssignHeading": true,
+      "isAssignPanel": false,
+      "isVfp": false,
+      "relocated": true
+    },
+    {
+      "i": 5,
+      "tag": "DIV",
+      "text": "Existing Flight NumberNew Flight Number Flight number first find FromJFKDeparture08 : 05Price100%Ser",
+      "className": "as-panel",
+      "isWideHost": false,
+      "isAssignHeading": false,
+      "isAssignPanel": true,
+      "isVfp": false,
+      "relocated": true
+    },
+    {
+      "i": 6,
+      "tag": "DIV",
+      "text": "Wave overlay no presetPlanDensity OnOverviewHide MondayTuesdayWednesdayThursdayFridaySaturdaySunday ",
+      "className": "as-panel visual-flight-plan",
+      "isWideHost": false,
+      "isAssignHeading": false,
+      "isAssignPanel": false,
+      "isVfp": true,
+      "relocated": false
+    },
+    {
+      "i": 7,
+      "tag": "H3",
+      "text": "Transfer Flight Plan",
+      "className": "",
+      "isWideHost": false,
+      "isAssignHeading": false,
+      "isAssignPanel": false,
+      "isVfp": false,
+      "relocated": false
+    }
+  ],
+  "console": [
+    "log: [AES cleanup] tab-idle: 1/1 ok in 15ms"
+  ]
+}

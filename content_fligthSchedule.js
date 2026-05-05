@@ -1,9 +1,32 @@
 "use strict";
 //MAIN
 var settings, compData;
+
+function normaliseScheduleSettings(rawSettings) {
+  let block = rawSettings && typeof rawSettings === 'object' ? rawSettings : {};
+  let schedule = block.schedule && typeof block.schedule === 'object' ? block.schedule : {};
+  block.schedule = Object.assign({autoExtract: 0}, schedule);
+  return block;
+}
+
+function saveScheduleSettings(done) {
+  settings = normaliseScheduleSettings(settings);
+  let save = window.AesSettings && typeof window.AesSettings.saveArea === 'function'
+    ? Promise.resolve(window.AesSettings.saveArea('schedule', settings.schedule))
+    : Promise.resolve().then(function() {
+        console.warn('[AES Schedule] AesSettings bridge missing; schedule settings not saved');
+        return settings.schedule;
+      });
+  save.catch(function(err) {
+      console.warn('[AES Schedule] failed to save schedule settings', err);
+    })
+    .then(function() { if (typeof done === 'function') done(); });
+}
+
 $(function(){
-  chrome.storage.local.get(['settings'], function(result) {
-    settings = result.settings;
+  chrome.storage.local.get({settings: {}}, function(result) {
+    settings = normaliseScheduleSettings(result.settings);
+    if (!$('.flight-schedule').length || $('#aes-panel-schedule').length) return;
     let label = $('<h3></h3>').text('AES Schedule');
     let btn = $('<button class="btn btn-default" id="aes-extractSchedule-btn"></button>').text('Extract Schedule');
     let panel = $('<div id="aes-panel-schedule" class="as-panel"></div>').append(btn);
@@ -18,7 +41,7 @@ $(function(){
     //Automation
     if(settings.schedule.autoExtract){
       settings.schedule.autoExtract = 0;
-      chrome.storage.local.set({settings: settings}, function() {
+      saveScheduleSettings(function() {
         btn.click();
       });
     } else {
@@ -29,6 +52,7 @@ $(function(){
       chrome.storage.local.get([key], function(compMonitoringData) {
         compData = compMonitoringData[key];
         if(compData){
+          compData.key = compData.key || key;
           if(compData.autoExtract){
             btn.click();
           }
@@ -98,7 +122,7 @@ function extractSchedule(){
     } else if(hub[route.origin] < hub[route.destination]) {
       route.od = route.destination+route.origin;
       route.direction = 'Inbound';
-    } else if (hub[route.origin] = hub[route.destination]) {
+    } else {
       if(route.origin < route.destination){
         route.od = route.origin+route.destination;
         route.direction = 'Outbound';
@@ -134,8 +158,9 @@ function extractSchedule(){
       if(compData){
         if(compData.autoExtract){
           compData.autoExtract = 0;
-          chrome.storage.local.set({[compData.key]: compData}, function() {
-            window.open('./'+airlineId+'?tab=0','_self');
+          let compKey = compData.key || (server+getAirlineId()+'competitorMonitoring');
+          chrome.storage.local.set({[compKey]: compData}, function() {
+            window.open('./'+getAirlineId()+'?tab=0','_self');
           });
         }
       }

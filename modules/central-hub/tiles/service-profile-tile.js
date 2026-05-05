@@ -21,7 +21,7 @@ class CentralHubServiceProfileTile extends window.CentralHubTile {
         super()
         this.id = "service-profile"
         this.title = "Service Profiles"
-        this.section = "routes"
+        this.section = "operations"
         this.priority = 10
         this.requiresAirline = true
 
@@ -89,17 +89,23 @@ class CentralHubServiceProfileTile extends window.CentralHubTile {
     async loadStatus(ctx) {
         const list = await window.RouteAssistantServiceProfileScraper.loadList()
         const profiles = list && Array.isArray(list.profiles) ? list.profiles : []
+        const reputation = window.AesCompanyReputationStore
+            ? await window.AesCompanyReputationStore.loadLatest()
+            : null
+        const ratingTail = reputation && reputation.ratingLabel
+            ? " · rating " + reputation.ratingLabel
+            : ""
         if (!profiles.length) {
             return {
                 badge: "—",
                 badgeKind: window.CentralHubStatusBadges.KIND.MUTED,
-                summary: "Visit a profile page to populate"
+                summary: "Visit a profile page to populate" + ratingTail
             }
         }
         return {
             badge: String(profiles.length),
             badgeKind: window.CentralHubStatusBadges.KIND.INFO,
-            summary: profiles.length + " profile" + (profiles.length === 1 ? "" : "s") + " cached"
+            summary: profiles.length + " profile" + (profiles.length === 1 ? "" : "s") + " cached" + ratingTail
         }
     }
 
@@ -141,6 +147,11 @@ class CentralHubServiceProfileTile extends window.CentralHubTile {
         }
 
         const detailMap = await window.RouteAssistantServiceProfileScraper.loadAllDetails()
+        const reputation = window.AesCompanyReputationStore
+            ? await window.AesCompanyReputationStore.loadLatest()
+            : null
+        const strip = this._buildReputationStrip(reputation, detailMap, T)
+        if (strip) host.appendChild(strip)
 
         const table = document.createElement("table")
         table.style.cssText = [
@@ -153,7 +164,7 @@ class CentralHubServiceProfileTile extends window.CentralHubTile {
 
         const thead = document.createElement("thead")
         const trh = document.createElement("tr")
-        for (const label of ["Name", "Min km", "Default", "Y", "C", "F", ""]) {
+        for (const label of ["Name", "Min km", "Default", "Y", "C", "F", "Impact", ""]) {
             const th = document.createElement("th")
             th.textContent = label
             th.style.cssText = [
@@ -202,7 +213,8 @@ class CentralHubServiceProfileTile extends window.CentralHubTile {
             profile.isDefault ? "default" : "",
             this._fmtScore(detail && detail.classScore && detail.classScore.Y),
             this._fmtScore(detail && detail.classScore && detail.classScore.C),
-            this._fmtScore(detail && detail.classScore && detail.classScore.F)
+            this._fmtScore(detail && detail.classScore && detail.classScore.F),
+            this._fmtImpact(detail)
         ]
         for (const text of cells) {
             const td = document.createElement("td")
@@ -225,6 +237,72 @@ class CentralHubServiceProfileTile extends window.CentralHubTile {
     _fmtScore(v) {
         if (v == null || !isFinite(v)) return "—"
         return Number(v).toFixed(2)
+    }
+
+    _fmtImpact(detail) {
+        if (!detail || !detail.categories) return "—"
+        const rows = this._rankCategoryImpact(detail)
+        if (!rows.length) return "—"
+        return rows.slice(0, 2).map(r => this._humaniseCategory(r.category)).join(", ")
+    }
+
+    _rankCategoryImpact(detail) {
+        const weights = {
+            drinks: 0.80, snacks: 0.85, entrees: 1.00, additionalEntrees: 0.95,
+            foodPresentation: 0.90, headphones: 0.65,
+            newspapersMagazines: 0.45, flightMagazines: 0.40
+        }
+        const out = []
+        const categories = (detail && detail.categories) || {}
+        for (const catKey in categories) {
+            const cat = categories[catKey] || {}
+            const vals = ["Y", "C", "F"].map(cls => Number(cat[cls])).filter(isFinite)
+            if (!vals.length) continue
+            const avg = vals.reduce((s, v) => s + v, 0) / vals.length
+            out.push({
+                category: catKey,
+                avgLevel: avg,
+                weight: weights[catKey] != null ? weights[catKey] : 0.5
+            })
+        }
+        return out.sort((a, b) => (a.avgLevel - b.avgLevel) || (b.weight - a.weight))
+    }
+
+    _buildReputationStrip(reputation, detailMap, T) {
+        const weak = []
+        if (detailMap && typeof detailMap.forEach === "function") {
+            detailMap.forEach(detail => {
+                const top = this._rankCategoryImpact(detail)[0]
+                if (top) weak.push({
+                    profile: detail.name || ("#" + detail.id),
+                    category: top.category,
+                    avgLevel: top.avgLevel,
+                    weight: top.weight
+                })
+            })
+        }
+        weak.sort((a, b) => (a.avgLevel - b.avgLevel) || (b.weight - a.weight))
+        if ((!reputation || !reputation.ratingLabel) && !weak.length) return null
+        const wrap = document.createElement("div")
+        wrap.style.cssText = [
+            "margin-top:" + T.sp[2],
+            "padding:" + T.sp[2],
+            "border:" + T.geom.bw1 + " solid " + T.color.paperRule,
+            "background:" + T.color.bone,
+            "font-family:" + T.font.mono,
+            "font-size:" + T.fs.body,
+            "color:" + T.color.oxide
+        ].join(";")
+        const parts = []
+        if (reputation && reputation.ratingLabel) {
+            parts.push("rating " + reputation.ratingLabel + " (" + (reputation.ratingScore || "—") + "/10)")
+        }
+        if (weak.length) {
+            const w = weak[0]
+            parts.push("weak brand cell " + w.profile + " · " + this._humaniseCategory(w.category))
+        }
+        wrap.textContent = parts.join(" · ")
+        return wrap
     }
 
     async _handleRefreshAll(host, T) {
@@ -645,7 +723,7 @@ class CentralHubServiceProfileTile extends window.CentralHubTile {
 if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
     window.CentralHubTileRegistry.register({
         id: "service-profile",
-        section: "routes",
+        section: "operations",
         priority: 10,
         factory: () => new CentralHubServiceProfileTile()
     })

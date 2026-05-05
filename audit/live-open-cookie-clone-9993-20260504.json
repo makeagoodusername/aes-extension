@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "sourcePort": "9947",
+  "remoteDebuggingPort": "9993",
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+  "loggedIn": true,
+  "expectedAirline": "CFLAIR",
+  "bodyHasExpectedAirline": true,
+  "profileDir": "/tmp/aes-live-cookie-9993",
+  "reportPath": "audit/live-open-cookie-clone-9993-20260504.json",
+  "consoleRows": [],
+  "pageErrors": []
+}

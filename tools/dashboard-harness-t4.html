@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Tile Harness T4 (slim)</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../css/design-tokens.css">
+  <link rel="stylesheet" href="../css/components.css">
+  <link rel="stylesheet" href="../css/content.css">
+  <style>
+    body{background:#f7f3e9;font-family:sans-serif;padding:20px;}
+    #harness-log{background:#222;color:#cfc;padding:8px;font-family:monospace;font-size:11px;max-height:200px;overflow:auto;}
+  </style>
+</head>
+<body>
+<h1>Tile Harness — T4 (slim)</h1>
+<div id="harness-log"></div>
+<div id="enterprise-dashboard" style="border:1px solid #aaa;padding:8px;background:#fff;min-height:60px;"></div>
+
+<script>
+(function(){
+  if (!window.chrome) window.chrome = {};
+  if (!chrome.storage) {
+    const _data = {};
+    const _listeners = [];
+    chrome.storage = {
+      local: {
+        get: (keys) => {
+          let result = {};
+          if (keys === null || keys === undefined) {
+            result = Object.assign({}, _data);
+          } else if (typeof keys === 'string') {
+            if (keys in _data) result[keys] = _data[keys];
+          } else if (Array.isArray(keys)) {
+            for (const k of keys) if (k in _data) result[k] = _data[k];
+          } else if (typeof keys === 'object') {
+            for (const k in keys) result[k] = (k in _data) ? _data[k] : keys[k];
+          }
+          return Promise.resolve(result);
+        },
+        set: (obj) => {
+          const changes = {};
+          for (const k in obj) { changes[k] = {oldValue: _data[k], newValue: obj[k]}; _data[k] = obj[k]; }
+          for (const fn of _listeners) try { fn(changes, 'local'); } catch(e){}
+          return Promise.resolve();
+        },
+        remove: (keys) => {
+          if (typeof keys === 'string') keys = [keys];
+          const changes = {};
+          for (const k of keys) { if (k in _data) { changes[k] = {oldValue: _data[k], newValue: undefined}; delete _data[k]; } }
+          for (const fn of _listeners) try { fn(changes, 'local'); } catch(e){}
+          return Promise.resolve();
+        }
+      },
+      onChanged: {
+        addListener: fn => _listeners.push(fn),
+        removeListener: fn => { const i = _listeners.indexOf(fn); if (i>=0) _listeners.splice(i,1); }
+      }
+    };
+  }
+  if (!chrome.runtime) {
+    chrome.runtime = {
+      id: 'harness-stub',
+      sendMessage: (msg, cb) => { if(cb) cb({}); return Promise.resolve({}); },
+      onMessage: { addListener: ()=>{} },
+      getURL: (p) => '../' + p,
+      getManifest: () => ({version: '0.0.0-harness'})
+    };
+  }
+  window.__harnessLog = function(level){
+    var args = Array.prototype.slice.call(arguments, 1);
+    const el = document.getElementById('harness-log');
+    if (!el) return;
+    const line = document.createElement('div');
+    line.style.color = (level==='error')?'#f99':(level==='warn')?'#fc6':'#cfc';
+    line.textContent = '['+level+'] '+ args.map(function(a){try{return typeof a==='string'?a:JSON.stringify(a);}catch(e){return String(a);}}).join(' ');
+    el.appendChild(line); el.scrollTop = el.scrollHeight;
+  };
+  const _ce = console.error.bind(console), _cw = console.warn.bind(console);
+  console.error = function(){var a = Array.prototype.slice.call(arguments); __harnessLog.apply(null, ['error'].concat(a)); _ce.apply(null, a);};
+  console.warn  = function(){var a = Array.prototype.slice.call(arguments); __harnessLog.apply(null, ['warn'].concat(a));  _cw.apply(null, a);};
+  window.addEventListener('error', function(e){ __harnessLog('error', 'window.onerror', e.message, e.filename+':'+e.lineno); });
+  window.addEventListener('unhandledrejection', function(e){ __harnessLog('error', 'unhandledRejection', String(e.reason && e.reason.stack || e.reason)); });
+})();
+</script>
+
+<!-- Slim load order: only what my 4 tiles need. -->
+<script src="../modules/_shared/storage-fallback.js"></script>
+<script src="../js/jquery-3.4.1.min.js"></script>
+<script src="../helpers.js"></script>
+<script src="../modules/_shared/account-registry.js"></script>
+<script src="../modules/_shared/account-scoped-key.js"></script>
+<script src="../modules/_shared/data-bus.js"></script>
+<script src="../modules/_shared/data-bus-topics.js"></script>
+<script src="../modules/_shared/utils.js"></script>
+<script src="../modules/_shared/settings-bridge.js"></script>
+<script src="../modules/_shared/hub-feed.js"></script>
+<script src="../modules/central-hub/feed/index.js"></script>
+<script src="../modules/central-hub/feed/cash-feed.js"></script>
+
+<script src="../js/design-tokens.js"></script>
+<script src="../js/cubist-tokens.js"></script>
+
+<script src="../modules/route-assistant/toast-host.js"></script>
+<script src="../modules/inventory/inventory-summary-store.js"></script>
+<script src="../modules/inventory/quick-price-applier.js"></script>
+<script src="../modules/route-assistant/service-profile-scraper.js"></script>
+<script src="../modules/route-assistant/service-profile-apply-log.js"></script>
+<script src="../modules/route-assistant/service-profile-applier.js"></script>
+<script src="../modules/accounting/snapshot-store.js"></script>
+<script src="../modules/alliance/alliance-overview-scraper.js"></script>
+
+<script src="../modules/central-hub/settings-store.js"></script>
+<script src="../modules/central-hub/status-badges.js"></script>
+<script src="../modules/central-hub/legacy-bridge.js"></script>
+<script src="../modules/central-hub/bus.js"></script>
+<script src="../modules/central-hub/tile.js"></script>
+<script src="../modules/central-hub/tile-registry.js"></script>
+<script src="../modules/central-hub/nav.js"></script>
+<script src="../modules/central-hub/hero-polyhedron.js"></script>
+<script src="../modules/central-hub/hero-strip.js"></script>
+<script src="../modules/central-hub/activity-strip.js"></script>
+<script src="../modules/central-hub/recents-rail.js"></script>
+<script src="../modules/central-hub/pin-affordance.js"></script>
+<script src="../modules/central-hub/tile-section-overrider.js"></script>
+<script src="../modules/central-hub/salience.js"></script>
+<script src="../modules/central-hub/cascade-pane.js"></script>
+<script src="../modules/central-hub/shell.js"></script>
+
+<script src="../modules/central-hub/tiles/accounting-tile.js"></script>
+<script src="../modules/central-hub/tiles/inventory-tile.js"></script>
+<script src="../modules/central-hub/tiles/service-profile-tile.js"></script>
+<script src="../modules/central-hub/tiles/alliance-tile.js"></script>
+
+<script>
+window.AES = window.AES || {};
+window.AES.getServerName = function(){ return "free1"; };
+window.AES.getAirlineCode = function(){ return {code: "FA"}; };
+window.AES.getAirlineIdentity = function(){ return "FreshAir Holdings"; };
+window.AES.getServerDate = function(){ return null; };
+
+document.addEventListener('DOMContentLoaded', function(){
+  (async function(){
+    try {
+      const anchor = document.getElementById("enterprise-dashboard");
+      const shell = new window.CentralHubShell({server: "free1", airline: "FA"});
+      window.__aesCentralHub = shell;
+      await shell.mount(anchor);
+      console.warn("[harness] mounted; tiles=", Array.from(shell.tilesById ? shell.tilesById.keys() : []).join(","));
+    } catch (e) {
+      console.error("[harness] mount failed", e && e.stack);
+    }
+  })();
+});
+</script>
+</body></html>

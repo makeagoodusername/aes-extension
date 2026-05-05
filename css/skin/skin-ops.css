@@ -1,0 +1,88 @@
+/* ===========================================================
+   skin-ops.css — /app/ops/* (stations, ground services).
+   Mostly inherits from skin-global.css; only page-specific quirks here.
+
+   Expanded to bring station tables up to skin-info.css parity: header
+   rhythm, tabular-nums, mono status badges, zebra stripes, density
+   awareness. The OPEN/CLOSED/PENDING column reads as a status pill.
+   =========================================================== */
+
+body.aes-skin[data-aes-page="ops"] .table > tbody > tr > td {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Station status badges in ops/stations* are usually inside the first
+   non-link column — keep them mono so OPEN / CLOSED / PENDING line up. */
+body.aes-skin[data-aes-page="ops"] .table > tbody > tr > td:nth-child(2) {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+}
+
+/* ---- Header rhythm -------------------------------------------------- */
+body.aes-skin[data-aes-page="ops"] .table > thead > tr > th {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-oxide);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    background: var(--aes-bone-2);
+}
+
+/* ---- Zebra stripes -------------------------------------------------- */
+body.aes-skin[data-aes-page="ops"] .table-striped > tbody > tr:nth-of-type(odd),
+body.aes-skin[data-aes-page="ops"] .table > tbody > tr:nth-of-type(odd) {
+    background: var(--aes-bone-2);
+}
+body.aes-skin[data-aes-page="ops"] .table > tbody > tr:hover {
+    background: var(--aes-rust-soft);
+}
+
+/* ---- Status pills (label-success / label-warning / label-danger) ---- */
+body.aes-skin[data-aes-page="ops"] .table .label {
+    display: inline-block;
+    padding: 2px var(--aes-sp-2);
+    border: var(--aes-bw-1) solid currentColor;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+    border-radius: var(--aes-radius);
+    background: transparent;
+}
+body.aes-skin[data-aes-page="ops"] .table .label.label-success { color: var(--aes-moss); }
+body.aes-skin[data-aes-page="ops"] .table .label.label-warning { color: var(--aes-amber); }
+body.aes-skin[data-aes-page="ops"] .table .label.label-danger  { color: var(--aes-crimson); }
+body.aes-skin[data-aes-page="ops"] .table .label.label-info    { color: var(--aes-cobalt); }
+
+/* ---- Right-align numeric columns ------------------------------------ */
+body.aes-skin[data-aes-page="ops"] .table .text-right,
+body.aes-skin[data-aes-page="ops"] .table td.price {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* ---- Density-aware row padding -------------------------------------- */
+body.aes-skin[data-aes-page="ops"][data-aes-density="compact"] .table > tbody > tr > td,
+body.aes-skin[data-aes-page="ops"][data-aes-density="compact"] .table > thead > tr > th {
+    padding-top: var(--aes-sp-1);
+    padding-bottom: var(--aes-sp-1);
+    font-size: var(--aes-fs-small);
+    line-height: var(--aes-lh-tight);
+}
+
+/* ---- Panel headings on the ground-services pages -------------------- */
+body.aes-skin[data-aes-page="ops"] .panel > .panel-heading {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+}

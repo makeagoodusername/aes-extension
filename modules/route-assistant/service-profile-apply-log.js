@@ -50,6 +50,14 @@ class RouteAssistantServiceProfileApplyLog {
         const cleaned = RouteAssistantServiceProfileApplyLog._cleanRecord(record)
         cleaned.ts = ts
         cleaned.id = cleaned.id || RouteAssistantServiceProfileApplyLog._newId(ts)
+        // Phase A4 — stamp accountId so a future split-by-account migration
+        // doesn't have to guess.
+        if (cleaned.accountId == null
+                && window.AesAccountKey
+                && typeof window.AesAccountKey.currentAccountIdSync === "function") {
+            const acctId = window.AesAccountKey.currentAccountIdSync()
+            if (acctId) cleaned.accountId = acctId
+        }
 
         const got = await chrome.storage.local.get([
             RouteAssistantServiceProfileApplyLog.GLOBAL_KEY
@@ -74,9 +82,16 @@ class RouteAssistantServiceProfileApplyLog {
         if (!merged) entries.unshift(cleaned)
         if (entries.length > this.limit) entries = entries.slice(0, this.limit)
 
-        await chrome.storage.local.set({
+        const writes = {
             [RouteAssistantServiceProfileApplyLog.GLOBAL_KEY]: {entries, updatedAt: ts}
-        })
+        }
+        // Phase A4 — dual-write to account-scoped key alongside legacy.
+        if (cleaned.accountId) {
+            const scoped = RouteAssistantServiceProfileApplyLog.GLOBAL_KEY
+                + ":acct:" + cleaned.accountId
+            writes[scoped] = {entries, updatedAt: ts}
+        }
+        await chrome.storage.local.set(writes)
         return cleaned
     }
 
@@ -126,6 +141,50 @@ class RouteAssistantServiceProfileApplyLog {
         await chrome.storage.local.remove([
             RouteAssistantServiceProfileApplyLog.GLOBAL_KEY
         ])
+    }
+
+    /**
+     * Cooldown enforcement for the joint rank-target tuner. Returns the
+     * timestamp of the most recent terminal-success entry for one
+     * profileId (status="verified" or "posted"), or null when never
+     * applied. Mirrors `RouteAssistantPricingApplyLog.getLastSuccessAt`
+     * so the auto-driver can skip a profile that was just touched.
+     */
+    async getLastSuccessAtFor(profileId) {
+        if (profileId == null) return null
+        const want = Number(profileId)
+        if (!isFinite(want)) return null
+        const r = await this.getRecent()
+        for (const e of r.entries) {
+            if (!e) continue
+            if (Number(e.profileId) !== want) continue
+            if (e.status === "verified" || e.status === "posted") return e.ts || null
+        }
+        return null
+    }
+
+    /**
+     * Silent-auto cap window for PR 3 — count `verified|posted` entries
+     * tagged source="silent-auto" in arbitrary windows. `windows` is
+     * `{name: sinceMs}`. Mirrors the pricing-apply-log primitive so the
+     * auto-driver can enforce the same cap rule across both domains.
+     */
+    async countSilentAutoIn(windows) {
+        const w = windows || {}
+        const counts = {}
+        for (const k in w) counts[k] = 0
+        const r = await this.getRecent()
+        for (const e of r.entries) {
+            if (!e) continue
+            if (e.source !== "silent-auto") continue
+            if (e.status !== "verified" && e.status !== "posted") continue
+            if (!isFinite(e.ts)) continue
+            const inc = isFinite(e.count) ? Math.max(1, e.count) : 1
+            for (const k in w) {
+                if (e.ts >= w[k]) counts[k] += inc
+            }
+        }
+        return counts
     }
 
     static _cleanRecord(record) {

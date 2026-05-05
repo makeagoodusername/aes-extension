@@ -14,9 +14,24 @@ $(function() {
 
 function saveData() {
     saveDataSpan = $('<span></span>');
-    let key = flightInfoData.server + flightInfoData.type + flightInfoData.flightId;
+    // F-9228-807: airline-scoped key. Without the airline component the
+    // same flightId on the same server (cross-airline shared-fleet sims,
+    // fleet transfers) collided across airlines and silently overwrote
+    // the prior airline's data. content_aircraftFlights.js reads both the
+    // airline-scoped key and the legacy un-scoped key for backwards-compat.
+    const airline = (typeof AES !== "undefined" && AES.getAirlineIdentity)
+        ? (AES.getAirlineIdentity() || "") : "";
+    let key = flightInfoData.server + airline + flightInfoData.type + flightInfoData.flightId;
     chrome.storage.local.set({
         [key]: flightInfoData }, function() {
+        // F-9228-806 sibling: surface chrome quota / serialization failures
+        // instead of silently dropping the write.
+        const err = chrome.runtime && chrome.runtime.lastError;
+        if (err) {
+            console.warn("[AES /action/info/flight] saveData failed", err.message || err);
+            saveDataSpan.addClass('bad').text('Save failed: ' + (err.message || err));
+            return;
+        }
         saveDataSpan.addClass('good').text('Flight info data saved!');
         chrome.storage.local.get(['settings'], function(result) {
             let settings = result.settings;
@@ -51,15 +66,108 @@ function getData() {
     let flightId = getFlightId();
     let date = AES.getServerDate()
     let money = getFinancials();
+    let loads = getLoads();
+    let prices = getPrices();
+    let route = getRoute();
     let server = getServerName();
     return {
         server: server,
         flightId: flightId,
         type: 'flightInfo',
         money: money,
+        loads: loads,
+        prices: prices,
+        route: route,
         date: date.date,
         time: date.time
     }
+}
+
+// Costing-page Loads-table column layout: [label, Y, C, F, PAX, Cargo, empty].
+// Used by both getLoads (first tbody — Capacity/Bookings/Load) and
+// getPrices (second tbody — Price/Unit + Minimum Price).
+const FLIGHT_INFO_COL_INDEX = { Y: 1, C: 2, F: 3, Cargo: 5 };
+
+function findLoadsTable() {
+    let table = null;
+    $('.as-fieldset').each(function() {
+        const legend = $(this).find('.legend').first().text().trim();
+        if (legend === 'Loads') { table = $(this).find('table').first(); return false; }
+    });
+    return table;
+}
+
+function readClassCell($td) {
+    if (!$td || !$td.length) return null;
+    if ($td.hasClass('empty')) return null;
+    const txt = ($td.text() || '').replace(/ /g, '').trim();
+    if (!txt) return null;
+    const v = AES.cleanInteger(txt);
+    return isFinite(v) ? v : null;
+}
+
+function getLoads() {
+    const table = findLoadsTable();
+    const out = { Y: {}, C: {}, F: {}, Cargo: {} };
+    if (!table || !table.length) return out;
+    // First tbody carries Capacity / Bookings / Load + connection feeders.
+    const rows = table.find('tbody').first().find('tr');
+    rows.each(function() {
+        const tds = $(this).find('td');
+        if (tds.length < 6) return;
+        const label = (tds.eq(0).text() || '').trim().toLowerCase();
+        let key = null;
+        if (label === 'capacity')      key = 'capacity';
+        else if (label === 'bookings') key = 'bookings';
+        else if (label === 'load')     key = 'loadPct';
+        if (!key) return;
+        for (const cls in FLIGHT_INFO_COL_INDEX) {
+            const v = readClassCell(tds.eq(FLIGHT_INFO_COL_INDEX[cls]));
+            if (v != null) out[cls][key] = v;
+        }
+    });
+    return out;
+}
+
+function getPrices() {
+    const table = findLoadsTable();
+    const out = { Y: {}, C: {}, F: {}, Cargo: {} };
+    if (!table || !table.length) return out;
+    // Second tbody is the "Further Information" block — Price/Unit + Min Price.
+    const rows = table.find('tbody').eq(1).find('tr');
+    rows.each(function() {
+        const tds = $(this).find('td');
+        if (tds.length < 6) return;
+        const label = (tds.eq(0).text() || '').trim().toLowerCase();
+        let key = null;
+        if (label === 'price/unit')        key = 'unit';
+        else if (label === 'minimum price') key = 'min';
+        if (!key) return;
+        for (const cls in FLIGHT_INFO_COL_INDEX) {
+            const v = readClassCell(tds.eq(FLIGHT_INFO_COL_INDEX[cls]));
+            if (v != null) out[cls][key] = v;
+        }
+    });
+    return out;
+}
+
+function getRoute() {
+    // The General Flight Information block has the Departure/Arrival airport
+    // codes as `<a href="airport?id=NNN">JFK</a>` inside the first td of those
+    // rows. Pull them by row label so we don't depend on table column order.
+    let hub = null, dest = null;
+    $('h3').each(function() {
+        const t = ($(this).text() || '').trim();
+        if (t !== 'General Flight Information') return;
+        const $rows = $(this).next('.as-panel').find('table tr');
+        $rows.each(function() {
+            const label = ($(this).find('th').first().text() || '').trim().toLowerCase();
+            const code = ($(this).find('td a[href^="airport"]').first().text() || '').trim().toUpperCase();
+            if (label === 'departure' && code) hub = code;
+            else if (label === 'arrival' && code) dest = code;
+        });
+    });
+    return (hub && dest) ? { hub: hub, dest: dest } : null;
 }
 
 function display() {
@@ -151,7 +259,7 @@ function getFinancials() {
                     cmp = 'Total'
                     break;
             }
-            let value = AES.cleanCurrency($(this).text());
+            let value = AES.cleanInteger($(this).text());
             if (!data[contMargin]) {
                 data[contMargin] = {}
             }

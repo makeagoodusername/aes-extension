@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Tile Harness T5 (competitor + crew)</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../css/design-tokens.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="../css/content.css">
+<style>
+  body{background:#f7f3e9;font-family:sans-serif;padding:20px;}
+  #harness-log{background:#222;color:#cfc;padding:8px;font-family:monospace;font-size:11px;max-height:280px;overflow:auto;white-space:pre-wrap;}
+  #enterprise-dashboard{border:1px solid #aaa;padding:8px;background:#fff;min-height:60px;}
+</style>
+</head><body>
+<h1>Tile Harness T5 — competitor-intel-hub / competitor-monitoring / competitor-outline / crew-management</h1>
+<div id="harness-log"></div>
+<div id="enterprise-dashboard"></div>
+
+<script>
+(function(){
+  // chrome.* shim — harness runs at file:// origin, so the real
+  // extension APIs are not available. Provide an in-memory storage,
+  // a runtime stub, and a no-op messaging stub so the modules under
+  // audit reach their persistence calls without the harness throwing.
+  if (!window.chrome) window.chrome = {};
+  if (!chrome.storage) {
+    const _data = {};
+    const _listeners = [];
+    chrome.storage = {
+      local: {
+        get: (keys, cb) => {
+          let result = {};
+          if (keys === null || keys === undefined) {
+            result = Object.assign({}, _data);
+          } else if (typeof keys === 'string') {
+            if (keys in _data) result[keys] = _data[keys];
+          } else if (Array.isArray(keys)) {
+            for (const k of keys) if (k in _data) result[k] = _data[k];
+          } else if (typeof keys === 'object') {
+            for (const k in keys) result[k] = (k in _data) ? _data[k] : keys[k];
+          }
+          if (cb) { try { cb(result); } catch(e){} return; }
+          return Promise.resolve(result);
+        },
+        set: (obj, cb) => {
+          const changes = {};
+          for (const k in obj) { changes[k] = {oldValue: _data[k], newValue: obj[k]}; _data[k] = obj[k]; }
+          for (const fn of _listeners) try { fn(changes, 'local'); } catch(e){}
+          if (cb) { try { cb(); } catch(e){} return; }
+          return Promise.resolve();
+        },
+        remove: (keys, cb) => {
+          if (typeof keys === 'string') keys = [keys];
+          const changes = {};
+          for (const k of keys) { if (k in _data) { changes[k] = {oldValue: _data[k], newValue: undefined}; delete _data[k]; } }
+          for (const fn of _listeners) try { fn(changes, 'local'); } catch(e){}
+          if (cb) { try { cb(); } catch(e){} return; }
+          return Promise.resolve();
+        }
+      },
+      onChanged: {
+        addListener: fn => _listeners.push(fn),
+        removeListener: fn => { const i = _listeners.indexOf(fn); if (i>=0) _listeners.splice(i,1); }
+      }
+    };
+  }
+  if (!chrome.runtime) {
+    chrome.runtime = {
+      id: 'harness-stub',
+      sendMessage: (msg, cb) => { if(cb) cb({}); return Promise.resolve({}); },
+      onMessage: { addListener: ()=>{} },
+      onInstalled: { addListener: ()=>{} },
+      getURL: (p) => '../' + p,
+      getManifest: () => ({version:'0.6.12-harness', name:'AES Harness'})
+    };
+  }
+  // Logging plumbing.
+  function appendLog(level, ...args){
+    const el = document.getElementById('harness-log'); if (!el) return;
+    const line = document.createElement('div');
+    line.style.color = (level==='error')?'#f99':(level==='warn')?'#fc6':'#cfc';
+    line.textContent = '['+level+'] '+ args.map(a=>{try{return typeof a==='string'?a:JSON.stringify(a);}catch(e){return String(a);}}).join(' ');
+    el.appendChild(line); el.scrollTop = el.scrollHeight;
+  }
+  window.__harnessLog = appendLog;
+  const _ce = console.error.bind(console), _cw = console.warn.bind(console);
+  console.error = function(...a){appendLog('error',...a); _ce(...a);};
+  console.warn = function(...a){appendLog('warn',...a); _cw(...a);};
+  window.addEventListener('error', e => appendLog('error', 'window.onerror', e.message, e.filename+':'+e.lineno));
+  window.addEventListener('unhandledrejection', e => appendLog('error', 'unhandledRejection', String(e.reason && e.reason.stack || e.reason)));
+})();
+</script>
+
+<!-- Targeted load — only what the four owned tiles + their direct deps need.
+     Skip strategy/auto-driver / scrape-orchestrator-host / world-view / route-launcher
+     so the harness doesn't kick off long-running interval loops. -->
+
+<!-- jQuery + AES helpers + bridge layer. -->
+<script src="../modules/_shared/storage-fallback.js"></script>
+<script src="../js/jquery-3.4.1.min.js"></script>
+<script src="../helpers.js"></script>
+<script src="../modules/_shared/account-registry.js"></script>
+<script src="../modules/_shared/account-scoped-key.js"></script>
+<script src="../modules/_shared/data-bus.js"></script>
+<script src="../modules/_shared/data-bus-topics.js"></script>
+<script src="../modules/_shared/utils.js"></script>
+<script src="../modules/_shared/settings-bridge.js"></script>
+<script src="../modules/_shared/prefix-store.js"></script>
+<script src="../modules/_shared/ttl-cache.js"></script>
+<script src="../modules/_shared/store-cache.js"></script>
+<script src="../modules/_shared/cleanup-registry.js"></script>
+<script src="../modules/_shared/hub-feed.js"></script>
+<script src="../modules/_shared/change-log-aggregator.js"></script>
+<script src="../modules/_shared/change-log-modal.js"></script>
+<script src="../modules/_shared/change-log-launcher.js"></script>
+
+<!-- Design tokens — required by every tile (window.AESTokens). -->
+<script src="../js/design-tokens.js"></script>
+
+<!-- Central hub core. -->
+<script src="../modules/central-hub/settings-store.js"></script>
+<script src="../modules/central-hub/status-badges.js"></script>
+<script src="../modules/central-hub/legacy-bridge.js"></script>
+<script src="../modules/central-hub/bus.js"></script>
+<script src="../modules/central-hub/tile.js"></script>
+<script src="../modules/central-hub/tile-registry.js"></script>
+<script src="../modules/central-hub/pin-affordance.js"></script>
+
+<!-- Crew-management dependencies. -->
+<script src="../modules/crew-management/staff-pilots-scraper.js"></script>
+<script src="../modules/crew-management/staff-pilots-applier.js"></script>
+<script src="../modules/crew-management/staff-overview-scraper.js"></script>
+<script src="../modules/crew-management/staff-overview-store.js"></script>
+<script src="../modules/crew-management/pay-tier-apply-log.js"></script>
+<script src="../modules/crew-management/personnel-cost-model.js"></script>
+
+<!-- Competitor-intel dependencies. -->
+<script src="../modules/canopy/affiliations-store.js"></script>
+<script src="../modules/competitor-intel/settings-store.js"></script>
+<script src="../modules/competitor-intel/competitor-store.js"></script>
+<script src="../modules/competitor-intel/snapshot-store.js"></script>
+<script src="../modules/competitor-intel/diff.js"></script>
+<script src="../modules/competitor-intel/threat-scorer.js"></script>
+<script src="../modules/competitor-intel/watchlist.js"></script>
+<script src="../modules/competitor-intel/enterprise-scraper.js"></script>
+<script src="../modules/competitor-intel/change-log-adapter.js"></script>
+<script src="../modules/competitor-intel/views/companies-view.js"></script>
+<script src="../modules/competitor-intel/views/routes-view.js"></script>
+<script src="../modules/competitor-intel/views/ors-view.js"></script>
+<script src="../modules/competitor-intel/views/flight-numbers-view.js"></script>
+<script src="../modules/competitor-intel/views/drilldown.js"></script>
+<script src="../modules/competitor-intel/host.js"></script>
+<script src="../modules/competitor-intel/hub-shell.js"></script>
+<script src="../modules/aircraft-type-specs.js"></script>
+<script src="../modules/route-assistant/profit-estimator.js"></script>
+<script src="../modules/route-assistant/competitor-income-estimator.js"></script>
+<script src="../modules/accounting/snapshot-store.js"></script>
+<script src="../modules/accounting/aggregator.js"></script>
+<script src="../modules/competitor-intel/counter-aircraft.js"></script>
+<script src="../modules/competitor-intel/outline-aggregator.js"></script>
+<script src="../modules/competitor-intel/outline-panel.js"></script>
+<script src="../modules/scrape-orchestrator/competitor-outline-runner.js"></script>
+
+<!-- The four owned tiles. -->
+<script src="../modules/central-hub/tiles/competitor-monitoring-tile.js"></script>
+<script src="../modules/central-hub/tiles/competitor-intel-hub-tile.js"></script>
+<script src="../modules/central-hub/tiles/competitor-outline-tile.js"></script>
+<script src="../modules/central-hub/tiles/crew-management-tile.js"></script>
+
+<script>
+  window.__harnessLog('log', 'harness ready — registry size:', window.CentralHubTileRegistry ? CentralHubTileRegistry.all().length : 'no registry');
+</script>
+</body></html>

@@ -15,7 +15,17 @@ class ScanController {
         this.listeners = []     // UI onUpdate callbacks
         this.storageListener = null
         this.WATCHDOG_MS = 30 * 1000
+        // Mirror mode: another tab holds the lease for this session. We
+        // observe progress via storage but don't dispatch / arm watchdogs.
+        // The UI hides Start/Cancel and shows "tracking from another tab".
+        this.mirror = false
     }
+
+    /**
+     * True when this controller is observing a scan owned by a different
+     * tab. UIs check this to suppress action affordances.
+     */
+    isMirror() { return !!this.mirror }
 
     /**
      * Subscribe to state changes. Callback receives the latest session record.
@@ -33,6 +43,11 @@ class ScanController {
     /**
      * Re-hydrate from a previously saved session (e.g. after a tab reload).
      * Returns the session or null if not found / not running.
+     *
+     * Lease-aware: if another tab currently owns the lease for this scan,
+     * the controller enters mirror mode — observes storage events to keep
+     * the UI fresh but does not dispatch child tabs or arm watchdogs (the
+     * owner is doing both).
      */
     async resume(scanId) {
         const session = await MarketScanSession.loadSession(this.server, scanId)
@@ -40,13 +55,21 @@ class ScanController {
         this.session = session
         this._installStorageListener()
         if (session.status === "running") {
-            // Reconcile inFlight by counting "inflight" entries in the queue
-            session.inFlight = session.queue.filter(e => e.status === "inflight").length
-            // Reset watchdogs (we lost the timers across reload — give them fresh time)
-            for (const entry of session.queue) {
-                if (entry.status === "inflight") this._armWatchdog(entry)
+            // Single-call takeover: acquire returns true when no active
+            // lease blocks us — that doubles as our mirror-mode signal.
+            // No race with the prior owner because acquire only writes
+            // when the existing lease is stale or owned by us.
+            const acquired = await MarketScanLease.acquire(this.server, scanId)
+            this.mirror = !acquired
+            if (!this.mirror) {
+                // Reconcile inFlight by counting "inflight" entries in the queue
+                session.inFlight = session.queue.filter(e => e.status === "inflight").length
+                // Reset watchdogs (we lost the timers across reload — give them fresh time)
+                for (const entry of session.queue) {
+                    if (entry.status === "inflight") this._armWatchdog(entry)
+                }
+                this.tick()
             }
-            this.tick()
         }
         this._notify()
         return session
@@ -59,12 +82,15 @@ class ScanController {
      */
     async start(preset, opts) {
         const overrides = (opts && opts.typeFamilyOverrides) || {}
+        const anyFamily = TypeFamilyMap.anyFamilyLabel()
         const queue = preset.types.map(type => {
-            const family = TypeFamilyMap.resolve(type, overrides)
-            if (!family) {
-                return {type: type, family: null, status: "error", error: "no family mapping"}
+            const resolvedFamily = TypeFamilyMap.resolve(type, overrides)
+            return {
+                type: type,
+                family: resolvedFamily || anyFamily,
+                familyFallback: !resolvedFamily,
+                status: "pending"
             }
-            return {type: type, family: family, status: "pending"}
         })
 
         this.session = MarketScanSession.create({
@@ -77,6 +103,11 @@ class ScanController {
         })
 
         await MarketScanSession.cleanupOld(this.server, this.session.scanId)
+        // Acquire lease against this fresh scanId. A new scanId always wins
+        // because MarketScanLease.acquire treats a different scanId as a
+        // valid takeover — the user explicitly asked to start a new scan.
+        await MarketScanLease.acquire(this.server, this.session.scanId)
+        this.mirror = false
         await MarketScanSession.saveSession(this.session)
         await UsedAircraftPresets.save({lastScanId: this.session.scanId})
 
@@ -94,6 +125,9 @@ class ScanController {
         for (const t in this.timers) clearTimeout(this.timers[t])
         this.timers = {}
         await MarketScanSession.saveSession(this.session)
+        if (!this.mirror) {
+            await MarketScanLease.release(this.server, this.session.scanId)
+        }
         this._notify()
     }
 
@@ -103,6 +137,8 @@ class ScanController {
      */
     async tick() {
         if (!this.session || this.session.status !== "running") return
+        // In mirror mode the lease-holding tab is dispatching; we just watch.
+        if (this.mirror) return
 
         const now = Date.now()
         const spaceLeft = (this.session.concurrency || 6) - this.session.inFlight
@@ -219,7 +255,12 @@ class ScanController {
             if (blob.progress) {
                 entry.progress = blob.progress
             }
-            this._armWatchdog(entry)
+            if (!this.mirror) {
+                this._armWatchdog(entry)
+                // Refresh the lease while work is in progress so a different
+                // tab doesn't think we crashed.
+                MarketScanLease.refresh(this.server, this.session.scanId)
+            }
             await MarketScanSession.saveSession(this.session)
             this._notify()
             return
@@ -246,7 +287,54 @@ class ScanController {
             this.session.finishedAt = Date.now()
             if (this.staggerTimer) { clearTimeout(this.staggerTimer); this.staggerTimer = null }
             await MarketScanSession.saveSession(this.session)
+            if (!this.mirror) {
+                // Release the lease so any tab can start the next scan
+                // immediately rather than waiting out the TTL. Also fold
+                // in the freshly-completed observations to the per-type
+                // history store so future classifier scores are anchored
+                // against more samples.
+                await MarketScanLease.release(this.server, this.session.scanId)
+                ScanController._recordHistory(this.server, this.session)
+            }
             this._notify()
+        }
+    }
+
+    /**
+     * Folds a finished scan's observations into per-type history. Best-
+     * effort: any storage / module hiccup logs and moves on — the deal
+     * classifier already has a within-scan fallback for cold-start types.
+     */
+    static async _recordHistory(server, session) {
+        if (typeof MarketScanPriceHistory === "undefined") return
+        try {
+            const knownTypes = session.queue.map(e => e.type).filter(Boolean)
+            const all = await MarketScanSession.loadResults(server, session.scanId, knownTypes)
+            const rows = []
+            for (const type in all) {
+                const blob = all[type]
+                if (!blob || !Array.isArray(blob.rows)) continue
+                for (const r of blob.rows) rows.push(r)
+            }
+            if (typeof MarketScanDealMetrics !== "undefined") {
+                // Re-decorate with the user's saved lease config so the
+                // basis stamped on each history entry matches what the
+                // classifier will look up against. Without this the entries
+                // would default to lease-first regardless of the user's
+                // setting and percentiles would drift from what the panel
+                // shows live.
+                let leaseConfig = null
+                if (typeof UsedAircraftPresets !== "undefined") {
+                    try {
+                        const settings = await UsedAircraftPresets.load()
+                        leaseConfig = settings && settings.leaseConfig
+                    } catch (_) { /* ignore — fall through to default */ }
+                }
+                for (const r of rows) MarketScanDealMetrics.decorate(r, {leaseConfig})
+            }
+            await MarketScanPriceHistory.recordRows(server, rows)
+        } catch (e) {
+            console.error("AES marketScan: history recording failed:", e)
         }
     }
 
@@ -256,7 +344,9 @@ class ScanController {
      */
     async aggregatedRows() {
         if (!this.session) return []
-        const results = await MarketScanSession.loadResults(this.server, this.session.scanId)
+        const knownTypes = this.session.queue.map(e => e.type).filter(Boolean)
+        const results = await MarketScanSession.loadResults(
+            this.server, this.session.scanId, knownTypes)
         const rows = []
         for (const type in results) {
             const blob = results[type]

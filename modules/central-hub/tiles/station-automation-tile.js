@@ -13,17 +13,29 @@ class CentralHubStationAutomationTile extends window.CentralHubTile {
         super()
         this.id = "station-automation"
         this.title = "Station Auto"
-        this.section = "routes"
+        this.section = "operations"
         this.priority = 30
         this.requiresAirline = false
     }
 
     watchedStorageKeys(ctx) {
-        return ["stationAutomation:" + (ctx && ctx.server || "") + ":"]
+        const server = (ctx && ctx.server) || ""
+        const airline = this._airlineKey()
+        // Storage keys are `<server><airlineId>stationAutomationQueue` and
+        // `<server><airlineId>stationAutomationRun:<runId>...` (see
+        // modules/station-automation/storage.js). watchedStorageKeys uses
+        // `key.indexOf(prefix) === 0` so we feed the literal key prefix.
+        if (!server) return []
+        const base = server + airline + "stationAutomation"
+        return [base + "Queue", base + "Run:"]
     }
 
     openHandler() {
-        return () => CentralHubLegacy.switchDropdownTo("stationAutomation")
+        return () => {
+            if (window.CentralHubLegacy && typeof window.CentralHubLegacy.switchDropdownTo === "function") {
+                window.CentralHubLegacy.switchDropdownTo("stationAutomation")
+            }
+        }
     }
 
     _airlineKey() {
@@ -130,8 +142,8 @@ class CentralHubStationAutomationTile extends window.CentralHubTile {
 if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
     window.CentralHubTileRegistry.register({
         id: "station-automation",
-        section: "routes",
-        priority: 30,
+        section: "operations",
+        priority: 20,
         factory: () => new CentralHubStationAutomationTile()
     })
 }

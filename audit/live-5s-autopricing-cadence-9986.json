@@ -1,0 +1,89 @@
+{
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "port": "9986",
+  "loggedIn": true,
+  "profileDir": "/var/folders/zx/0dqhlzq10hvc07_m0nq_jbvc0000gn/T/aes-live-5s-9986",
+  "result": {
+    "ok": true,
+    "stage": "done",
+    "server": "free1",
+    "tickSec": 5,
+    "samples": [
+      {
+        "at": 1777897299114,
+        "elapsedMs": 3692,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777897299114,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777897304115,
+        "elapsedMs": 8693,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777897304115,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777897309116,
+        "elapsedMs": 13694,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777897309116,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      }
+    ],
+    "intervals": [
+      5001,
+      5001
+    ],
+    "dryRunOnly": true,
+    "liveWritesDisabled": true,
+    "durationMs": 14088
+  },
+  "consoleRows": [],
+  "pageErrors": [
+    "_startForegroundLoop is not defined"
+  ]
+}

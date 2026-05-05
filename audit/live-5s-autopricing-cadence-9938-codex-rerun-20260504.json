@@ -1,0 +1,88 @@
+{
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "port": "9938",
+  "loggedIn": true,
+  "attached": true,
+  "profileDir": null,
+  "result": {
+    "ok": true,
+    "stage": "done",
+    "server": "free1",
+    "tickSec": 5,
+    "samples": [
+      {
+        "at": 1777897961087,
+        "elapsedMs": 4402,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777897961087,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777897966087,
+        "elapsedMs": 9402,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777897966087,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777897971087,
+        "elapsedMs": 14402,
+        "result": {
+          "applied": 0,
+          "blocked": 0,
+          "capped": 0,
+          "dryRun": true,
+          "eligible": 0,
+          "error": {
+            "code": "noProposals",
+            "message": "no route met the min delta threshold"
+          },
+          "perRoute": [],
+          "proposed": 0,
+          "ranAt": 1777897971087,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      }
+    ],
+    "intervals": [
+      5000,
+      5000
+    ],
+    "dryRunOnly": true,
+    "liveWritesDisabled": true,
+    "durationMs": 14569
+  },
+  "consoleRows": [],
+  "pageErrors": []
+}

@@ -5,8 +5,14 @@ var server,airlineId,activeTab,compData;
 $(function(){
     server = getServerName();
     airlineId = getAirlineId();
-    activeTab = $(".nav-tabs .active").attr('class').split(" ");
-    activeTab = activeTab[0];
+    const activeClass = $(".nav-tabs .active").attr('class');
+    if (!activeClass) {
+      // Page renders without .nav-tabs (e.g. /app/info/enterprises/me has no
+      // tab bar). Nothing to display — bail before touching DOM that does
+      // not exist on this layout.
+      return;
+    }
+    activeTab = activeClass.split(" ")[0];
     let key = server+airlineId+'competitorMonitoring';
     chrome.storage.local.get([key], function(compMonitoringData) {
       compData = compMonitoringData[key];
@@ -140,6 +146,7 @@ function displayCompetitorMonitoring(div){
 function displayTab0(actionBar){
   //Get data
   let data = getTab0Data();
+  saveCompanyReputationFromEnterpriseOverview(data);
   //Save Data
   let span = $('<span></span>');
   let btnSave = $('<button id="aes-btn-save-tab0-data" type="button" class="btn btn-default">save competitor overview data</button>');
@@ -167,6 +174,33 @@ function displayTab0(actionBar){
   if(compData.autoExtract){
     btnSave.click();
   }
+}
+
+function saveCompanyReputationFromEnterpriseOverview(data) {
+  if (!window.AesCompanyReputationStore || !data) return;
+  let current = "";
+  try {
+    if (typeof AES !== "undefined" && AES.getAirlineIdentity) current = AES.getAirlineIdentity();
+  } catch (_) {}
+  const pageName = data.displayName || data.name || data.code || "";
+  const pageCode = data.code || "";
+  const sameAirline = normaliseCompanyIdentity(current) === normaliseCompanyIdentity(pageName)
+    || normaliseCompanyIdentity(current) === normaliseCompanyIdentity(pageCode);
+  if (!sameAirline) return;
+  window.AesCompanyReputationStore.save({
+    source:       "enterprise-overview",
+    server:       server,
+    enterpriseId: airlineId,
+    displayName:  data.displayName,
+    airlineCode:  data.code,
+    ratingLabel:  data.rating
+  }).catch(function(err) {
+    console.warn("[AES enterpriseOverview] company reputation save failed", err);
+  });
+}
+
+function normaliseCompanyIdentity(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 function displayTab2(actionBar){
   let data = getTab2Data();

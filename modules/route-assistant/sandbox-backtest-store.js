@@ -12,8 +12,9 @@
  * (slice 3c — bias + RMSE in the settings drawer) so the user can tell
  * whether their α_price / α_comfort / T tunes are improving or drifting.
  *
- *   routeAssistant:sandboxBacktest:<HUB>-<DEST>  →
- *     {hub, dest, entries: [<Entry>, …], updatedAt}
+ *   routeAssistant:sandboxBacktest:<HUB>-<DEST>                   (legacy)
+ *   routeAssistant:sandboxBacktest:acct:<id>:<HUB>-<DEST>         (L3+)
+ *     → {hub, dest, entries: [<Entry>, …], updatedAt}
  *
  * Entry shape:
  *   {
@@ -27,13 +28,15 @@
  *   }
  *
  * Pair key is **directional** to match the orientation of every other
- * per-route store (overrides, notes, ORS, markets, watchlist, yield).
+ * per-route store.
  *
- * Cap is `MAX_PER_ROUTE` entries via shift() — back-test data is
- * disposable; the user's authored content sits in other stores.
+ * L3 — Class B refactor: per-account scoping. Back-test entries depend
+ * on which airline made the call (different ratings, different shares),
+ * so cross-account aggregation would mix two distinct model fits.
  */
 class RouteAssistantSandboxBacktestStore {
-    static PREFIX = "routeAssistant:sandboxBacktest:"
+    static LEGACY_PREFIX = "routeAssistant:sandboxBacktest:"
+    static SCOPE_PREFIX  = "routeAssistant:sandboxBacktest"
     static MAX_PER_ROUTE = 50
 
     /** Entries within this window before a marketShare scrape are
@@ -42,20 +45,30 @@ class RouteAssistantSandboxBacktestStore {
      *  done just before a scrape lands still matches. */
     static BACKFILL_WINDOW_MS = 8 * 86400 * 1000
 
-    static _key(hub, dest) {
-        return RouteAssistantSandboxBacktestStore.PREFIX
-            + String(hub  || "").toUpperCase() + "-"
-            + String(dest || "").toUpperCase()
-    }
-
     static _pairKey(hub, dest) {
         return String(hub || "").toUpperCase() + "-" + String(dest || "").toUpperCase()
     }
 
+    static _key(hub, dest) {
+        return acctKey(RouteAssistantSandboxBacktestStore.SCOPE_PREFIX,
+            RouteAssistantSandboxBacktestStore._pairKey(hub, dest))
+    }
+
+    static _legacyKey(hub, dest) {
+        return RouteAssistantSandboxBacktestStore.LEGACY_PREFIX
+            + RouteAssistantSandboxBacktestStore._pairKey(hub, dest)
+    }
+
     static async get(hub, dest) {
-        const key = RouteAssistantSandboxBacktestStore._key(hub, dest)
-        const out = await chrome.storage.local.get([key])
-        return out[key] || null
+        const ns = RouteAssistantSandboxBacktestStore._key(hub, dest)
+        const lg = RouteAssistantSandboxBacktestStore._legacyKey(hub, dest)
+        if (ns === lg) {
+            const out = await chrome.storage.local.get([ns])
+            return out[ns] || null
+        }
+        const out = await chrome.storage.local.get([ns, lg])
+        if (out[ns] !== undefined) return out[ns]
+        return out[lg] || null
     }
 
     /**
@@ -64,36 +77,60 @@ class RouteAssistantSandboxBacktestStore {
      */
     static async getMany(pairs) {
         if (!pairs || !pairs.length) return new Map()
-        const keys = pairs.map(p => {
+        const nsKeys = []
+        const lgKeys = []
+        const pairKeys = []
+        for (const p of pairs) {
             const h = Array.isArray(p) ? p[0] : p.hub
             const d = Array.isArray(p) ? p[1] : p.dest
-            return RouteAssistantSandboxBacktestStore._key(h, d)
-        })
-        const out = await chrome.storage.local.get(keys)
+            pairKeys.push(RouteAssistantSandboxBacktestStore._pairKey(h, d))
+            nsKeys.push(RouteAssistantSandboxBacktestStore._key(h, d))
+            lgKeys.push(RouteAssistantSandboxBacktestStore._legacyKey(h, d))
+        }
+        const all = []
+        for (const k of nsKeys) all.push(k)
+        for (const k of lgKeys) if (all.indexOf(k) < 0) all.push(k)
+        const out = await chrome.storage.local.get(all)
         const map = new Map()
-        for (const k in out) {
-            const rec = out[k]
-            if (!rec) continue
-            const pair = k.substring(RouteAssistantSandboxBacktestStore.PREFIX.length)
-            map.set(pair, rec)
+        for (let i = 0; i < pairs.length; i++) {
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            const rec = out[ns] !== undefined ? out[ns] : (out[lg] || null)
+            if (rec) map.set(pairKeys[i], rec)
         }
         return map
     }
 
     /**
-     * Scan every record in chrome.storage.local with this PREFIX. Used
-     * by the model-fit summary (slice 3c) which aggregates across the
+     * Scan every record in chrome.storage.local for the current account
+     * (with legacy fallback for suffixes the namespaced slot hasn't
+     * touched yet). Used by the model-fit summary which aggregates the
      * user's full back-test history. Heavier than `getMany` — only call
      * from the settings drawer / explicit refresh.
      */
     static async loadAll() {
+        const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
+        const myNs = id ? RouteAssistantSandboxBacktestStore.SCOPE_PREFIX + ":acct:" + id + ":" : null
         const all = await chrome.storage.local.get(null)
         const map = new Map()
+        const seen = new Set()
+        if (myNs) {
+            for (const k in all) {
+                if (!k.startsWith(myNs)) continue
+                const rec = all[k]
+                if (!rec || !Array.isArray(rec.entries)) continue
+                const pair = k.substring(myNs.length)
+                map.set(pair, rec)
+                seen.add(pair)
+            }
+        }
         for (const k in all) {
-            if (!k.startsWith(RouteAssistantSandboxBacktestStore.PREFIX)) continue
+            if (!k.startsWith(RouteAssistantSandboxBacktestStore.LEGACY_PREFIX)) continue
+            if (k.indexOf(":acct:") !== -1) continue
+            const pair = k.substring(RouteAssistantSandboxBacktestStore.LEGACY_PREFIX.length)
+            if (seen.has(pair)) continue
             const rec = all[k]
             if (!rec || !Array.isArray(rec.entries)) continue
-            const pair = k.substring(RouteAssistantSandboxBacktestStore.PREFIX.length)
             map.set(pair, rec)
         }
         return map
@@ -101,8 +138,9 @@ class RouteAssistantSandboxBacktestStore {
 
     /**
      * Append a back-test entry. Caps at MAX_PER_ROUTE via shift()
-     * (oldest first). Returns the stored record, or null on invalid
-     * input (no projected.share AND no projected.paxPerWeek).
+     * (oldest first). Reads via legacy fallback so a pre-L3 history
+     * seeds the namespaced record on the next log. Returns the stored
+     * record, or null on invalid input.
      */
     static async log(hub, dest, entry) {
         const hubU  = String(hub  || "").toUpperCase()
@@ -111,8 +149,11 @@ class RouteAssistantSandboxBacktestStore {
         const cleaned = RouteAssistantSandboxBacktestStore._normaliseEntry(entry || {})
         if (!cleaned) return null
 
-        const key = RouteAssistantSandboxBacktestStore._key(hubU, destU)
-        const existing = (await chrome.storage.local.get([key]))[key] || null
+        const ns = RouteAssistantSandboxBacktestStore._key(hubU, destU)
+        const lg = RouteAssistantSandboxBacktestStore._legacyKey(hubU, destU)
+        const reads = (ns === lg) ? [ns] : [ns, lg]
+        const out = await chrome.storage.local.get(reads)
+        const existing = out[ns] !== undefined ? out[ns] : (out[lg] || null)
         const entries = (existing && Array.isArray(existing.entries))
             ? existing.entries.slice()
             : []
@@ -125,24 +166,23 @@ class RouteAssistantSandboxBacktestStore {
             entries:   entries,
             updatedAt: now
         }
-        await chrome.storage.local.set({[key]: record})
+        await chrome.storage.local.set({[ns]: record})
         return record
     }
 
     static async remove(hub, dest) {
-        const key = RouteAssistantSandboxBacktestStore._key(hub, dest)
-        await chrome.storage.local.remove([key])
+        const ns = RouteAssistantSandboxBacktestStore._key(hub, dest)
+        const lg = RouteAssistantSandboxBacktestStore._legacyKey(hub, dest)
+        const keys = (ns === lg) ? [ns] : [ns, lg]
+        await chrome.storage.local.remove(keys)
     }
 
     /**
      * Back-fill `observed.share` for entries that were logged within
      * `BACKFILL_WINDOW_MS` before a fresh marketShare scrape. Mutates
      * matched records in storage; returns `{filled, scanned, skipped}`
-     * so the caller can report.
-     *
-     * Caller already has the marketShare records keyed by pair (from
-     * `marketsScraper.bulkLoadCache(pairs, {families: ["marketShare"]})`
-     * → unwrap the per-pair `bucket.marketShare` first).
+     * so the caller can report. Reads via legacy fallback; writes back
+     * to the namespaced slot.
      */
     static async backfillManyFromMarketShares(pairs, marketSharesByPair, ourEnterpriseId) {
         const result = {filled: 0, scanned: 0, skipped: 0}
@@ -154,15 +194,21 @@ class RouteAssistantSandboxBacktestStore {
             const d = Array.isArray(p) ? p[1] : p.dest
             return [h, d]
         })
-        const keys = normPairs.map(([h, d]) => RouteAssistantSandboxBacktestStore._key(h, d))
-        const stored = await chrome.storage.local.get(keys)
+        const nsKeys = normPairs.map(([h, d]) => RouteAssistantSandboxBacktestStore._key(h, d))
+        const lgKeys = normPairs.map(([h, d]) => RouteAssistantSandboxBacktestStore._legacyKey(h, d))
+        const reads = []
+        for (const k of nsKeys) reads.push(k)
+        for (const k of lgKeys) if (reads.indexOf(k) < 0) reads.push(k)
+        const stored = await chrome.storage.local.get(reads)
         const writes = {}
         const now = Date.now()
         const targetEnterpriseId = Number(ourEnterpriseId)
 
-        for (const [h, d] of normPairs) {
-            const k = RouteAssistantSandboxBacktestStore._key(h, d)
-            const rec = stored[k]
+        for (let i = 0; i < normPairs.length; i++) {
+            const [h, d] = normPairs[i]
+            const ns = nsKeys[i]
+            const lg = lgKeys[i]
+            const rec = stored[ns] !== undefined ? stored[ns] : (stored[lg] || null)
             if (!rec || !Array.isArray(rec.entries) || !rec.entries.length) continue
             const pair = RouteAssistantSandboxBacktestStore._pairKey(h, d)
             const ms = (marketSharesByPair && typeof marketSharesByPair.get === "function")
@@ -196,7 +242,7 @@ class RouteAssistantSandboxBacktestStore {
             }
             if (touched) {
                 rec.updatedAt = now
-                writes[k] = rec
+                writes[ns] = rec
             }
         }
         if (Object.keys(writes).length) await chrome.storage.local.set(writes)
@@ -255,4 +301,7 @@ class RouteAssistantSandboxBacktestStore {
             comfortDelta:    num(s.comfortDelta, 0)
         }
     }
+
+    /** L3 deprecated — preserve for any reader still doing key arithmetic. */
+    static get PREFIX() { return RouteAssistantSandboxBacktestStore.LEGACY_PREFIX }
 }

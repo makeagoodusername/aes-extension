@@ -1,0 +1,225 @@
+{
+  "startedAt": "2026-05-04T12:14:19.793Z",
+  "port": "9937",
+  "base": "https://free1.airlinesim.aero",
+  "mode": "real-airlinesim-read-only",
+  "checks": {
+    "dashboard boots with AES menu and Central Hub": {
+      "ok": true,
+      "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+      "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+      "tileIds": [
+        "mainboard",
+        "family",
+        "dna-drift",
+        "fleet-command",
+        "fleet-optimizer",
+        "fleet-hub",
+        "route-launcher",
+        "route-builder",
+        "aircraft-flight-plan",
+        "used-aircraft-scanner",
+        "aircraft-profitability",
+        "route-assistant",
+        "inventory",
+        "schedule-management",
+        "fleet-schedule-canvas",
+        "competitor-outline",
+        "competitor-monitoring",
+        "competitor-intel-hub",
+        "cubist-map",
+        "route-management",
+        "flightsfrom",
+        "strategy-briefing",
+        "strategy-hub-designer",
+        "strategy-portfolio",
+        "strategy-slot-trading",
+        "service-profile",
+        "station-automation",
+        "crew-management",
+        "world-view",
+        "alliance",
+        "accounting",
+        "general",
+        "conductor",
+        "strategy",
+        "risk-dashboard",
+        "weekly-review",
+        "conductor-trust",
+        "strategy-backtest",
+        "conductor-drift",
+        "counterfactual-lab",
+        "diagnostics",
+        "lessons",
+        "settings",
+        "data-flow-inspector",
+        "gossip-feed",
+        "network-graph",
+        "tools"
+      ],
+      "tileCount": 47
+    },
+    "all Central Hub tiles expand without body-render crashes": {
+      "ok": true,
+      "expandedCount": 47,
+      "emptyBodies": [],
+      "sample": [
+        {
+          "id": "mainboard",
+          "bodyText": "OPEN FULL SCRAPE\nOPEN SCRAPE CACHE\nRUN NEXT PHASE: FOUNDATION\nFix target: Foundation\nNETWORK\nnetwork missing\nFLEET\n3/4 need attention\nFINANCE\n3/3 need attention\nSCRAPER\nphases 0 fresh/0 stale/5 missing/0 failed\nNETWORK READINESS\nHubs and routes\nMISSING\nNo route snapshots found\nPHASE: PER-HUB\nSchedul",
+          "buttonCount": 5
+        },
+        {
+          "id": "family",
+          "bodyText": "Re-detect kin\nOpen Kin Roles →\n\nLetter M conglomerate orchestration becomes active once at least 2 of your enterprises are classified as self.\nQuick start: ensure settings.routeAssistant.carriers.myEnterpriseIds lists your own AS enterprises (RA panel → Carriers expander), then click Re-detect kin a",
+          "buttonCount": 5
+        },
+        {
+          "id": "dna-drift",
+          "bodyText": "Per-account DNA →\nEdit DNA template →\nCFLAIR · free1\n◯ 0.00\nAll dimensions aligned within tolerance.",
+          "buttonCount": 5
+        },
+        {
+          "id": "fleet-command",
+          "bodyText": "Visit each airline's /app/fleets page to populate the federated roster.",
+          "buttonCount": 3
+        },
+        {
+          "id": "fleet-optimizer",
+          "bodyText": "Need a fleet snapshot + wear samples. Visit aircraft pages to populate.",
+          "buttonCount": 3
+        },
+        {
+          "id": "fleet-hub",
+          "bodyText": "Visit /app/fleets to populate the fleet roster.",
+          "buttonCount": 3
+        },
+        {
+          "id": "route-launcher",
+          "bodyText": "AIRCRAFT\n\nNo fleet found. Visit /app/fleets to scrape your roster, then come back.\n\nDESTINATIONS\n\nPick an aircraft on the left.\n\nSTATUS FEED\n\nNo submissions yet. Pick an aircraft and click a destination.",
+          "buttonCount": 2
+        },
+        {
+          "id": "route-builder",
+          "bodyText": "Pick airports, set how many flights to create, edit the mock schedule's HH:MM, then apply. Long-haul legs are sequenced after the prior return automatically.\n\nOpen route builder…\nEsc to cancel · uses Active draft store + AesAfpAutoApplyBatch",
+          "buttonCount": 3
+        }
+      ]
+    },
+    "Mainboard shows demand-store readiness row": {
+      "ok": true,
+      "excerpt": [
+        "Demand store",
+        "Optional seed not run yet",
+        "Demand store seed"
+      ]
+    },
+    "AES isolated world has registered integration topics and notifications API": {
+      "ok": true,
+      "dataBus": "object",
+      "notifications": "function",
+      "missing": [],
+      "registeredCount": 66
+    },
+    "notifications API posts real in-page toast and bus event": {
+      "ok": true,
+      "panelCount": 1,
+      "lastClass": "feedbackPanelWARNING",
+      "lastText": " AES live smoke toast",
+      "emitted": 1,
+      "emittedType": "warning"
+    },
+    "scrape orchestrator demand-seed is linked but opt-in/no tab fan-out": {
+      "ok": true,
+      "ids": [
+        "foundation",
+        "demand-seed",
+        "per-aircraft",
+        "per-hub",
+        "per-route",
+        "ors-rank",
+        "per-competitor",
+        "flightsfrom"
+      ],
+      "optional": true,
+      "defaultEnabled": false,
+      "label": "Demand store (slow — country fan-out)",
+      "jobCount": 0
+    },
+    "AesDataBus refresh topics emit without tile crashes": {
+      "ok": true,
+      "emitted": [
+        "data:route-assistant:ors:health",
+        "data:route-assistant:flight-number-pricing:updated",
+        "data:strategy:company-reputation:saved",
+        "data:slots:available:updated",
+        "data:slots:bid:queued"
+      ]
+    },
+    "Command palette lists fork command and navigates to Accounting": {
+      "ok": true,
+      "url": "https://free1.airlinesim.aero/app/finance/accounting"
+    },
+    "Strategy and briefing surfaces open on real dashboard": {
+      "ok": true,
+      "strategyModal": true,
+      "briefingModal": true
+    },
+    "Backtest CTA executes without exception": {
+      "ok": true,
+      "excerpt": "STRATEGY BACKTEST\nLast backtest 2026-05-04 · 12wk · engine would have outperformed actual\n$0\n☆\n▾\n12-WEEK REPLAY\nRUN BACKTEST\nΔ cumulative: $0 over 12 weeks\nWK\tACTUAL CUM\tHYPO CUM\tΔ\nwk-1\t$913,614\t—\t—"
+    },
+    "Fleets, AFP plan, aircraft flights, scheduling, alliance pages load AES surfaces": {
+      "ok": true,
+      "fleets": {
+        "url": "https://free1.airlinesim.aero/app/fleets?12",
+        "text": "FLEET\nAIRLINESIM\nDENSITY: COMPACT\n⇧D\n DATABASE \n HELP \n COMMUNITY \n PRIVATE MESSAGES 27\n HALLEU \nCFLAIR \n1,249,940 AS$\nCOMMERCIAL \nOPERATIONS \nMANAGEMENT \nAES\nBRIDGE\nCFLAIR FLEET MANAGEMENT\nAES FLEET MANAGEMENT\n\nCurrently 4 aircrafts stored in memory.\n\nUpdated aircraft data for 4 from Default fleet\n\n✈ OPEN FLEET SCHEDULE GRID\n▦ OPEN SCHEDULE CANVAS\nStacks every aircraft's Mon–Sun timeline; colors ",
+        "aircraftHref": "https://free1.airlinesim.aero/app/fleets/aircraft/22035/0"
+      },
+      "afp": {
+        "hasAfp": true,
+        "hasFormDriver": true,
+        "hasRouteCandidates": true,
+        "hasWaveApplier": true,
+        "routeBuilderText": false
+      },
+      "aircraftFlights": {
+        "hasProfitLoss": true,
+        "hasExtracted": true,
+        "tableCount": 3
+      },
+      "alliance": {
+        "scraper": "function",
+        "title": "Your alliance: United Alliance | Free1 | AirlineSim",
+        "hasAllianceText": true
+      },
+      "scheduling": {
+        "hasSettings": true,
+        "hasTokens": true,
+        "hasScheduleStore": true,
+        "hasPricingApplier": true,
+        "title": "Scheduling | Free1 | AirlineSim"
+      }
+    }
+  },
+  "errors": [],
+  "pageErrors": [],
+  "consoleErrors": [],
+  "screenshots": [
+    "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-real-shots-enterprise775-9937-20260504/01-dashboard.png",
+    "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-real-shots-enterprise775-9937-20260504/02-dashboard-return.png",
+    "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-real-shots-enterprise775-9937-20260504/03-fleets.png",
+    "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-real-shots-enterprise775-9937-20260504/04-afp-plan.png",
+    "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-real-shots-enterprise775-9937-20260504/05-aircraft-flights.png",
+    "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-real-shots-enterprise775-9937-20260504/06-alliance.png",
+    "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-real-shots-enterprise775-9937-20260504/07-scheduling.png"
+  ],
+  "finishedAt": "2026-05-04T12:15:19.714Z",
+  "summary": {
+    "checks": 11,
+    "passed": 11,
+    "failed": 0,
+    "pageErrors": 0,
+    "consoleErrors": 0
+  }
+}

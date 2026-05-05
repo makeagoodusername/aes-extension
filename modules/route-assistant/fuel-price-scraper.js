@@ -37,6 +37,25 @@ class RouteAssistantFuelPriceScraper {
     static URLS = ["/action/portal/index", "/action/holding/stockexchanges"]
     static MAX_AGE_FRESH_MS = 6 * 3600e3   // re-scrape if older than 6h
 
+    /**
+     * Lazy single-key TTL wrapper. wrapSingleKey ships in
+     * modules/_shared/ttl-cache.js (slice-1 foundation); we resolve it on
+     * first access so this file works the same when loaded into a context
+     * that doesn't include the shared block (defensive, since fuel-price
+     * scraping is also called from RA settings flows).
+     */
+    static _cache() {
+        if (!RouteAssistantFuelPriceScraper._cacheInst) {
+            if (typeof wrapSingleKey === "undefined") return null
+            RouteAssistantFuelPriceScraper._cacheInst = wrapSingleKey(
+                RouteAssistantFuelPriceScraper.CACHE_KEY,
+                RouteAssistantFuelPriceScraper.MAX_AGE_FRESH_MS,
+                {freshnessField: "scrapedAt"}
+            )
+        }
+        return RouteAssistantFuelPriceScraper._cacheInst
+    }
+
     constructor(server) {
         if (!server) throw new Error("RouteAssistantFuelPriceScraper: server required")
         this.server = server
@@ -45,6 +64,12 @@ class RouteAssistantFuelPriceScraper {
     /**
      * Try each candidate URL. For each, prefer the readable table; fall back
      * to SVG parsing. Returns the stored record, or null if every page failed.
+     *
+     * On success, emits `data:route-assistant:fuel-price:updated` with the
+     * fresh `{value, unit}` so cross-surface consumers (scanner panel,
+     * dashboard tiles) re-decorate without polling. The scalar carry is the
+     * documented exception to the minimal-payload rule (see
+     * modules/_shared/data-bus-topics.js).
      */
     async scrape() {
         for (const path of RouteAssistantFuelPriceScraper.URLS) {
@@ -66,7 +91,7 @@ class RouteAssistantFuelPriceScraper {
                         sourceUrl: url,
                         history:   table.history
                     }
-                    await chrome.storage.local.set({[RouteAssistantFuelPriceScraper.CACHE_KEY]: record})
+                    await RouteAssistantFuelPriceScraper._write(record)
                     console.log(`[AES routeAssistant] fuel price ${record.value.toFixed(2)} ASc$/l (${record.date}) via ${url}`)
                     return record
                 }
@@ -81,7 +106,7 @@ class RouteAssistantFuelPriceScraper {
                         source:    "svg",
                         sourceUrl: url
                     }
-                    await chrome.storage.local.set({[RouteAssistantFuelPriceScraper.CACHE_KEY]: record})
+                    await RouteAssistantFuelPriceScraper._write(record)
                     console.log(`[AES routeAssistant] fuel index ${record.value.toFixed(2)} (chart-scale) via ${url}`)
                     return record
                 }
@@ -90,9 +115,40 @@ class RouteAssistantFuelPriceScraper {
         return null
     }
 
+    static async _write(record) {
+        const cache = RouteAssistantFuelPriceScraper._cache()
+        if (cache) await cache.set(record)
+        else await chrome.storage.local.set({[RouteAssistantFuelPriceScraper.CACHE_KEY]: record})
+        if (typeof AesDataBus !== "undefined") {
+            // publish() caches the scalar so cross-module consumers
+            // (auto-driver, scanner, RA panel) can read AesDataBus.last(...)
+            // synchronously without a storage round-trip.
+            AesDataBus.publish("data:route-assistant:fuel-price:updated", {
+                value:     record.value,
+                unit:      record.unit,
+                scrapedAt: record.scrapedAt
+            })
+        }
+    }
+
     static async getCached() {
+        const cache = RouteAssistantFuelPriceScraper._cache()
+        if (cache) return cache.getStale()
         const out = await chrome.storage.local.get([RouteAssistantFuelPriceScraper.CACHE_KEY])
         return out[RouteAssistantFuelPriceScraper.CACHE_KEY] || null
+    }
+
+    /**
+     * Returns the cached record only if it's still inside MAX_AGE_FRESH_MS.
+     * Use this from cross-module consumers (e.g. the scanner panel) that
+     * want a fresh value or null — saves them the `isStale` check and the
+     * raw `chrome.storage.local.get` reach.
+     */
+    static async getCachedFresh() {
+        const cache = RouteAssistantFuelPriceScraper._cache()
+        if (cache) return cache.get()
+        const rec = await RouteAssistantFuelPriceScraper.getCached()
+        return rec && !RouteAssistantFuelPriceScraper.isStale(rec) ? rec : null
     }
 
     static isStale(record) {

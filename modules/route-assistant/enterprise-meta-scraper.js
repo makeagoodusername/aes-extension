@@ -203,6 +203,13 @@ function parseEnterpriseHtml(html, server, enterpriseId) {
         const cleaned = t.split(/[—|·-]/)[0].trim()
         if (cleaned) name = cleaned
     }
+    const generalInfo = parseEnterpriseGeneralInfo(doc)
+    if (generalInfo.name && (!name || /^enterprises$/i.test(name))) {
+        name = generalInfo.name
+    }
+    if (generalInfo.iata && !iata) {
+        iata = generalInfo.iata
+    }
 
     // --- IATA / ICAO code ---
     // Common shapes: "Fly Gemini (FG)" in the heading, or a separate
@@ -318,6 +325,33 @@ function parseEnterpriseHtml(html, server, enterpriseId) {
         avatarUrl:    avatarUrl,
         parserNotes:  notes.length ? notes.join("; ") : null
     }
+}
+
+function parseEnterpriseGeneralInfo(doc) {
+    const out = {name: null, iata: null}
+    if (!doc) return out
+
+    for (const tr of doc.querySelectorAll("tr")) {
+        const cells = tr.querySelectorAll("th, td")
+        if (cells.length < 2) continue
+        const label = ((cells[0] && cells[0].textContent) || "")
+            .trim()
+            .replace(/\s+/g, " ")
+            .toLowerCase()
+        const value = ((cells[1] && cells[1].textContent) || "")
+            .trim()
+            .replace(/\s+/g, " ")
+        if (!value) continue
+
+        if (label === "name" && !out.name) {
+            out.name = value
+        } else if ((label === "code" || label === "iata" || label === "icao") && !out.iata) {
+            const m = /\b([A-Z0-9]{2,4})\b/i.exec(value)
+            out.iata = m ? m[1].toUpperCase() : value.toUpperCase()
+        }
+    }
+
+    return out
 }
 
 /**

@@ -1,0 +1,166 @@
+[
+  {
+    "text": "AirlineSim",
+    "href": "https://free1.airlinesim.aero/action/portal/index"
+  },
+  {
+    "text": "Database",
+    "href": "https://free1.airlinesim.aero/app/fleets?0#"
+  },
+  {
+    "text": "Help",
+    "href": "https://free1.airlinesim.aero/app/fleets?0#"
+  },
+  {
+    "text": "Community",
+    "href": "https://free1.airlinesim.aero/app/fleets?0#"
+  },
+  {
+    "text": "Private Messages\n                        26",
+    "href": "https://free1.airlinesim.aero/app/user/mail"
+  },
+  {
+    "text": "halleu",
+    "href": null
+  },
+  {
+    "text": "Casper Flight Logistics",
+    "href": "https://free1.airlinesim.aero/app/enterprise/dashboard"
+  },
+  {
+    "text": "0 AS$",
+    "href": "https://free1.airlinesim.aero/app/finance/accounting"
+  },
+  {
+    "text": "Commercial",
+    "href": "https://free1.airlinesim.aero/app/fleets?0#"
+  },
+  {
+    "text": "Operations",
+    "href": "https://free1.airlinesim.aero/app/fleets?0#"
+  },
+  {
+    "text": "Management",
+    "href": "https://free1.airlinesim.aero/app/fleets?0#"
+  },
+  {
+    "text": "AES",
+    "href": null
+  },
+  {
+    "text": "Bridge",
+    "href": null
+  },
+  {
+    "text": "✈ Open Fleet Schedule Grid",
+    "href": null
+  },
+  {
+    "text": "▦ Open Schedule Canvas",
+    "href": null
+  },
+  {
+    "text": "Create new fleet",
+    "href": null
+  },
+  {
+    "text": "Default",
+    "href": "https://free1.airlinesim.aero/app/fleets"
+  },
+  {
+    "text": "Reg.#",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-header-sort~reg"
+  },
+  {
+    "text": "Aircraft model",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-header-sort~type"
+  },
+  {
+    "text": "Location",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-header-sort~airport"
+  },
+  {
+    "text": "Age",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-header-sort~age"
+  },
+  {
+    "text": "Notes",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-header-sort~remark"
+  },
+  {
+    "text": "Nickname",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-header-sort~name"
+  },
+  {
+    "text": "cond",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-header-sort~condition"
+  },
+  {
+    "text": "maint",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-header-sort~maintenance"
+  },
+  {
+    "text": "all",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-select~all"
+  },
+  {
+    "text": "none",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-select~none"
+  },
+  {
+    "text": "invert",
+    "href": "https://free1.airlinesim.aero/app/fleets?0-1.-select~inverse"
+  },
+  {
+    "text": "v6.13.8",
+    "href": null
+  },
+  {
+    "text": "free1",
+    "href": "https://free1.airlinesim.aero/app/fleets?0#"
+  },
+  {
+    "text": "English",
+    "href": "https://free1.airlinesim.aero/app/fleets?0#"
+  },
+  {
+    "text": "60 Credits",
+    "href": "https://free1.airlinesim.aero/action/user/holdings"
+  },
+  {
+    "text": "Cockpit ▸",
+    "href": null
+  },
+  {
+    "text": "× Close",
+    "href": null
+  },
+  {
+    "text": "↻ Refresh all",
+    "href": null
+  },
+  {
+    "text": "Clear route filter",
+    "href": null
+  },
+  {
+    "text": "Bar labels: On",
+    "href": null
+  },
+  {
+    "text": "Waves",
+    "href": null
+  },
+  {
+    "text": "Aircraft",
+    "href": null
+  },
+  {
+    "text": "Drag destinations",
+    "href": null
+  },
+  {
+    "text": "+ create plan…",
+    "href": null
+  }
+]

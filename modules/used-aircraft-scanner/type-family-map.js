@@ -13,6 +13,10 @@
  */
 
 const AS_FAMILY_ANY = "any aircraft family"
+const AS_TYPE_ANY    = "any aircraft type"
+const AS_TYPE_ANY_RE = /^any aircraft type$/i
+const AS_TYPE_SELECT_SELECTOR   = "select[name='tab:panel:filter-aircraftType']"
+const AS_FAMILY_SELECT_SELECTOR = "select[name='tab:panel:filter-aircraftFamily']"
 
 // Maps every AS Type dropdown label (current as of v6.13.x) to its parent
 // Family. Family names must match the live "Aircraft Family" dropdown exactly,
@@ -413,6 +417,33 @@ const AS_FAMILY_CATEGORY = {
 // Visual order in the family grid: small → large, left-to-right.
 const AS_CATEGORY_ORDER = ["commuter", "turboprop", "regional", "narrowbody", "widebody"]
 
+// Manufacturer keyword patterns, longest/most-specific first. Tested by
+// TypeFamilyMap.manufacturer() against the AS type label (e.g.
+// "Bombardier CRJ-700"). Misses fall back to the type's leading word.
+const MANUFACTURER_PATTERNS = [
+    [/\bAirbus\b/i,                              "Airbus"],
+    [/\bBoeing\b/i,                              "Boeing"],
+    [/\bATR\b/i,                                 "ATR"],
+    [/\bDash 8\b|\bDe Havilland\b|\bDHC-/i,      "De Havilland / Bombardier"],
+    [/\bBombardier\b|\bCRJ\b/i,                  "De Havilland / Bombardier"],
+    [/\bEmbraer\b|\bEMB\b|\bERJ\b/i,             "Embraer"],
+    [/\bCessna\b/i,                              "Cessna (Textron)"],
+    [/\bBeechcraft\b|\bBeech\b|\bRaytheon\b/i,   "Beechcraft (Textron)"],
+    [/\bLET\b|\bL-?410\b/i,                      "LET"],
+    [/\bPilatus\b|\bPC-/i,                       "Pilatus"],
+    [/\bSaab\b/i,                                "Saab"],
+    [/\bBritten-Norman\b|Islander|Trislander/i,  "Britten-Norman"],
+    [/\bAntonov\b|\bAN-?\d/i,                    "Antonov"],
+    [/\bTupolev\b|\bTu-?\d/i,                    "Tupolev"],
+    [/\bIlyushin\b|\bIl-?\d/i,                   "Ilyushin"],
+    [/\bSukhoi\b|Superjet/i,                     "Sukhoi"],
+    [/\bMcDonnell Douglas\b|\bMD-?\d|\bDC-?\d/i, "McDonnell Douglas"],
+    [/\bCOMAC\b|\bARJ\d|\bC91\d/i,               "COMAC"],
+    [/\bFokker\b|\bF\d{2,3}\b/i,                 "Fokker"],
+    [/\bDornier\b|\bDO ?228/i,                   "Dornier"],
+    [/\bXian\b|\bY-7\b|\bAVIC\b|\bMA-?\d{2,3}/i, "AVIC / Xian"]
+]
+
 // Single source of truth for category color (used by family-grid cards AND
 // the results-table row rail). Hex values match the existing scanner palette
 // (status badges in content_dashboard.js use the same 3b82f6 / 16a34a base).
@@ -426,6 +457,34 @@ const AS_CATEGORY_COLOR = {
 }
 
 class TypeFamilyMap {
+    static anyFamilyLabel() {
+        return AS_FAMILY_ANY
+    }
+
+    static isAnyFamilyLabel(label) {
+        return String(label || "").trim().toLowerCase() === AS_FAMILY_ANY
+    }
+
+    static isAnyTypeLabel(label) {
+        return AS_TYPE_ANY_RE.test(String(label || "").trim())
+    }
+
+    // Category-then-alpha comparator shared by `marketTypeOptions`,
+    // `marketFamilyOptions`, and `familyList`. Unrecognised categories
+    // ("other") sort last so the picker stays grouped by familiar buckets.
+    static _categoryRank(category) {
+        const i = AS_CATEGORY_ORDER.indexOf(category)
+        return i < 0 ? 999 : i
+    }
+
+    static _byCategoryFamilyType(a, b) {
+        const cd = TypeFamilyMap._categoryRank(a.category) - TypeFamilyMap._categoryRank(b.category)
+        if (cd !== 0) return cd
+        const fd = String(a.family || "").localeCompare(String(b.family || ""))
+        if (fd !== 0) return fd
+        return String(a.type || "").localeCompare(String(b.type || ""))
+    }
+
     /**
      * Strip variant suffixes ("heavy", "light", "medium", "high density",
      * "(enhanced)", "LR", "SHARP", "P2F", etc.) from an AS Type name to find
@@ -471,13 +530,14 @@ class TypeFamilyMap {
      * @returns {Promise<void>}
      */
     static async setOverride(type, family) {
-        const data = await chrome.storage.local.get(["settings"])
-        const settings = data.settings || {}
-        settings.usedAircraftScanner = settings.usedAircraftScanner || {}
-        settings.usedAircraftScanner.typeFamilyOverrides =
-            settings.usedAircraftScanner.typeFamilyOverrides || {}
-        settings.usedAircraftScanner.typeFamilyOverrides[type] = family
-        await chrome.storage.local.set({settings: settings})
+        const block = await window.AesSettings.getArea("usedAircraftScanner")
+        await window.AesSettings.saveArea("usedAircraftScanner", {
+            ...block,
+            typeFamilyOverrides: {
+                ...(block.typeFamilyOverrides || {}),
+                [type]: family
+            }
+        })
     }
 
     /**
@@ -491,6 +551,23 @@ class TypeFamilyMap {
     }
 
     /**
+     * Best-effort manufacturer label for an AS type name. Matches a
+     * curated keyword list first (covers historical brand renames and
+     * manufacturer letter prefixes like "An-", "Tu-", "Il-"), falls back
+     * to the leading word if nothing matches. Used by the scanner panel's
+     * manufacturer filter chip row.
+     */
+    static manufacturer(typeName) {
+        if (!typeName) return ""
+        const s = String(typeName).trim()
+        for (const [re, label] of MANUFACTURER_PATTERNS) {
+            if (re.test(s)) return label
+        }
+        const first = s.split(/\s+/)[0] || ""
+        return first.replace(/[^A-Za-z0-9-]/g, "")
+    }
+
+    /**
      * Color hex for a category. Falls back to the "other" grey for unknown
      * inputs so callers don't need to special-case nulls.
      */
@@ -499,19 +576,210 @@ class TypeFamilyMap {
     }
 
     /**
+     * Visual order of the five real categories (small → large). Excludes
+     * "other" — that's a fallback bucket for unrecognised families, not a
+     * dimension users would deliberately pick.
+     */
+    static allCategories() {
+        return AS_CATEGORY_ORDER.slice()
+    }
+
+    /**
+     * Every distinct manufacturer label exposed by `manufacturer()`. Pulled
+     * from MANUFACTURER_PATTERNS so the scanner filter can offer the full
+     * roster up front, not just whatever is present in the current scan.
+     */
+    static allManufacturers() {
+        const seen = new Set()
+        for (const [, label] of MANUFACTURER_PATTERNS) seen.add(label)
+        return Array.from(seen).sort()
+    }
+
+    /**
+     * Family list as `[{family, category}, ...]` in the same category-then-
+     * alpha order as `familyList()` — but without the type arrays, since the
+     * scanner filter only needs the name + category for grouped display.
+     */
+    static allFamilies(overrides) {
+        return TypeFamilyMap.familyList(overrides).map(e => ({
+            family:   e.family,
+            category: e.category
+        }))
+    }
+
+    /**
+     * Every distinct AS Type label as `[{type, family, category}, ...]`,
+     * sorted by family-category then alpha within family. Honors the
+     * user's typeFamilyOverrides via `familyList()` so custom mappings
+     * surface in the picker.
+     */
+    static allTypes(overrides) {
+        const out = []
+        for (const entry of TypeFamilyMap.familyList(overrides)) {
+            for (const t of entry.types) {
+                out.push({type: t, family: entry.family, category: entry.category})
+            }
+        }
+        return out
+    }
+
+    /**
+     * Returns the aircraft-type labels currently offered by AirlineSim's
+     * native market Type dropdown, or null when the dropdown is unavailable.
+     * The static map intentionally knows about historical/model aliases. When
+     * AS is showing the global Type dropdown, callers can use this set to keep
+     * scan launch bounded to labels this world can actually pick.
+     */
+    static _resolveDoc(root) {
+        const doc = root || (typeof document !== "undefined" ? document : null)
+        return (doc && typeof doc.querySelector === "function") ? doc : null
+    }
+
+    static liveMarketTypeSet(root) {
+        const doc = TypeFamilyMap._resolveDoc(root)
+        if (!doc) return null
+        const family = TypeFamilyMap._liveMarketFamily(doc)
+        if (family && !TypeFamilyMap.isAnyFamilyLabel(family)) return null
+        const types = TypeFamilyMap._liveMarketTypes(undefined, doc)
+        return types.length ? new Set(types.map(e => e.type)) : null
+    }
+
+    static _liveMarketFamily(root) {
+        const doc = TypeFamilyMap._resolveDoc(root)
+        if (!doc) return null
+        const select = doc.querySelector(AS_FAMILY_SELECT_SELECTOR)
+        if (!select || !select.options || select.selectedIndex < 0) return null
+        const opt = select.options[select.selectedIndex]
+        return opt ? ((opt.textContent || "").trim() || null) : null
+    }
+
+    static _liveMarketTypes(overrides, root) {
+        const doc = TypeFamilyMap._resolveDoc(root)
+        if (!doc) return []
+        const select = doc.querySelector(AS_TYPE_SELECT_SELECTOR)
+        if (!select || !select.options) return []
+        const selectedFamily = TypeFamilyMap._liveMarketFamily(doc)
+        const hasScopedFamily = selectedFamily && !TypeFamilyMap.isAnyFamilyLabel(selectedFamily)
+        const out = []
+        const seen = new Set()
+        for (const opt of select.options) {
+            const type = (opt.textContent || "").trim()
+            if (!type || TypeFamilyMap.isAnyTypeLabel(type) || seen.has(type)) continue
+            seen.add(type)
+            const resolvedFamily = TypeFamilyMap.resolve(type, overrides)
+            const family = hasScopedFamily
+                ? selectedFamily
+                : (resolvedFamily || AS_FAMILY_ANY)
+            out.push({
+                type:     type,
+                family:   family,
+                category: TypeFamilyMap.category(family),
+                live:     true
+            })
+        }
+        return out
+    }
+
+    static marketTypeOptions(overrides, root) {
+        const byType = new Map()
+        for (const entry of TypeFamilyMap.allTypes(overrides)) {
+            byType.set(entry.type, entry)
+        }
+        for (const entry of TypeFamilyMap._liveMarketTypes(overrides, root)) {
+            if (!byType.has(entry.type)) byType.set(entry.type, entry)
+        }
+        return Array.from(byType.values()).sort(TypeFamilyMap._byCategoryFamilyType)
+    }
+
+    static marketFamilyOptions(overrides, root) {
+        const byFamily = new Map()
+        for (const entry of TypeFamilyMap.allFamilies(overrides)) {
+            byFamily.set(entry.family, entry)
+        }
+        for (const entry of TypeFamilyMap._liveMarketTypes(overrides, root)) {
+            if (!entry.family || TypeFamilyMap.isAnyFamilyLabel(entry.family)) continue
+            if (!byFamily.has(entry.family)) {
+                byFamily.set(entry.family, {
+                    family:   entry.family,
+                    category: TypeFamilyMap.category(entry.family),
+                    live:     true
+                })
+            }
+        }
+        return Array.from(byFamily.values()).sort(TypeFamilyMap._byCategoryFamilyType)
+    }
+
+    // Bundle the three live-DOM-derived dimensions (family options, type
+    // options, type set for narrowing) into a single call so a render pass
+    // hits AS's <select> elements once instead of three times.
+    static marketDimensions(overrides, root) {
+        const doc = TypeFamilyMap._resolveDoc(root)
+        const live = TypeFamilyMap._liveMarketTypes(overrides, doc)
+        const selectedFamily = doc ? TypeFamilyMap._liveMarketFamily(doc) : null
+        const familyScoped = selectedFamily && !TypeFamilyMap.isAnyFamilyLabel(selectedFamily)
+
+        const byType = new Map()
+        for (const entry of TypeFamilyMap.allTypes(overrides)) {
+            byType.set(entry.type, entry)
+        }
+        for (const entry of live) {
+            if (!byType.has(entry.type)) byType.set(entry.type, entry)
+        }
+        const typeOptions = Array.from(byType.values()).sort(TypeFamilyMap._byCategoryFamilyType)
+
+        const byFamily = new Map()
+        for (const entry of TypeFamilyMap.allFamilies(overrides)) {
+            byFamily.set(entry.family, entry)
+        }
+        for (const entry of live) {
+            if (!entry.family || TypeFamilyMap.isAnyFamilyLabel(entry.family)) continue
+            if (!byFamily.has(entry.family)) {
+                byFamily.set(entry.family, {
+                    family:   entry.family,
+                    category: TypeFamilyMap.category(entry.family),
+                    live:     true
+                })
+            }
+        }
+        const familyOptions = Array.from(byFamily.values()).sort(TypeFamilyMap._byCategoryFamilyType)
+
+        let liveTypeSet = null
+        if (!familyScoped && live.length) {
+            liveTypeSet = new Set()
+            for (const entry of live) liveTypeSet.add(entry.type)
+            if (!liveTypeSet.size) liveTypeSet = null
+        }
+
+        return {familyOptions, typeOptions, liveTypeSet}
+    }
+
+    /**
      * Walks AS_TYPE_TO_FAMILY and returns one entry per family:
      * `[{family, category, types: string[]}, ...]` sorted by category
      * (commuter → widebody) then family name. Sole source for the dashboard
-     * family-card grid's structure. User typeFamilyOverrides are NOT walked
-     * here — they remain a scan-time concern; unknown labels in a preset land
-     * in the grid's "Custom" card instead.
+     * family-card grid's structure. When `overrides` is supplied (typically
+     * `settings.usedAircraftScanner.typeFamilyOverrides`), each override is
+     * folded into its target family card so user-redirected types appear in
+     * their actual family rather than the grid's "Custom" card. Overrides
+     * pointing at a family with zero static members create a new entry.
+     * Truly unknown labels (no override, not in the static map) still land
+     * in "Custom".
      */
-    static familyList() {
+    static familyList(overrides) {
         const byFamily = {}
         for (const type in AS_TYPE_TO_FAMILY) {
             const family = AS_TYPE_TO_FAMILY[type]
             if (!byFamily[family]) byFamily[family] = []
             byFamily[family].push(type)
+        }
+        if (overrides && typeof overrides === "object") {
+            for (const type in overrides) {
+                const family = overrides[type]
+                if (!family || typeof family !== "string") continue
+                if (AS_TYPE_TO_FAMILY[type] === family) continue  // already there
+                if (!byFamily[family]) byFamily[family] = []
+                if (!byFamily[family].includes(type)) byFamily[family].push(type)
+            }
         }
         const out = []
         for (const family in byFamily) {
@@ -521,14 +789,6 @@ class TypeFamilyMap {
                 types: byFamily[family].slice().sort()
             })
         }
-        out.sort((a, b) => {
-            const ai = AS_CATEGORY_ORDER.indexOf(a.category)
-            const bi = AS_CATEGORY_ORDER.indexOf(b.category)
-            const ad = ai < 0 ? 999 : ai
-            const bd = bi < 0 ? 999 : bi
-            if (ad !== bd) return ad - bd
-            return a.family.localeCompare(b.family)
-        })
-        return out
+        return out.sort(TypeFamilyMap._byCategoryFamilyType)
     }
 }

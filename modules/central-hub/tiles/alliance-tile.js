@@ -15,12 +15,16 @@ class CentralHubAllianceTile extends window.CentralHubTile {
         super()
         this.id = "alliance"
         this.title = "Alliance"
-        this.section = "tools"
+        // Section must match the registry registration below ("operations")
+        // — `dataset.section` drives the bleed-strip accent color via
+        // CentralHubTile._sectionAccent, so a mismatch shows the wrong color.
+        this.section = "operations"
         this.priority = 40
         this.requiresAirline = true
 
         this._sortKey = "enterpriseName"
         this._sortDir = "asc"
+        this._highlightedEnterpriseId = null    // CH-5d-5
     }
 
     watchedStorageKeys() {
@@ -28,6 +32,45 @@ class CentralHubAllianceTile extends window.CentralHubTile {
     }
 
     openHref() { return "/app/alliance" }
+
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        this.subscribeBus("focus-enterprise", async ({enterpriseId}) => {
+            if (!enterpriseId) return
+            const id = String(enterpriseId)
+            const rec = await AllianceOverviewScraper.loadRecord()
+            const members = (rec && Array.isArray(rec.members)) ? rec.members : []
+            const isMember = members.some(m => this._memberMatchesId(m, id))
+            if (!isMember) return
+            this._highlightedEnterpriseId = id
+            if (!this.expanded) this.toggle()
+            if (this.root) this.root.scrollIntoView({behavior: "smooth", block: "start"})
+            this._renderBodySafe()
+        })
+    }
+
+    _memberMatchesId(member, enterpriseId) {
+        if (!member) return false
+        const candidates = [
+            member.enterpriseId, member.id, member.code,
+            this._enterpriseIdFromUrl(member.enterpriseUrl)
+        ]
+        for (const c of candidates) {
+            if (c == null) continue
+            if (String(c) === enterpriseId) return true
+        }
+        return false
+    }
+
+    _enterpriseIdFromUrl(url) {
+        if (typeof url !== "string") return null
+        // AS member rows hand us `/app/info/enterprises/<id>` (plural) — the
+        // older regex required an exact `enterprise/` boundary so the trailing
+        // "s" silently broke every match. Accept the optional plural and the
+        // legacy `?id=<n>` query form alongside the path form.
+        const m = url.match(/enterprises?[/=](\d+)/i)
+        return m ? m[1] : null
+    }
 
     async loadStatus() {
         const rec = await AllianceOverviewScraper.loadRecord()
@@ -42,6 +85,16 @@ class CentralHubAllianceTile extends window.CentralHubTile {
         const members = Array.isArray(rec.members) ? rec.members : []
         const pending = Number(rec.pendingApplications) || 0
         const name = rec.allianceName || "Alliance"
+        // When the scrape succeeded but the page had no `table.members`, the
+        // airline is not in an alliance — surface that as MUTED so the badge
+        // doesn't look like an alliance with zero members. F-9231-004.
+        if (!members.length) {
+            return {
+                badge:     "—",
+                badgeKind: KIND.MUTED,
+                summary:   "Not in an alliance — visit /app/alliance to join."
+            }
+        }
         let summary = name + " · " + members.length + " member" + (members.length === 1 ? "" : "s")
         if (pending > 0) summary += " · " + pending + " pending"
         return {
@@ -92,7 +145,23 @@ class CentralHubAllianceTile extends window.CentralHubTile {
             "white-space:nowrap"
         ].join(";")
 
-        headerStrip.append(meta, openBtn)
+        if (this._highlightedEnterpriseId) {
+            const clearHl = document.createElement("button")
+            clearHl.type = "button"
+            clearHl.textContent = "× clear highlight"
+            clearHl.style.cssText = "background:transparent;color:" + T.color.cobalt
+                + ";border:" + T.geom.bw1 + " solid " + T.color.cobalt + ";border-radius:" + T.geom.radius
+                + ";padding:" + T.sp[0] + " " + T.sp[2] + ";font-family:" + T.font.display
+                + ";font-size:" + T.fs.micro + ";letter-spacing:" + T.track.caps
+                + ";text-transform:uppercase;cursor:pointer;margin-right:" + T.sp[2] + ";"
+            clearHl.addEventListener("click", () => {
+                this._highlightedEnterpriseId = null
+                this._renderBodySafe()
+            })
+            headerStrip.append(meta, clearHl, openBtn)
+        } else {
+            headerStrip.append(meta, openBtn)
+        }
         host.appendChild(headerStrip)
 
         const members = (rec && Array.isArray(rec.members)) ? rec.members.slice() : []
@@ -164,7 +233,12 @@ class CentralHubAllianceTile extends window.CentralHubTile {
         const tbody = document.createElement("tbody")
         for (const m of members) {
             const tr = document.createElement("tr")
+            const highlighted = this._highlightedEnterpriseId
+                && this._memberMatchesId(m, this._highlightedEnterpriseId)
             tr.style.cssText = "border-bottom:" + T.geom.bw1 + " solid " + T.color.paperRule + ";"
+                + (highlighted
+                    ? "background:" + T.color.cobaltSoft + ";box-shadow:inset 3px 0 0 " + T.color.cobalt + ";"
+                    : "")
 
             const tdLogo = document.createElement("td")
             tdLogo.style.cssText = "padding:" + T.sp[1] + " " + T.sp[2] + ";width:24px;"
@@ -256,7 +330,7 @@ class CentralHubAllianceTile extends window.CentralHubTile {
 if (typeof window !== "undefined" && window.CentralHubTileRegistry) {
     window.CentralHubTileRegistry.register({
         id:       "alliance",
-        section:  "tools",
+        section:  "operations",
         priority: 40,
         factory:  () => new CentralHubAllianceTile()
     })

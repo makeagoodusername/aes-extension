@@ -1,0 +1,34 @@
+/* ===========================================================
+   skin-finance.css — accounting / leasing / capital / assets / cashflow
+   Scoped to body.aes-skin[data-aes-page="finance"] so other pages don't
+   inherit currency-specific rules.
+   =========================================================== */
+
+body.aes-skin[data-aes-page="finance"] .table > tbody > tr > td {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Right-align the rightmost cells (AS finance tables put figures on the right) */
+body.aes-skin[data-aes-page="finance"] .table > tbody > tr > td:last-child,
+body.aes-skin[data-aes-page="finance"] .table > tfoot > tr > td:last-child,
+body.aes-skin[data-aes-page="finance"] .table > thead > tr > th:last-child {
+    text-align: right;
+}
+
+/* Negative-number emphasis. AS uses a plain "-" prefix on numbers in
+   accounting; we boost contrast for losses without restructuring the DOM. */
+body.aes-skin[data-aes-page="finance"] .table td.negative,
+body.aes-skin[data-aes-page="finance"] .table td.aes-negative,
+body.aes-skin[data-aes-page="finance"] .table td.text-danger {
+    color: var(--aes-crimson);
+    font-weight: var(--aes-fw-bold);
+}
+
+body.aes-skin[data-aes-page="finance"] .table td.positive,
+body.aes-skin[data-aes-page="finance"] .table td.aes-positive,
+body.aes-skin[data-aes-page="finance"] .table td.text-success {
+    color: var(--aes-moss);
+}
+
+/* AES-injected accounting/finance panels (modules/accounting/panel.js) keep
+   their own rendering — leave .aes-panel selectors untouched here. */

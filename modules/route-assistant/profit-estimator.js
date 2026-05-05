@@ -34,6 +34,15 @@ class RouteAssistantProfitEstimator {
      * @param {object} input.economics        {loadFactor, loadFactorMin, loadFactorMax,
      *                                         yieldPerKm, fuelCostPerHour, falloffYieldMultiplier}
      * @param {number} [input.falloffPct=10]  amber-zone width (% of max range)
+     * @param {object} [input.interlineShares] H 3b.2 — `{paxPercent, cargoPercent}` to
+     *                                         reduce effective LF by the share of
+     *                                         capacity sold via interline / codeshare
+     *                                         partners. Both values are clamped to
+     *                                         [0, 100]; missing fields default to 0
+     *                                         (no reduction). The reduction is
+     *                                         applied AFTER LF is sourced from
+     *                                         override / real-demand / score so the
+     *                                         provenance attribution stays clean.
      * @returns {object} with `breakdown` exposing every term that fed into profit
      *   so the UI can show the full math in a tooltip.
      */
@@ -146,6 +155,23 @@ class RouteAssistantProfitEstimator {
             cargoLfSource   = "fallback"
         }
 
+        // ---------- Interline-share reduction (H slice 3b.2) ----------
+        // Capacity sold via codeshare / interline partners doesn't accrue
+        // to our airline's revenue line, so we trim effective LF by the
+        // recorded share. Computed AFTER the source-attributed LF above
+        // so paxLfSource / cargoLfSource still reflect "where the LF
+        // came from" and the reduction is observable as a separate term
+        // in the breakdown.
+        const interlineShares = (input && input.interlineShares) || null
+        const paxInterlinePct = clamp(
+            numOrNull(interlineShares && interlineShares.paxPercent), 0, 100, 0)
+        const cargoInterlinePct = clamp(
+            numOrNull(interlineShares && interlineShares.cargoPercent), 0, 100, 0)
+        const paxLoadFactorPreInterline   = paxLoadFactor
+        const cargoLoadFactorPreInterline = cargoLoadFactor
+        if (paxInterlinePct > 0)   paxLoadFactor   *= (1 - paxInterlinePct   / 100)
+        if (cargoInterlinePct > 0) cargoLoadFactor *= (1 - cargoInterlinePct / 100)
+
         // ---------- Yields (with optional demand modulation) ----------
         // Demand sensitivity 0-1: at sensitivity=0 yield is flat (backward
         // compatible). At sensitivity=1, yield ranges ±20% by demand
@@ -193,14 +219,43 @@ class RouteAssistantProfitEstimator {
 
         const distanceRoundTripKm = distanceKm * 2
         const paxSeats   = (seats > 0) ? seats : 0
-        const paxRevenue = paxSeats > 0
-            ? paxSeats * paxLoadFactor * effectivePaxYield * distanceRoundTripKm * yieldMult
-            : 0
+        // Per-class pax breakdown (Y/C/F). When `econ.classYields` is set we
+        // partition `paxSeats` across cabins via `econ.classShares` and price
+        // each cabin with its own yield + LF range. Otherwise the single-class
+        // path below produces identical numbers to the pre-byClass model so
+        // no consumer breaks on upgrade.
+        const classBreakdown = _perClassPaxBreakdown({
+            paxSeats,
+            paxLoadFactor,
+            effectivePaxYield,
+            distanceRoundTripKm,
+            yieldMult,
+            paxScore,
+            econ
+        })
+        const paxRevenue = classBreakdown
+            ? classBreakdown.totalRevenue
+            : (paxSeats > 0 ? paxSeats * paxLoadFactor * effectivePaxYield * distanceRoundTripKm * yieldMult : 0)
         const cargoKg    = cargo > 0 ? cargo : 0
         const cargoRevenue = (cargoKg > 0 && effectiveCargoYield > 0)
             ? cargoKg * cargoLoadFactor * effectiveCargoYield * distanceRoundTripKm * yieldMult
             : 0
         const revenue = paxRevenue + cargoRevenue
+
+        // H slice 3b.2.2 — sensitivity surfacing. Pre-interline revenue is
+        // what you'd earn with the same demand-derived LF if the codeshare
+        // were ended; the delta is the dollar cost of the partner deal,
+        // since operating cost stays the same regardless. Computing here
+        // (rather than at consumer time) keeps the math co-located with
+        // the LF-trim and avoids consumers having to know the formula.
+        const paxRevenuePreInterline = paxSeats > 0
+            ? paxSeats * paxLoadFactorPreInterline * effectivePaxYield * distanceRoundTripKm * yieldMult
+            : 0
+        const cargoRevenuePreInterline = (cargoKg > 0 && effectiveCargoYield > 0)
+            ? cargoKg * cargoLoadFactorPreInterline * effectiveCargoYield * distanceRoundTripKm * yieldMult
+            : 0
+        const revenuePreInterline = paxRevenuePreInterline + cargoRevenuePreInterline
+        const interlineRevenueLoss = revenuePreInterline - revenue
 
         // ---------- Fuel cost: distance-based when AS price + spec available ----------
         // Preferred path: AS computes fuel as (cycle_L + per_km_L × dist) ×
@@ -251,10 +306,14 @@ class RouteAssistantProfitEstimator {
             distanceRoundTripKm:      distanceRoundTripKm,
             paxScore:                 paxScore,
             cargoScore:               cargoScore,
-            paxLoadFactor:            round3(paxLoadFactor),
-            paxLoadFactorSource:      paxLfSource,
-            cargoLoadFactor:          round3(cargoLoadFactor),
-            cargoLoadFactorSource:    cargoLfSource,
+            paxLoadFactor:                round3(paxLoadFactor),
+            paxLoadFactorSource:          paxLfSource,
+            paxLoadFactorPreInterline:    round3(paxLoadFactorPreInterline),
+            paxInterlineSharePercent:     paxInterlinePct,
+            cargoLoadFactor:              round3(cargoLoadFactor),
+            cargoLoadFactorSource:        cargoLfSource,
+            cargoLoadFactorPreInterline:  round3(cargoLoadFactorPreInterline),
+            cargoInterlineSharePercent:   cargoInterlinePct,
             yieldPerKm:               yieldPerKm,
             yieldSource:              yieldSource,
             cargoYieldSource:         cargoYieldSource,
@@ -271,6 +330,14 @@ class RouteAssistantProfitEstimator {
             paxRevenue:               Math.round(paxRevenue),
             cargoRevenue:             Math.round(cargoRevenue),
             revenue:                  Math.round(revenue),
+            // H slice 3b.2.2 — pre-interline revenue + the loss delta.
+            // Cost is unchanged by codeshare, so revenue loss == profit loss.
+            paxRevenuePreInterline:   Math.round(paxRevenuePreInterline),
+            cargoRevenuePreInterline: Math.round(cargoRevenuePreInterline),
+            revenuePreInterline:      Math.round(revenuePreInterline),
+            interlineRevenueLossPerFlight: Math.round(interlineRevenueLoss),
+            interlineRevenueLossPerWeek:   freq > 0
+                ? Math.round(interlineRevenueLoss * freq) : 0,
             blockHours:               result.blockHours,
             aircraftAge:              aircraftAge,
             fuelAgePenaltyPerYear:    fuelAgePenaltyPerYear,
@@ -289,7 +356,19 @@ class RouteAssistantProfitEstimator {
             totalCost:                Math.round(totalCost),
             profitPerFlight:          result.profitPerFlight,
             frequency:                freq,
-            profitPerWeek:            result.profitPerWeek
+            profitPerWeek:            result.profitPerWeek,
+            // Per-class breakdown — null unless econ.classYields is set.
+            // Cargo is always populated when cargoYieldPerKgKm > 0 so consumers
+            // get a uniform shape regardless of pax cabin configuration.
+            byClass:                  _buildByClass(classBreakdown, {
+                cargoSeats: cargoKg,
+                cargoLoadFactor,
+                effectiveCargoYield,
+                distanceRoundTripKm,
+                yieldMult,
+                freq,
+                totalCost
+            })
         }
         return result
     }
@@ -364,4 +443,95 @@ function round3(v) {
 
 function round4(v) {
     return Math.round(v * 10000) / 10000
+}
+
+// Pax-cabin breakdown. Returns null when no per-class config is supplied so
+// the aggregate paxRevenue path stays the source of truth on upgrade. When
+// classYields is present, partitions paxSeats across Y/C/F via classShares
+// (auto-normalized; missing keys default to 0) and prices each cabin with
+// its own yield + LF range driven off the same paxScore.
+function _perClassPaxBreakdown({paxSeats, paxLoadFactor, effectivePaxYield,
+                                 distanceRoundTripKm, yieldMult, paxScore, econ}) {
+    if (!econ || !econ.classYields || paxSeats <= 0) return null
+    const cyAll = econ.classYields
+    const sharesIn = econ.classShares || {}
+    // Sum input shares; renormalize so a misconfigured blob doesn't silently
+    // shrink total revenue when the user typed shares that don't sum to 1.
+    let shareSum = 0
+    const order = ["Y", "C", "F"]
+    const shareRaw = {}
+    for (const cls of order) {
+        const v = numOrNull(sharesIn[cls])
+        shareRaw[cls] = (v !== null && v >= 0) ? v : 0
+        shareSum += shareRaw[cls]
+    }
+    if (shareSum <= 0) return null
+    const lines = {}
+    let total = 0
+    for (const cls of order) {
+        if (shareRaw[cls] <= 0) continue
+        const share = shareRaw[cls] / shareSum
+        const cy = cyAll[cls] || {}
+        const lfMin = clamp(numOrNull(cy.loadFactorMin), 0, 1, null)
+        const lfMax = clamp(numOrNull(cy.loadFactorMax), 0, 1, null)
+        const sens  = clamp(numOrNull(cy.demandSensitivity), 0, 1, 0)
+        // LF: per-class range driven by paxScore when ranges set, else fall
+        // back to the route-level paxLoadFactor so per-cabin output remains
+        // sensible even if the user only typed yields.
+        let cabinLF
+        if (lfMin !== null && lfMax !== null && lfMax >= lfMin && paxScore !== null) {
+            cabinLF = lfMin + Math.max(0, Math.min(1, paxScore / 10)) * (lfMax - lfMin)
+        } else {
+            cabinLF = paxLoadFactor
+        }
+        const baseY = numOrNull(cy.yieldPerKm)
+        const yieldPerKm = (baseY !== null && baseY >= 0) ? baseY : effectivePaxYield
+        // Per-cabin demand sensitivity, anchored at score=5 like the route
+        // level. Independent multiplier per cabin so high paxScore can lift
+        // First yield more than Economy when configured that way.
+        const demandMult = (sens > 0 && paxScore !== null)
+            ? clamp(1 + sens * (paxScore - 5) / 5, 0.5, 1.5, 1)
+            : 1
+        const effYield = yieldPerKm * demandMult
+        const seats = paxSeats * share
+        const revenue = seats * cabinLF * effYield * distanceRoundTripKm * yieldMult
+        lines[cls] = {
+            seats:        round2(seats),
+            sharePct:     round3(share * 100),
+            loadFactor:   round3(cabinLF),
+            yieldPerKm:   round4(yieldPerKm),
+            effYield:     round4(effYield),
+            demandMult:   round3(demandMult),
+            revenue:      Math.round(revenue)
+        }
+        total += revenue
+    }
+    if (total <= 0) return null
+    return {lines, totalRevenue: total}
+}
+
+function _buildByClass(paxBreakdown, ctx) {
+    if (!paxBreakdown && !(ctx.cargoSeats > 0 && ctx.effectiveCargoYield > 0)) return null
+    const out = {}
+    if (paxBreakdown) {
+        for (const cls of ["Y", "C", "F"]) {
+            if (!paxBreakdown.lines[cls]) continue
+            const line = paxBreakdown.lines[cls]
+            out[cls] = Object.assign({}, line, {
+                revenuePerWeek: ctx.freq > 0 ? Math.round(line.revenue * ctx.freq) : null
+            })
+        }
+    }
+    if (ctx.cargoSeats > 0 && ctx.effectiveCargoYield > 0) {
+        const cargoRev = ctx.cargoSeats * ctx.cargoLoadFactor * ctx.effectiveCargoYield
+            * ctx.distanceRoundTripKm * ctx.yieldMult
+        out.Cargo = {
+            cargoKg:        ctx.cargoSeats,
+            loadFactor:     round3(ctx.cargoLoadFactor),
+            effYield:       round4(ctx.effectiveCargoYield),
+            revenue:        Math.round(cargoRev),
+            revenuePerWeek: ctx.freq > 0 ? Math.round(cargoRev * ctx.freq) : null
+        }
+    }
+    return Object.keys(out).length ? out : null
 }

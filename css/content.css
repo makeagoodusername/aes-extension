@@ -80,3 +80,101 @@
 #aes-route-assistant th[data-group-header="1"]:hover {
     cursor: default;
 }
+
+
+/* ---- Route Planner live schedule builder ---- */
+.aes-route-planner {
+    margin: 0 0 var(--aes-sp-4) 0;
+    padding: var(--aes-sp-3);
+    border: var(--aes-bw-2) solid var(--aes-oxide);
+    border-radius: var(--aes-radius);
+    background: color-mix(in srgb, var(--aes-bone) 92%, white);
+}
+.aes-route-planner__header {
+    display: flex;
+    gap: var(--aes-sp-3);
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--aes-sp-3);
+}
+.aes-route-planner__header h4 {
+    margin: 0;
+}
+.aes-route-planner__status,
+.aes-rp-row-status {
+    font-weight: 700;
+    white-space: nowrap;
+}
+.aes-route-planner__status.is-ok,
+.aes-rp-row-status.is-ok {
+    color: #176c2f;
+}
+.aes-route-planner__status.is-warn,
+.aes-rp-row-status.is-warn {
+    color: #8a4b00;
+}
+.aes-route-planner__status.is-error,
+.aes-rp-row-status.is-error {
+    color: #b42318;
+}
+.aes-route-planner__controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--aes-sp-3);
+}
+.aes-route-planner__field {
+    display: grid;
+    gap: var(--aes-sp-1);
+    margin: 0;
+    font-weight: 600;
+}
+.aes-route-planner__field > span {
+    font-size: 12px;
+    line-height: 1.2;
+}
+.aes-route-planner__field .form-control {
+    width: 100%;
+    min-width: 0;
+}
+.aes-route-planner__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--aes-sp-2);
+    align-items: center;
+    margin-top: var(--aes-sp-3);
+}
+.aes-route-planner__summary {
+    margin: var(--aes-sp-3) 0;
+    color: color-mix(in srgb, var(--aes-oxide) 76%, white);
+}
+.aes-route-planner__preview {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+}
+.aes-route-planner__table {
+    min-width: 980px;
+    margin-bottom: 0;
+}
+.aes-route-planner__table th,
+.aes-route-planner__table td {
+    vertical-align: middle;
+}
+.aes-route-planner__table input[type="time"] {
+    min-width: 6.5em;
+}
+.aes-route-planner__table .aes-rp-row-flight-number {
+    width: 6em;
+}
+.aes-route-planner__table .aes-rp-row-aircraft {
+    width: 9em;
+}
+.aes-route-planner__table .aes-rp-row-day {
+    width: 7em;
+}
+.aes-route-planner__route {
+    white-space: nowrap;
+}
+.aes-route-planner__empty {
+    color: color-mix(in srgb, var(--aes-oxide) 64%, white);
+}

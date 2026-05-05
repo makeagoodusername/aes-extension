@@ -75,6 +75,208 @@
             color: var(--aes-slate);
             border: var(--aes-bw-1) dashed var(--aes-paper-rule);
         }
+        .aes-settings {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: var(--aes-sp-2) var(--aes-sp-4);
+            align-items: center;
+            padding: var(--aes-sp-3);
+            border: var(--aes-bw-2) solid var(--aes-oxide);
+            background: var(--aes-bone);
+            margin-bottom: var(--aes-sp-5);
+        }
+        .aes-settings__row-label {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-small);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            color: var(--aes-oxide);
+        }
+        .aes-settings__row-value {
+            display: flex;
+            align-items: center;
+            gap: var(--aes-sp-3);
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-body);
+        }
+        .aes-settings__hint {
+            color: var(--aes-slate);
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            grid-column: 1 / -1;
+            margin-top: var(--aes-sp-1);
+        }
+        .aes-settings input[type="checkbox"],
+        .aes-settings input[type="radio"] { accent-color: var(--aes-rust); margin-right: var(--aes-sp-1); }
+        .aes-settings label { cursor: pointer; }
+        .aes-accounts {
+            border: var(--aes-bw-2) solid var(--aes-oxide);
+            background: var(--aes-bone);
+            padding: var(--aes-sp-3);
+            margin-bottom: var(--aes-sp-5);
+        }
+        .aes-accounts__title {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-small);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            color: var(--aes-oxide);
+            margin: 0 0 var(--aes-sp-2);
+        }
+        .aes-accounts__hint {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            color: var(--aes-slate);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            margin: 0 0 var(--aes-sp-2);
+        }
+        .aes-accounts__empty {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-body);
+            color: var(--aes-slate);
+            padding: var(--aes-sp-2) 0;
+        }
+        .aes-accounts__viewing {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            color: var(--aes-oxide-2);
+            margin: var(--aes-sp-2) 0 0;
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+        }
+        .aes-data-tools {
+            border: var(--aes-bw-2) solid var(--aes-oxide);
+            background: var(--aes-bone);
+            padding: var(--aes-sp-3);
+            margin-bottom: var(--aes-sp-5);
+        }
+        .aes-data-tools__title {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-small);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            color: var(--aes-oxide);
+            margin: 0 0 var(--aes-sp-2);
+        }
+        .aes-data-tools__hint {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            color: var(--aes-slate);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-mono);
+            margin: 0 0 var(--aes-sp-3);
+        }
+        .aes-data-tools__grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--aes-sp-4);
+        }
+        @media (max-width: 720px) {
+            .aes-data-tools__grid { grid-template-columns: 1fr; }
+        }
+        .aes-data-tools__col h4 {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-small);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            color: var(--aes-oxide);
+            margin: 0 0 var(--aes-sp-2);
+        }
+        .aes-data-tools__field {
+            display: flex;
+            flex-direction: column;
+            gap: var(--aes-sp-1);
+            margin-bottom: var(--aes-sp-2);
+        }
+        .aes-data-tools__label {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-micro);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            color: var(--aes-slate);
+        }
+        .aes-data-tools__select,
+        .aes-data-tools__file-name {
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-body);
+            padding: var(--aes-sp-1) var(--aes-sp-2);
+            border: var(--aes-bw-1) solid var(--aes-oxide-2);
+            background: var(--aes-bone);
+            color: var(--aes-oxide);
+        }
+        .aes-data-tools__file-name {
+            display: inline-block;
+            min-height: 1.6em;
+            color: var(--aes-slate);
+            margin-left: var(--aes-sp-2);
+        }
+        .aes-data-tools__btn {
+            font-family: var(--aes-font-display);
+            font-size: var(--aes-fs-small);
+            font-weight: var(--aes-fw-display);
+            text-transform: uppercase;
+            letter-spacing: var(--aes-tracking-caps);
+            background: var(--aes-bone);
+            color: var(--aes-oxide);
+            border: var(--aes-bw-2) solid var(--aes-oxide);
+            padding: var(--aes-sp-2) var(--aes-sp-3);
+            cursor: pointer;
+            transition: var(--aes-tr-fast);
+        }
+        .aes-data-tools__btn:hover { background: var(--aes-oxide); color: var(--aes-bone); }
+        .aes-data-tools__btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .aes-data-tools__btn--warn,
+        .aes-data-tools__btn--danger {
+            border-color: var(--aes-rust);
+            color: var(--aes-rust);
+        }
+        .aes-data-tools__btn--warn:hover,
+        .aes-data-tools__btn--danger:hover {
+            background: var(--aes-rust);
+            color: var(--aes-bone);
+        }
+        .aes-data-tools__stats {
+            border: var(--aes-bw-1) dashed var(--aes-paper-rule);
+            padding: var(--aes-sp-2);
+            margin-bottom: var(--aes-sp-2);
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-micro);
+            color: var(--aes-oxide-2);
+        }
+        .aes-data-tools__status {
+            margin-top: var(--aes-sp-3);
+            padding: var(--aes-sp-2);
+            border: var(--aes-bw-1) solid var(--aes-paper-rule);
+            font-family: var(--aes-font-mono);
+            font-size: var(--aes-fs-body);
+            display: none;
+        }
+        .aes-data-tools__status.status-success {
+            border-color: var(--aes-leaf, #2f855a);
+            color: var(--aes-leaf, #2f855a);
+        }
+        .aes-data-tools__status.status-error,
+        .aes-data-tools__status.status-warning {
+            border-color: var(--aes-rust);
+            color: var(--aes-rust);
+        }
+        .aes-data-tools__cleanup-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--aes-sp-3);
+        }
+        @media (max-width: 720px) {
+            .aes-data-tools__cleanup-row { grid-template-columns: 1fr; }
+        }
+        .aes-data-tools input[type="file"] { display: none; }
     </style>
 </head>
 <body>
@@ -87,9 +289,99 @@
 
         <hr class="aes-double-rule" style="margin: 0 0 var(--aes-sp-4);">
 
+        <section class="aes-accounts" aria-label="AES registered accounts">
+            <h2 class="aes-accounts__title">Accounts</h2>
+            <p class="aes-accounts__hint">
+                Every (server, airline) tuple AES has observed. Touched on each AS page mount.
+            </p>
+            <div id="aes-accounts-table"></div>
+            <p class="aes-accounts__viewing" id="aes-accounts-viewing"></p>
+        </section>
+
+        <section class="aes-settings" aria-label="AES site-skin settings">
+            <span class="aes-settings__row-label">Brutalist Skin</span>
+            <div class="aes-settings__row-value">
+                <label><input type="checkbox" id="aes-skin-enabled"> Apply brutalist styling sitewide</label>
+            </div>
+
+            <span class="aes-settings__row-label">Density</span>
+            <div class="aes-settings__row-value">
+                <label><input type="radio" name="aes-skin-density" value="comfortable"> Comfortable</label>
+                <label><input type="radio" name="aes-skin-density" value="compact"> Compact</label>
+            </div>
+
+            <p class="aes-settings__hint">
+                Skin and density apply to AirlineSim pages. Toggle takes effect immediately —
+                no reload required. Press <code>Shift+D</code> on any AS page to cycle density,
+                <code>?</code> for the keyboard-shortcut list.
+            </p>
+        </section>
+
         <div class="aes-filter-row" id="aes-div-topSelect"></div>
 
         <div id="aes-div-dataDisplay"></div>
+
+        <section class="aes-data-tools" aria-label="AES backup and restore">
+            <h2 class="aes-data-tools__title">Backup &amp; Restore</h2>
+            <p class="aes-data-tools__hint">
+                Export AES data to a JSON file, or restore a previous backup. Backups carry a metadata header with version and item count.
+            </p>
+
+            <div class="aes-data-tools__grid">
+                <div class="aes-data-tools__col">
+                    <h4>Backup</h4>
+                    <div class="aes-data-tools__stats" id="aes-data-stats">
+                        <div id="aes-stats-content">Loading…</div>
+                    </div>
+                    <div class="aes-data-tools__field">
+                        <label class="aes-data-tools__label" for="aes-backup-type">Backup type</label>
+                        <select class="aes-data-tools__select" id="aes-backup-type">
+                            <option value="all">All Data</option>
+                            <option value="settings">Settings Only</option>
+                            <option value="schedule">Schedule Data</option>
+                            <option value="pricing">Pricing Data</option>
+                            <option value="competitorMonitoring">Competitor Monitoring</option>
+                            <option value="flightInfo">Flight Info</option>
+                            <option value="aircraftData">Aircraft Data</option>
+                        </select>
+                    </div>
+                    <button class="aes-data-tools__btn" id="aes-backup-btn" type="button">Create backup</button>
+                </div>
+
+                <div class="aes-data-tools__col">
+                    <h4>Restore</h4>
+                    <div class="aes-data-tools__field">
+                        <label class="aes-data-tools__label" for="aes-restore-file">Backup file</label>
+                        <input type="file" id="aes-restore-file" accept=".json">
+                        <div>
+                            <button class="aes-data-tools__btn" id="aes-choose-file-btn" type="button">Choose file</button>
+                            <span class="aes-data-tools__file-name" id="aes-selected-file-name"></span>
+                        </div>
+                    </div>
+                    <div class="aes-data-tools__field">
+                        <label class="aes-data-tools__label" for="aes-restore-mode">Mode</label>
+                        <select class="aes-data-tools__select" id="aes-restore-mode">
+                            <option value="merge">Merge with existing data</option>
+                            <option value="replace">Replace existing data</option>
+                        </select>
+                    </div>
+                    <button class="aes-data-tools__btn" id="aes-restore-btn" type="button" disabled>Restore data</button>
+                </div>
+            </div>
+
+            <div class="aes-data-tools__status" id="aes-status-message"></div>
+        </section>
+
+        <section class="aes-data-tools" aria-label="AES data cleanup">
+            <h2 class="aes-data-tools__title">Data Cleanup</h2>
+            <p class="aes-data-tools__hint">
+                Remove old or all stored data to free up extension storage. Both actions are irreversible — back up first.
+            </p>
+            <div class="aes-data-tools__cleanup-row">
+                <button class="aes-data-tools__btn aes-data-tools__btn--warn" id="aes-clear-old-data-btn" type="button">Clear old data (&gt;30 days)</button>
+                <button class="aes-data-tools__btn aes-data-tools__btn--danger" id="aes-clear-all-data-btn" type="button">Clear all data</button>
+            </div>
+        </section>
     </main>
     <script src="options.js"></script>
 </body>

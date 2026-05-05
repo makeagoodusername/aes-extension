@@ -1,0 +1,117 @@
+/* ===========================================================
+   skin-staff.css — /action/enterprise/staff(Overview|Pilots)
+
+   Page family extended in v0.6.9 to cover both staffOverview (payroll
+   summary) and staffPilots (pilot roster). Brings the AS personnel
+   tables up to skin-info.css parity: pay-tier columns mono, status
+   pills, density spacing.
+   =========================================================== */
+
+body.aes-skin[data-aes-page="staff"] .table {
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---- Header rhythm -------------------------------------------------- */
+body.aes-skin[data-aes-page="staff"] .table > thead > tr > th {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    font-size: var(--aes-fs-small);
+    color: var(--aes-oxide);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    padding: var(--aes-sp-2) var(--aes-sp-3);
+    background: var(--aes-bone-2);
+}
+
+/* ---- Zebra stripes -------------------------------------------------- */
+body.aes-skin[data-aes-page="staff"] .table-striped > tbody > tr:nth-of-type(odd),
+body.aes-skin[data-aes-page="staff"] .table > tbody > tr:nth-of-type(odd) {
+    background: var(--aes-bone-2);
+}
+body.aes-skin[data-aes-page="staff"] .table > tbody > tr:hover {
+    background: var(--aes-rust-soft);
+}
+
+/* ---- Pilot license type / pay tier code: mono ---------------------- */
+body.aes-skin[data-aes-page="staff"] td.pay-tier,
+body.aes-skin[data-aes-page="staff"] td.license-type,
+body.aes-skin[data-aes-page="staff"] td.aes-mono {
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+}
+
+/* ---- Right-align numeric (salary, hours, count) -------------------- */
+body.aes-skin[data-aes-page="staff"] .table .text-right,
+body.aes-skin[data-aes-page="staff"] .table .text-end,
+body.aes-skin[data-aes-page="staff"] .table td.salary,
+body.aes-skin[data-aes-page="staff"] .table td.hours,
+body.aes-skin[data-aes-page="staff"] .table td.numeric {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* ---- Pay-tier input fields — mono right-aligned -------------------- */
+body.aes-skin[data-aes-page="staff"] input.form-control[type="number"],
+body.aes-skin[data-aes-page="staff"] input.form-control[name*="salary" i],
+body.aes-skin[data-aes-page="staff"] input.form-control[name*="rate" i] {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--aes-font-mono);
+    letter-spacing: var(--aes-tracking-mono);
+}
+
+/* ---- Status pills (active / probation / on-leave / terminated) ---- */
+body.aes-skin[data-aes-page="staff"] .table .label,
+body.aes-skin[data-aes-page="staff"] .pilot-status {
+    display: inline-block;
+    padding: 2px var(--aes-sp-2);
+    border: var(--aes-bw-1) solid currentColor;
+    font-family: var(--aes-font-mono);
+    font-size: var(--aes-fs-micro);
+    letter-spacing: var(--aes-tracking-mono);
+    text-transform: uppercase;
+    border-radius: var(--aes-radius);
+    background: transparent;
+}
+body.aes-skin[data-aes-page="staff"] .label.label-success { color: var(--aes-moss); }
+body.aes-skin[data-aes-page="staff"] .label.label-warning { color: var(--aes-amber); }
+body.aes-skin[data-aes-page="staff"] .label.label-danger  { color: var(--aes-crimson); }
+body.aes-skin[data-aes-page="staff"] .label.label-info    { color: var(--aes-cobalt); }
+
+/* ---- Density-aware row padding -------------------------------------- */
+body.aes-skin[data-aes-page="staff"][data-aes-density="compact"] .table > tbody > tr > td,
+body.aes-skin[data-aes-page="staff"][data-aes-density="compact"] .table > thead > tr > th {
+    padding-top: var(--aes-sp-1);
+    padding-bottom: var(--aes-sp-1);
+    font-size: var(--aes-fs-small);
+    line-height: var(--aes-lh-tight);
+}
+
+/* ---- Form section headings ----------------------------------------- */
+body.aes-skin[data-aes-page="staff"] .panel > .panel-heading,
+body.aes-skin[data-aes-page="staff"] legend {
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-family: var(--aes-font-display);
+    font-weight: var(--aes-fw-display);
+    border-bottom: var(--aes-bw-2) solid var(--aes-oxide);
+    background: var(--aes-bone-2);
+    color: var(--aes-oxide);
+}
+
+/* ---- Submit-button cluster — primary on rust ------------------------ */
+body.aes-skin[data-aes-page="staff"] .btn-primary {
+    background: var(--aes-rust);
+    border-color: var(--aes-rust-deep);
+    color: var(--aes-rust-fg);
+    text-transform: uppercase;
+    letter-spacing: var(--aes-tracking-caps);
+    font-weight: var(--aes-fw-display);
+}
+body.aes-skin[data-aes-page="staff"] .btn-primary:hover {
+    background: var(--aes-rust-deep);
+}
