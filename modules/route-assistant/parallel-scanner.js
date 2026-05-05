@@ -192,15 +192,27 @@ class RouteAssistantParallelScanner {
         }
         this._notify(state)
 
-        // Phase 1: resolve every IATA → countryId. Resolution can do an HTTP
-        // fetch per never-seen IATA, so we limit concurrency the same way
-        // CountryScraper does internally: small batches.
+        // Phase 1: resolve every IATA → countryId.
         const countryToIatas = new Map()  // countryId → [iata, ...]
-        const resolveQueue = todo.slice()
-        const resolvers = []
-        for (let i = 0; i < this.concurrency; i++) {
-            resolvers.push(this._resolveWorker(resolveQueue, countryToIatas, state))
-        }
+
+        const resolvers = todo.map(async (iata) => {
+            if (this._aborted) return
+            try {
+                const r = await this.resolver.resolve(iata)
+                if (r && r.countryId) {
+                    if (!countryToIatas.has(r.countryId)) countryToIatas.set(r.countryId, [])
+                    countryToIatas.get(r.countryId).push(iata)
+                    state.resolved++
+                } else {
+                    state.failedIatas.push(iata)
+                }
+            } catch (error) {
+                console.warn(`[AES routeAssistant] resolve ${iata} failed`, error)
+                state.failedIatas.push(iata)
+            }
+            this._notify(state)
+        })
+
         await Promise.all(resolvers)
         if (this._aborted) {
             state.phase = "done"
@@ -248,25 +260,6 @@ class RouteAssistantParallelScanner {
         return state
     }
 
-    async _resolveWorker(queue, countryToIatas, state) {
-        while (queue.length && !this._aborted) {
-            const iata = queue.shift()
-            try {
-                const r = await this.resolver.resolve(iata)
-                if (r && r.countryId) {
-                    if (!countryToIatas.has(r.countryId)) countryToIatas.set(r.countryId, [])
-                    countryToIatas.get(r.countryId).push(iata)
-                    state.resolved++
-                } else {
-                    state.failedIatas.push(iata)
-                }
-            } catch (error) {
-                console.warn(`[AES routeAssistant] resolve ${iata} failed`, error)
-                state.failedIatas.push(iata)
-            }
-            this._notify(state)
-        }
-    }
 }
 
 function sleep(ms) {
