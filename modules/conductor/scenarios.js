@@ -178,6 +178,17 @@
             const floor = _threshold(ctx, "MaintenanceWatch", "RATIO_FLOOR", DEFAULT_RATIO_FLOOR)
             if (to == null || to >= floor) return null
             const dropped = (from != null && to < from)
+
+            // K13 — anomaly check vs learned maintenance.ratio baseline per tail.
+            if (p.aircraftId && ctx && ctx.baselines) {
+                const e = ctx.baselines["maintenance.ratio:tail:" + p.aircraftId]
+                if (e && typeof e.n === "number" && e.n >= 4 && isFinite(to)) {
+                    const sd = Math.sqrt(Math.max(e.var || 0, 1e-9))
+                    const z = sd > 0 ? (to - e.mean) / sd : 0
+                    if (z > -1.5) return null // Requires z <= -1.5σ (a significant drop relative to this tail's normal variance)
+                }
+            }
+
             return {
                 rationale: (p.aircraftId || "?") + " maintenance ratio at "
                     + to.toFixed(1) + "%"
@@ -241,6 +252,17 @@
             const from = _num(p.from)
             const floor = _threshold(ctx, "ConditionWatch", "CONDITION_FLOOR", CONDITION_FLOOR)
             if (to == null || to >= floor) return null
+
+            // K13 — anomaly check vs learned maintenance.condition baseline per tail.
+            if (p.aircraftId && ctx && ctx.baselines) {
+                const e = ctx.baselines["maintenance.condition:tail:" + p.aircraftId]
+                if (e && typeof e.n === "number" && e.n >= 4 && isFinite(to)) {
+                    const sd = Math.sqrt(Math.max(e.var || 0, 1e-9))
+                    const z = sd > 0 ? (to - e.mean) / sd : 0
+                    if (z > -1.5) return null
+                }
+            }
+
             return {
                 rationale: (p.aircraftId || "?") + " condition at " + to.toFixed(1) + "%"
                     + (from != null ? " (was " + from.toFixed(1) + "%)" : "")
@@ -338,6 +360,19 @@
             const delta = _num(p.delta)
             const floor = _threshold(ctx, "CashStep", "CASH_STEP_FLOOR", CASH_STEP_FLOOR)
             if (delta == null || Math.abs(delta) < floor) return null
+
+            // K13 — anomaly check vs learned cash.balance baseline.
+            // If we have a baseline, we can suppress normal variance.
+            if (ctx && ctx.baselines) {
+                const e = ctx.baselines["cash.balance:global:"]
+                if (e && typeof e.n === "number" && e.n >= 4 && isFinite(p.to)) {
+                    const sd = Math.sqrt(Math.max(e.var || 0, 1e-9))
+                    const z = sd > 0 ? (p.to - e.mean) / sd : 0
+                    // Fire only if the drop or jump is > 1.5σ away from the rolling mean
+                    if (Math.abs(z) < 1.5) return null
+                }
+            }
+
             const sign = delta > 0 ? "+" : ""
             return {
                 rationale: "Cash balance moved " + sign + Math.round(delta).toLocaleString()
@@ -541,6 +576,31 @@
             const p = signal.payload || {}
             const worst = _num(p.worstRegression)
             if (worst == null || worst < _threshold(ctx, "OrsRegression", "ORS_RANK_DROP_MIN", ORS_RANK_DROP_MIN)) return null
+
+            // K13 — anomaly check vs learned ors.rank.avg baseline per route.
+            const rk = (p.hub && p.dest) ? (String(p.hub).toUpperCase() + "-" + String(p.dest).toUpperCase()) : null
+            if (rk && ctx && ctx.baselines) {
+                // Rank increases numerically when worsened (e.g., rank 1 -> rank 4).
+                const e = ctx.baselines["ors.rank.avg:route:" + rk]
+                // We check against the avg rank in the payload. Note that signal may not have avg directly here,
+                // but we can compute it or just use `worst` as a heuristic if avg isn't available.
+                // Alternatively, we rely on the baseline-driver's storage of ors.rank.avg.
+                let avgTo = null
+                if (Array.isArray(p.classes)) {
+                    let sum = 0, cnt = 0
+                    for (const c of p.classes) { if (_num(c.rankTo) != null) { sum += c.rankTo; cnt++ } }
+                    if (cnt > 0) avgTo = sum / cnt
+                }
+
+                if (avgTo != null && e && typeof e.n === "number" && e.n >= 4) {
+                    const sd = Math.sqrt(Math.max(e.var || 0, 1e-9))
+                    const z = sd > 0 ? (avgTo - e.mean) / sd : 0
+                    // Since lower rank number is better, an increase in numerical rank is bad.
+                    // We only fire if the rank is significantly worse than the baseline (z > 1.5).
+                    if (z < 1.5) return null
+                }
+            }
+
             const cls = (Array.isArray(p.classes) ? p.classes : [])
                 .find(c => c && c.direction === "worsened" && c.rankDelta === worst)
             return {
