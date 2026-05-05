@@ -69,3 +69,11 @@ CLAUDE/.DS_Store
 # Local copy of the upstream AES extension source — kept on disk for
 # diffing against the fork; never committed.
 AirlineSim-Enhancement-Suite-main/
+
+# Live Playwright screenshot batches — large PNG corpora regenerated
+# on every audit run, same category as audit/playwright/screenshots/.
+audit/live-real-shots-*/
+audit/live-*.png
+
+# Stray scratch dir created outside this work tree.
+/feat/
