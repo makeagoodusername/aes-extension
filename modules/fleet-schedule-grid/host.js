@@ -99,6 +99,8 @@ class FleetScheduleGridHost {
         const T = (typeof window !== "undefined" && window.AESTokens) || null
         const allowFallback = !!(opts && opts.allowFallback)
 
+        this._openPanel(); // automatically mount the panel inline!
+
         let anchor = (typeof FleetHubHost !== "undefined" && FleetHubHost._findFltmngPanel)
             ? FleetHubHost._findFltmngPanel()
             : null
