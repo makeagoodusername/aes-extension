@@ -403,26 +403,26 @@
             }
             return {ok: false, error: err}
         }
-        let allOk = true
-        for (const d of decisions) {
+        const results = await Promise.all(decisions.map(async (d) => {
             const p = d.payload || {}
             try {
                 const r = await applier.apply(p.profileId, p.changes || {}, {source: (opts && opts.source) || "strategy"})
                 const ok = !!(r && (r.status === "posted" || r.status === "noop" || r.status === "dry-run"))
-                if (!ok) allOk = false
                 applied.push({decisionId: d.id, domain: "service", ok: ok,
                               result: r,
                               error: ok ? null : (r && r.error && r.error.message) || "unknown"})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "service", ok: ok})
                 _busEmit("service", {decisionId: d.id, hub: p.hub, dest: p.dest, ok: ok})
+                return ok
             } catch (e) {
-                allOk = false
                 const err = (e && e.message) || String(e)
                 applied.push({decisionId: d.id, domain: "service", ok: false, error: err})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "service", ok: false, error: err})
                 _busEmit("service", {decisionId: d.id, hub: p.hub, dest: p.dest, ok: false})
+                return false
             }
-        }
+        }))
+        const allOk = results.every(ok => ok)
         return {ok: allOk}
     }
 
@@ -550,8 +550,7 @@
             ? Number(opts.maxCacheAgeMin) * 60000 : null
         const cacheAgeIdx = (maxCacheAgeMs && snapshot) ? _indexCacheAges(snapshot) : null
 
-        let allOk = true
-        for (const d of decisions) {
+        const results = await Promise.all(decisions.map(async (d) => {
             const p   = d.payload || {}
             const cls = p.classKey || "Y"
             // Optional freshness gate — skip routes whose underlying
@@ -569,7 +568,7 @@
                                   hub: p.hub, dest: p.dest})
                     _emit(opts, {kind: "skipped", decisionId: d.id, domain: "price", reason: reason})
                     _recordPriceDiagnostic("skip", {hub: p.hub, dest: p.dest, reason: reason})
-                    continue
+                    return true // skip means not a failure in applying pipeline step
                 }
             }
             let cached = await _readCachedPrice(server, p.hub, p.dest, cls)
@@ -590,8 +589,7 @@
                              error: "no cached own-price"})
                 _busEmit("price", {decisionId: d.id, hub: p.hub, dest: p.dest, ok: false})
                 _recordPriceDiagnostic("skip", {hub: p.hub, dest: p.dest, reason: "noCachedOwnPrice"})
-                allOk = false
-                continue
+                return false
             }
             const newPrice = _computeAbsolutePrice(cached, p.toPct, cls)
             const prices   = {[cls]: newPrice}
@@ -608,7 +606,6 @@
                 })
                 const ok = !!(r && (r.status === "verified" || r.status === "posted"
                     || (raApply.dryRunOnly && r.status === "dry-run")))
-                if (!ok) allOk = false
                 const logId = (r && r.logId) || null
                 applied.push({decisionId: d.id, domain: "price", ok: ok,
                               result: r,
@@ -617,15 +614,17 @@
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "price", ok: ok})
                 _busEmit("price", {decisionId: d.id, hub: p.hub, dest: p.dest, ok: ok})
                 _recordPriceDiagnostic("apply", {hub: p.hub, dest: p.dest, ok: ok, logId: logId})
+                return ok
             } catch (e) {
-                allOk = false
                 const err = (e && e.message) || String(e)
                 applied.push({decisionId: d.id, domain: "price", ok: false, error: err})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "price", ok: false, error: err})
                 _busEmit("price", {decisionId: d.id, hub: p.hub, dest: p.dest, ok: false})
                 _recordPriceDiagnostic("apply", {hub: p.hub, dest: p.dest, ok: false})
+                return false
             }
-        }
+        }))
+        const allOk = results.every(ok => ok)
         return {ok: allOk}
     }
 
@@ -666,15 +665,13 @@
             return {ok: false, error: "missing snapshot"}
         }
         const Applier = window.AesStrategyRouteCreationApplier
-        let allOk = true
-        for (const d of decisions) {
+        const results = await Promise.all(decisions.map(async (d) => {
             const creation = d.payload || null
             if (!creation || !creation.hub || !creation.dest) {
-                allOk = false
                 applied.push({decisionId: d.id, domain: "routeCreation", ok: false, error: "creation payload missing hub/dest"})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "routeCreation", ok: false, error: "bad payload"})
                 _busEmit("routeCreation", {decisionId: d.id, hub: creation && creation.hub, dest: creation && creation.dest, ok: false})
-                continue
+                return false
             }
             try {
                 const r = await Applier.apply(creation, snapshot, {
@@ -682,20 +679,21 @@
                     source: (opts && opts.source) || "aesStrategy-routeCreation"
                 })
                 const ok = !!(r && r.ok)
-                if (!ok) allOk = false
                 applied.push({decisionId: d.id, domain: "routeCreation", ok: ok,
                               result: r,
                               error: ok ? null : (r && r.error) || "unknown"})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "routeCreation", ok: ok})
                 _busEmit("routeCreation", {decisionId: d.id, hub: creation.hub, dest: creation.dest, ok: ok})
+                return ok
             } catch (e) {
-                allOk = false
                 const err = (e && e.message) || String(e)
                 applied.push({decisionId: d.id, domain: "routeCreation", ok: false, error: err})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "routeCreation", ok: false, error: err})
                 _busEmit("routeCreation", {decisionId: d.id, hub: creation.hub, dest: creation.dest, ok: false})
+                return false
             }
-        }
+        }))
+        const allOk = results.every(ok => ok)
         return {ok: allOk}
     }
 
@@ -747,16 +745,13 @@
             dryRunOnly:   allianceCfg.dryRunOnly === true
         })
 
-        let allOk = true
-        for (const d of decisions) {
+        const results = await Promise.all(decisions.map(async (d) => {
             const p = d.payload || {}
-            // Defensive: alliance-join leaks here only via a malformed
-            // decision (diff-plan marks them advisory). Skip explicitly.
             if (p.kind && p.kind !== "il-request") {
                 skipped.push({decisionId: d.id, domain: "alliance", reason: "advisory",
                               note: "alliance-join is advisory-only — no AS join API"})
                 _emit(opts, {kind: "skipped", decisionId: d.id, domain: "alliance", reason: "advisory"})
-                continue
+                return true
             }
             if (!p.partnerEnterpriseId) {
                 applied.push({decisionId: d.id, domain: "alliance", ok: false,
@@ -764,8 +759,7 @@
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "alliance", ok: false,
                              error: "missing partnerEnterpriseId"})
                 _busEmit("alliance", {decisionId: d.id, hub: p.hub || null, dest: null, ok: false})
-                allOk = false
-                continue
+                return false
             }
             try {
                 const env = await applier.apply(p.partnerEnterpriseId, {
@@ -773,12 +767,9 @@
                     partnerName: p.partnerName || null,
                     requestType: p.requestType || "INTERLINING"
                 })
-                // Treat dry-run as success — the user opted into preview-mode
-                // explicitly and a "what'd post" envelope is the value here.
                 const ok = env && (env.status === "verified"
                                 || env.status === "posted"
                                 || env.status === "dry-run")
-                if (!ok) allOk = false
                 applied.push({
                     decisionId: d.id,
                     domain:     "alliance",
@@ -789,14 +780,16 @@
                 })
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "alliance", ok: ok})
                 _busEmit("alliance", {decisionId: d.id, hub: p.hub || null, dest: null, ok: ok})
+                return ok
             } catch (e) {
-                allOk = false
                 const err = (e && e.message) || String(e)
                 applied.push({decisionId: d.id, domain: "alliance", ok: false, error: err})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "alliance", ok: false, error: err})
                 _busEmit("alliance", {decisionId: d.id, hub: p.hub || null, dest: null, ok: false})
+                return false
             }
-        }
+        }))
+        const allOk = results.every(ok => ok)
         return {ok: allOk}
     }
 
@@ -818,8 +811,7 @@
             return {ok: true, missingActuator: true}
         }
 
-        let allOk = true
-        for (const d of decisions) {
+        const results = await Promise.all(decisions.map(async (d) => {
             const p = d.payload || {}
             const bidAmount = Number(p.suggestedBid || p.minBid || p.currentBid)
             const req = {
@@ -832,7 +824,6 @@
             try {
                 const r = await window.AesSlotBidder.apply(req)
                 const ok = !!(r && r.ok)
-                if (!ok) allOk = false
                 applied.push({
                     decisionId: d.id,
                     domain:     "slotBid",
@@ -842,14 +833,16 @@
                 })
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "slotBid", ok: ok})
                 _busEmit("slotBid", {decisionId: d.id, hub: null, dest: req.iata, ok: ok})
+                return ok
             } catch (e) {
-                allOk = false
                 const err = (e && e.message) || String(e)
                 applied.push({decisionId: d.id, domain: "slotBid", ok: false, error: err})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "slotBid", ok: false, error: err})
                 _busEmit("slotBid", {decisionId: d.id, hub: null, dest: req.iata, ok: false})
+                return false
             }
-        }
+        }))
+        const allOk = results.every(ok => ok)
         return {ok: allOk}
     }
 
@@ -879,19 +872,18 @@
                 dryRunOnly:   payCfg.dryRunOnly === true
             })
             : null
-        let allOk = true
-        for (const d of decisions) {
+        const results = await Promise.all(decisions.map(async (d) => {
             const p = d.payload || {}
             const isPay = p.action === "raisePay" || p.action === "cutPay"
             if (isPay && !payApplier) {
                 skipped.push({decisionId: d.id, domain: "crew", reason: "pay-actuator-missing"})
                 _emit(opts, {kind: "skipped", decisionId: d.id, domain: "crew", reason: "pay-actuator-missing"})
-                continue
+                return true
             }
             if (!isPay && !pilotApplier) {
                 skipped.push({decisionId: d.id, domain: "crew", reason: "pilot-actuator-missing"})
                 _emit(opts, {kind: "skipped", decisionId: d.id, domain: "crew", reason: "pilot-actuator-missing"})
-                continue
+                return true
             }
             try {
                 const r = isPay
@@ -916,14 +908,16 @@
                               error: ok ? null : (r && r.error && r.error.message) || "unknown"})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "crew", ok: ok})
                 _busEmit("crew", {decisionId: d.id, hub: p.hub, dest: null, ok: ok})
+                return ok
             } catch (e) {
-                allOk = false
                 const err = (e && e.message) || String(e)
                 applied.push({decisionId: d.id, domain: "crew", ok: false, error: err})
                 _emit(opts, {kind: "result", decisionId: d.id, domain: "crew", ok: false, error: err})
                 _busEmit("crew", {decisionId: d.id, hub: p.hub, dest: null, ok: false})
+                return false
             }
-        }
+        }))
+        const allOk = results.every(ok => ok)
         return {ok: allOk}
     }
 
