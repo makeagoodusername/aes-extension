@@ -73,15 +73,71 @@ class RouteAssistantAlertRulesStore {
     static async load() {
         const rec = await RouteAssistantAlertRulesStore._loadRecord()
         if (!rec || !Array.isArray(rec.rules)) return {rules: [], updatedAt: null}
+
+        let rules = rec.rules.map(r => RouteAssistantAlertRulesStore._normalise(r)).filter(Boolean);
+
+        // Seed default Load Factor rules if none exist and it hasn't been explicitly cleared
+        if (rules.length === 0 && !rec.hasSeededDefaults) {
+            rules = [
+                RouteAssistantAlertRulesStore._normalise({
+                    id: "rule-seed-lf-y-low",
+                    label: "Economy LF < 80%",
+                    field: "rmTightnessY",
+                    operator: "below",
+                    threshold: 0.8,
+                    scope: "all",
+                    severity: "warn"
+                }),
+                RouteAssistantAlertRulesStore._normalise({
+                    id: "rule-seed-lf-c-low",
+                    label: "Business LF < 80%",
+                    field: "rmTightnessC",
+                    operator: "below",
+                    threshold: 0.8,
+                    scope: "all",
+                    severity: "warn"
+                }),
+                RouteAssistantAlertRulesStore._normalise({
+                    id: "rule-seed-lf-y-full",
+                    label: "Economy LF == 100%",
+                    field: "rmTightnessY",
+                    operator: "above",
+                    threshold: 0.99,
+                    scope: "all",
+                    severity: "info"
+                }),
+                RouteAssistantAlertRulesStore._normalise({
+                    id: "rule-seed-lf-c-full",
+                    label: "Business LF == 100%",
+                    field: "rmTightnessC",
+                    operator: "above",
+                    threshold: 0.99,
+                    scope: "all",
+                    severity: "info"
+                })
+            ].filter(Boolean);
+
+            // Background save to mark seeded
+            RouteAssistantAlertRulesStore._saveWithSeedFlag(rules).catch(() => {});
+        }
+
         return {
-            rules:     rec.rules.map(r => RouteAssistantAlertRulesStore._normalise(r)).filter(Boolean),
+            rules:     rules,
             updatedAt: rec.updatedAt || null
         }
     }
 
+    static async _saveWithSeedFlag(rules) {
+        const cleaned = (rules || []).map(r => RouteAssistantAlertRulesStore._normalise(r)).filter(Boolean)
+        const rec = {rules: cleaned, updatedAt: Date.now(), hasSeededDefaults: true}
+        const key = RouteAssistantAlertRulesStore._key()
+        await chrome.storage.local.set({[key]: rec})
+        return rec
+    }
+
     static async saveAll(rules) {
         const cleaned = (rules || []).map(r => RouteAssistantAlertRulesStore._normalise(r)).filter(Boolean)
-        const rec = {rules: cleaned, updatedAt: Date.now()}
+        const rec = {rules: cleaned, updatedAt: Date.now(), hasSeededDefaults: true}
         const key = RouteAssistantAlertRulesStore._key()
         await chrome.storage.local.set({[key]: rec})
         return rec
