@@ -11,11 +11,11 @@
     "action": {
         "default_popup": "popup.html",
         "default_icon": {
-            "256": "images/AES-logo-256.png",
-            "128": "images/AES-logo-128.png",
-            "48": "images/AES-logo-48.png",
+            "16": "images/AES-logo-16.png",
             "32": "images/AES-logo-32.png",
-            "16": "images/AES-logo-16.png"
+            "48": "images/AES-logo-48.png",
+            "128": "images/AES-logo-128.png",
+            "256": "images/AES-logo-256.png"
         }
     },
     "options_ui": {
@@ -23,16 +23,25 @@
         "open_in_tab": true
     },
     "icons": {
-        "256": "images/AES-logo-256.png",
-        "128": "images/AES-logo-128.png",
-        "48": "images/AES-logo-48.png",
+        "16": "images/AES-logo-16.png",
         "32": "images/AES-logo-32.png",
-        "16": "images/AES-logo-16.png"
+        "48": "images/AES-logo-48.png",
+        "128": "images/AES-logo-128.png",
+        "256": "images/AES-logo-256.png"
     },
     "background": {
         "service_worker": "background.js"
     },
     "content_scripts": [
+        {
+            "matches": [
+                "https://*.airlinesim.aero/auth/login*",
+                "https://airlinesim.aero/auth/login*"
+            ],
+            "js": [
+                "content_login.js"
+            ]
+        },
         {
             "css": [
                 "css/design-tokens.css",
