@@ -15444,13 +15444,13 @@ class RouteAssistantPanel {
             const hubU = String(this.hubIata || "").toUpperCase()
             const dateStr = new Date().toISOString().slice(0, 10)
             let written = 0
-            for (const c of checks) {
-                if (!c.cb.checked) continue
+            await Promise.all(checks.map(async (c) => {
+                if (!c.cb.checked) return
                 const side = c.sideSel.value
                 const sol  = (c.entry.primary.side === side) ? c.entry.primary
                            : (c.entry.alt && c.entry.alt.side === side) ? c.entry.alt
                            : null
-                if (!sol) continue
+                if (!sol) return
                 const ex = c.entry.row.override || {}
                 const noteStr = "calibrated " + dateStr + " (" + side + ")"
                 const fields = {
@@ -15471,7 +15471,7 @@ class RouteAssistantPanel {
                     this.overrideMap.set(hubU + "-" + destU, saved)
                     written++
                 }
-            }
+            }))
             close()
             if (written) {
                 this._recomputeProfit()
