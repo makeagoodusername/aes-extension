@@ -1,0 +1,337 @@
+{
+  "ok": true,
+  "startedAt": "2026-05-05T00:06:17.686Z",
+  "base": "https://free1.airlinesim.aero",
+  "port": "10067",
+  "enterpriseId": "775",
+  "candidates": [
+    "LAX",
+    "MIA",
+    "HKG",
+    "IST",
+    "DXB",
+    "DOH",
+    "SIN",
+    "LHR",
+    "ORD"
+  ],
+  "errors": [],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "loggedIn": true,
+  "dashboard": {
+    "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?2&select=775",
+    "title": "Dashboard: Fly Gemini | Free1 | AirlineSim"
+  },
+  "marketProbes": [
+    {
+      "dest": "LAX",
+      "url": "https://free1.airlinesim.aero/app/com/markets/JFKLAX?3",
+      "families": [
+        "competitors",
+        "ownPricing",
+        "marketShare",
+        "historic"
+      ],
+      "competitorRows": 162,
+      "sample": [
+        {
+          "flightCode": "MRM 404",
+          "flightId": 88913,
+          "carrierPrefix": "MRM",
+          "typeCode": "321",
+          "typeId": 3000,
+          "depTimeLocal": "19:40",
+          "arrTimeLocal": "21:49",
+          "serviceClass": "Y",
+          "capacity": null,
+          "booked": null,
+          "loadPct": null,
+          "availability": 0,
+          "price": 313,
+          "status": "finished",
+          "isOurs": false
+        },
+        {
+          "flightCode": "MRM 404",
+          "flightId": 88913,
+          "carrierPrefix": "MRM",
+          "typeCode": "321",
+          "typeId": 3000,
+          "depTimeLocal": "19:40",
+          "arrTimeLocal": "21:49",
+          "serviceClass": "C",
+          "capacity": null,
+          "booked": null,
+          "loadPct": null,
+          "availability": 0,
+          "price": 760,
+          "status": "finished",
+          "isOurs": false
+        },
+        {
+          "flightCode": "MRM 404",
+          "flightId": 88913,
+          "carrierPrefix": "MRM",
+          "typeCode": "321",
+          "typeId": 3000,
+          "depTimeLocal": "19:40",
+          "arrTimeLocal": "21:49",
+          "serviceClass": "Cargo",
+          "capacity": null,
+          "booked": null,
+          "loadPct": null,
+          "availability": 0,
+          "price": 203,
+          "status": "finished",
+          "isOurs": false
+        },
+        {
+          "flightCode": "AAC 4",
+          "flightId": 88502,
+          "carrierPrefix": "AAC",
+          "typeCode": "76Y",
+          "typeId": 15300,
+          "depTimeLocal": "21:40",
+          "arrTimeLocal": "23:45",
+          "serviceClass": "Cargo",
+          "capacity": null,
+          "booked": null,
+          "loadPct": null,
+          "availability": 0,
+          "price": 203,
+          "status": "finished",
+          "isOurs": false
+        },
+        {
+          "flightCode": "TWA 101",
+          "flightId": 101946,
+          "carrierPrefix": "TWA",
+          "typeCode": "321",
+          "typeId": 3150,
+          "depTimeLocal": "01:17",
+          "arrTimeLocal": "04:00",
+          "serviceClass": "Y",
+          "capacity": null,
+          "booked": null,
+          "loadPct": null,
+          "availability": 0,
+          "price": 313,
+          "status": "finished",
+          "isOurs": false
+        }
+      ]
+    }
+  ],
+  "selectedMarket": {
+    "dest": "LAX",
+    "url": "https://free1.airlinesim.aero/app/com/markets/JFKLAX?3",
+    "families": [
+      "competitors",
+      "ownPricing",
+      "marketShare",
+      "historic"
+    ],
+    "competitorRows": 162,
+    "sample": [
+      {
+        "flightCode": "MRM 404",
+        "flightId": 88913,
+        "carrierPrefix": "MRM",
+        "typeCode": "321",
+        "typeId": 3000,
+        "depTimeLocal": "19:40",
+        "arrTimeLocal": "21:49",
+        "serviceClass": "Y",
+        "capacity": null,
+        "booked": null,
+        "loadPct": null,
+        "availability": 0,
+        "price": 313,
+        "status": "finished",
+        "isOurs": false
+      },
+      {
+        "flightCode": "MRM 404",
+        "flightId": 88913,
+        "carrierPrefix": "MRM",
+        "typeCode": "321",
+        "typeId": 3000,
+        "depTimeLocal": "19:40",
+        "arrTimeLocal": "21:49",
+        "serviceClass": "C",
+        "capacity": null,
+        "booked": null,
+        "loadPct": null,
+        "availability": 0,
+        "price": 760,
+        "status": "finished",
+        "isOurs": false
+      },
+      {
+        "flightCode": "MRM 404",
+        "flightId": 88913,
+        "carrierPrefix": "MRM",
+        "typeCode": "321",
+        "typeId": 3000,
+        "depTimeLocal": "19:40",
+        "arrTimeLocal": "21:49",
+        "serviceClass": "Cargo",
+        "capacity": null,
+        "booked": null,
+        "loadPct": null,
+        "availability": 0,
+        "price": 203,
+        "status": "finished",
+        "isOurs": false
+      },
+      {
+        "flightCode": "AAC 4",
+        "flightId": 88502,
+        "carrierPrefix": "AAC",
+        "typeCode": "76Y",
+        "typeId": 15300,
+        "depTimeLocal": "21:40",
+        "arrTimeLocal": "23:45",
+        "serviceClass": "Cargo",
+        "capacity": null,
+        "booked": null,
+        "loadPct": null,
+        "availability": 0,
+        "price": 203,
+        "status": "finished",
+        "isOurs": false
+      },
+      {
+        "flightCode": "TWA 101",
+        "flightId": 101946,
+        "carrierPrefix": "TWA",
+        "typeCode": "321",
+        "typeId": 3150,
+        "depTimeLocal": "01:17",
+        "arrTimeLocal": "04:00",
+        "serviceClass": "Y",
+        "capacity": null,
+        "booked": null,
+        "loadPct": null,
+        "availability": 0,
+        "price": 313,
+        "status": "finished",
+        "isOurs": false
+      }
+    ]
+  },
+  "panel": {
+    "hub": "JFK",
+    "rowCount": 1,
+    "hasFltColumn": true,
+    "dest": "LAX",
+    "marketFlightCount": 162,
+    "marketEnterpriseCount": 8,
+    "competitorMarketFlights": 162,
+    "competitorEntries": 15,
+    "entriesWithRouteFlights": 8,
+    "groups": [
+      {
+        "prefix": "MRM",
+        "flights": 26,
+        "routeFlights": 78
+      },
+      {
+        "prefix": "AAC",
+        "flights": 5,
+        "routeFlights": 5
+      },
+      {
+        "prefix": "TWA",
+        "flights": 5,
+        "routeFlights": 15
+      },
+      {
+        "prefix": "FN",
+        "flights": 5,
+        "routeFlights": 5
+      },
+      {
+        "prefix": "FTG",
+        "flights": 5,
+        "routeFlights": 15
+      },
+      {
+        "prefix": "LBS",
+        "flights": 8,
+        "routeFlights": 24
+      },
+      {
+        "prefix": "UAF",
+        "flights": 4,
+        "routeFlights": 12
+      },
+      {
+        "prefix": "MCT",
+        "flights": 2,
+        "routeFlights": 8
+      }
+    ],
+    "sampleEntry": [
+      {
+        "name": "3RM Airlines",
+        "prefix": null,
+        "routeFlights": 0
+      },
+      {
+        "name": "Mountain Clouds Tech",
+        "prefix": null,
+        "routeFlights": 0
+      },
+      {
+        "name": "Trade Winds Air",
+        "prefix": null,
+        "routeFlights": 0
+      }
+    ],
+    "sampleFlight": [
+      {
+        "flightCode": "MRM 404",
+        "price": 313,
+        "depTimeLocal": "19:40",
+        "typeCode": "321",
+        "capacity": null,
+        "booked": null,
+        "loadPct": null,
+        "availability": 0,
+        "status": "finished"
+      },
+      {
+        "flightCode": "MRM 404",
+        "price": 760,
+        "depTimeLocal": "19:40",
+        "typeCode": "321",
+        "capacity": null,
+        "booked": null,
+        "loadPct": null,
+        "availability": 0,
+        "status": "finished"
+      },
+      {
+        "flightCode": "MRM 404",
+        "price": 203,
+        "depTimeLocal": "19:40",
+        "typeCode": "321",
+        "capacity": null,
+        "booked": null,
+        "loadPct": null,
+        "availability": 0,
+        "status": "finished"
+      }
+    ],
+    "drawerOpened": true
+  },
+  "panelDom": {
+    "hasRoot": true,
+    "rootText": "ROUTE ASSISTANT\n↻\n🛬\n🛩\n🔍\n📜\n⚙\n🔔\n⇅\n▴\nHub JFK\n· FF: 1 routes, just now\n· Demand: 0/1 AS, 1 FF fallback\n· Distance: 1/1\nRESCAN FLIGHTSFROM\nRESOLVE 1 DEMAND\nSEED ALL COUNTRIES\nPricing: live (M+B+A) · tick —\n🔍\nFILTERS\n★ WATCH\n💸 LOSS\n🛠 OVERRIDE\n📝 NOTE\nΔ CHANGED\nView\n(no saved views)\n+\nStrategy\n(no presets saved)\n+\n🌐 Canopy\nAircraft mode\nNone\nFleet (any owned)\nBy type\nBy tail\nAircraft\n(no fleet — visit /app/fleets)\nAll\nPax\nCargo\n★ Watchlist\nNEW\n·\nOK\nUNDER\nOVER\nOOR\n·\n$ Loss-makers\n📌 Override\n📝 Note\nΔ Changed\n≡\nTABLE\n1 route\n📊\nWAVES\ntop-20\n🧪\nSANDBOX\npick route\n🗺\nHEATMAP\nscore\n🧭\nCOMPASS\n◧\nCOMPACT\nNo fleet data found.\n\nVisit /app/fleets in this game world to record your aircraft. Once it's saved, this panel can score routes by range and rough profit.\n\nOperating:\nNEW\nyou don't fly\nN×\nweekly frequency\n·\nHealth:\nOK\nhealthy\nUNDER\nscale up\nOVER\ntrim\n\t\t▾ AS in-game\t▾ Real-world\t▾ Competition\t▾ Overrides\t▾ Live route data\t▾ Actuals\t▾ Service\t▾ Market Analysis\t▾ ORS Rank\t\n\tSc ▼\tDest\tSt\tPax\tCrg\tOwn\tkm\tFF/w\tCmp\tMkt%\tLFᵒ\tYᵒ\tCYᵒ\tEq\tDep\tWk\tAct $/flt\tΔ%\tSeats/wk\tMix\tSvc\tCmp$\tFlt\tDrft\tORS\tRkNS\tGap\tOrsC#\tY\tC\tF\tCg\tPool\tC-Pool\tElast\tC-Elast\tAvg$\tRM%\n\t60\t\n☆\nLAX📅📦📝\nLos Angeles◯ 0.00\tNEWOK\t7\t—\t0\t3,971\t92\t7\t9.0%✓\t—\t—\t—\tBoeing 737-700 BGW 📋\t06:00\t14 2222222\t—\t—\t—\t—\t—\t313 (+2%)\t162 ▾\tdrift\t—\t—\t—\t—\t—\t—\t—\t—\t2,625\t—\t—\t—\tAS$331\t—\nSETTINGS\n✕\nScore weights & filters\nQuick presets:\nBALANCED\nCHASE DEMAND\nAVOID COMPETITION\nCARGO FOCUS\nColumns & groups:\nCONFIGURE COLUMNS…\nOn\tVariable\tDirection\tWeight\tMin\tMax\n\tPax demand\t\nhigher = better\nlower = better\n\t\t\nno limit\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n\t\nno limit\n0\n1",
+    "drawerText": "Market flights · JFK → LAX\nAS Market Analysis: 162 flight/class rows · 8 airline prefixes · scraped 05/05/2026, 09:06:43\nFlightsFrom reference: FlightsFrom listing 92/wk · 1 real-world airline · airport-list scrape: FlightsFrom reference. It is not used for AS prices/times/aircraft.\nAirline / enterprise\tFlight\tDep\tArr\tCls\tPrice\tCap\tBkd / Load\tAircraft\tStatus\nAAC (AAC)\tAAC 4\t2026-05-02 21:40\t23:45\tCargo\t203 AS$/kg\t—\t—\t76Y\tfinished\nAAC (AAC)\tAAC 4\t2026-05-03 21:40\t23:45\tCargo\t203 AS$/kg\t—\t—\t76Y\tfinished\nAAC (AAC)\tAAC 4\t2026-05-04 21:40\t23:45\tCargo\t203 AS$/kg\t—\t—\t76Y\tbooked\nAAC (AAC)\tAAC 4\t2026-05-05 21:40\t23:45\tCargo\t203 AS$/kg\t—\t—\t76Y\tbooked\nAAC (AAC)\tAAC 4\t2026-05-06 21:40\t23:45\tCargo\t203 AS$/kg\t—\t—\t76Y\tbooked\nFN (FN)\tFN 24\t2026-05-03 06:05\t08:10\tCargo\t203 AS$/kg\t—\t—\t76Y\tfinished\nFN (FN)\tFN 24\t2026-05-04 06:05\t07:34\tCargo\t203 AS$/kg\t—\t—\t76Y\tfinished\nFN (FN)\tFN 24\t2026-05-05 06:05\t08:10\tCargo\t203 AS$/kg\t—\t—\t76Y\tbooked\nFN (FN)\tFN 24\t2026-05-06 06:05\t08:10\tCargo\t203 AS$/kg\t—\t—\t76Y\tbooked\nFN (FN)\tFN 24\t2026-05-07 06:05\t08:10\tCargo\t203 AS$/kg\t—\t—\t76Y\tbooked\nFTG (FTG)\tFTG 3\t2026-05-03 14:31\t16:40\tY\t304 AS$\t189\t—\t32N\tfinished\nFTG (FTG)\tFTG 3\t2026-05-03 14:31\t16:40\tC\t737 AS$\t189\t—\t32N\tfinished\nFTG (FTG)\tFTG 3\t2026-05-03 14:31\t16:40\tCargo\t197 AS$/kg\t189\t—\t32N\tfinished\nFTG (FTG)\tFTG 3\t2026-05-04 14:31\t16:40\tY\t304 AS$\t189\t—\t32N\tinflight\nFTG (FTG)\tFTG 3\t2026-05-04 14:31\t16:40\tC\t737 AS$\t189\t—\t32N\tinflight\nFTG (FTG)\tFTG 3\t2026-05-04 14:31\t16:40\tCargo\t197 AS$/kg\t189\t—\t32N\tinflight\nFTG (FTG)\tFTG 3\t2026-05-05 14:31\t16:40\tY\t304 AS$\t189\t—\t32N\tbooked\nFTG (FTG)\tFTG 3\t2026-05-05 14:31\t16:40\tC\t73"
+  },
+  "screenshot": "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-ra-enterprise-flight-drilldown-10067-20260505.png",
+  "finishedAt": "2026-05-05T00:06:58.384Z"
+}

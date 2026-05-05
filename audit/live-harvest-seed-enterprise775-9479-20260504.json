@@ -1,0 +1,491 @@
+{
+  "ok": true,
+  "mode": "demand-seed-first",
+  "port": "9479",
+  "server": "free1.airlinesim.aero",
+  "startedAt": "2026-05-04T11:23:07.652Z",
+  "progress": [
+    {
+      "at": "2026-05-04T11:23:15.917Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 2,
+      "airportsSeeded": 8,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Türkiye"
+      ],
+      "currentCountryId": "176",
+      "currentCountryName": "Turkmenistan"
+    },
+    {
+      "at": "2026-05-04T11:23:20.930Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 5,
+      "airportsSeeded": 79,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Ukraine",
+        "United Kingdom",
+        "Uruguay"
+      ],
+      "currentCountryId": "181",
+      "currentCountryName": "Uruguay"
+    },
+    {
+      "at": "2026-05-04T11:23:25.969Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 9,
+      "airportsSeeded": 192,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA",
+        "Vanuatu"
+      ],
+      "currentCountryId": "183",
+      "currentCountryName": "Uzbekistan"
+    },
+    {
+      "at": "2026-05-04T11:23:30.995Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 11,
+      "airportsSeeded": 254,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA",
+        "Viet Nam"
+      ],
+      "currentCountryId": "186",
+      "currentCountryName": "Venezuela"
+    },
+    {
+      "at": "2026-05-04T11:23:36.024Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 13,
+      "airportsSeeded": 286,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA",
+        "Zambia",
+        "Zimbabwe"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:23:41.073Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:23:46.108Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:23:51.160Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:23:56.199Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:01.244Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:06.281Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:11.315Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:16.354Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:21.392Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:26.439Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:31.489Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:36.533Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:41.572Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:46.612Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:51.658Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:24:57.566Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:25:02.746Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:25:07.984Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:25:13.090Z",
+      "phase": "seeding",
+      "total": 16,
+      "fetched": 15,
+      "airportsSeeded": 299,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T11:25:18.485Z",
+      "phase": "done",
+      "total": 16,
+      "fetched": 16,
+      "airportsSeeded": 1053,
+      "failedCountries": 0,
+      "activeCountries": [],
+      "currentCountryId": null,
+      "currentCountryName": null
+    }
+  ],
+  "before": {
+    "demand": 3567,
+    "topRoutes": 0,
+    "marketsCompetitors": 0,
+    "marketsOwnPricing": 0,
+    "inventory": 0,
+    "ors": 0,
+    "aircraftFleet": 0,
+    "aircraftFlights": 0,
+    "maintenance": 0,
+    "sampleDemand": [
+      {
+        "airportId": "2",
+        "cargoScore": 0,
+        "countryId": "1",
+        "countryName": "Egypt",
+        "iata": "AAC",
+        "name": "Al Arish",
+        "paxScore": 1,
+        "scrapedAt": 1777893600300,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "4632",
+        "cargoScore": 0,
+        "countryId": "153",
+        "countryName": "Somalia",
+        "iata": "AAD",
+        "name": "Adado",
+        "paxScore": 1,
+        "scrapedAt": 1777893760730,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "53",
+        "cargoScore": 1,
+        "countryId": "6",
+        "countryName": "Algeria",
+        "iata": "AAE",
+        "name": "Annaba",
+        "paxScore": 3,
+        "scrapedAt": 1777893500646,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "1802",
+        "cargoScore": 0,
+        "countryId": "80",
+        "countryName": "Kiribati",
+        "iata": "AAK",
+        "name": "Aranuka",
+        "paxScore": 1,
+        "scrapedAt": 1777893674645,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "664",
+        "cargoScore": 1,
+        "countryId": "34",
+        "countryName": "Denmark",
+        "iata": "AAL",
+        "name": "Aalborg",
+        "paxScore": 4,
+        "scrapedAt": 1777893589383,
+        "sizeScore": 10
+      }
+    ]
+  },
+  "after": {
+    "demand": 4620,
+    "topRoutes": 0,
+    "marketsCompetitors": 0,
+    "marketsOwnPricing": 0,
+    "inventory": 0,
+    "ors": 0,
+    "aircraftFleet": 0,
+    "aircraftFlights": 0,
+    "maintenance": 0,
+    "sampleDemand": [
+      {
+        "airportId": "2",
+        "cargoScore": 0,
+        "countryId": "1",
+        "countryName": "Egypt",
+        "iata": "AAC",
+        "name": "Al Arish",
+        "paxScore": 1,
+        "scrapedAt": 1777893600300,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "4632",
+        "cargoScore": 0,
+        "countryId": "153",
+        "countryName": "Somalia",
+        "iata": "AAD",
+        "name": "Adado",
+        "paxScore": 1,
+        "scrapedAt": 1777893760730,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "53",
+        "cargoScore": 1,
+        "countryId": "6",
+        "countryName": "Algeria",
+        "iata": "AAE",
+        "name": "Annaba",
+        "paxScore": 3,
+        "scrapedAt": 1777893500646,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "1802",
+        "cargoScore": 0,
+        "countryId": "80",
+        "countryName": "Kiribati",
+        "iata": "AAK",
+        "name": "Aranuka",
+        "paxScore": 1,
+        "scrapedAt": 1777893674645,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "664",
+        "cargoScore": 1,
+        "countryId": "34",
+        "countryName": "Denmark",
+        "iata": "AAL",
+        "name": "Aalborg",
+        "paxScore": 4,
+        "scrapedAt": 1777893589383,
+        "sizeScore": 10
+      }
+    ]
+  },
+  "result": {
+    "phase": "done",
+    "total": 16,
+    "allCountries": 194,
+    "skippedCountries": 178,
+    "fetched": 16,
+    "airportsSeeded": 1053,
+    "failedCountries": [],
+    "currentCountryId": null,
+    "currentCountryName": null,
+    "activeCountries": []
+  },
+  "errors": [],
+  "start": {
+    "started": true
+  },
+  "completedAt": "2026-05-04T11:25:18.777Z"
+}

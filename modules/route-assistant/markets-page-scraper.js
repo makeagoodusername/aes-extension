@@ -20,9 +20,10 @@
  * Storage — one fetch writes 4 directional keys atomically:
  *   routeAssistant:markets:competitors:<HUB>-<DEST>
  *     → {hub, dest, scrapedAt, source, competitors: [{flightCode, flightId,
- *        typeCode, typeId, depDateUtc, depDateLocal, depTimeUtc, depTimeLocal,
- *        arrTimeUtc, arrTimeLocal, serviceClass, availability, price, status,
- *        isOurs}]}
+ *        flightNumberId, operatorPrefix, typeCode, typeId, depDateUtc,
+ *        depDateLocal, depTimeUtc, depTimeLocal, arrTimeUtc, arrTimeLocal,
+ *        serviceClass, capacity, booked, loadPct, availability, price,
+ *        status, isOurs}]}
  *
  *   routeAssistant:markets:ownPricing:<HUB>-<DEST>
  *     → {hub, dest, scrapedAt, source, prices: {Y, C, F, Cargo},
@@ -509,60 +510,79 @@ class RouteAssistantMarketsPageScraper {
         const ourPrefix = RouteAssistantMarketsPageScraper._currentAirlinePrefixes()
         const list = []
         for (const tr of table.querySelectorAll("tbody tr")) {
-            const cells = tr.querySelectorAll("td")
+            const cells = Array.from(tr.querySelectorAll("td"))
             if (cells.length < 8) continue
+            const plan = RouteAssistantMarketsPageScraper._competitorColumnPlan(cells)
+            if (!plan) continue
 
-            // [0] flight code (span) + small (a typeId link)
-            const flightCodeEl = cells[0].querySelector("span")
-            const typeLinkEl   = cells[0].querySelector("a[href*='aircraftsType']")
-            const flightCode = flightCodeEl ? (flightCodeEl.textContent || "").trim() : null
-            let typeCode = typeLinkEl ? (typeLinkEl.textContent || "").trim() : null
-            let typeId   = null
-            if (typeLinkEl) {
-                const m = /aircraftsType\?id=(\d+)/.exec(typeLinkEl.getAttribute("href") || "")
-                if (m) typeId = parseInt(m[1], 10)
-            }
+            const flightCell = cells[plan.flight]
+            const typeInfo = RouteAssistantMarketsPageScraper._extractInventoryType(flightCell)
+            const flightCode = RouteAssistantMarketsPageScraper._extractInventoryFlightCode(flightCell)
+            const flightNumberId = RouteAssistantMarketsPageScraper._extractFlightNumberId(flightCell)
+            const carrierPrefix = RouteAssistantMarketsPageScraper._carrierPrefixFromFlightCode(flightCode)
+            let typeCode = typeInfo.typeCode
+            let typeId   = typeInfo.typeId
 
-            // [1] date — "2026-04-23" body, title="2026-04-24 UTC / 2026-04-23 HT / 2026-04-23 LT"
-            const dateBody = (cells[1].textContent || "").trim()
-            const dateTitle = cells[1].getAttribute("title") || ""
+            // Date title shape: "2026-04-24 UTC / 2026-04-23 HT / 2026-04-23 LT".
+            const dateBody = (cells[plan.date].textContent || "").trim()
+            const dateTitle = cells[plan.date].getAttribute("title") || ""
             const depDateUtc   = RouteAssistantMarketsPageScraper._extractTitlePart(dateTitle, "UTC")
             const depDateLocal = RouteAssistantMarketsPageScraper._extractTitlePart(dateTitle, "LT") || dateBody
 
-            // [2] depTime — "20:30" body, title="01:30 UTC / 20:30 HT / 20:30 LT"
-            const depTimeBody  = (cells[2].textContent || "").trim()
-            const depTimeTitle = cells[2].getAttribute("title") || ""
+            // Time title shape: "01:30 UTC / 20:30 HT / 20:30 LT".
+            const depTimeBody  = (cells[plan.depTime].textContent || "").trim()
+            const depTimeTitle = cells[plan.depTime].getAttribute("title") || ""
             const depTimeUtc   = RouteAssistantMarketsPageScraper._extractTitlePart(depTimeTitle, "UTC")
             const depTimeLocal = RouteAssistantMarketsPageScraper._extractTitlePart(depTimeTitle, "LT") || depTimeBody
 
-            // [3] arrTime — same shape
-            const arrTimeBody  = (cells[3].textContent || "").trim()
-            const arrTimeTitle = cells[3].getAttribute("title") || ""
+            const arrTimeBody  = (cells[plan.arrTime].textContent || "").trim()
+            const arrTimeTitle = cells[plan.arrTime].getAttribute("title") || ""
             const arrTimeUtc   = RouteAssistantMarketsPageScraper._extractTitlePart(arrTimeTitle, "UTC")
             const arrTimeLocal = RouteAssistantMarketsPageScraper._extractTitlePart(arrTimeTitle, "LT") || arrTimeBody
 
-            // [4] service class — Y / C / F / Cargo. Normalise long AS
+            // Service class — Y / C / F / Cargo. Normalise long AS
             // labels so downstream per-class pricing does not split
             // "Business" and "C" into separate buckets.
-            const rawServiceClass = (cells[4].textContent || "").trim()
+            const rawServiceClass = (cells[plan.serviceClass].textContent || "").trim()
             const serviceClass = RouteAssistantMarketsPageScraper._normaliseClassKey(rawServiceClass) || rawServiceClass
 
-            // [5] availability — number inside good/warning/bad div
-            const availDiv = cells[5].querySelector("div")
-            const availability = availDiv
-                ? RouteAssistantMarketsPageScraper._parseInt(availDiv.textContent)
-                : RouteAssistantMarketsPageScraper._parseInt(cells[5].textContent)
+            const capacity = plan.capacity != null
+                ? RouteAssistantMarketsPageScraper._parseInt(cells[plan.capacity].textContent)
+                : null
+            const booked = plan.booked != null
+                ? RouteAssistantMarketsPageScraper._parseInt(cells[plan.booked].textContent)
+                : null
+            const loadPct = plan.load != null
+                ? RouteAssistantMarketsPageScraper._parsePct(cells[plan.load].textContent)
+                : null
 
-            // [6] price — "148 AS$" for pax, often decimal AS$/kg for cargo.
-            const price = RouteAssistantMarketsPageScraper._parsePrice(cells[6].textContent, serviceClass)
+            // Legacy layout exposed "availability"; current AirlineSim
+            // inventory exposes Cap/Bkd/Load. Preserve availability for
+            // old consumers by deriving remaining capacity when possible.
+            let availability = null
+            if (plan.availability != null) {
+                const availDiv = cells[plan.availability].querySelector("div")
+                availability = availDiv
+                    ? RouteAssistantMarketsPageScraper._parseInt(availDiv.textContent)
+                    : RouteAssistantMarketsPageScraper._parseInt(cells[plan.availability].textContent)
+            }
+            if (availability == null && capacity != null && booked != null) {
+                availability = Math.max(0, capacity - booked)
+            } else if (availability == null && capacity != null) {
+                availability = capacity
+            }
 
-            // [7] status — span text inside .flightStatusPanel
-            const statusSpan = cells[7].querySelector("span")
-            const status = statusSpan ? (statusSpan.textContent || "").trim() : (cells[7].textContent || "").trim()
+            // Price — "148 AS$" for pax, often decimal AS$/kg for cargo.
+            const price = RouteAssistantMarketsPageScraper._parsePrice(cells[plan.price].textContent, serviceClass)
 
-            // [8] flight detail link → flight ID
+            // Status — span text inside .flightStatusPanel on older pages,
+            // direct text on the current inventory table.
+            const statusSpan = cells[plan.status].querySelector("span")
+            const status = statusSpan ? (statusSpan.textContent || "").trim() : (cells[plan.status].textContent || "").trim()
+
+            // Flight detail link → flight ID.
             let flightId = null
-            const flightLink = cells[cells.length - 1].querySelector("a[href*='flight?id=']")
+            const flightLink = RouteAssistantMarketsPageScraper._firstAnchorMatching(cells[plan.link] || tr, /flight\?id=/)
             if (flightLink) {
                 const m = /flight\?id=(\d+)/.exec(flightLink.getAttribute("href") || "")
                 if (m) flightId = parseInt(m[1], 10)
@@ -571,13 +591,125 @@ class RouteAssistantMarketsPageScraper {
             const isOurs = RouteAssistantMarketsPageScraper.isOurFlightCode(flightCode, ourPrefix)
 
             list.push({
-                flightCode, flightId, typeCode, typeId,
+                flightCode, flightNumberId, flightId,
+                carrierPrefix, operatorPrefix: carrierPrefix,
+                typeCode, typeId,
                 depDateUtc, depDateLocal, depTimeUtc, depTimeLocal,
                 arrTimeUtc, arrTimeLocal,
-                serviceClass, availability, price, status, isOurs
+                serviceClass, capacity, booked, loadPct, availability,
+                price, status, isOurs
             })
         }
         return list
+    }
+
+    static _competitorColumnPlan(cells) {
+        if (!cells || cells.length < 8) return null
+        let hasLeadingCheckbox = false
+        try {
+            hasLeadingCheckbox = !!(cells[0] && cells[0].querySelector("input[type='checkbox']"))
+        } catch (e) { hasLeadingCheckbox = false }
+        const offset = hasLeadingCheckbox ? 1 : 0
+        let priceIdx = -1
+        for (let i = offset + 5; i < cells.length; i++) {
+            if (/\bAS\$/i.test(String(cells[i] && cells[i].textContent || ""))) {
+                priceIdx = i
+                break
+            }
+        }
+        if (priceIdx < 0) priceIdx = offset + 6
+        if (priceIdx >= cells.length) return null
+        const looksCurrent = priceIdx >= offset + 8
+        if (looksCurrent) {
+            return {
+                flight: offset, date: offset + 1, depTime: offset + 2, arrTime: offset + 3,
+                serviceClass: offset + 4, capacity: offset + 5, booked: offset + 6, load: offset + 7,
+                price: priceIdx, status: Math.min(priceIdx + 1, cells.length - 1), link: cells.length - 1
+            }
+        }
+        return {
+            flight: offset, date: offset + 1, depTime: offset + 2, arrTime: offset + 3,
+            serviceClass: offset + 4, availability: offset + 5,
+            price: priceIdx, status: Math.min(priceIdx + 1, cells.length - 1), link: cells.length - 1
+        }
+    }
+
+    static _anchors(scope) {
+        if (!scope) return []
+        try {
+            if (scope.querySelectorAll) {
+                const found = Array.from(scope.querySelectorAll("a"))
+                if (found.length) return found
+            }
+            if (scope.querySelector) {
+                const one = scope.querySelector("a")
+                if (one) return [one]
+            }
+        } catch (e) { /* ignore */ }
+        return []
+    }
+
+    static _firstAnchorMatching(scope, pattern) {
+        for (const a of RouteAssistantMarketsPageScraper._anchors(scope)) {
+            const href = a.getAttribute("href") || ""
+            if (pattern instanceof RegExp ? pattern.test(href) : href.indexOf(String(pattern)) !== -1) {
+                return a
+            }
+        }
+        return null
+    }
+
+    static _extractInventoryFlightCode(cell) {
+        if (!cell) return null
+        let source = null
+        for (const a of RouteAssistantMarketsPageScraper._anchors(cell)) {
+            const href = a.getAttribute("href") || ""
+            if (/aircraftsType|flight\?id=/.test(href)) continue
+            const txt = (a.textContent || "").trim()
+            if (txt) { source = txt; break }
+        }
+        if (!source) {
+            const span = cell.querySelector("span")
+            if (span) source = (span.textContent || "").trim()
+        }
+        if (!source) source = (cell.textContent || "").trim()
+        source = String(source || "").replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim()
+        if (!source) return null
+        const m = /^([A-Z0-9]{1,5}\s*\d+[A-Z]?)/i.exec(source)
+        return m ? m[1].replace(/\s+/, " ").toUpperCase() : source.toUpperCase()
+    }
+
+    static _extractFlightNumberId(cell) {
+        for (const a of RouteAssistantMarketsPageScraper._anchors(cell)) {
+            const href = a.getAttribute("href") || ""
+            if (/aircraftsType|flight\?id=/.test(href)) continue
+            let m = /\/(?:app\/)?com\/numbers\/(\d+)/.exec(href)
+            if (!m) m = /(?:^|\/)\.?\/?(\d+)(?:[/?#]|$)/.exec(href)
+            if (m) return parseInt(m[1], 10)
+        }
+        return null
+    }
+
+    static _extractInventoryType(cell) {
+        const typeLinkEl = RouteAssistantMarketsPageScraper._firstAnchorMatching(cell, /aircraftsType/)
+        let typeCode = typeLinkEl ? (typeLinkEl.textContent || "").trim() : null
+        let typeId   = null
+        if (typeLinkEl) {
+            const m = /aircraftsType\?id=(\d+)/.exec(typeLinkEl.getAttribute("href") || "")
+            if (m) typeId = parseInt(m[1], 10)
+        }
+        return {typeCode, typeId}
+    }
+
+    static _carrierPrefixFromFlightCode(flightCode) {
+        const code = String(flightCode || "").trim().toUpperCase()
+        if (!code) return null
+        const spaced = /^([A-Z0-9]{1,5})\s+\d/.exec(code)
+        if (spaced) return spaced[1]
+        const compact = /^([A-Z]{1,3}[A-Z0-9]?)\d/.exec(code)
+        if (compact) return compact[1]
+        const token = /^([A-Z0-9]{1,5})/.exec(code)
+        return token ? token[1] : null
     }
 
     static _currentAirlinePrefixes() {
@@ -613,9 +745,11 @@ class RouteAssistantMarketsPageScraper {
     static isOurFlightCode(flightCode, prefixes) {
         if (!flightCode || !prefixes || !prefixes.length) return false
         const code = String(flightCode).trim().toUpperCase()
+        const codePrefix = RouteAssistantMarketsPageScraper._carrierPrefixFromFlightCode(code)
         for (const p of prefixes) {
             if (!p) continue
             const pu = String(p).toUpperCase()
+            if (codePrefix && codePrefix === pu) return true
             if (code.startsWith(pu + " ") || code === pu) return true
         }
         return false
@@ -829,8 +963,8 @@ class RouteAssistantMarketsPageScraper {
 
     static _parsePct(text) {
         if (!text) return null
-        const m = /(-?\d+(?:\.\d+)?)\s*%/.exec(text)
-        return m ? parseFloat(m[1]) : null
+        const m = /(-?\d+(?:[,.]\d+)?)\s*%/.exec(text)
+        return m ? parseFloat(m[1].replace(",", ".")) : null
     }
 
     // ------------------------------------------------------------------

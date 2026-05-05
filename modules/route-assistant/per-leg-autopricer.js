@@ -997,9 +997,9 @@
             return window.RouteAssistantPricingPlumbing.resolveApplyGate(apply, "manual", {forceDryRun: !!forceDryRun})
         }
         const enabled = apply.enabled !== false
-        const dryRunOnly = apply.dryRunOnly !== false
+        const dryRunOnly = apply.dryRunOnly === true
         const liveScopes = apply.liveScopes && typeof apply.liveScopes === "object" ? apply.liveScopes : {}
-        const scopeLiveAllowed = liveScopes.manual === true
+        const scopeLiveAllowed = liveScopes.manual !== false
         const forcedDryRun = !!forceDryRun
         const dryRun = forcedDryRun || dryRunOnly || !enabled || !scopeLiveAllowed
         return {
@@ -1192,7 +1192,6 @@
             .aes-perleg-actions .aes-perleg-live-apply { border-color:#1d4ed8; color:#1d4ed8; font-weight:600; }
             .aes-perleg-actions .aes-perleg-live-apply:hover,
             .aes-perleg-actions .aes-perleg-apply-all:hover { background:#dbeafe; }
-            .aes-perleg-actions .aes-perleg-dry-run { border-color:#a16207; color:#92400e; }
             .aes-perleg-status { margin-top:6px; padding:4px 6px; border-radius:3px; font-size:11px;
                 line-height:1.35; background:#f8fafc; color:#334155; border:1px solid #cbd5e1; }
             .aes-perleg-status[data-status="verified"] { background:#dcfce7; color:#166534; border-color:#86efac; }
@@ -1468,24 +1467,6 @@
             })
         })
 
-        const dryRun = document.createElement("button")
-        dryRun.type = "button"
-        dryRun.className = "btn btn-xs aes-perleg-dry-run"
-        dryRun.textContent = "Dry-run"
-        dryRun.title = "Run the same applier pipeline with dryRun forced on and write an apply-log rehearsal entry."
-        dryRun.disabled = _applyInFlight
-        dryRun.addEventListener("click", () => {
-            _applySuggestedPrices({
-                route,
-                suggestions: suggestionsByCls,
-                rowsByCls,
-                settings
-            }, {dryRun: true}).catch(e => {
-                _lastApplyState = {status: "failed", message: String(e && e.message || e), blockers: [], warnings: []}
-                _renderCurrentApplyStatus()
-            })
-        })
-
         const restore = document.createElement("button")
         restore.type = "button"
         restore.className = "btn btn-xs aes-perleg-restore"
@@ -1512,7 +1493,6 @@
 
         actions.appendChild(applyAll)
         actions.appendChild(liveApply)
-        actions.appendChild(dryRun)
         actions.appendChild(restore)
         banner.appendChild(actions)
         _renderApplyStatus(banner, _lastApplyState)

@@ -12,13 +12,15 @@
  *   - Cross-tab dedup: multiple scheduling tabs each receive the
  *     broadcast, but the panel's `_silentAutoTickIfDue` re-reads the
  *     persisted `silentAutoLastTickAt` and skips if another tab already
- *     ticked within ~0.9× tickMin.
+ *     ticked within ~0.9× the saved foreground cadence.
  *
  * The alarm is created when any legacy or account-scoped
  * `routeAssistant.pricing.silentAutoEnabled === true` and cleared when
  * they are all off. Period follows the shortest enabled
- * `silentAutoTickMin` (clamped 5–240 min, matching the panel). The
- * receiving page still re-reads its own account-scoped settings before
+ * `silentAutoTickSec` (falling back to legacy `silentAutoTickMin`).
+ * Foreground AS tabs can run as fast as 5 seconds; chrome.alarms remains
+ * the coarse persistent safety net and is floored to 30 seconds by Chrome.
+ * The receiving page still re-reads its own account-scoped settings before
  * running, so a global alarm cannot write for an account whose local gate
  * is off.
  */
@@ -44,17 +46,28 @@ function _aesRouteAssistantBlocks(settings) {
   return out;
 }
 
+function _aesSilentAutoTickMin(pr) {
+  const p = _aesPlainObject(pr) ? pr : {};
+  const rawSec = (typeof p.silentAutoTickSec === 'number' && isFinite(p.silentAutoTickSec))
+    ? p.silentAutoTickSec
+    : (typeof p.silentAutoTickSeconds === 'number' && isFinite(p.silentAutoTickSeconds))
+      ? p.silentAutoTickSeconds
+      : null;
+  if (rawSec && rawSec > 0) return Math.max(1 / 12, Math.min(240, rawSec / 60));
+  const rawTick = (typeof p.silentAutoTickMin === 'number' && isFinite(p.silentAutoTickMin))
+    ? p.silentAutoTickMin
+    : 1 / 12;
+  return Math.max(1 / 12, Math.min(240, rawTick));
+}
+
 function _aesSilentAutoConfigFromSettings(settings) {
   const blocks = _aesRouteAssistantBlocks(settings);
   let enabled = false;
-  let tickMin = 30;
+  let tickMin = 1 / 12;
   let sawEnabled = false;
   for (const ra of blocks) {
     const pr = _aesPlainObject(ra.pricing) ? ra.pricing : {};
-    const rawTick = (typeof pr.silentAutoTickMin === 'number' && isFinite(pr.silentAutoTickMin))
-      ? pr.silentAutoTickMin
-      : 30;
-    const clampedTick = Math.max(5, Math.min(240, rawTick));
+    const clampedTick = _aesSilentAutoTickMin(pr);
     if (pr.silentAutoEnabled) {
       enabled = true;
       tickMin = sawEnabled ? Math.min(tickMin, clampedTick) : clampedTick;
@@ -69,7 +82,7 @@ async function _aesReadSilentAutoConfig() {
     const got = await chrome.storage.local.get('settings');
     return _aesSilentAutoConfigFromSettings(got && got.settings);
   } catch (_) {
-    return { enabled: false, tickMin: 30 };
+    return { enabled: false, tickMin: 1 / 12 };
   }
 }
 
@@ -78,12 +91,13 @@ async function _aesSyncSilentAutoAlarm() {
   try {
     const cfg = await _aesReadSilentAutoConfig();
     const existing = await chrome.alarms.get(_AES_SILENT_AUTO_ALARM);
+    const alarmTickMin = Math.max(0.5, cfg.tickMin);
     if (cfg.enabled) {
-      if (!existing || existing.periodInMinutes !== cfg.tickMin) {
+      if (!existing || existing.periodInMinutes !== alarmTickMin) {
         await chrome.alarms.clear(_AES_SILENT_AUTO_ALARM);
         chrome.alarms.create(_AES_SILENT_AUTO_ALARM, {
-          periodInMinutes: cfg.tickMin,
-          delayInMinutes:  cfg.tickMin
+          periodInMinutes: alarmTickMin,
+          delayInMinutes:  alarmTickMin
         });
       }
     } else if (existing) {
@@ -114,9 +128,9 @@ if (chrome.alarms && chrome.alarms.onAlarm) {
     // Broadcast to ONE capable AS tab only — sending to every tab races
     // on the per-tick dedup read (each surface reads `silentAutoLastTickAt`
     // before the others' write has landed). Scheduling tabs run the Route
-    // Assistant panel path; dashboard tabs run the Central Hub cached-route
-    // automator. Picking the most-recently-active capable tab matches the
-    // user's attention; falls back to the first match.
+    // Assistant panel path; dashboard, market-analysis, and fleet tabs run
+    // the cached-route automator. Picking the most-recently-active capable
+    // tab matches the user's attention; falls back to the first match.
     chrome.tabs.query(
       { url: 'https://*.airlinesim.aero/*' },
       (tabs) => {
@@ -126,6 +140,8 @@ if (chrome.alarms && chrome.alarms.onAlarm) {
         const capable = tabs.filter((t) =>
           /\/app\/com\/scheduling(?:\/|$)/.test(t.url || '')
           || /\/app\/enterprise\/dashboard/.test(t.url || '')
+          || /\/app\/com\/markets\//.test(t.url || '')
+          || /\/app\/fleets(?:\/|$)/.test(t.url || '')
         );
         if (!capable.length) return;
         const sorted = capable.slice().sort(

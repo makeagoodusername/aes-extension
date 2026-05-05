@@ -13,17 +13,23 @@
  * Route Assistant switches allow silent-auto live writes:
  *   pricing.apply.enabled === true
  *   pricing.apply.dryRunOnly === false
- *   pricing.apply.liveScopes.silentAuto === true
+ *   pricing.apply.liveScopes.silentAuto !== false
  */
 ;(function () {
     if (typeof window === "undefined") return
     if (window.AesRoutePriceAutomator) return
 
-    const TOP_ROUTES_PREFIX = "routeAssistant:topRoutes:"
+    const TOP_ROUTES_KEY = "routeAssistant:topRoutes"
+    const TOP_ROUTES_PREFIX = TOP_ROUTES_KEY + ":"
     const OWN_PREFIX = "routeAssistant:markets:ownPricing"
     const COMP_PREFIX = "routeAssistant:markets:competitors"
     const HIST_PREFIX = "routeAssistant:markets:historic"
+    const SCHEDULE_PREFIX = "routeAssistant:ticketPrice"
     const OVERRIDE_PREFIX = "routeAssistant:override"
+    const MIN_SILENT_AUTO_TICK_MIN = 1 / 12
+
+    let _tickIfDueInFlight = false
+    let _foregroundTickTimer = null
 
     function _u(v) { return String(v || "").toUpperCase() }
     function _pairKey(hub, dest) { return _u(hub) + "-" + _u(dest) }
@@ -42,6 +48,32 @@
         return null
     }
     function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+    function _silentAutoTickMin(value, fallback) {
+        const n = Number(value)
+        if (!isFinite(n)) return fallback != null ? fallback : MIN_SILENT_AUTO_TICK_MIN
+        return _clamp(n, MIN_SILENT_AUTO_TICK_MIN, 240)
+    }
+    function _silentAutoTickMs(value, fallback) {
+        return Math.max(5000, Math.round(_silentAutoTickMin(value, fallback) * 60000))
+    }
+    function _silentAutoTickLabel(value) {
+        const ms = _silentAutoTickMs(value)
+        return ms < 60000
+            ? Math.round(ms / 1000) + " sec"
+            : Math.round(ms / 60000) + " min"
+    }
+    function _silentAutoTickMsFromPricing(pricing) {
+        const p = pricing || {}
+        const sec = _firstNum(p.silentAutoTickSec, p.silentAutoTickSeconds)
+        if (sec != null && sec > 0) return _clamp(sec, 5, 240 * 60) * 1000
+        return _silentAutoTickMs(p.silentAutoTickMin)
+    }
+    function _silentAutoTickLabelFromPricing(pricing) {
+        const ms = _silentAutoTickMsFromPricing(pricing)
+        return ms < 60000
+            ? Math.round(ms / 1000) + " sec"
+            : Math.round(ms / 60000) + " min"
+    }
     function _pricingPlumbing() {
         return typeof window !== "undefined" && window.RouteAssistantPricingPlumbing
             ? window.RouteAssistantPricingPlumbing : null
@@ -53,9 +85,18 @@
         }
         const src = apply && typeof apply === "object" ? apply : {}
         const enabled = src.enabled !== false
-        const dryRunOnly = src.dryRunOnly !== false
-        const liveScopes = src.liveScopes && typeof src.liveScopes === "object" ? src.liveScopes : {}
-        const scopeLiveAllowed = scopeName ? liveScopes[scopeName] === true : true
+        const dryRunOnly = src.permanentLiveMode === true ? false : src.dryRunOnly === true
+        const liveScopes = Object.assign(
+            {manual: true, bulk: true, silentAuto: true, bulkRecommended: true},
+            src.liveScopes && typeof src.liveScopes === "object" ? src.liveScopes : {}
+        )
+        if (src.permanentLiveMode === true) {
+            liveScopes.manual = true
+            liveScopes.bulk = true
+            liveScopes.silentAuto = true
+            liveScopes.bulkRecommended = true
+        }
+        const scopeLiveAllowed = scopeName ? liveScopes[scopeName] !== false : true
         const forcedDryRun = !!(opts && opts.forceDryRun)
         const dryRun = forcedDryRun || dryRunOnly || !enabled || !scopeLiveAllowed
         return {
@@ -159,15 +200,19 @@
     function configFromSettings(settings) {
         const p = settings && settings.pricing || {}
         const apply = p.apply || {}
+        const tickMs = _silentAutoTickMsFromPricing(p)
         return {
             silentAutoEnabled:      !!p.silentAutoEnabled,
-            silentAutoTickMin:       isFinite(p.silentAutoTickMin)     ? p.silentAutoTickMin     : 30,
-            silentAutoMaxPerDay:     isFinite(p.silentAutoMaxPerDay)   ? p.silentAutoMaxPerDay   : 20,
-            silentAutoMaxPerHour:    isFinite(p.silentAutoMaxPerHour)  ? p.silentAutoMaxPerHour  : 5,
+            silentAutoTickMin:       tickMs / 60000,
+            silentAutoTickSec:       tickMs / 1000,
+            silentAutoTickMs:        tickMs,
+            silentAutoTickLabel:     _silentAutoTickLabelFromPricing(p),
+            silentAutoMaxPerDay:     isFinite(p.silentAutoMaxPerDay)   ? p.silentAutoMaxPerDay   : 0,
+            silentAutoMaxPerHour:    isFinite(p.silentAutoMaxPerHour)  ? p.silentAutoMaxPerHour  : 0,
             silentAutoMinDeltaPct:   isFinite(p.silentAutoMinDeltaPct) ? p.silentAutoMinDeltaPct : 3,
             silentAutoMaxStepPct:    isFinite(p.silentAutoMaxStepPct)  ? p.silentAutoMaxStepPct  : 10,
             silentAutoStrategy:      p.silentAutoStrategy || "per-class-elasticity",
-            silentAutoFollowMode:    p.silentAutoFollowMode || "watchlist",
+            silentAutoFollowMode:    p.silentAutoFollowMode || "all",
             silentAutoLastTickAt:    isFinite(p.silentAutoLastTickAt) ? p.silentAutoLastTickAt : null,
             silentAutoLastTickResult: p.silentAutoLastTickResult || null,
             silentAutoMutedUntil:    isFinite(p.silentAutoMutedUntil) ? p.silentAutoMutedUntil : null,
@@ -200,6 +245,7 @@
         const pricing = settings && settings.pricing || {}
         const apply = pricing.apply || {}
         const gate = _resolveApplyGate(apply, "silentAuto", opts)
+        const tickMs = _silentAutoTickMsFromPricing(pricing)
         return {
             silentAutoEnabled: !!pricing.silentAutoEnabled,
             dryRun: gate.dryRun,
@@ -211,8 +257,11 @@
             strategy: pricing.silentAutoStrategy || "per-class-elasticity",
             followMode: opts && opts.followMode
                 ? (opts.followMode === "all" ? "all" : "watchlist")
-                : (pricing.silentAutoFollowMode || "watchlist"),
-            tickMin: isFinite(pricing.silentAutoTickMin) ? pricing.silentAutoTickMin : 30,
+                : (pricing.silentAutoFollowMode || "all"),
+            tickMin: tickMs / 60000,
+            tickSec: tickMs / 1000,
+            tickMs,
+            tickLabel: _silentAutoTickLabelFromPricing(pricing),
             mutedUntil: isFinite(pricing.silentAutoMutedUntil) ? pricing.silentAutoMutedUntil : null
         }
     }
@@ -251,7 +300,11 @@
         defaultScope.airportPair = true
         defaultScope.flightNumbers = true
 
+        liveScopes.manual = true
+        liveScopes.bulk = true
         liveScopes.silentAuto = true
+        liveScopes.bulkRecommended = true
+        apply.permanentLiveMode = true
         apply.enabled = true
         apply.dryRunOnly = false
         apply.liveScopes = liveScopes
@@ -271,7 +324,19 @@
         pricing.silentAutoStrategy = o.strategy || pricing.silentAutoStrategy || "per-class-elasticity"
         if (isFinite(o.maxPerDay)) pricing.silentAutoMaxPerDay = Math.max(0, Number(o.maxPerDay))
         if (isFinite(o.maxPerHour)) pricing.silentAutoMaxPerHour = Math.max(0, Number(o.maxPerHour))
-        if (isFinite(o.tickMin)) pricing.silentAutoTickMin = Math.max(5, Math.min(240, Number(o.tickMin)))
+        if (!isFinite(o.tickMin) && !isFinite(o.tickSec) && !isFinite(o.tickSeconds)) {
+            pricing.silentAutoTickSec = 5
+            pricing.silentAutoTickMin = 5 / 60
+        }
+        if (isFinite(o.tickMin)) {
+            pricing.silentAutoTickMin = _silentAutoTickMin(o.tickMin, pricing.silentAutoTickMin)
+            pricing.silentAutoTickSec = pricing.silentAutoTickMin * 60
+        }
+        if (isFinite(o.tickSec) || isFinite(o.tickSeconds)) {
+            const sec = isFinite(o.tickSec) ? Number(o.tickSec) : Number(o.tickSeconds)
+            pricing.silentAutoTickSec = _clamp(sec, 5, 240 * 60)
+            pricing.silentAutoTickMin = pricing.silentAutoTickSec / 60
+        }
         if (isFinite(o.minDeltaPct)) pricing.silentAutoMinDeltaPct = Math.max(0, Number(o.minDeltaPct))
         if (isFinite(o.maxStepPct)) pricing.silentAutoMaxStepPct = Math.max(0, Number(o.maxStepPct))
         pricing.silentAutoMutedUntil = null
@@ -305,6 +370,17 @@
             })
         }
         const candidates = []
+        const exactRec = got[TOP_ROUTES_KEY]
+        if (exactRec && Array.isArray(exactRec.rows) && _topRoutesRecordMatches(exactRec, host)) {
+            candidates.push({
+                key: TOP_ROUTES_KEY,
+                rec: exactRec,
+                scoped: false,
+                exact: true,
+                hub: _u(exactRec.hub),
+                scrapedAt: exactRec.scrapedAt || exactRec.snapshotAt || 0
+            })
+        }
         for (const key in got) {
             if (key.indexOf(TOP_ROUTES_PREFIX) !== 0) continue
             const keyInfo = _topRoutesKeyInfo(key)
@@ -316,28 +392,34 @@
                 key,
                 rec,
                 scoped: keyInfo.scoped,
+                exact: false,
                 hub: _u(rec.hub || keyInfo.hub),
                 scrapedAt: rec.scrapedAt || rec.snapshotAt || 0
             })
         }
         candidates.sort((a, b) => {
-            if (a.scoped !== b.scoped) return a.scoped ? -1 : 1
+            const ap = a.scoped ? 0 : (a.exact ? 2 : 1)
+            const bp = b.scoped ? 0 : (b.exact ? 2 : 1)
+            if (ap !== bp) return ap - bp
             return (b.scrapedAt || 0) - (a.scrapedAt || 0)
         })
         for (const c of candidates) {
             const rec = c.rec
-            const hub = c.hub
             for (const r of rec.rows) {
+                const hub = _u(c.hub || r && (r.hub || r.originIata || r.origin))
                 const dest = _u(r && (r.destIata || r.dest))
                 addRow(hub, dest, r, c.scrapedAt, c.scoped ? "topRoutes:acct" : "topRoutes")
             }
         }
         _addMarketCacheRoutes(got, rows, seen, host)
+        _addScheduleCacheRoutes(got, rows, seen, host)
         rows.sort((a, b) => {
             const ap = a.source === "topRoutes" ? 0
-                : a.source === "market-cache:ownPricing" ? 1 : 2
+                : a.source === "market-cache:ownPricing" ? 1
+                : a.source === "market-cache:competitors" ? 2 : 3
             const bp = b.source === "topRoutes" ? 0
-                : b.source === "market-cache:ownPricing" ? 1 : 2
+                : b.source === "market-cache:ownPricing" ? 1
+                : b.source === "market-cache:competitors" ? 2 : 3
             if (ap !== bp) return ap - bp
             return (b.topRoutesScrapedAt || 0) - (a.topRoutesScrapedAt || 0)
         })
@@ -422,6 +504,45 @@
         }
     }
 
+    function _addScheduleCacheRoutes(all, rows, seen, host) {
+        const found = []
+        for (const key in all) {
+            if (key.indexOf(SCHEDULE_PREFIX + ":") !== 0) continue
+            if (!_keyMatchesCurrentAccount(key)) continue
+            const rec = all[key]
+            if (!_recordMatchesHost(rec, host)) continue
+            const pairInfo = _routeFromScheduleRecord(key, rec)
+            if (!pairInfo) continue
+            const pair = _pairKey(pairInfo.hub, pairInfo.dest)
+            if (seen.has(pair)) continue
+            found.push({
+                hub: pairInfo.hub,
+                dest: pairInfo.dest,
+                pair,
+                scrapedAt: rec && rec.scrapedAt || 0,
+                rec
+            })
+        }
+        found.sort((a, b) => (b.scrapedAt || 0) - (a.scrapedAt || 0))
+        for (const r of found) {
+            if (seen.has(r.pair)) continue
+            seen.add(r.pair)
+            rows.push({
+                hub: r.hub,
+                dest: r.dest,
+                pair: r.pair,
+                row: {
+                    destIata: r.dest,
+                    destName: r.rec && (r.rec.destName || r.rec.destinationName) || null,
+                    weeklyFlights: r.rec && r.rec.weeklyFlights || null,
+                    status: "schedule-cache"
+                },
+                topRoutesScrapedAt: r.scrapedAt || 0,
+                source: "schedule-cache"
+            })
+        }
+    }
+
     function _keyAccountId(key) {
         const m = /:acct:([^:]+):/.exec(String(key || ""))
         return m ? m[1] : null
@@ -435,6 +556,16 @@
     }
 
     function _routeFromMarketRecord(key, rec) {
+        const hub = _u(rec && rec.hub)
+        const dest = _u(rec && (rec.dest || rec.destIata))
+        if (hub && dest) return {hub, dest}
+        const tail = String(key || "").split(":").pop() || ""
+        const m = /^([A-Z0-9]{3,4})-([A-Z0-9]{3,4})$/i.exec(tail)
+        if (!m) return null
+        return {hub: _u(m[1]), dest: _u(m[2])}
+    }
+
+    function _routeFromScheduleRecord(key, rec) {
         const hub = _u(rec && rec.hub)
         const dest = _u(rec && (rec.dest || rec.destIata))
         if (hub && dest) return {hub, dest}
@@ -492,6 +623,17 @@
         if (isFinite(exp) && exp > 0 && exp <= Date.now()) return null
         const pin = Number(rec.pricePin)
         return isFinite(pin) ? pin : null
+    }
+
+    function _sourcePageFromLocation() {
+        try {
+            const path = String(location && location.pathname || "")
+            if (/\/app\/enterprise\/dashboard(?:\/|$)/.test(path)) return "dashboard"
+            if (/\/app\/com\/scheduling(?:\/|$)/.test(path)) return "scheduling"
+            if (/\/app\/com\/markets(?:\/|$)/.test(path)) return "markets"
+            if (/\/app\/fleets(?:\/|$)/.test(path)) return "fleets"
+        } catch (_) { /* noop */ }
+        return "cached-route"
     }
 
     function _recordMatchesHost(rec, host) {
@@ -1760,6 +1902,13 @@
             withOrsPriceIndex: rows.filter(r => !!r.orsPriceIndex).length
         }
         const notices = []
+        if (counts.routes === 0) {
+            notices.push({
+                code: "no-route-data",
+                severity: "info",
+                message: "No cached routes or market-pricing records are available for auto-pricing. Visit a Route Assistant scheduling hub or run a Markets bulk scrape, then retry."
+            })
+        }
         if (cfg.silentAutoFollowMode === "watchlist" && counts.watchlisted === 0 && counts.routes > 0) {
             notices.push({
                 code: "watchlist-empty",
@@ -1774,6 +1923,13 @@
                 code: "no-cached-signals",
                 severity: "info",
                 message: "No competitor / ORS / yield-history data is cached for any route. Run a Markets bulk-scrape from the Route Assistant panel before silent-auto can produce proposals."
+            })
+        }
+        if (counts.routes > 0 && counts.withOwnPricing === 0) {
+            notices.push({
+                code: "no-own-pricing-cache",
+                severity: "info",
+                message: "Routes are known from scheduling/top-route cache, but no own-pricing records are cached yet. Open each route's Market Analysis page or run the pricing scrape before silent-auto can apply fare moves."
             })
         }
         return {host, settings, cfg, state, rows, proposals, counts, notices}
@@ -1874,7 +2030,7 @@
         const ranAt = Date.now()
         const result = {
             ranAt,
-            sourcePage: "dashboard",
+            sourcePage: _sourcePageFromLocation(),
             eligible: 0,
             proposed: 0,
             applied: 0,
@@ -1917,6 +2073,13 @@
             result.eligible = eligibleRows.length
             result.skipped = prev.rows.filter(r => r.stage === "skipped").length
             result.proposed = prev.proposals.length
+            if (!prev.rows.length) {
+                result.error = {
+                    code: "noCachedRoutes",
+                    message: "no cached routes are available for automatic pricing; run Route Assistant or the dashboard scrape first"
+                }
+                return result
+            }
             if (!prev.proposals.length) {
                 const cooldownRows = prev.rows.filter(r => r.stage === "cooldown")
                 const capRows = prev.rows.filter(r => r.stage === "cap")
@@ -2121,14 +2284,49 @@
         if (!chrome.runtime || !chrome.runtime.onMessage) return
         chrome.runtime.onMessage.addListener((msg) => {
             if (!msg || msg.type !== "aes:silent-auto:tick") return
-            runTick(_hostFromPage({}), {source: "alarm"})
+            runTickIfDue(_hostFromPage({}), {source: "alarm"})
                 .catch(e => console.warn("[AES route-price-auto] alarm tick failed", e))
         })
+    }
+
+    function _isDashboardPage() {
+        try { return /\/app\/enterprise\/dashboard/.test(location && location.pathname || "") }
+        catch (_) { return false }
+    }
+
+    async function runTickIfDue(hostArg, opts) {
+        const ranAt = Date.now()
+        if (_tickIfDueInFlight) return {ranAt, skipped: "running"}
+        _tickIfDueInFlight = true
+        try {
+            const settings = await _loadSettings()
+            const cfg = configFromSettings(settings)
+            if (!cfg.silentAutoEnabled) return {ranAt, skipped: "disabled"}
+            if (cfg.silentAutoMutedUntil && cfg.silentAutoMutedUntil > ranAt) {
+                return {ranAt, skipped: "muted", mutedUntil: cfg.silentAutoMutedUntil}
+            }
+            const tickMs = cfg.silentAutoTickMs || _silentAutoTickMs(cfg.silentAutoTickMin)
+            const last = isFinite(cfg.silentAutoLastTickAt) ? Number(cfg.silentAutoLastTickAt) : 0
+            if (last > 0 && (ranAt - last) < Math.max(4000, tickMs * 0.9)) {
+                return {ranAt, skipped: "recent", lastTickAt: last, nextDueAt: last + tickMs}
+            }
+            return await runTick(hostArg || _hostFromPage({}), opts || {source: "due"})
+        } catch (e) {
+            console.warn("[AES route-price-auto] due tick failed", e)
+            return {
+                ranAt,
+                skipped: "threw",
+                error: {code: "tickIfDueThrew", message: String(e && e.message || e)}
+            }
+        } finally {
+            _tickIfDueInFlight = false
+        }
     }
 
     window.AesRoutePriceAutomator = {
         preview,
         runTick,
+        runTickIfDue,
         configFromSettings,
         describeSettings,
         setSilentAutoEnabled,
@@ -2137,6 +2335,11 @@
             _competitorStats,
             _prices,
             _pairKey,
+            _silentAutoTickMin,
+            _silentAutoTickMs,
+            _silentAutoTickLabel,
+            _silentAutoTickMsFromPricing,
+            _silentAutoTickLabelFromPricing,
             _activePricePin,
             _loadAirborneByRoute,
             _orsPriceIndex,
@@ -2153,4 +2356,11 @@
     }
 
     _attachAlarmListener()
+    if (_isDashboardPage()) {
+        const fire = () => { runTickIfDue(_hostFromPage({}), {source: "foreground"}).catch(() => {}) }
+        const kickoff = setTimeout(fire, 5000)
+        if (kickoff && typeof kickoff.unref === "function") kickoff.unref()
+        _foregroundTickTimer = setInterval(fire, 5000)
+        if (_foregroundTickTimer && typeof _foregroundTickTimer.unref === "function") _foregroundTickTimer.unref()
+    }
 })()

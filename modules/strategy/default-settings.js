@@ -47,17 +47,18 @@
 
     function _defaults() {
         return {
-            tier:                   "preview-only",
+            permanentLiveMode:      true,
+            tier:                   "apply-auto",
             riskProfile:            "balanced",
             weights:                null,             // null → use AesStrategy.DEFAULT_WEIGHTS
             crossAirlineEnabled:    false,
-            scheduleApplyEnabled:   false,
-            routeCreationEnabled:   false,
-            priceMovesEnabled:      false,
-            serviceMovesEnabled:    false,
-            crewMovesEnabled:       false,
-            allianceMovesEnabled:   false,
-            slotBidApplyEnabled:    false,
+            scheduleApplyEnabled:   true,
+            routeCreationEnabled:   true,
+            priceMovesEnabled:      true,
+            serviceMovesEnabled:    true,
+            crewMovesEnabled:       true,
+            allianceMovesEnabled:   true,
+            slotBidApplyEnabled:    true,
             minOrsTarget:           0.7,
             routeCreationThreshold: 0.6,
             priceDeadband:          5,
@@ -77,12 +78,12 @@
             aircraftOrsModifier:    {},
             // Slice S1 — service-profile dry-run + auto loop scaffolding (S2 wires the loop)
             serviceApply: {
-                dryRunOnly:           true,
+                dryRunOnly:           false,
                 cooldownMinPerProfile: 60
             },
             // Slice S2 — apply-auto driver (modules/strategy/auto-driver.js).
-            // Crew + routeCreation default off — riskier domains require an
-            // explicit user opt-in before auto-firing.
+            // Live-run builds keep every strategy domain available once the
+            // tier is explicitly set to apply-auto.
             autoTick: {
                 enabled:             true,
                 intervalMin:         30,
@@ -99,14 +100,17 @@
                     schedule:      true,
                     service:       true,
                     price:         true,
-                    crew:          false,
-                    routeCreation: false
+                    crew:          true,
+                    routeCreation: true,
+                    alliance:      true,
+                    slotBid:       true
                 }
             },
             // Lane C Phase 2 — Fleet Optimizer slot, owned by
             // AesStrategyFleetOptimizerSettings (modules/strategy/fleet-optimizer-settings.js).
-            // Default `targetingEnabled: false` + `underUtilWeight: 0` keep
-            // every consumer dormant until the user explicitly opts in.
+            // Permanent-live builds enable targeting by default; the
+            // conservative `underUtilWeight: 0` still avoids surprise
+            // rebalance pressure until scoring weights are tuned.
             // _merge passes the slot through unchanged via _normFleetOptimizer.
             fleetOptimizer: {
                 ratioFloorPct:           95,
@@ -114,7 +118,7 @@
                 underUtilWeight:         0,
                 maxRebalancesPerWindow:  3,
                 perAircraft:             {},
-                targetingEnabled:        false,
+                targetingEnabled:        true,
                 readinessAck:            null
             },
             // Slice — evidence-based tunables. Mirrors the opts route-creation.js
@@ -195,29 +199,23 @@
                 weeklyBudgetAS$: null,
                 apply: {
                     enabled:    true,
-                    dryRunOnly: true
+                    dryRunOnly: false
                 }
             },
             // Slice 12 — alliance & IL codeshare optimisation. `apply` is
             // the two-gate model for `AllianceIlRequestApplier`:
             //   enabled    — user kill switch (defaults true so the per-card
             //                "Send IL request" affordance lights up; the
-            //                surrounding `allianceMovesEnabled` flag still
-            //                defaults FALSE per the bulk apply pattern)
-            //   dryRunOnly — codebase-readiness gate (§4.18). Defaults
-            //                TRUE because the AS form structure for IL
-            //                requests has not been calibrated against a
-            //                live AS instance. First flip prompts a confirm
-            //                modal; the applier runs the full GET → parse
-            //                → body build → audit-log path either way and
-            //                returns a `bodyPreview` so the user sees what
-            //                would post.
+            //                surrounding `allianceMovesEnabled` flag is also
+            //                live by default in live-run builds)
+            //   dryRunOnly — explicit rehearsal override. Defaults false so
+            //                the existing applier POST path can run live.
             // `proposers` mirrors `proposeAllianceMoves` opts; defaults
             // verbatim from `modules/strategy/alliance.js` DEFAULTS.
             alliance: {
                 apply: {
                     enabled:    true,
-                    dryRunOnly: true
+                    dryRunOnly: false
                 },
                 proposers: {
                     minNewReach:          4,
@@ -234,7 +232,7 @@
         const f = fallback || {
             ratioFloorPct: 95, headroomPct: 2, underUtilWeight: 0,
             maxRebalancesPerWindow: 3, perAircraft: {},
-            targetingEnabled: false, readinessAck: null
+            targetingEnabled: true, readinessAck: null
         }
         if (!block || typeof block !== "object") return Object.assign({}, f)
         const perAircraft = (block.perAircraft && typeof block.perAircraft === "object")
@@ -245,12 +243,12 @@
             underUtilWeight:        _normNum(block.underUtilWeight,        0,  1e6, f.underUtilWeight),
             maxRebalancesPerWindow: _normNum(block.maxRebalancesPerWindow, 0,  50,  f.maxRebalancesPerWindow),
             perAircraft:            perAircraft,
-            targetingEnabled:       !!block.targetingEnabled,
+            targetingEnabled:       block.targetingEnabled !== false,
             readinessAck:           (typeof block.readinessAck === "string") ? block.readinessAck : null
         }
     }
 
-    function _normTier(v) { return TIERS.indexOf(v) >= 0 ? v : "preview-only" }
+    function _normTier(v) { return TIERS.indexOf(v) >= 0 ? v : "apply-auto" }
     function _normRisk(v) { return RISKS.indexOf(v) >= 0 ? v : "balanced"     }
     function _normNum(v, lo, hi, fallback) {
         const n = Number(v)
@@ -299,10 +297,10 @@
     }
 
     function _normServiceApply(block, fallback) {
-        const f = fallback || {dryRunOnly: true, cooldownMinPerProfile: 60}
+        const f = fallback || {dryRunOnly: false, cooldownMinPerProfile: 60}
         if (!block || typeof block !== "object") return Object.assign({}, f)
         return {
-            dryRunOnly:            block.dryRunOnly !== false,
+            dryRunOnly:            block.dryRunOnly === true,
             cooldownMinPerProfile: _normNum(block.cooldownMinPerProfile, 0, 1440, f.cooldownMinPerProfile)
         }
     }
@@ -396,7 +394,7 @@
         return {
             apply: {
                 enabled:    apply.enabled    !== false,
-                dryRunOnly: apply.dryRunOnly !== false
+                dryRunOnly: apply.dryRunOnly === true
             },
             proposers: {
                 minNewReach:          _normNum(props.minNewReach,          0,    50,  f.proposers.minNewReach),
@@ -465,7 +463,7 @@
             weeklyBudgetAS$: Number.isFinite(budget) && budget >= 0 ? budget : null,
             apply: {
                 enabled:    apply.enabled !== false,
-                dryRunOnly: apply.dryRunOnly !== false
+                dryRunOnly: apply.dryRunOnly === true
             }
         }
     }
@@ -473,18 +471,20 @@
     function _merge(block) {
         const d = _defaults()
         if (!block || typeof block !== "object") return d
-        return {
-            tier:                   _normTier(block.tier),
+        const liveMode = block.permanentLiveMode !== false
+        const out = {
+            permanentLiveMode:      liveMode,
+            tier:                   liveMode ? "apply-auto" : _normTier(block.tier),
             riskProfile:            _normRisk(block.riskProfile),
             weights:                (block.weights && typeof block.weights === "object") ? block.weights : null,
             crossAirlineEnabled:    !!block.crossAirlineEnabled,
-            scheduleApplyEnabled:   !!block.scheduleApplyEnabled,
-            routeCreationEnabled:   !!block.routeCreationEnabled,
-            priceMovesEnabled:      !!block.priceMovesEnabled,
-            serviceMovesEnabled:    !!block.serviceMovesEnabled,
-            crewMovesEnabled:       !!block.crewMovesEnabled,
-            allianceMovesEnabled:   !!block.allianceMovesEnabled,
-            slotBidApplyEnabled:    !!block.slotBidApplyEnabled,
+            scheduleApplyEnabled:   (typeof block.scheduleApplyEnabled === "boolean") ? block.scheduleApplyEnabled : d.scheduleApplyEnabled,
+            routeCreationEnabled:   (typeof block.routeCreationEnabled === "boolean") ? block.routeCreationEnabled : d.routeCreationEnabled,
+            priceMovesEnabled:      (typeof block.priceMovesEnabled === "boolean") ? block.priceMovesEnabled : d.priceMovesEnabled,
+            serviceMovesEnabled:    (typeof block.serviceMovesEnabled === "boolean") ? block.serviceMovesEnabled : d.serviceMovesEnabled,
+            crewMovesEnabled:       (typeof block.crewMovesEnabled === "boolean") ? block.crewMovesEnabled : d.crewMovesEnabled,
+            allianceMovesEnabled:   (typeof block.allianceMovesEnabled === "boolean") ? block.allianceMovesEnabled : d.allianceMovesEnabled,
+            slotBidApplyEnabled:    (typeof block.slotBidApplyEnabled === "boolean") ? block.slotBidApplyEnabled : d.slotBidApplyEnabled,
             minOrsTarget:           _normNum(block.minOrsTarget, 0, 1, d.minOrsTarget),
             routeCreationThreshold: _normNum(block.routeCreationThreshold, 0, 1, d.routeCreationThreshold),
             priceDeadband:          _normNum(block.priceDeadband, 0, 50, d.priceDeadband),
@@ -508,6 +508,36 @@
             crewPay:                _normCrewPay(block.crewPay,             d.crewPay),
             alliance:               _normAlliance(block.alliance,           d.alliance)
         }
+        if (liveMode) {
+            out.scheduleApplyEnabled = true
+            out.routeCreationEnabled = true
+            out.priceMovesEnabled = true
+            out.serviceMovesEnabled = true
+            out.crewMovesEnabled = true
+            out.allianceMovesEnabled = true
+            out.slotBidApplyEnabled = true
+            out.serviceApply.dryRunOnly = false
+            out.autoTick.enabled = true
+            out.autoTick.domains = Object.assign({}, out.autoTick.domains || {}, {
+                schedule: true,
+                service: true,
+                price: true,
+                crew: true,
+                routeCreation: true,
+                alliance: true,
+                slotBid: true
+            })
+            out.fleetOptimizer.targetingEnabled = true
+            if (out.fleetOptimizer.apply) {
+                out.fleetOptimizer.apply.enabled = true
+                out.fleetOptimizer.apply.dryRunOnly = false
+            }
+            out.crewPay.apply.enabled = true
+            out.crewPay.apply.dryRunOnly = false
+            out.alliance.apply.enabled = true
+            out.alliance.apply.dryRunOnly = false
+        }
+        return out
     }
 
     function _accountId() {
@@ -581,7 +611,7 @@
         return next
     }
 
-    function resolveTier(s)   { return s ? _normTier(s.tier) : "preview-only" }
+    function resolveTier(s)   { return s ? _normTier(s.tier) : "apply-auto" }
     function canApply(s, domain) {
         if (!s) return false
         if (resolveTier(s) === "preview-only") return false
@@ -607,16 +637,16 @@
     try {
         if (typeof location !== "undefined" && /[?&]aes-debug\b/.test(location.search || "")) {
             const d = _defaults()
-            console.assert(d.tier === "preview-only",                    "[smoke] default tier preview-only")
-            console.assert(d.scheduleApplyEnabled === false,             "[smoke] default schedule disabled")
+            console.assert(d.tier === "apply-auto",                      "[smoke] default tier apply-auto")
+            console.assert(d.scheduleApplyEnabled === true,              "[smoke] default schedule enabled")
             console.assert(d.objective && d.objective.kind === "balanced", "[smoke] default objective balanced")
-            console.assert(d.serviceApply && d.serviceApply.dryRunOnly === true, "[smoke] service dry-run on")
+            console.assert(d.serviceApply && d.serviceApply.dryRunOnly === false, "[smoke] service live on")
             console.assert(d.autoTick && d.autoTick.enabled === true, "[smoke] autoTick enabled by default")
-            console.assert(d.autoTick.domains.crew === false && d.autoTick.domains.routeCreation === false,
-                "[smoke] crew + routeCreation default off in autoTick")
+            console.assert(d.autoTick.domains.crew === true && d.autoTick.domains.routeCreation === true,
+                "[smoke] crew + routeCreation default on in autoTick")
             const at = _merge({autoTick: {intervalMin: 0, domains: {price: false}}}).autoTick
             console.assert(at.intervalMin === 1, "[smoke] autoTick.intervalMin clamped to 1 min floor")
-            console.assert(at.domains.price === false, "[smoke] autoTick.domains override sticks")
+            console.assert(at.domains.price === true, "[smoke] permanent-live keeps price domain on")
             console.assert(at.domains.schedule === true, "[smoke] autoTick.domains unset key keeps default")
             console.assert(canApply({tier: "preview-only", scheduleApplyEnabled: true}, "schedule") === false,
                 "[smoke] preview-only blocks schedule even when domain enabled")
@@ -648,13 +678,12 @@
                 "[smoke] serviceCosts class multipliers mirror frozen CLASS_COST_MULTIPLIER")
             console.assert(d.serviceCosts.defaultCategoryCost === 2.0,
                 "[smoke] serviceCosts defaultCategoryCost mirrors prior literal")
-            // Slice 12 — alliance defaults (apply.dryRunOnly TRUE per §4.18,
-            // allianceMovesEnabled FALSE matching other bulk-apply domains).
+            // Slice 12 — alliance defaults live in this build.
             console.assert(d.alliance && d.alliance.apply.enabled === true
-                && d.alliance.apply.dryRunOnly === true,
-                "[smoke] alliance apply gates default enabled+dryRun")
-            console.assert(d.allianceMovesEnabled === false,
-                "[smoke] allianceMovesEnabled defaults FALSE")
+                && d.alliance.apply.dryRunOnly === false,
+                "[smoke] alliance apply gates default enabled+live")
+            console.assert(d.allianceMovesEnabled === true,
+                "[smoke] allianceMovesEnabled defaults TRUE")
             console.assert(d.alliance.proposers.minNewReach === 4
                 && d.alliance.proposers.maxOverlapFraction === 0.35,
                 "[smoke] alliance proposer defaults match alliance.js DEFAULTS")

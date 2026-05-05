@@ -16,12 +16,8 @@
  * build a body, POST, verify by re-parsing the response. Two gates per
  * NORTH-STAR §4.1:
  *   - applyEnabled  — user kill switch (settings.alliance.apply.enabled)
- *   - dryRunOnly    — codebase-readiness gate; **default TRUE** because
- *                     the AS form structure for IL requests has not been
- *                     calibrated against a live AS instance in this slice.
- *                     Manual verification of the form's submit-button name
- *                     and required hidden fields is required before
- *                     flipping `dryRunOnly:false` in default-settings.js.
+ *   - dryRunOnly    — explicit rehearsal override. v0.6.9-live defaults
+ *                     it to false so validated IL request forms POST live.
  *
  * Both gates must be cleared for any POST to reach the wire. While
  * dryRunOnly is on, the applier still runs the full GET → parse → body
@@ -57,7 +53,7 @@ class AllianceIlRequestApplier {
      * @param {object} [opts]
      * @param {AllianceIlRequestApplyLog} [opts.applyLog]
      * @param {boolean} [opts.applyEnabled=true]
-     * @param {boolean} [opts.dryRunOnly=true]   — codebase gate; default ON
+     * @param {boolean} [opts.dryRunOnly=false]  — explicit rehearsal gate
      */
     constructor(server, opts) {
         if (!server) throw new Error("AllianceIlRequestApplier: server required")
@@ -65,7 +61,7 @@ class AllianceIlRequestApplier {
         this.server       = server
         this.applyLog     = opts.applyLog || null
         this.applyEnabled = opts.applyEnabled !== false
-        this.dryRunOnly   = opts.dryRunOnly !== false
+        this.dryRunOnly   = opts.dryRunOnly === true
     }
 
     static _baseUrl(server) {
@@ -212,11 +208,10 @@ class AllianceIlRequestApplier {
         const body = AllianceIlRequestApplier.buildBody(formContext)
         baseEnvelope.bodyPreview = AllianceIlRequestApplier._summariseBody(body)
 
-        // Tier gate — codebase readiness. Default ON (NORTH-STAR §4.18).
+        // Explicit rehearsal override.
         if (this.dryRunOnly) {
             return await this._completeAsDryRun(Object.assign({}, baseEnvelope, {
-                warning: "dryRunOnly=true — POST suppressed (audit logged as dry-run);"
-                    + " manually verify form structure before flipping the codebase gate"
+                warning: "dryRunOnly=true — POST suppressed (audit logged as dry-run)"
             }))
         }
         // User kill switch.

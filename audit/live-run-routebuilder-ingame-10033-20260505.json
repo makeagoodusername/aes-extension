@@ -1,0 +1,94 @@
+{
+  "ok": true,
+  "port": "10033",
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "loggedIn": true,
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?6&select=775",
+  "title": "Dashboard: Fly Gemini | Free1 | AirlineSim",
+  "routesVisited": [
+    "JFKMCO",
+    "JFKBOS",
+    "JFKORD"
+  ],
+  "result": {
+    "ok": true,
+    "seeded": [
+      {
+        "key": "routeAssistant:ticketPrice:acct:8d812d2e77ff:JFK-BOS",
+        "hub": "JFK",
+        "dest": "BOS",
+        "source": "live",
+        "fields": [
+          "cruiseSpeedKmh",
+          "dailyFlights",
+          "daysPerWeek",
+          "departureTime",
+          "dest",
+          "fareClasses",
+          "flights",
+          "hub",
+          "orsRank",
+          "ourPrice",
+          "ourYield",
+          "primaryAircraftReg"
+        ]
+      },
+      {
+        "key": "routeAssistant:ticketPrice:acct:8d812d2e77ff:JFK-MCO",
+        "hub": "JFK",
+        "dest": "MCO",
+        "source": "live",
+        "fields": [
+          "cruiseSpeedKmh",
+          "dailyFlights",
+          "daysPerWeek",
+          "departureTime",
+          "dest",
+          "fareClasses",
+          "flights",
+          "hub",
+          "orsRank",
+          "ourPrice",
+          "ourYield",
+          "primaryAircraftReg"
+        ]
+      },
+      {
+        "key": "routeAssistant:ticketPrice:acct:8d812d2e77ff:JFK-ORD",
+        "hub": "JFK",
+        "dest": "ORD",
+        "source": "live",
+        "fields": [
+          "cruiseSpeedKmh",
+          "dailyFlights",
+          "daysPerWeek",
+          "departureTime",
+          "dest",
+          "fareClasses",
+          "flights",
+          "hub",
+          "orsRank",
+          "ourPrice",
+          "ourYield",
+          "primaryAircraftReg"
+        ]
+      }
+    ],
+    "hasModal": true,
+    "hasCandidateSummary": true,
+    "hasInGameSource": true,
+    "hasMockSchedule": true,
+    "buttons": [
+      "×",
+      "ORD · D5",
+      "BOS · D5",
+      "MCO · D5",
+      "Recommend schedule"
+    ],
+    "excerpt": "Route builder — pick airports → mock schedule → apply\n×\nAIRCRAFT\nHUB\nserver: free1 · airline: live\nFLIGHTS\nAIRPORT COUNT (AUTO)\nBASE DEPART\nFIRST DAY\nMon\nTue\nWed\nThu\nFri\nSat\nSun\nTURNAROUND (MIN)\nCANDIDATE ROUTES - ROUTE ASSISTANT IN-GAME DATA + FLIGHTSFROM\n3 candidates from ticket-price cache 3 · AS schedule 3 · 3 with AS data\nORD · D5\nBOS · D5\nMCO · D5\nDEST\nSCORE\nDEMAND\nLIVE\nPRICE\nCMP\nMKT\nACTUAL\nSOURCE\nORD\n50\nP5 / C-\n20/wk 18:20\n-\n-\n-\n-\nticket-price cache + AS schedule\nBOS\n50\nP5 / C-\n14/wk 00:10\n-\n-\n-\n-\nticket-price cache + AS schedule\nMCO\n50\nP5 / C-\n6/wk 09:45\n-\n-\n-\n-\nticket-price cache + AS schedule\nSequential long-haul placement\nHide scheduled\nRecommend schedule\nno selected airports have usable route distance"
+  },
+  "screenshot": "/Users/jihwan/Downloads/AES.v0.6.9/audit/live-run-routebuilder-ingame-10033-20260505.png",
+  "consoleRows": [],
+  "pageErrors": []
+}

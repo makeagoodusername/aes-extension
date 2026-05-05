@@ -14,6 +14,12 @@
     if (window.RouteAssistantPricingPlumbing) return
 
     const CLASS_KEYS = ["Y", "C", "F", "Cargo"]
+    const DEFAULT_LIVE_SCOPES = {
+        manual: true,
+        bulk: true,
+        silentAuto: true,
+        bulkRecommended: true
+    }
 
     function _num(v) {
         if (v === null || v === undefined || v === "") return null
@@ -23,10 +29,16 @@
 
     function normaliseApplyBlock(apply) {
         const src = apply && typeof apply === "object" ? apply : {}
+        const liveScopes = Object.assign(
+            {},
+            DEFAULT_LIVE_SCOPES,
+            (src.liveScopes && typeof src.liveScopes === "object") ? src.liveScopes : {}
+        )
+        if (src.permanentLiveMode === true) Object.assign(liveScopes, DEFAULT_LIVE_SCOPES)
         return {
             enabled: src.enabled !== false,
-            dryRunOnly: src.dryRunOnly !== false,
-            liveScopes: (src.liveScopes && typeof src.liveScopes === "object") ? src.liveScopes : {}
+            dryRunOnly: src.permanentLiveMode === true ? false : src.dryRunOnly === true,
+            liveScopes
         }
     }
 
@@ -34,7 +46,7 @@
         const a = normaliseApplyBlock(apply)
         const o = opts || {}
         const scope = scopeName || null
-        const scopeLiveAllowed = scope ? a.liveScopes[scope] === true : true
+        const scopeLiveAllowed = scope ? a.liveScopes[scope] !== false : true
         const forcedDryRun = !!o.forceDryRun
         const dryRun = forcedDryRun || a.dryRunOnly || !a.enabled || !scopeLiveAllowed
         const reason = forcedDryRun ? "forced-dry-run"
@@ -120,6 +132,7 @@
 
     window.RouteAssistantPricingPlumbing = {
         CLASS_KEYS,
+        DEFAULT_LIVE_SCOPES,
         normaliseApplyBlock,
         resolveApplyGate,
         classEnabledMap,

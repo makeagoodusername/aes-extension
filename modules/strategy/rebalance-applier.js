@@ -5,17 +5,14 @@
  *
  * Closes the loop on Phase 3's preview-only proposers
  * (`AesStrategy.proposeRebalanceMoves` in `rebalance-moves.js`). Takes a
- * `RebalanceProposal` and either applies it via the existing schedule-
- * presets store (for the two wave-shape kinds) or returns advisory when
+ * `RebalanceProposal` and applies it via the existing schedule-presets
+ * store (for the two wave-shape kinds) or returns advisory when
  * the kind isn't yet wireable end-to-end.
  *
- * Two-gate model (§4.1):
+ * Live gate model:
  *   apply.enabled       — kill switch (user opt-in). Default false →
  *                         applier returns {status: "skipped",
  *                         reason: "apply.enabled=false"}.
- *   apply.dryRunOnly    — slice-readiness gate. Default true → mutations
- *                         skipped; returns {status: "dry-run", preview}.
- *   BOTH must be off-default-false flipped before any real write.
  *
  * Anti-spiral (§4.17):
  *   apply.cooldownMinutes  — minimum gap between successful applies.
@@ -28,7 +25,7 @@
  *
  * ApplyResult:
  *   {
- *     status:     "applied"|"dry-run"|"skipped"|"failed"|"advisory",
+ *     status:     "applied"|"skipped"|"failed"|"advisory",
  *     proposalId: string,
  *     kind:       string,
  *     hubIata:    string|null,
@@ -36,12 +33,12 @@
  *     waveId?:    string,    // when known
  *     reason?:    string,    // when status in skipped/advisory
  *     error?:     string,    // when status === "failed"
- *     preview?:   object,    // dry-run preview of what WOULD change
+ *     preview?:   object,    // applied change summary
  *     ts:         number,
  *     logId:      string|null
  *   }
  *
- * Bus events emitted on success/dry-run:
+ * Bus events emitted on success:
  *   "fleet-optimizer:proposal-applied" (CentralHubBus + AesStrategy.bus)
  *
  * Outcomes (LEARN — §4.5):
@@ -92,7 +89,7 @@
 
     /**
      * Best-effort outcome recording for the LEARN loop. Snapshot is
-     * fetched lazily so dry-run paths can skip the work entirely.
+     * fetched lazily after a confirmed applied status.
      */
     async function _recordOutcome(proposal, ctx) {
         try {
@@ -174,7 +171,7 @@
         return w
     }
 
-    async function _doWaveAdd(proposal, dryRun) {
+    async function _doWaveAdd(proposal) {
         const hub = String(proposal.hubIata || "").toUpperCase()
         if (!hub) return {ok: false, error: "wave-add: no hubIata in proposal"}
         if (typeof SchedulePresets === "undefined" || !SchedulePresets.load) {
@@ -194,8 +191,6 @@
                 composition: wave.composition
             }
         }
-        if (dryRun) return {ok: true, dryRun: true, preview}
-
         if (!preset) {
             preset = await _createStarterPresetForHub(hub, wave)
             return {ok: true, presetId: preset.id, waveId: wave.id, preview}
@@ -206,7 +201,7 @@
         return {ok: true, presetId: preset.id, waveId: wave.id, preview}
     }
 
-    async function _doWaveDensify(proposal, dryRun) {
+    async function _doWaveDensify(proposal) {
         const p = proposal.payload || {}
         const presetId = String(p.presetId || "")
         const waveId   = String(p.waveId   || "")
@@ -229,8 +224,6 @@
             presetId, waveId,
             shortHaul: {before: cur, after: next, delta}
         }
-        if (dryRun) return {ok: true, dryRun: true, preview}
-
         wave.composition = Object.assign(
             {shortHaul: 0, mediumHaul: 0, longHaul: 0, byDay: null},
             wave.composition || {},
@@ -300,11 +293,7 @@
         }
 
         // ── Anti-spiral cap (§4.17) ─────────────────────────────────────
-        // Only gate on cooldown/cap when a live write is about to happen —
-        // dry-runs and skipped paths don't count toward the cap (the log
-        // counters already filter to status === "applied", so this is the
-        // outer optimization that skips the whole DB read on dry-run).
-        if (typeof window.AesStrategyRebalanceApplyLog === "function" && !ag.dryRunOnly) {
+        if (typeof window.AesStrategyRebalanceApplyLog === "function") {
             try {
                 const log = new window.AesStrategyRebalanceApplyLog()
                 const sinceDay = ts - 24 * 3600 * 1000
@@ -333,14 +322,12 @@
             } catch (_) { /* fall through — log issues never block apply */ }
         }
 
-        const dryRun = ag.dryRunOnly === true
-
         // ── Sub-router ──────────────────────────────────────────────────
         let r = null
         if (proposal.kind === "wave-add") {
-            r = await _doWaveAdd(proposal, dryRun)
+            r = await _doWaveAdd(proposal)
         } else if (proposal.kind === "wave-densify") {
-            r = await _doWaveDensify(proposal, dryRun)
+            r = await _doWaveDensify(proposal)
         } else if (proposal.kind === "service-profile-promote") {
             r = await _doServicePromote(proposal)
         } else {
@@ -362,7 +349,7 @@
                     ts, logId}
         }
 
-        const status = r.dryRun ? "dry-run" : "applied"
+        const status = "applied"
         const presetId = r.presetId || null
         const waveId   = r.waveId   || null
         const logId = await _logEntry(Object.assign({}, baseRecord, {
@@ -370,7 +357,7 @@
             presetId,
             waveId,
             payload: Object.assign({}, baseRecord.payload || {}, {preview: r.preview || null}),
-            dryRun:  !!r.dryRun
+            dryRun:  false
         }))
 
         _emitBus("fleet-optimizer:proposal-applied", {

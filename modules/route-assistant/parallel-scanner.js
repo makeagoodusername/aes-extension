@@ -62,11 +62,16 @@ class RouteAssistantParallelScanner {
      *   {phase: "seeding"|"done", total, fetched, failedCountries,
      *    currentCountryId?, currentCountryName?}
      */
-    async seedAllCountries() {
+    async seedAllCountries(opts) {
+        opts = opts || {}
         const countries = await CountryScraper.loadCountriesList(this.server)
+        const seededCountryIds = opts.force ? new Set() : await this._loadSeededCountryIds()
+        const todoCountries = countries.filter(c => !seededCountryIds.has(String(c && c.id)))
         const state = {
             phase: "seeding",
-            total: countries.length,
+            total: todoCountries.length,
+            allCountries: countries.length,
+            skippedCountries: countries.length - todoCountries.length,
             fetched: 0,
             airportsSeeded: 0,
             failedCountries: [],
@@ -75,24 +80,24 @@ class RouteAssistantParallelScanner {
             activeCountries: []
         }
         this._notify(state)
-        if (!countries.length) {
+        if (!todoCountries.length) {
             state.phase = "done"
             this._notify(state)
             return state
         }
 
         let next = 0
-        const workerCount = Math.max(1, Math.min(this.concurrency || 1, countries.length))
+        const workerCount = Math.max(1, Math.min(this.concurrency || 1, todoCountries.length))
         const active = new Map()
         const workers = []
         for (let w = 0; w < workerCount; w++) {
             workers.push((async () => {
                 while (!this._aborted) {
                     const i = next++
-                    if (i >= countries.length) return
-                    const c = countries[i]
+                    if (i >= todoCountries.length) return
+                    const c = todoCountries[i]
                     await this._seedOneCountry(c, state, active)
-                    if (i < countries.length - 1 && !this._aborted) await sleep(this.staggerMs)
+                    if (i < todoCountries.length - 1 && !this._aborted) await sleep(this.staggerMs)
                 }
             })())
         }
@@ -104,6 +109,30 @@ class RouteAssistantParallelScanner {
         state.activeCountries = []
         this._notify(state)
         return state
+    }
+
+    async _loadSeededCountryIds() {
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return new Set()
+        const demandStore = (typeof RouteAssistantDemandStore !== "undefined")
+            ? RouteAssistantDemandStore
+            : null
+        const prefix = (demandStore && demandStore.KEY_PREFIX)
+            || "routeAssistant:demand:"
+        const maxAgeMs = Number(demandStore && demandStore.MAX_AGE_MS)
+            || 30 * 24 * 60 * 60 * 1000
+        const cutoff = Date.now() - maxAgeMs
+        let all = {}
+        try { all = await chrome.storage.local.get(null) || {} }
+        catch (_) { return new Set() }
+        const seeded = new Set()
+        for (const key in all) {
+            if (key.indexOf(prefix) !== 0) continue
+            const rec = all[key]
+            const countryId = rec && rec.countryId
+            const scrapedAt = Number(rec && rec.scrapedAt) || 0
+            if (countryId != null && scrapedAt >= cutoff) seeded.add(String(countryId))
+        }
+        return seeded
     }
 
     async _seedOneCountry(c, state, active) {

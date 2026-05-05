@@ -1,0 +1,357 @@
+{
+  "ok": false,
+  "mode": "demand-seed-first",
+  "port": "9863",
+  "server": "free1.airlinesim.aero",
+  "startedAt": "2026-05-04T11:59:33.457Z",
+  "progress": [
+    {
+      "at": "2026-05-04T11:59:41.998Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 0,
+      "airportsSeeded": 0,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Croatia",
+        "Cuba"
+      ],
+      "currentCountryId": "85",
+      "currentCountryName": "Cuba"
+    },
+    {
+      "at": "2026-05-04T11:59:47.008Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 3,
+      "airportsSeeded": 30,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Cyprus - Republic of (greek)"
+      ],
+      "currentCountryId": "192",
+      "currentCountryName": "Cyprus - \"TRNC\" (turkish)"
+    },
+    {
+      "at": "2026-05-04T11:59:52.018Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 5,
+      "airportsSeeded": 38,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Denmark"
+      ],
+      "currentCountryId": "173",
+      "currentCountryName": "Czech Republic"
+    },
+    {
+      "at": "2026-05-04T11:59:57.028Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 8,
+      "airportsSeeded": 53,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China"
+      ],
+      "currentCountryId": "37",
+      "currentCountryName": "Dominica"
+    },
+    {
+      "at": "2026-05-04T12:00:02.039Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 9,
+      "airportsSeeded": 65,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "DR Congo"
+      ],
+      "currentCountryId": "38",
+      "currentCountryName": "Dominican Republic"
+    },
+    {
+      "at": "2026-05-04T12:00:07.055Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 11,
+      "airportsSeeded": 97,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Egypt"
+      ],
+      "currentCountryId": "40",
+      "currentCountryName": "Ecuador"
+    },
+    {
+      "at": "2026-05-04T12:00:12.070Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 13,
+      "airportsSeeded": 117,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Equatorial Guinea",
+        "Eritrea"
+      ],
+      "currentCountryId": "43",
+      "currentCountryName": "Eritrea"
+    },
+    {
+      "at": "2026-05-04T12:00:17.086Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 15,
+      "airportsSeeded": 123,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Estonia",
+        "Eswatini"
+      ],
+      "currentCountryId": "163",
+      "currentCountryName": "Eswatini"
+    },
+    {
+      "at": "2026-05-04T12:00:22.106Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 17,
+      "airportsSeeded": 129,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Ethiopia",
+        "Fiji"
+      ],
+      "currentCountryId": "45",
+      "currentCountryName": "Fiji"
+    },
+    {
+      "at": "2026-05-04T12:00:27.125Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 19,
+      "airportsSeeded": 175,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Finland",
+        "France"
+      ],
+      "currentCountryId": "47",
+      "currentCountryName": "France"
+    },
+    {
+      "at": "2026-05-04T12:00:32.155Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 21,
+      "airportsSeeded": 267,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Gabon"
+      ],
+      "currentCountryId": "48",
+      "currentCountryName": "Gabon"
+    },
+    {
+      "at": "2026-05-04T12:00:37.178Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 24,
+      "airportsSeeded": 282,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Germany"
+      ],
+      "currentCountryId": "50",
+      "currentCountryName": "Georgia"
+    },
+    {
+      "at": "2026-05-04T12:00:42.205Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 26,
+      "airportsSeeded": 340,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China"
+      ],
+      "currentCountryId": "51",
+      "currentCountryName": "Ghana"
+    },
+    {
+      "at": "2026-05-04T12:00:47.245Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 28,
+      "airportsSeeded": 381,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China",
+        "Guatemala"
+      ],
+      "currentCountryId": "53",
+      "currentCountryName": "Greece"
+    },
+    {
+      "at": "2026-05-04T12:00:52.273Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 31,
+      "airportsSeeded": 387,
+      "failedCountries": 0,
+      "activeCountries": [
+        "China"
+      ],
+      "currentCountryId": "56",
+      "currentCountryName": "Guinea"
+    },
+    {
+      "at": "2026-05-04T12:00:57.301Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 34,
+      "airportsSeeded": 663,
+      "failedCountries": 0,
+      "activeCountries": [
+        "Honduras",
+        "Hungary",
+        "Iceland"
+      ],
+      "currentCountryId": "66",
+      "currentCountryName": "Iceland"
+    },
+    {
+      "at": "2026-05-04T12:01:23.931Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 40,
+      "airportsSeeded": 777,
+      "failedCountries": 0,
+      "activeCountries": [
+        "India",
+        "Indonesia",
+        "Israel"
+      ],
+      "currentCountryId": "67",
+      "currentCountryName": "Israel"
+    },
+    {
+      "at": "2026-05-04T12:01:29.084Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 45,
+      "airportsSeeded": 980,
+      "failedCountries": 0,
+      "activeCountries": [
+        "India",
+        "Japan"
+      ],
+      "currentCountryId": "69",
+      "currentCountryName": "Jamaica"
+    },
+    {
+      "at": "2026-05-04T12:01:41.195Z",
+      "phase": "seeding",
+      "total": 154,
+      "fetched": 49,
+      "airportsSeeded": 1096,
+      "failedCountries": 0,
+      "activeCountries": [
+        "India",
+        "Kiribati",
+        "Kosovo"
+      ],
+      "currentCountryId": "194",
+      "currentCountryName": "Kosovo"
+    }
+  ],
+  "before": {
+    "demand": 996,
+    "topRoutes": 0,
+    "marketsCompetitors": 0,
+    "marketsOwnPricing": 0,
+    "inventory": 0,
+    "ors": 0,
+    "aircraftFleet": 0,
+    "aircraftFlights": 0,
+    "maintenance": 0,
+    "sampleDemand": [
+      {
+        "airportId": "53",
+        "cargoScore": 1,
+        "countryId": "6",
+        "countryName": "Algeria",
+        "iata": "AAE",
+        "name": "Annaba",
+        "paxScore": 3,
+        "scrapedAt": 1777895894465,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "400",
+        "cargoScore": 0,
+        "countryId": "24",
+        "countryName": "Brazil",
+        "iata": "AAX",
+        "name": "Araxa",
+        "paxScore": 1,
+        "scrapedAt": 1777895938949,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "211",
+        "cargoScore": 0,
+        "countryId": "12",
+        "countryName": "Australia",
+        "iata": "ABM",
+        "name": "Bamaga",
+        "paxScore": 1,
+        "scrapedAt": 1777895922489,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "164",
+        "cargoScore": 0,
+        "countryId": "12",
+        "countryName": "Australia",
+        "iata": "ABX",
+        "name": "Albury",
+        "paxScore": 3,
+        "scrapedAt": 1777895922489,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "4090",
+        "cargoScore": 0,
+        "countryId": "81",
+        "countryName": "Colombia",
+        "iata": "ACD",
+        "name": "Acandi",
+        "paxScore": 1,
+        "scrapedAt": 1777895961560,
+        "sizeScore": 10
+      }
+    ]
+  },
+  "after": null,
+  "result": null,
+  "errors": [
+    "browserContext.newCDPSession: Target page, context or browser has been closed"
+  ],
+  "start": {
+    "started": true
+  },
+  "completedAt": "2026-05-04T12:01:46.197Z"
+}

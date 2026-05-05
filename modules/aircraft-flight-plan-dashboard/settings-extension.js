@@ -3,18 +3,19 @@
 /**
  * AFP Dashboard — settings shell.
  *
- * Tier 1 hard-codes both safety gates (`dryRunOnly: true`, `applyEnabled: false`)
- * regardless of stored values. The store is wired now so Tier 2 can flip them
- * without a separate migration; until then `load()` returns the locked T1
- * shape and `save()` is a no-op (with a console warn) so a curious user
- * editing storage by hand can't accidentally enable live POSTs.
+ * Live-write settings for the Fleet Hub AFP dashboard.
+ *
+ * Earlier tiers hard-coded `dryRunOnly: true` and ignored saves. The dashboard
+ * now defaults to live one-leg POSTs and persists edits normally; callers can
+ * still force a one-off dry-run by passing `opts.dryRun` to the applier.
  */
 class AesAfpDashboardSettings {
     static KEY = "aircraftFlightPlanDashboard:settings"
 
-    static T1_LOCKED = {
-        dryRunOnly:                 true,    // Tier 2 will allow false
-        applyEnabled:               false,   // Tier 2 will allow true
+    static DEFAULTS = {
+        permanentLiveMode:          true,
+        dryRunOnly:                 false,
+        applyEnabled:               true,
         cooldownMinPerAircraft:     5,
         circuitBreakerTrippedAt:    null,
         maxBulkPostsPerRun:         50,
@@ -28,18 +29,26 @@ class AesAfpDashboardSettings {
             stored = got[AesAfpDashboardSettings.KEY] || null
         } catch (e) { /* non-fatal */ }
 
-        const merged = Object.assign({}, AesAfpDashboardSettings.T1_LOCKED, stored || {})
-        // Force the T1 invariants regardless of whatever's in storage.
-        merged.dryRunOnly   = true
-        merged.applyEnabled = false
+        const merged = Object.assign({}, AesAfpDashboardSettings.DEFAULTS, stored || {})
+        merged.permanentLiveMode = merged.permanentLiveMode !== false
+        merged.dryRunOnly = merged.permanentLiveMode ? false : merged.dryRunOnly === true
+        merged.applyEnabled = merged.permanentLiveMode ? true : merged.applyEnabled !== false
+        merged.cooldownMinPerAircraft = isFinite(merged.cooldownMinPerAircraft)
+            ? Math.max(0, Number(merged.cooldownMinPerAircraft))
+            : AesAfpDashboardSettings.DEFAULTS.cooldownMinPerAircraft
+        merged.maxBulkPostsPerRun = isFinite(merged.maxBulkPostsPerRun)
+            ? Math.max(1, Number(merged.maxBulkPostsPerRun))
+            : AesAfpDashboardSettings.DEFAULTS.maxBulkPostsPerRun
+        merged.staggerMs = isFinite(merged.staggerMs)
+            ? Math.max(0, Number(merged.staggerMs))
+            : AesAfpDashboardSettings.DEFAULTS.staggerMs
         return merged
     }
 
     static async save(patch) {
-        // Tier 1 is read-only. We accept the call so callers don't break,
-        // but log so anyone wiring a settings UI early sees it during
-        // development.
-        console.warn("[AES afp-dashboard] settings.save is a no-op in Tier 1; gates are locked", patch)
+        const current = await AesAfpDashboardSettings.load()
+        const next = Object.assign({}, current, patch || {})
+        await chrome.storage.local.set({[AesAfpDashboardSettings.KEY]: next})
         return AesAfpDashboardSettings.load()
     }
 }

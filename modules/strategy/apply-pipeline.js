@@ -132,7 +132,7 @@
     function _now()      { return Date.now() }
 
     async function _routeAssistantPricingApplyConfig() {
-        const safe = {enabled: false, dryRunOnly: true}
+        const safe = {enabled: true, dryRunOnly: false}
         const loader = window.RouteAssistantSettings
         if (!loader || typeof loader.load !== "function") return safe
         try {
@@ -140,8 +140,8 @@
             const apply = settings && settings.pricing && settings.pricing.apply
             if (!apply || typeof apply !== "object") return safe
             return {
-                enabled:    apply.enabled === true,
-                dryRunOnly: apply.dryRunOnly !== false
+                enabled:    apply.enabled !== false,
+                dryRunOnly: apply.dryRunOnly === true
             }
         } catch (_) {
             return safe
@@ -368,10 +368,11 @@
             }
             return {ok: false, error: "missing server"}
         }
-        // Resolve service-profile dry-run from strategy settings; defaults
-        // to dryRunOnly=true so accidental wires can't push real changes.
+        // Resolve service-profile dry-run from strategy settings. Live-run
+        // builds default to real writes unless the user explicitly re-arms
+        // dryRunOnly.
         const settingsLoader = _settings()
-        let serviceApply = {dryRunOnly: true}
+        let serviceApply = {dryRunOnly: false}
         if (settingsLoader && typeof settingsLoader.load === "function") {
             try {
                 const s = await settingsLoader.load()
@@ -704,11 +705,12 @@
      * IL requests are bilateral; the engine sends a request and the
      * partner has to accept on their side. This sub-pipeline drives only
      * the *send* path via `AllianceIlRequestApplier`, which has its own
-     * two-gate model (applyEnabled + dryRunOnly, default dryRunOnly=true).
+     * two-gate model (applyEnabled + dryRunOnly, live by default in this
+     * permanent-live build unless an explicit rehearsal override is set).
      * Strategy's tier + domain gates have already cleared by the time we
      * get here; we still re-apply the per-applier kill switches because
      * the user can have, for instance, `allianceMovesEnabled:true` on the
-     * pipeline while keeping dryRunOnly:true on the applier itself.
+     * pipeline while explicitly keeping dryRunOnly:true on the applier itself.
      *
      * `alliance-join` decisions never reach this sub-pipeline because they
      * carry `applicable:false` — diff-plan filters them into the advisory
@@ -742,7 +744,7 @@
         const applier = new window.AllianceIlRequestApplier(server, {
             applyLog:     applyLog,
             applyEnabled: allianceCfg.enabled    !== false,
-            dryRunOnly:   allianceCfg.dryRunOnly !== false
+            dryRunOnly:   allianceCfg.dryRunOnly === true
         })
 
         let allOk = true
@@ -801,10 +803,10 @@
     /**
      * Slice 20 — slot bid sub-pipeline.
      *
-     * The live AS bid form is not mapped yet, so Strategy deliberately
-     * routes this as a dry-run queue/logging path. AesSlotBidder still
-     * records the attempt to AesSlotStore, which gives the Strategy menu
-     * a real, inspectable action without risking a live slot write.
+     * The live AS bid form is not mapped yet. Strategy routes decisions
+     * through AesSlotBidder so every attempted live bid is logged, but
+     * the bidder fails closed with `form-shape-not-yet-mapped` until the
+     * POST body can be built from a verified AS sample.
      */
     async function _applySlotBids(decisions, ctx, applied, skipped, opts) {
         if (!decisions.length) return {ok: true}
@@ -825,7 +827,7 @@
                 iata:      p.iata || p.airport || null,
                 slotId:    p.slotId || null,
                 bidAmount: bidAmount,
-                dryRun:    true
+                dryRun:    false
             }
             try {
                 const r = await window.AesSlotBidder.apply(req)
@@ -874,7 +876,7 @@
                 applyLog:     typeof window.CrewMgmtPayTierApplyLog === "function"
                     ? new window.CrewMgmtPayTierApplyLog() : null,
                 applyEnabled: payCfg.enabled !== false,
-                dryRunOnly:   payCfg.dryRunOnly !== false
+                dryRunOnly:   payCfg.dryRunOnly === true
             })
             : null
         let allOk = true
@@ -1310,13 +1312,13 @@
     // ── ?aes-debug smoke (offline, no AS calls) ──────────────────────────
     try {
         if (typeof location !== "undefined" && /[?&]aes-debug\b/.test(location.search || "")) {
-            // Tier-gate short-circuit smoke — relies on default-settings being
-            // loaded; if not, this assertion is benign (preview-only is default).
+            // Permanent-live default smoke — relies on default-settings being
+            // loaded; if not, this assertion is benign.
             (async function () {
                 const r = await apply({planId: "smoke", perAircraft: [], priceMoves: [],
                                         serviceMoves: [], crewMoves: [], routeCreations: []})
-                console.assert(r && r.aborted === true,
-                    "[smoke strategy/apply] empty plan with default settings → aborted preview-only")
+                console.assert(r && r.aborted !== true,
+                    "[smoke strategy/apply] empty plan with default settings → live tier no-op")
             })().catch(() => {})
         }
     } catch (_) { /* never let smoke break the page */ }

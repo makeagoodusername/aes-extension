@@ -308,7 +308,11 @@
      *     uniqueCount, sevenDayCount
      *   }
      */
-    function _scheduleFromRecords(records, carrierIata, anchorIata, nowMs) {
+    function _scheduleFromRecords(records, carrierIata, anchorIata, typeSpecs, nowMs) {
+        if (typeof typeSpecs === "number" && nowMs == null) {
+            nowMs = typeSpecs
+            typeSpecs = null
+        }
         const now = isFinite(nowMs) ? nowMs : Date.now()
         const sevenDaysAgo = now - 7 * 86400000
         const carrier = String(carrierIata || "").toUpperCase()
@@ -317,8 +321,7 @@
             return {flights: [], banks: [], uniqueCount: 0, sevenDayCount: 0}
         }
         const re = new RegExp("^" + carrier + "\\s*\\d", "i")
-        const seen = new Set()                // flightId+depTimeUtc — dedupes service-class triplets
-        const flights = []
+        const rows = []
         const last7 = new Set()
         for (const rec of records || []) {
             if (!rec || !rec.competitors) continue
@@ -332,27 +335,29 @@
                 if (!re.test(code)) continue
                 const fid = c.flightId != null ? String(c.flightId) : (code + "@" + (c.depTimeUtc || ""))
                 const depKey = fid + "|" + (c.depTimeUtc || "")
-                if (seen.has(depKey)) continue
-                seen.add(depKey)
                 const depMin = _hhmmToMin(c.depTimeUtc)
                 const arrMin = _hhmmToMin(c.arrTimeUtc)
                 if (depMin == null) continue
-                flights.push({
+                rows.push(Object.assign({}, c, {
+                    hub, dest,
                     routePair: hub + "→" + dest,
                     dir,
-                    flightCode: code,
-                    depHHMM: c.depTimeUtc || "",
-                    arrHHMM: c.arrTimeUtc || "",
-                    typeCode: c.typeCode || null,
                     depMin,
                     arrMin
-                })
+                }))
                 if (c.depDateUtc) {
                     const depMs = Date.parse(c.depDateUtc + "T" + (c.depTimeUtc || "00:00") + "Z")
                     if (isFinite(depMs) && depMs >= sevenDaysAgo) last7.add(depKey)
                 }
             }
         }
+        const flights = _buildFlightInstances(rows, typeSpecs).map(f => {
+            f.depMin = _hhmmToMin(f.depTimeUtc || f.depTimeLocal)
+            f.arrMin = _hhmmToMin(f.arrTimeUtc || f.arrTimeLocal)
+            f.depHHMM = f.depTimeUtc || f.depTimeLocal || ""
+            f.arrHHMM = f.arrTimeUtc || f.arrTimeLocal || ""
+            return f
+        }).filter(f => f.depMin != null)
         // Bank detection — bin departures into 30-min windows; report top peaks.
         const bins = new Array(48).fill(0)
         for (const f of flights) {
@@ -388,6 +393,113 @@
         const h = Math.floor(min / 60)
         const m = min % 60
         return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0")
+    }
+
+    function _flightDetailApi() {
+        return (typeof window !== "undefined") ? window.RouteAssistantCompetitorFlightDetails : null
+    }
+
+    function _collectTypeIdsFromRecords(records) {
+        const ids = new Set()
+        for (const rec of records || []) {
+            for (const c of ((rec && rec.competitors) || [])) {
+                const n = Number(c && c.typeId)
+                if (isFinite(n) && n > 0) ids.add(n)
+            }
+        }
+        return Array.from(ids)
+    }
+
+    async function _loadTypeSpecsForRecords(records) {
+        const ids = _collectTypeIdsFromRecords(records)
+        if (!ids.length) return new Map()
+        if (typeof RouteAssistantTypeSpecsStore !== "undefined"
+                && typeof RouteAssistantTypeSpecsStore.getMany === "function") {
+            try {
+                return await RouteAssistantTypeSpecsStore.getMany(ids)
+            } catch (e) {
+                console.warn("[AES competitor-map] type-spec bulk load failed", e)
+            }
+        }
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return new Map()
+        const keys = ids.map(id => "routeAssistant:typeSpec:" + id)
+        const raw = await new Promise(resolve => chrome.storage.local.get(keys, resolve))
+        const out = new Map()
+        for (const k of keys) {
+            const rec = raw[k]
+            if (rec && rec.typeId != null) out.set(Number(rec.typeId), rec)
+        }
+        return out
+    }
+
+    function _buildFlightInstances(rows, typeSpecs) {
+        const api = _flightDetailApi()
+        if (api && typeof api.buildFlightInstances === "function") {
+            return api.buildFlightInstances(rows, {typeSpecs})
+        }
+        const seen = new Map()
+        for (const f of rows || []) {
+            if (!f || f.isOurs) continue
+            const key = [
+                f.flightId != null ? "id:" + f.flightId : "",
+                f.flightCode || "",
+                f.depDateLocal || "",
+                f.depTimeLocal || f.depTimeUtc || "",
+                f.typeId || f.typeCode || ""
+            ].join("|")
+            let inst = seen.get(key)
+            if (!inst) {
+                inst = {
+                    hub: f.hub || null, dest: f.dest || null,
+                    routePair: f.routePair || null, dir: f.dir || null,
+                    flightCode: f.flightCode || null, flightId: f.flightId || null,
+                    typeCode: f.typeCode || null, typeId: f.typeId || null,
+                    depDateLocal: f.depDateLocal || null,
+                    depTimeLocal: f.depTimeLocal || null,
+                    depTimeUtc: f.depTimeUtc || null,
+                    arrTimeLocal: f.arrTimeLocal || null,
+                    arrTimeUtc: f.arrTimeUtc || null,
+                    status: f.status || null,
+                    seatCapacity: f.seatCapacity || null,
+                    cargoCapacity: f.cargoCapacity || null,
+                    classes: {}
+                }
+                const spec = typeSpecs && (typeSpecs.get(Number(f.typeId)) || typeSpecs.get(String(f.typeId)))
+                if (spec) {
+                    if (inst.seatCapacity == null && spec.seats != null) inst.seatCapacity = spec.seats
+                    if (inst.cargoCapacity == null && spec.cargoCapacity != null) inst.cargoCapacity = spec.cargoCapacity
+                }
+                seen.set(key, inst)
+            }
+            const cls = String(f.serviceClass || "").trim() || "?"
+            inst.classes[cls] = {
+                price: f.price,
+                capacity: f.capacity,
+                booked: f.booked,
+                loadPct: f.loadPct,
+                availability: f.availability
+            }
+        }
+        return Array.from(seen.values()).sort((a, b) =>
+            String(a.depTimeLocal || a.depTimeUtc || "").localeCompare(String(b.depTimeLocal || b.depTimeUtc || ""))
+            || String(a.flightCode || "").localeCompare(String(b.flightCode || "")))
+    }
+
+    function _formatFlightLine(f) {
+        const api = _flightDetailApi()
+        if (api && typeof api.formatFlightLine === "function") return api.formatFlightLine(f)
+        const bits = []
+        if (f.routePair) bits.push(f.routePair)
+        if (f.depTimeLocal || f.depTimeUtc) bits.push("dep " + (f.depTimeLocal || f.depTimeUtc))
+        if (f.typeCode) bits.push(f.typeCode)
+        if (f.seatCapacity != null) bits.push(Number(f.seatCapacity).toLocaleString() + " seats")
+        return (f.flightCode || "flight") + (bits.length ? " | " + bits.join(" | ") : "")
+    }
+
+    function _formatFlightClasses(f) {
+        const api = _flightDetailApi()
+        if (api && typeof api.formatFlightClasses === "function") return api.formatFlightClasses(f)
+        return ""
     }
 
     /**
@@ -452,7 +564,8 @@
         paneHost.appendChild(wrap)
 
         const records = await _loadRecordsForAirport(airportIata)
-        const proj = _scheduleFromRecords(records, carrier.iata, airportIata)
+        const typeSpecs = await _loadTypeSpecsForRecords(records)
+        const proj = _scheduleFromRecords(records, carrier.iata, airportIata, typeSpecs)
         title.querySelector("div").textContent = proj.uniqueCount
             + " unique flight" + (proj.uniqueCount === 1 ? "" : "s")
             + " · " + proj.sevenDayCount + " in last 7d"
@@ -521,6 +634,8 @@
                 tip.textContent = f.flightCode + " · " + f.depHHMM
                     + (f.arrHHMM ? " → " + f.arrHHMM : "")
                     + (f.typeCode ? " · " + f.typeCode : "")
+                    + (f.seatCapacity != null ? " · " + f.seatCapacity + " seats" : "")
+                    + (_formatFlightClasses(f) ? " · " + _formatFlightClasses(f) : "")
                 const fill = p.dir === "out" ? "#38bdf8" : "#a78bfa"
                 const bar = _svg("rect", {
                     x, y: yTop + 1, width: w, height: rowH - 2,
@@ -537,6 +652,72 @@
             banksLine.innerHTML = "<span style='color:#94a3b8;'>BANKS:</span> "
                 + proj.banks.map(b => "<b>" + _minToHHMM(b.peakMin) + "</b> ×" + b.count).join(" · ")
             wrap.appendChild(banksLine)
+        }
+        _renderFlightRowsTable(wrap, proj.flights, {limit: 14})
+    }
+
+    function _renderFlightRowsTable(host, flights, opts) {
+        opts = opts || {}
+        const list = (flights || []).slice().sort((a, b) =>
+            String(a.depTimeLocal || a.depTimeUtc || "").localeCompare(String(b.depTimeLocal || b.depTimeUtc || ""))
+            || String(a.flightCode || "").localeCompare(String(b.flightCode || "")))
+        if (!list.length) return
+        const limit = opts.limit || 12
+        const tbl = document.createElement("table")
+        tbl.style.cssText = "width:100%;border-collapse:collapse;font-size:10px;margin-top:8px;"
+        const thead = document.createElement("thead")
+        thead.innerHTML = "<tr style='color:#94a3b8;text-align:left;text-transform:uppercase;'>"
+            + "<th style='padding:4px 6px;'>Flight</th>"
+            + "<th style='padding:4px 6px;'>Route</th>"
+            + "<th style='padding:4px 6px;'>Dep</th>"
+            + "<th style='padding:4px 6px;'>Aircraft</th>"
+            + "<th style='padding:4px 6px;text-align:right;'>Seats</th>"
+            + "<th style='padding:4px 6px;'>Prices / capacity</th>"
+            + "</tr>"
+        tbl.appendChild(thead)
+        const tbody = document.createElement("tbody")
+        for (const f of list.slice(0, limit)) {
+            const tr = document.createElement("tr")
+            tr.style.cssText = "border-top:1px solid #1f2937;color:#cbd5e1;"
+            tr.title = _formatFlightLine(f)
+            const code = document.createElement("td")
+            code.style.cssText = "padding:4px 6px;font-family:var(--aes-font-mono,monospace);color:#93c5fd;"
+            if (f.flightId) {
+                const a = document.createElement("a")
+                a.href = "/action/info/flight?id=" + encodeURIComponent(String(f.flightId))
+                a.target = "_blank"
+                a.rel = "noreferrer noopener"
+                a.style.cssText = "color:#93c5fd;text-decoration:none;"
+                a.textContent = f.flightCode || String(f.flightId)
+                code.appendChild(a)
+            } else {
+                code.textContent = f.flightCode || "flight"
+            }
+            const route = document.createElement("td")
+            route.style.cssText = "padding:4px 6px;font-family:var(--aes-font-mono,monospace);"
+            route.textContent = f.routePair || ((f.hub && f.dest) ? f.hub + " -> " + f.dest : "-")
+            const dep = document.createElement("td")
+            dep.style.cssText = "padding:4px 6px;font-family:var(--aes-font-mono,monospace);"
+            dep.textContent = f.depTimeLocal || f.depTimeUtc || "-"
+            const ac = document.createElement("td")
+            ac.style.cssText = "padding:4px 6px;font-family:var(--aes-font-mono,monospace);"
+            ac.textContent = f.typeCode || (f.typeId ? "type " + f.typeId : "-")
+            const seats = document.createElement("td")
+            seats.style.cssText = "padding:4px 6px;text-align:right;font-family:var(--aes-font-mono,monospace);"
+            seats.textContent = f.seatCapacity != null ? Number(f.seatCapacity).toLocaleString()
+                : (f.cargoCapacity != null ? Number(f.cargoCapacity).toLocaleString() + " kg" : "-")
+            const classes = document.createElement("td")
+            classes.style.cssText = "padding:4px 6px;color:#e5e7eb;"
+            classes.textContent = _formatFlightClasses(f) || "-"
+            tr.append(code, route, dep, ac, seats, classes)
+            tbody.appendChild(tr)
+        }
+        tbl.appendChild(tbody)
+        host.appendChild(tbl)
+        if (list.length > limit) {
+            const more = _styleEl("div", "margin-top:4px;font-size:10px;color:#94a3b8;")
+            more.textContent = "Showing " + limit + " of " + list.length + " cached individual flights."
+            host.appendChild(more)
         }
     }
 
@@ -582,7 +763,11 @@
      *     totalRoutes, totalWeekly, totalLast7d, hubsTouched (Set<iata>)
      *   }
      */
-    function _carrierNetworkFromRecords(records, carrierIata, nowMs) {
+    function _carrierNetworkFromRecords(records, carrierIata, typeSpecs, nowMs) {
+        if (typeof typeSpecs === "number" && nowMs == null) {
+            nowMs = typeSpecs
+            typeSpecs = null
+        }
         const now = isFinite(nowMs) ? nowMs : Date.now()
         const sevenDaysAgo = now - 7 * 86400000
         const carrier = String(carrierIata || "").toUpperCase()
@@ -604,30 +789,36 @@
                 if (!re.test(code)) continue
                 const fid = c.flightId != null ? String(c.flightId) : (code + "@" + (c.depTimeUtc || ""))
                 const key = pair + "|" + fid + "|" + (c.depTimeUtc || "")
-                if (seen.has(key)) continue
-                seen.add(key)
                 const slot = byPair.get(pair) || {
                     hub, dest, pair,
                     weeklyFlights: 0,
                     last7d: 0,
                     depSpark: new Array(24).fill(0),
                     depMins: [],
+                    marketRows: [],
                     firstSeenAt: null,
                     lastSeenAt: null
                 }
-                slot.weeklyFlights += 1
-                const depMin = _hhmmToMin(c.depTimeUtc)
-                if (depMin != null) {
-                    slot.depMins.push(depMin)
-                    const hr = Math.floor(depMin / 60)
-                    if (hr >= 0 && hr < 24) slot.depSpark[hr] += 1
-                }
-                if (c.depDateUtc) {
-                    const depMs = Date.parse(c.depDateUtc + "T" + (c.depTimeUtc || "00:00") + "Z")
-                    if (isFinite(depMs)) {
-                        if (depMs >= sevenDaysAgo) slot.last7d += 1
-                        if (slot.firstSeenAt == null || depMs < slot.firstSeenAt) slot.firstSeenAt = depMs
-                        if (slot.lastSeenAt == null || depMs > slot.lastSeenAt) slot.lastSeenAt = depMs
+                slot.marketRows.push(Object.assign({}, c, {
+                    hub, dest,
+                    routePair: hub + "-" + dest
+                }))
+                if (!seen.has(key)) {
+                    seen.add(key)
+                    slot.weeklyFlights += 1
+                    const depMin = _hhmmToMin(c.depTimeUtc)
+                    if (depMin != null) {
+                        slot.depMins.push(depMin)
+                        const hr = Math.floor(depMin / 60)
+                        if (hr >= 0 && hr < 24) slot.depSpark[hr] += 1
+                    }
+                    if (c.depDateUtc) {
+                        const depMs = Date.parse(c.depDateUtc + "T" + (c.depTimeUtc || "00:00") + "Z")
+                        if (isFinite(depMs)) {
+                            if (depMs >= sevenDaysAgo) slot.last7d += 1
+                            if (slot.firstSeenAt == null || depMs < slot.firstSeenAt) slot.firstSeenAt = depMs
+                            if (slot.lastSeenAt == null || depMs > slot.lastSeenAt) slot.lastSeenAt = depMs
+                        }
                     }
                 }
                 byPair.set(pair, slot)
@@ -649,7 +840,10 @@
             }
             banks.sort((a, b) => b.count - a.count)
             slot.topBanks = banks.slice(0, 3)
+            slot.flightDetails = _buildFlightInstances(slot.marketRows, typeSpecs)
+            slot.sampleFlights = slot.flightDetails.slice(0, 4)
             delete slot.depMins
+            delete slot.marketRows
             routes.push(slot)
             hubsTouched.add(slot.hub)
             hubsTouched.add(slot.dest)
@@ -733,7 +927,8 @@
         paneHost.appendChild(wrap)
 
         const records = await _loadAllRecords()
-        const proj = _carrierNetworkFromRecords(records, carrier.iata)
+        const typeSpecs = await _loadTypeSpecsForRecords(records)
+        const proj = _carrierNetworkFromRecords(records, carrier.iata, typeSpecs)
         title.querySelector("div").textContent = proj.totalRoutes
             + " route" + (proj.totalRoutes === 1 ? "" : "s")
             + " · " + Array.from(proj.hubsTouched).length + " airports touched"
@@ -757,6 +952,7 @@
             + "<th style='text-align:right;padding:4px 8px;width:72px;'>Wkly</th>"
             + "<th style='text-align:right;padding:4px 8px;width:48px;'>7d</th>"
             + "<th style='text-align:left;padding:4px 8px;'>Departures (UTC hour)</th>"
+            + "<th style='text-align:left;padding:4px 8px;width:240px;'>Flight detail</th>"
             + "<th style='text-align:left;padding:4px 8px;width:160px;'>Top banks</th>"
             + "<th style='padding:4px 8px;width:80px;'></th>"
             + "</tr>"
@@ -805,6 +1001,25 @@
                 + maxHour + " on this network."
             sparkSvg.appendChild(sparkTip)
             sparkCell.appendChild(sparkSvg)
+            const detailCell = document.createElement("td")
+            detailCell.style.cssText = "padding:6px 8px;color:#cbd5e1;font-size:10px;line-height:1.35;"
+            const sample = r.sampleFlights || []
+            if (sample.length) {
+                detailCell.title = (r.flightDetails || sample).slice(0, 12)
+                    .map(f => _formatFlightLine(f)).join("\n")
+                detailCell.textContent = sample.slice(0, 2)
+                    .map(f => {
+                        const dep = f.depTimeLocal || f.depTimeUtc || "?"
+                        const cls = _formatFlightClasses(f)
+                        const seats = f.seatCapacity != null ? " · " + Number(f.seatCapacity).toLocaleString() + " seats" : ""
+                        return (f.flightCode || "flight") + " " + dep
+                            + (f.typeCode ? " " + f.typeCode : "") + seats
+                            + (cls ? " · " + cls : "")
+                    }).join(" / ")
+            } else {
+                detailCell.textContent = "-"
+                detailCell.style.color = "#64748b"
+            }
             const banksCell = document.createElement("td")
             banksCell.style.cssText = "padding:6px 8px;color:#cbd5e1;font-size:10px;"
             banksCell.textContent = r.topBanks.length
@@ -828,7 +1043,7 @@
             drillCell.appendChild(mkDrill(r.hub))
             drillCell.appendChild(mkDrill(r.dest))
 
-            tr.append(routeCell, wfCell, last7Cell, sparkCell, banksCell, drillCell)
+            tr.append(routeCell, wfCell, last7Cell, sparkCell, detailCell, banksCell, drillCell)
             tbody.appendChild(tr)
         }
         tbl.appendChild(tbody)

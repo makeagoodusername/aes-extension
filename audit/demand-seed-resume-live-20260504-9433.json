@@ -1,0 +1,160 @@
+{
+  "generatedAt": "2026-05-04T11:40:20Z",
+  "state": {
+    "startedAt": 1777893407282,
+    "done": true,
+    "ok": true,
+    "phase": "done",
+    "total": 34,
+    "coveredBefore": 160,
+    "demandRecordsBefore": 2824,
+    "processed": 34,
+    "fetched": 34,
+    "airportsSeeded": 1532,
+    "failed": [],
+    "current": null,
+    "completedAt": 1777894802025,
+    "error": null,
+    "missingInitial": [
+      {
+        "id": "189",
+        "name": "Central African Republic"
+      },
+      {
+        "id": "30",
+        "name": "China"
+      },
+      {
+        "id": "154",
+        "name": "Spain"
+      },
+      {
+        "id": "155",
+        "name": "Sri Lanka"
+      },
+      {
+        "id": "159",
+        "name": "Sudan"
+      },
+      {
+        "id": "162",
+        "name": "Suriname"
+      },
+      {
+        "id": "144",
+        "name": "Sweden"
+      },
+      {
+        "id": "145",
+        "name": "Switzerland"
+      },
+      {
+        "id": "164",
+        "name": "Syria"
+      },
+      {
+        "id": "166",
+        "name": "Taiwan"
+      },
+      {
+        "id": "165",
+        "name": "Tajikistan"
+      },
+      {
+        "id": "167",
+        "name": "Tanzania"
+      },
+      {
+        "id": "168",
+        "name": "Thailand"
+      },
+      {
+        "id": "125",
+        "name": "Timor Leste"
+      },
+      {
+        "id": "169",
+        "name": "Togo"
+      },
+      {
+        "id": "170",
+        "name": "Tonga"
+      },
+      {
+        "id": "171",
+        "name": "Trinidad and Tobago"
+      },
+      {
+        "id": "175",
+        "name": "Tunisia"
+      },
+      {
+        "id": "174",
+        "name": "T\u00fcrkiye"
+      },
+      {
+        "id": "176",
+        "name": "Turkmenistan"
+      },
+      {
+        "id": "177",
+        "name": "Tuvalu"
+      },
+      {
+        "id": "184",
+        "name": "UAE"
+      },
+      {
+        "id": "178",
+        "name": "Uganda"
+      },
+      {
+        "id": "179",
+        "name": "Ukraine"
+      },
+      {
+        "id": "54",
+        "name": "United Kingdom"
+      },
+      {
+        "id": "181",
+        "name": "Uruguay"
+      },
+      {
+        "id": "182",
+        "name": "USA"
+      },
+      {
+        "id": "183",
+        "name": "Uzbekistan"
+      },
+      {
+        "id": "185",
+        "name": "Vanuatu"
+      },
+      {
+        "id": "186",
+        "name": "Venezuela"
+      },
+      {
+        "id": "187",
+        "name": "Viet Nam"
+      },
+      {
+        "id": "71",
+        "name": "Yemen"
+      },
+      {
+        "id": "140",
+        "name": "Zambia"
+      },
+      {
+        "id": "190",
+        "name": "Zimbabwe"
+      }
+    ],
+    "updatedAt": 1777894801760,
+    "coveredAfter": 194,
+    "demandRecordsAfter": 4356
+  }
+}

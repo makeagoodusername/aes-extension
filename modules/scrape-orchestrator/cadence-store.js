@@ -10,7 +10,7 @@
  *     -> {phaseId, startedAt, completedAt, total, succeeded, failed, haltReason}
  *
  * Cadences are intentionally generous — drip-style, not exhaustive. The
- * heavy optional phases (per-competitor, flightsfrom) are NOT in the
+ * heavy optional phases (demand-seed, per-competitor, flightsfrom) are NOT in the
  * mandatory list the auto-driver consults; users still trigger those via
  * the Scrape-everything button.
  */
@@ -22,6 +22,7 @@
     const DEFAULT_CADENCE_MS = {
         "foundation":     2 * 60 * 60 * 1000,
         "per-hub":        6 * 60 * 60 * 1000,
+        "demand-seed":    30 * 24 * 60 * 60 * 1000,
         "per-aircraft":  12 * 60 * 60 * 1000,
         "per-route":     24 * 60 * 60 * 1000,
         // ORS rank turns over fast (competitor schedule changes, our own

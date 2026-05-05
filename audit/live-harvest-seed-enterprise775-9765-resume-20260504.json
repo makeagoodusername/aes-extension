@@ -1,0 +1,268 @@
+{
+  "ok": false,
+  "mode": "demand-seed-first",
+  "port": "9765",
+  "server": "free1.airlinesim.aero",
+  "startedAt": "2026-05-04T12:01:57.336Z",
+  "progress": [
+    {
+      "at": "2026-05-04T12:02:07.538Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 2,
+      "airportsSeeded": 62,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "186",
+      "currentCountryName": "Venezuela"
+    },
+    {
+      "at": "2026-05-04T12:02:12.545Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 4,
+      "airportsSeeded": 94,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "71",
+      "currentCountryName": "Yemen"
+    },
+    {
+      "at": "2026-05-04T12:02:17.560Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:02:22.585Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:02:27.593Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:02:32.614Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:02:37.635Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:02:42.656Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:02:47.670Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:02:52.690Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:02:57.703Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:03:02.712Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:03:07.734Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    },
+    {
+      "at": "2026-05-04T12:03:12.750Z",
+      "phase": "seeding",
+      "total": 7,
+      "fetched": 6,
+      "airportsSeeded": 107,
+      "failedCountries": 0,
+      "activeCountries": [
+        "USA"
+      ],
+      "currentCountryId": "190",
+      "currentCountryName": "Zimbabwe"
+    }
+  ],
+  "before": {
+    "demand": 3759,
+    "topRoutes": 0,
+    "marketsCompetitors": 0,
+    "marketsOwnPricing": 0,
+    "inventory": 0,
+    "ors": 0,
+    "aircraftFleet": 0,
+    "aircraftFlights": 0,
+    "maintenance": 0,
+    "sampleDemand": [
+      {
+        "airportId": "2",
+        "cargoScore": 0,
+        "countryId": "1",
+        "countryName": "Egypt",
+        "iata": "AAC",
+        "name": "Al Arish",
+        "paxScore": 1,
+        "scrapedAt": 1777895819093,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "4632",
+        "cargoScore": 0,
+        "countryId": "153",
+        "countryName": "Somalia",
+        "iata": "AAD",
+        "name": "Adado",
+        "paxScore": 1,
+        "scrapedAt": 1777896041721,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "53",
+        "cargoScore": 1,
+        "countryId": "6",
+        "countryName": "Algeria",
+        "iata": "AAE",
+        "name": "Annaba",
+        "paxScore": 3,
+        "scrapedAt": 1777895676378,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "1802",
+        "cargoScore": 0,
+        "countryId": "80",
+        "countryName": "Kiribati",
+        "iata": "AAK",
+        "name": "Aranuka",
+        "paxScore": 1,
+        "scrapedAt": 1777895900374,
+        "sizeScore": 10
+      },
+      {
+        "airportId": "664",
+        "cargoScore": 1,
+        "countryId": "34",
+        "countryName": "Denmark",
+        "iata": "AAL",
+        "name": "Aalborg",
+        "paxScore": 4,
+        "scrapedAt": 1777895806176,
+        "sizeScore": 10
+      }
+    ]
+  },
+  "after": null,
+  "result": null,
+  "errors": [
+    "seed state disappeared"
+  ],
+  "start": {
+    "started": true
+  },
+  "completedAt": "2026-05-04T12:03:18.631Z"
+}

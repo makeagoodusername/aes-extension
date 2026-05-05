@@ -138,14 +138,26 @@ class RouteAssistantCarriersScraper {
 
         const url = `https://www.flightsfrom.com/${hubIata.toUpperCase()}-${destIata.toUpperCase()}`
         let html = null
+        let fetchNote = null
         try {
             const resp = await fetch(url, {credentials: "include"})
-            if (resp.ok) html = await resp.text()
+            html = await resp.text().catch(() => null)
+            if (!resp.ok) {
+                const cf = resp.headers && resp.headers.get
+                    ? resp.headers.get("cf-mitigated") : null
+                fetchNote = cf === "challenge"
+                    ? "flightsfrom Cloudflare challenge blocked direct fetch (HTTP " + resp.status + ")"
+                    : "HTTP " + resp.status + " from flightsfrom"
+            }
         } catch (e) {
             console.warn(`[AES carriersScraper] fetch failed for ${hubIata}-${destIata}:`, e)
+            fetchNote = "fetch failed: " + ((e && e.message) || String(e))
         }
 
         const parsed = parseCarriersHtml(html)
+        if (fetchNote && (!parsed.parserNotes || !parsed.carriers.length)) {
+            parsed.parserNotes = fetchNote + (parsed.parserNotes ? " · " + parsed.parserNotes : "")
+        }
         const record = await RouteAssistantCarriersScraper.saveRecord(
             hubIata, destIata,
             {
@@ -272,6 +284,16 @@ function parseCarriersHtml(html) {
         return Object.assign({}, empty, {parserNotes: "DOMParser failed"})
     }
     if (!doc || !doc.body) return Object.assign({}, empty, {parserNotes: "empty document"})
+
+    const bodyText = doc.body.textContent || ""
+    const titleText = doc.title || ""
+    if (/just a moment/i.test(titleText)
+            || /enable javascript and cookies to continue/i.test(bodyText)
+            || /cf_chl|challenge-platform|cf-mitigated/i.test(html)) {
+        return Object.assign({}, empty, {
+            parserNotes: "flightsfrom Cloudflare challenge page, carrier list unavailable to direct fetch"
+        })
+    }
 
     const notes = []
     const carriers = []

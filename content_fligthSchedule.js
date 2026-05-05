@@ -13,12 +13,9 @@ function saveScheduleSettings(done) {
   settings = normaliseScheduleSettings(settings);
   let save = window.AesSettings && typeof window.AesSettings.saveArea === 'function'
     ? Promise.resolve(window.AesSettings.saveArea('schedule', settings.schedule))
-    : new Promise(function(resolve) {
-        chrome.storage.local.get({settings: {}}, function(result) {
-          let next = normaliseScheduleSettings(result.settings);
-          next.schedule = settings.schedule;
-          chrome.storage.local.set({settings: next}, resolve);
-        });
+    : Promise.resolve().then(function() {
+        console.warn('[AES Schedule] AesSettings bridge missing; schedule settings not saved');
+        return settings.schedule;
       });
   save.catch(function(err) {
       console.warn('[AES Schedule] failed to save schedule settings', err);

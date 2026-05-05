@@ -28,6 +28,7 @@ class CentralHubHeroStrip {
         this._dirty = new Set()
         this._cards = CentralHubHeroStrip._cardSpecs()
         this._feedDisposers = []
+        this._storageAllPromise = null
     }
 
     static _cardSpecs() {
@@ -249,14 +250,18 @@ class CentralHubHeroStrip {
     }
 
     async _refreshAll() {
+        this._storageAllPromise = null
+        const tasks = []
         for (const spec of this._cards) {
             // Feed-driven cards paint via HubFeed subscriptions; the cold
             // value (if any) is set in _attachFeedSubscriptions, and updates
             // arrive through the bus. Skip the legacy resolver to avoid the
             // momentary "no data" flicker before the subscription fires.
             if (spec.feedSlice) continue
-            this._refreshCard(spec).catch(() => { /* never throw at strip level */ })
+            tasks.push(this._refreshCard(spec).catch(() => { /* never throw at strip level */ }))
         }
+        await Promise.all(tasks)
+        this._storageAllPromise = null
     }
 
     async _refreshCard(spec) {
@@ -392,7 +397,7 @@ class CentralHubHeroStrip {
 
     async _resolveFleet() {
         if (!this.server) return {value: "—", sub: "no server", kind: "muted"}
-        const all = await chrome.storage.local.get(null)
+        const all = await this._loadStorageAll()
         const airline = this._airlineIdentityKey()
         let chosen = null
         const suffix = "aircraftFleet"
@@ -425,7 +430,7 @@ class CentralHubHeroStrip {
     }
 
     async _resolveTopRoute() {
-        const all = await chrome.storage.local.get(null)
+        const all = await this._loadStorageAll()
         const prefix = "routeAssistant:topRoutes:"
         const currentAcct = (typeof window !== "undefined" && window.__aesAccountId) || null
         // Two-pass picker. The aggregator only computes profitPerWeek for
@@ -482,7 +487,7 @@ class CentralHubHeroStrip {
     }
 
     async _resolveAlerts() {
-        const all = await chrome.storage.local.get(null)
+        const all = await this._loadStorageAll()
         const prefix = "routeAssistant:alertRules"
         let rules = []
         for (const k in all) {
@@ -523,7 +528,7 @@ class CentralHubHeroStrip {
             records = Array.from(map.values())
         }
         if (!records) {
-            const all = await chrome.storage.local.get(null)
+            const all = await this._loadStorageAll()
             records = []
             for (const k in all) {
                 if (k.indexOf("routeAssistant:ors:") !== 0) continue
@@ -559,7 +564,7 @@ class CentralHubHeroStrip {
 
     async _resolveMaintenance() {
         if (!this.server) return {value: "—", sub: "no server", kind: "muted"}
-        const all = await chrome.storage.local.get(null)
+        const all = await this._loadStorageAll()
         const prefix = "aircraftFlightPlan:wearObservations:" + this.server + ":"
         let total = 0
         let risk = 0
@@ -583,6 +588,13 @@ class CentralHubHeroStrip {
             if (a && a.code) return a.code
         } catch (_) { /* fall through */ }
         return this.airline || ""
+    }
+
+    async _loadStorageAll() {
+        if (!this._storageAllPromise) {
+            this._storageAllPromise = chrome.storage.local.get(null).catch(() => ({}))
+        }
+        return await this._storageAllPromise || {}
     }
 
     _airlineIdentityKey() {

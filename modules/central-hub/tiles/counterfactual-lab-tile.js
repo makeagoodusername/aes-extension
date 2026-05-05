@@ -195,25 +195,25 @@
             const btns = document.createElement("div")
             btns.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:2px"
 
-            // Dry-run preview never writes to AS; reads the current snapshot
-            // and re-derives what the apply pipeline would propose for this
-            // intervention. Uses existing pure helpers; no POST.
+            // Preview reads the current snapshot and re-derives what the
+            // apply pipeline would propose for this intervention. Uses
+            // existing pure helpers; no POST.
             const previewBtn = document.createElement("button")
             previewBtn.type = "button"
-            previewBtn.textContent = "Preview (dry-run)"
+            previewBtn.textContent = "Preview"
             previewBtn.style.cssText = this._btnStyle(T)
             previewBtn.addEventListener("click", () => { this._previewIntervention(pending, root, T).catch(() => {}) })
             btns.appendChild(previewBtn)
 
-            // Apply button gates on the existing apply.enabled + dryRunOnly
-            // flags via the same pipeline composeMove uses. The button disables
-            // when applied/failed already so a double-click cannot re-fire.
+            // Apply button routes through the same pipeline composeMove uses.
+            // The button disables when applied/failed already so a double-click
+            // cannot re-fire.
             const applyBtn = document.createElement("button")
             applyBtn.type = "button"
             applyBtn.textContent = "Apply"
             applyBtn.style.cssText = this._btnStyle(T)
             applyBtn.disabled = applied
-            applyBtn.title = "Routes through the existing apply pipeline. Honors strategy.apply.enabled / dryRunOnly gates."
+            applyBtn.title = "Routes through the existing apply pipeline."
             applyBtn.addEventListener("click", () => { this._applyIntervention(pending, root, T).catch(() => {}) })
             btns.appendChild(applyBtn)
 

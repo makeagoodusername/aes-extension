@@ -81,6 +81,16 @@ class CentralHubRouteLauncherTile extends window.CentralHubTile {
             if (!this.expanded) this.toggle()
             if (this.root) this.root.scrollIntoView({behavior: "smooth", block: "start"})
         })
+        // per-leg-autopricer emits this on AesDataBus when a /app/com/numbers/*
+        // page produces fresh per-class price suggestions. The launcher
+        // surfaces last-applied pricing and so should refresh when fresh
+        // suggestions land in the cache the launcher reads from.
+        if (window.AesDataBus && typeof window.AesDataBus.on === "function") {
+            const off = window.AesDataBus.on("data:route-assistant:flight-number-pricing:updated", () => {
+                this.refresh().catch(() => {})
+            })
+            if (typeof off === "function") this._busDisposers.push(off)
+        }
     }
 
     async renderBody(ctx, host, focusFilter) {

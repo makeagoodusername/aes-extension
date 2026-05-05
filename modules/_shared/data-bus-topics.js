@@ -106,6 +106,12 @@ window.AES_DATA_BUS_TOPICS = [
         notes:    "single key per route; subscribers refetch via RouteAssistantOrsScraper.loadRecord"
     },
     {
+        topic:    "data:route-assistant:ors:health",
+        emittedBy: "modules/route-assistant/ors-intelligence.js",
+        hint:     "{server, accountId?, missingRoutes?, staleRoutes?, failedRoutes?, warningRoutes?, breaker?, coverage?, updatedAt}",
+        notes:    "fired when ORS intelligence saves its health/circuit-breaker record; consumed by the Route Assistant hub tile for low-latency refresh"
+    },
+    {
         topic:    "data:route-assistant:schedule:updated",
         emittedBy: "modules/route-assistant/schedule-page-scraper.js",
         hint:     "{hub, dest}",
@@ -124,6 +130,12 @@ window.AES_DATA_BUS_TOPICS = [
         emittedBy: "modules/route-assistant/pricing-applier.js",
         hint:     "{hub, dest, classes: string[], verified}",
         notes:    "fired only on terminal-success status (verified|posted); subscribers refetch via RouteAssistantPricingApplyLog"
+    },
+    {
+        topic:    "data:route-assistant:flight-number-pricing:updated",
+        emittedBy: "modules/route-assistant/per-leg-autopricer.js",
+        hint:     "{server, hub, dest, flightNumberId, legIndex, keysTouched: string[]}",
+        notes:    "fired after the per-leg autopricer saves visible flight-number pricing context; consumed by route-launcher tile"
     },
     {
         topic:    "data:route-assistant:serviceProfile:applied",
@@ -167,6 +179,21 @@ window.AES_DATA_BUS_TOPICS = [
         hint:     "{server, airline, weekId?, type, sister?}",
         notes:    "weekly tab saves carry weekId; sister-page saves carry sister:true; subscribers refetch via AccountingSnapshotStore.loadLatest"
     },
+
+    // -- slots --
+    {
+        topic:    "data:slots:available:updated",
+        emittedBy: "modules/slots/slot-store.js",
+        hint:     "{server, count}",
+        notes:    "fired when available slot inventory is saved; consumed by strategy-slot-trading tile"
+    },
+    {
+        topic:    "data:slots:bid:queued",
+        emittedBy: "modules/slots/slot-store.js",
+        hint:     "{server, iata}",
+        notes:    "fired when a slot bid is queued; consumed by strategy-slot-trading tile"
+    },
+
     // -- signal:strategy:* (cross-feature reaction hints, Phase A2) --
     {
         topic:    "signal:strategy:crew-pressure",
@@ -199,6 +226,12 @@ window.AES_DATA_BUS_TOPICS = [
         emittedBy: "modules/strategy/service-experiment-store.js  // _appendOutcome",
         hint:     "{experimentId, state, winner: 'perturbation'|'base'|'tie'|null}",
         notes:    "fired on first transition to a terminal state with a non-null outcome. Consumed by Phase D2's weekly-review tile."
+    },
+    {
+        topic:    "data:strategy:company-reputation:saved",
+        emittedBy: "modules/strategy/company-reputation-store.js",
+        hint:     "{displayName?, airlineCode?, enterpriseId?, ratingLabel?, ratingScore?, ratingNorm?, scrapedAt, source, server?}",
+        notes:    "fired when company reputation is scraped/saved; consumed by the strategy briefing tile for live reputation-derived signals"
     },
     {
         topic:    "data:strategy:dispatch:pending",
@@ -427,6 +460,14 @@ window.AES_DATA_BUS_TOPICS = [
         emittedBy: "modules/central-hub/tiles/network-graph-tile.js  // settle complete",
         hint:     "{nodeCount, edgeCount, durationMs}",
         notes:    "Slice 25 — telemetry: emitted once per network-graph tile expand after the layout settles; useful for the data-flow-inspector"
+    },
+
+    // -- shared UI feedback --
+    {
+        topic:    "data:notifications:posted",
+        emittedBy: "modules/_shared/notifications-api.js",
+        hint:     "{message: string, type: 'success'|'warning'|'error', ts: number}",
+        notes:    "fired on every in-page toast posted via AesNotifications.add(); best-effort emit so a missing bus never breaks the UI feedback path"
     }
 
     // Slices 2 + 3 will add: data:schedule-management:store:saved,

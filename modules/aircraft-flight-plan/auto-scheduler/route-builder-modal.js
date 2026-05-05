@@ -37,6 +37,7 @@
     const DEFAULT_TURN_MIN = 45
     const DEFAULT_DEPART   = "06:00"
     const ESTIMATED_SECONDS_PER_LEG = 18
+    const TOP_ROUTES_PREFIX = "routeAssistant:topRoutes"
 
     let _modalEl = null
     let _onKey   = null
@@ -96,8 +97,394 @@
             staggerMin:           73,
             longHaulThresholdNm:  3500,
             latestLongHaulDeparture: "18:00",
-            sequentialLongHaul:   true
+            sequentialLongHaul:   true,
+            hideScheduled:        true
         }, o)
+    }
+
+    function _num(v) {
+        if (v === null || v === undefined || v === "") return null
+        const n = Number(v)
+        return isFinite(n) ? n : null
+    }
+
+    function _maxNum() {
+        let best = null
+        for (let i = 0; i < arguments.length; i++) {
+            const n = _num(arguments[i])
+            if (n == null) continue
+            best = best == null ? n : Math.max(best, n)
+        }
+        return best
+    }
+
+    function _firstNum() {
+        for (let i = 0; i < arguments.length; i++) {
+            const n = _num(arguments[i])
+            if (n != null) return n
+        }
+        return null
+    }
+
+    function _firstText() {
+        for (let i = 0; i < arguments.length; i++) {
+            const s = String(arguments[i] || "").trim()
+            if (s) return s
+        }
+        return null
+    }
+
+    function _pairKey(hub, dest) {
+        return _normaliseIata(hub) + "-" + _normaliseIata(dest)
+    }
+
+    function _routePairFromString(value) {
+        const matches = String(value || "").toUpperCase().match(/[A-Z]{3}-[A-Z]{3}/g)
+        if (!matches || !matches.length) return null
+        const parts = matches[matches.length - 1].split("-")
+        return {hub: parts[0], dest: parts[1]}
+    }
+
+    function _keyAccountId(key) {
+        const m = /:acct:([^:]+):/.exec(String(key || ""))
+        return m ? m[1] : null
+    }
+
+    function _keyMatchesCurrentAccount(key, rec) {
+        const acct = (typeof window !== "undefined" && window.__aesAccountId) || null
+        const keyAcct = _keyAccountId(key)
+        if (keyAcct) return !!acct && keyAcct === acct
+        if (rec && rec.accountId) return !!acct && String(rec.accountId) === String(acct)
+        return true
+    }
+
+    function _recordMatchesServer(rec, server) {
+        return !server || !rec || !rec.server || String(rec.server) === String(server)
+    }
+
+    function _distanceKmFromRecord(rec) {
+        const km = _num(rec && (rec.distanceKm || rec.distance))
+        if (km != null && km > 0) return km
+        const nm = _num(rec && rec.distanceNm)
+        if (nm != null && nm > 0) {
+            if (typeof ScheduleFactors !== "undefined" && ScheduleFactors.nmToKm) {
+                return ScheduleFactors.nmToKm(nm)
+            }
+            return Math.round(nm * 1.852)
+        }
+        return null
+    }
+
+    function _candidateSortScore(c) {
+        return _maxNum(
+            c && c.scoreBlend,
+            c && c.score,
+            c && c.actualProfitPerWeek != null ? Math.max(0, Number(c.actualProfitPerWeek) / 1000) : null,
+            c && c.competitorCount != null ? 80 - Number(c.competitorCount) : null,
+            c && c.paxScore != null ? Number(c.paxScore) * 10 : null,
+            c && c.weeklyFlights
+        ) || 0
+    }
+
+    function _noteCandidateSource(row, source) {
+        if (!row || !source) return
+        const sources = Array.isArray(row.sources) ? row.sources.slice() : []
+        if (sources.indexOf(source) < 0) sources.push(source)
+        row.sources = sources
+        row.sourceSummary = sources.join(" + ") || row.sourceSummary || source
+    }
+
+    function _directionalPairKey(hub, dest) {
+        return _normaliseIata(hub) + "-" + _normaliseIata(dest)
+    }
+
+    function _distancePairKey(hub, dest) {
+        const h = _normaliseIata(hub)
+        const d = _normaliseIata(dest)
+        return h < d ? h + "-" + d : d + "-" + h
+    }
+
+    function _normalisePriceClass(v) {
+        const s = String(v || "").trim().toUpperCase()
+        if (s === "Y" || s === "ECONOMY" || s === "ECONOMY CLASS") return "Y"
+        if (s === "C" || s === "BUSINESS" || s === "BUSINESS CLASS") return "C"
+        if (s === "F" || s === "FIRST" || s === "FIRST CLASS") return "F"
+        if (s === "CARGO" || s === "FREIGHT" || s === "MAIL") return "Cargo"
+        return null
+    }
+
+    function _competitorClass(c) {
+        if (!c) return null
+        if (c.isCargo === true) return "Cargo"
+        return _normalisePriceClass(
+            c.serviceClass || c.classKey || c.bookingClass || c.cabinClass
+            || c.cabin || c.payloadClass || c.payload || c.className
+            || c.classLabel || c["class"]
+        )
+    }
+
+    function _competitorPrice(c, cls) {
+        if (!c) return null
+        let price = _firstNum(c.price, c.fare, c.avgPrice, c.currentPrice, c.unitPrice)
+        if (price == null && cls && c.prices && typeof c.prices === "object") {
+            price = _firstNum(c.prices[cls])
+        }
+        return price
+    }
+
+    function _roundPriceForClass(cls, value) {
+        const n = Number(value)
+        if (!isFinite(n)) return null
+        return cls === "Cargo" && Math.abs(n) < 10
+            ? Math.round(n * 100) / 100
+            : Math.round(n)
+    }
+
+    function _median(values, cls) {
+        const vals = (values || []).filter(v => isFinite(v) && v > 0).sort((a, b) => a - b)
+        if (!vals.length) return null
+        const mid = Math.floor(vals.length / 2)
+        const raw = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2
+        return _roundPriceForClass(cls, raw)
+    }
+
+    function _competitorStats(rec) {
+        const all = rec && Array.isArray(rec.competitors) ? rec.competitors : []
+        const byClass = {Y: [], C: [], F: [], Cargo: []}
+        const prefixes = new Map()
+        for (const c of all) {
+            if (!c || c.isOurs) continue
+            const cls = _competitorClass(c)
+            const price = _competitorPrice(c, cls)
+            if (cls && isFinite(price) && price > 0) byClass[cls].push(price)
+            if (c.flightCode) {
+                const m = /^([A-Z0-9]+)/.exec(String(c.flightCode).trim().toUpperCase())
+                if (m) {
+                    const p = m[1]
+                    const slot = prefixes.get(p) || {prefix: p, flights: 0, sampleType: c.typeCode || null}
+                    slot.flights += 1
+                    if (!slot.sampleType && c.typeCode) slot.sampleType = c.typeCode
+                    prefixes.set(p, slot)
+                }
+            }
+        }
+        const medians = {}
+        const counts = {}
+        for (const cls of ["Y", "C", "F", "Cargo"]) {
+            const m = _median(byClass[cls], cls)
+            if (m != null) medians[cls] = m
+            counts[cls] = byClass[cls].length
+        }
+        return {
+            competitorMedianPriceY: medians.Y != null ? medians.Y : null,
+            competitorYsCount: counts.Y || 0,
+            competitorPricesByClass: medians,
+            competitorCountsByClass: counts,
+            competitorFlightPrefixes: Array.from(prefixes.values())
+        }
+    }
+
+    function _ourEnterpriseIdsFromDom() {
+        const ids = new Set()
+        try {
+            for (const a of document.querySelectorAll(".as-navbar-main a[href*='dashboard?select=']")) {
+                const m = /select=(\d+)/.exec(a.getAttribute("href") || "")
+                if (m) ids.add(parseInt(m[1], 10))
+            }
+        } catch (_) { /* ignore */ }
+        return ids
+    }
+
+    function _ourAirlineNameLow() {
+        try {
+            const name = (typeof AES !== "undefined" && AES.getAirlineIdentity)
+                ? AES.getAirlineIdentity() : ""
+            return String(name || "").toLowerCase().trim()
+        } catch (_) {
+            return ""
+        }
+    }
+
+    function _sumPctValid(arr) {
+        if (!Array.isArray(arr) || !arr.length) return null
+        let sum = 0
+        let seen = 0
+        for (const e of arr) {
+            if (typeof e.sharePct === "number" && isFinite(e.sharePct)) {
+                sum += e.sharePct
+                seen++
+            }
+        }
+        return seen ? sum : null
+    }
+
+    function _isOurMarketShareEntry(e, ourEnterpriseIds, ourNameLow) {
+        if (!e) return false
+        if (e.enterpriseId != null && ourEnterpriseIds && ourEnterpriseIds.has(e.enterpriseId)) return true
+        return !!(ourNameLow && e.name && e.name.toLowerCase().trim() === ourNameLow)
+    }
+
+    function _candidateSourceLabel(raw, fallback) {
+        return _firstText(raw && raw.sourceLabel, raw && raw.demandSource,
+            raw && raw.source, fallback, "cached route intel")
+    }
+
+    function _mergeCandidateSources(sourceGroups, opts) {
+        const hub = _normaliseIata(opts && opts.hub)
+        const scheduledDestSet = (opts && opts.scheduledDestSet) || new Set()
+        const scheduledCounts = (opts && opts.scheduledCounts) || new Map()
+        const byDest = new Map()
+
+        const add = (raw, fallbackSource) => {
+            const dest = _normaliseIata(raw && (raw.destIata || raw.iata
+                || raw.dest || raw.destination || raw.airportIata))
+            if (!dest || dest === hub) return
+            const cur = byDest.get(dest) || {
+                destIata: dest,
+                sources: [],
+                _sourceSet: new Set()
+            }
+            const source = _candidateSourceLabel(raw, fallbackSource)
+            if (source && !cur._sourceSet.has(source)) {
+                cur._sourceSet.add(source)
+                cur.sources.push(source)
+            }
+
+            cur.destName = _firstText(cur.destName, raw && (raw.destName || raw.name || raw.destinationName))
+            cur.distanceKm = _maxNum(cur.distanceKm, _distanceKmFromRecord(raw))
+            cur.distanceNm = _maxNum(cur.distanceNm, raw && raw.distanceNm)
+            cur.weeklyFlights = _maxNum(cur.weeklyFlights, raw && raw.weeklyFlights)
+            cur.seatsPerWeek = _maxNum(cur.seatsPerWeek, raw && raw.seatsPerWeek)
+            cur.airlineCount = _maxNum(cur.airlineCount,
+                raw && (raw.airlineCount != null ? raw.airlineCount
+                    : (Array.isArray(raw.airlines) ? raw.airlines.length : null)))
+            cur.paxScore = _maxNum(cur.paxScore, raw && raw.paxScore)
+            cur.cargoScore = _maxNum(cur.cargoScore, raw && raw.cargoScore)
+            cur.score = _maxNum(cur.score, raw && raw.score)
+            cur.scoreBlend = _maxNum(cur.scoreBlend, raw && raw.scoreBlend, raw && raw.score)
+            cur.demandSource = _firstText(cur.demandSource, raw && raw.demandSource, source)
+            cur.demandBasis = _firstText(cur.demandBasis, raw && raw.demandBasis, raw && raw.status)
+            cur.suggestedDepTime = _firstText(cur.suggestedDepTime, raw && raw.suggestedDepTime, raw && raw.departureTime)
+            cur.status = _firstText(cur.status, raw && raw.status)
+            cur.alreadyScheduled = cur.alreadyScheduled || scheduledDestSet.has(dest) || !!(raw && raw.alreadyScheduled)
+            cur.scheduledFlights = _maxNum(cur.scheduledFlights, scheduledCounts.get(dest), raw && raw.scheduledFlights)
+            byDest.set(dest, cur)
+        }
+
+        for (const group of Array.isArray(sourceGroups) ? sourceGroups : []) {
+            const routes = group && Array.isArray(group.routes) ? group.routes : []
+            for (const r of routes) add(r, group && group.label)
+        }
+
+        return Array.from(byDest.values()).map(c => {
+            delete c._sourceSet
+            if (c.scoreBlend == null) c.scoreBlend = _candidateSortScore(c)
+            if (c.score == null) c.score = c.scoreBlend
+            c.sourceSummary = c.sources.join(" + ") || c.demandSource || "cached route intel"
+            return c
+        }).sort((a, b) => {
+            if (!!a.alreadyScheduled !== !!b.alreadyScheduled) return a.alreadyScheduled ? 1 : -1
+            return _candidateSortScore(b) - _candidateSortScore(a)
+                || String(a.destIata).localeCompare(String(b.destIata))
+        })
+    }
+
+    function _addScheduledLeg(info, origin, destination, flightId) {
+        const hub = _normaliseIata(info && info.hub)
+        const a = _normaliseIata(origin)
+        const b = _normaliseIata(destination)
+        if (!hub || (!a && !b)) return
+        const dests = []
+        if (a === hub && b && b !== hub) dests.push(b)
+        else if (b === hub && a && a !== hub) dests.push(a)
+        else {
+            if (a && a !== hub) dests.push(a)
+            if (b && b !== hub) dests.push(b)
+        }
+        for (const d of dests) {
+            info.destSet.add(d)
+            info.counts.set(d, (info.counts.get(d) || 0) + 1)
+        }
+        if (flightId != null) info.flightIds.add(String(flightId))
+    }
+
+    function _scheduledInfoFromSchedule(schedule, hub) {
+        const info = {
+            hub: _normaliseIata(hub),
+            destSet: new Set(),
+            counts: new Map(),
+            flightIds: new Set(),
+            flightCount: 0,
+            scrapedAt: schedule && schedule.scrapedAt || null,
+            source: schedule ? "schedule-store" : null
+        }
+        const legs = schedule && Array.isArray(schedule.legs) ? schedule.legs : []
+        for (const leg of legs) {
+            _addScheduledLeg(info, leg && leg.origin, leg && leg.destination, leg && leg.flightId)
+        }
+        info.flightCount = legs.length
+        return info
+    }
+
+    function _latestRouteAnalysis(rec) {
+        const dateBlock = rec && rec.date
+        if (!dateBlock || typeof dateBlock !== "object") return null
+        const dates = Object.keys(dateBlock).sort()
+        for (let i = dates.length - 1; i >= 0; i--) {
+            const entry = dateBlock[dates[i]]
+            if (entry && entry.data) return entry.data
+        }
+        return null
+    }
+
+    function _fieldsFromCachedRouteRecord(rec, key) {
+        const fields = {
+            source: "AS in-game cache",
+            demandSource: "AS in-game cache",
+            demandBasis: "Cached Route Assistant record"
+        }
+        if (!rec || typeof rec !== "object") return fields
+        if (rec.destName || rec.name || rec.destinationName) {
+            fields.destName = rec.destName || rec.name || rec.destinationName
+        }
+        if (_distanceKmFromRecord(rec) != null) fields.distanceKm = _distanceKmFromRecord(rec)
+        if (rec.distanceNm != null) fields.distanceNm = _num(rec.distanceNm)
+        if (rec.weeklyFlights != null) fields.weeklyFlights = _num(rec.weeklyFlights)
+        if (rec.seatsPerWeek != null) fields.seatsPerWeek = _num(rec.seatsPerWeek)
+        if (rec.departureTime) fields.suggestedDepTime = String(rec.departureTime)
+        if (rec.score != null) fields.score = _num(rec.score)
+        if (rec.scoreBlend != null) fields.scoreBlend = _num(rec.scoreBlend)
+        if (rec.paxScore != null) fields.paxScore = _num(rec.paxScore)
+        if (rec.cargoScore != null) fields.cargoScore = _num(rec.cargoScore)
+
+        if (/ticketPrice/.test(key)) {
+            fields.source = "ticket-price cache"
+            fields.demandSource = "ticket-price cache"
+            fields.demandBasis = "Cached ticket-price route"
+            fields.paxScore = fields.paxScore != null ? fields.paxScore : 5
+            fields.score = fields.score != null ? fields.score : fields.paxScore * 10
+        } else if (/ownPricing|markets:ownPricing/.test(key)) {
+            fields.source = "pricing cache"
+            fields.demandSource = "pricing cache"
+            fields.demandBasis = "Cached own-pricing route"
+            fields.paxScore = fields.paxScore != null ? fields.paxScore : 5
+            fields.score = fields.score != null ? fields.score : 50
+        } else if (/routeAnalysis/.test(key) || rec.type === "routeAnalysis") {
+            const latest = _latestRouteAnalysis(rec)
+            if (latest) {
+                const y = latest.Y && Number(latest.Y.totalBkd) && Number(latest.Y.totalCap)
+                    ? Math.round((Number(latest.Y.totalBkd) / Number(latest.Y.totalCap)) * 10) : null
+                const c = latest.Cargo && Number(latest.Cargo.totalBkd) && Number(latest.Cargo.totalCap)
+                    ? Math.round((Number(latest.Cargo.totalBkd) / Number(latest.Cargo.totalCap)) * 10) : null
+                fields.paxScore = Number.isFinite(y) ? Math.max(1, Math.min(10, y)) : 6
+                fields.cargoScore = Number.isFinite(c) ? Math.max(1, Math.min(10, c)) : fields.cargoScore || null
+                fields.score = fields.paxScore * 10
+                fields.source = "route analysis"
+                fields.demandSource = "route analysis"
+                fields.demandBasis = "Cached booking/load analysis"
+            }
+        }
+        return fields
     }
 
     /**
@@ -198,6 +585,8 @@
                 targetFlights: Number(o.defaultFlights) || DEFAULT_FLIGHTS
             }),
             candidates:    [],
+            candidateSourceSummary: null,
+            scheduledInfo: null,
             plannerResult: null,
             draft:         null,
             running:       false,
@@ -255,17 +644,419 @@
 
     async function _hydrateCandidates() {
         _state.candidates = []
+        _state.candidateSourceSummary = null
+        _state.scheduledInfo = null
         if (!_state.hub) return
-        if (typeof window.FlightsFromStore !== "undefined") {
-            try {
-                const rec = await window.FlightsFromStore.loadAirport(_state.hub)
-                if (rec && Array.isArray(rec.routes)) {
-                    _state.candidates = rec.routes.map(r => Object.assign({}, r, {
-                        destIata: _normaliseIata(r.destIata || r.iata)
-                    })).filter(r => r.destIata && r.destIata !== _state.hub)
-                }
-            } catch (_) { /* fall through */ }
+
+        const scheduledInfo = await _loadScheduledInfo()
+        _state.scheduledInfo = scheduledInfo
+
+        const ffRoutes = await _loadFlightsFromRoutes(_state.hub)
+        const cachedRoutes = await _loadCachedRouteRows(_state.hub, _state.server)
+        const merged = _mergeCandidateSources([
+            {label: "FlightsFrom", routes: ffRoutes},
+            {label: "AS in-game", routes: cachedRoutes}
+        ], {
+            hub: _state.hub,
+            scheduledDestSet: scheduledInfo.destSet,
+            scheduledCounts: scheduledInfo.counts
+        })
+        _state.candidates = await _enrichCandidatesFromRouteAssistantCaches(merged, _state.hub)
+        _state.candidateSourceSummary = _summariseCandidateSources(_state.candidates, scheduledInfo)
+    }
+
+    async function _loadFlightsFromRoutes(hub) {
+        if (typeof window.FlightsFromStore === "undefined") return []
+        if (typeof window.FlightsFromStore.loadAirport !== "function") return []
+        try {
+            const rec = await window.FlightsFromStore.loadAirport(hub)
+            if (!rec || !Array.isArray(rec.routes)) return []
+            return rec.routes.map(r => Object.assign({}, r, {
+                destIata: _normaliseIata(r && (r.destIata || r.iata)),
+                source: "FlightsFrom",
+                demandSource: r && r.demandSource || "FlightsFrom"
+            })).filter(r => r.destIata && r.destIata !== hub)
+        } catch (_) {
+            return []
         }
+    }
+
+    async function _loadCachedRouteRows(hub, server) {
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return []
+        const h = _normaliseIata(hub)
+        if (!h) return []
+        let all = {}
+        try { all = await chrome.storage.local.get(null) || {} }
+        catch (_) { return [] }
+
+        const rows = []
+        const push = (dest, fields) => {
+            const d = _normaliseIata(dest)
+            if (!d || d === h) return
+            rows.push(Object.assign({destIata: d}, fields || {}))
+        }
+
+        for (const key in all) {
+            const rec = all[key]
+            if (!rec || typeof rec !== "object") continue
+            if (!_keyMatchesCurrentAccount(key, rec) || !_recordMatchesServer(rec, server)) continue
+
+            if (key.indexOf(TOP_ROUTES_PREFIX) === 0
+                    && _normaliseIata(rec.hub) === h
+                    && Array.isArray(rec.rows)) {
+                for (const row of rec.rows) {
+                    push(row && row.destIata, Object.assign({}, row, {
+                        source: "Route Assistant top routes",
+                        demandSource: row && row.demandSource || "Route Assistant top routes",
+                        demandBasis: row && row.demandBasis || "AS top-routes cache"
+                    }))
+                }
+                continue
+            }
+
+            if (/^routeAssistant:watchlist(?::|$)/.test(key)
+                    && rec.routes && typeof rec.routes === "object") {
+                for (const routeKey of Object.keys(rec.routes)) {
+                    const pair = _routePairFromString(routeKey)
+                    if (pair && pair.hub === h) push(pair.dest, {
+                        paxScore: 5,
+                        score: 50,
+                        source: "watchlist",
+                        demandSource: "watchlist",
+                        demandBasis: "Route Assistant watchlist"
+                    })
+                }
+                continue
+            }
+
+            const recHub = _normaliseIata(rec.hub || rec.origin || rec.originIata)
+            const recDest = _normaliseIata(rec.dest || rec.destIata || rec.destination || rec.destinationIata)
+            if (recHub === h && recDest) {
+                push(recDest, _fieldsFromCachedRouteRecord(rec, key))
+                continue
+            }
+
+            const pair = _routePairFromString(key)
+            if (pair && pair.hub === h) {
+                push(pair.dest, _fieldsFromCachedRouteRecord(rec, key))
+            }
+        }
+        return rows
+    }
+
+    async function _enrichCandidatesFromRouteAssistantCaches(rows, hub) {
+        if (!Array.isArray(rows) || !rows.length) return []
+        const hubIata = _normaliseIata(hub)
+        const iatas = Array.from(new Set(rows.map(r => _normaliseIata(r && r.destIata)).filter(Boolean)))
+        const pairs = iatas.map(dest => ({hub: hubIata, dest}))
+
+        const demandMap  = await _loadDemandMap(iatas)
+        const distMap    = await _loadDistanceMap(hubIata, iatas)
+        const scheduleMap = await _loadScheduleRouteMap(pairs)
+        const marketsMap = await _loadMarketsRouteMap(pairs)
+        const yieldMap   = await _loadYieldHistoryRouteMap(pairs)
+
+        const ourEnterpriseIds = _ourEnterpriseIdsFromDom()
+        const ourNameLow = _ourAirlineNameLow()
+
+        return rows.map(row => {
+            const dest = _normaliseIata(row && row.destIata)
+            const pair = _directionalPairKey(hubIata, dest)
+            const distPair = _distancePairKey(hubIata, dest)
+            const demand = demandMap.get(dest)
+            const dist = distMap.get(distPair)
+            const next = Object.assign({}, row)
+
+            if (next.distanceKm == null && dist && _num(dist.distanceKm) != null) {
+                next.distanceKm = _num(dist.distanceKm)
+                next.distanceSource = dist.source || "distance cache"
+                _noteCandidateSource(next, "distance cache")
+            }
+            if (demand) _projectDemandRecord(next, demand)
+            _projectScheduleRecord(next, scheduleMap.get(pair))
+            _projectMarketsBucket(next, marketsMap.get(pair), ourEnterpriseIds, ourNameLow)
+            _projectYieldHistoryRecord(next, yieldMap.get(pair))
+
+            next.scoreBlend = _candidateSortScore(next)
+            next.score = next.score == null ? next.scoreBlend : next.score
+            return next
+        }).sort((a, b) => {
+            if (!!a.alreadyScheduled !== !!b.alreadyScheduled) return a.alreadyScheduled ? 1 : -1
+            return _candidateSortScore(b) - _candidateSortScore(a)
+                || String(a.destIata).localeCompare(String(b.destIata))
+        })
+    }
+
+    async function _loadDemandMap(iatas) {
+        if (!iatas.length || typeof window.RouteAssistantDemandStore === "undefined"
+                || typeof window.RouteAssistantDemandStore.getMany !== "function") return new Map()
+        try { return await window.RouteAssistantDemandStore.getMany(iatas) || new Map() }
+        catch (_) { return new Map() }
+    }
+
+    async function _loadDistanceMap(hub, iatas) {
+        if (!iatas.length || typeof window.RouteAssistantDistanceResolver === "undefined"
+                || typeof window.RouteAssistantDistanceResolver.bulkLoadCache !== "function") return new Map()
+        try {
+            return await window.RouteAssistantDistanceResolver.bulkLoadCache(
+                iatas.map(dest => [hub, dest]), {}
+            ) || new Map()
+        } catch (_) { return new Map() }
+    }
+
+    async function _loadScheduleRouteMap(pairs) {
+        if (!pairs.length || typeof window.RouteAssistantSchedulePageScraper === "undefined"
+                || typeof window.RouteAssistantSchedulePageScraper.bulkLoadCache !== "function") return new Map()
+        try { return await window.RouteAssistantSchedulePageScraper.bulkLoadCache(pairs, {}) || new Map() }
+        catch (_) { return new Map() }
+    }
+
+    async function _loadMarketsRouteMap(pairs) {
+        if (!pairs.length || typeof window.RouteAssistantMarketsPageScraper === "undefined"
+                || typeof window.RouteAssistantMarketsPageScraper.bulkLoadCache !== "function") return new Map()
+        try {
+            return await window.RouteAssistantMarketsPageScraper.bulkLoadCache(pairs, {
+                families: ["competitors", "ownPricing", "marketShare", "historic"]
+            }) || new Map()
+        } catch (_) { return new Map() }
+    }
+
+    async function _loadYieldHistoryRouteMap(pairs) {
+        if (!pairs.length || typeof window.RouteAssistantYieldHistoryStore === "undefined"
+                || typeof window.RouteAssistantYieldHistoryStore.getMany !== "function") return new Map()
+        try { return await window.RouteAssistantYieldHistoryStore.getMany(pairs) || new Map() }
+        catch (_) { return new Map() }
+    }
+
+    function _projectDemandRecord(row, demand) {
+        if (!row || !demand) return
+        row.destName = _firstText(row.destName, demand.name)
+        row.paxScore = _maxNum(row.paxScore, demand.paxScore)
+        row.cargoScore = _maxNum(row.cargoScore, demand.cargoScore)
+        row.demandSource = _firstText(row.demandSource, "AS demand")
+        row.demandBasis = _firstText(row.demandBasis, "AS in-game demand bars")
+        if (row.scoreBlend == null || row.scoreBlend < Number(demand.paxScore || 0) * 10) {
+            row.scoreBlend = Number(demand.paxScore || 0) * 10
+        }
+        _noteCandidateSource(row, "AS demand")
+    }
+
+    function _projectScheduleRecord(row, rec) {
+        if (!row || !rec) return
+        const weekly = _num(rec.weeklyFlights)
+        row.liveWeeklyFlights = weekly
+        row.liveDaysPerWeek = _num(rec.daysPerWeek)
+        row.liveDailyFlights = Array.isArray(rec.dailyFlights) ? rec.dailyFlights.slice() : null
+        row.liveDeparture = _firstText(rec.departureTime, row.liveDeparture)
+        row.liveAircraftType = _firstText(rec.primaryAircraftType, row.liveAircraftType)
+        row.liveAircraftTypeId = _firstNum(rec.primaryAircraftTypeId, row.liveAircraftTypeId)
+        row.liveAircraftReg = _firstText(rec.primaryAircraftReg, row.liveAircraftReg)
+        row.liveCruiseSpeed = _firstNum(rec.cruiseSpeedKmh, row.liveCruiseSpeed)
+        row.liveScrapedAt = _firstNum(rec.scrapedAt, row.liveScrapedAt)
+        if (weekly != null && weekly > 0) {
+            row.ownRouteFrequency = weekly
+            row.scheduledFlights = _maxNum(row.scheduledFlights, weekly)
+        }
+        if (rec.ourPrice != null) row.ourPrice = _num(rec.ourPrice)
+        if (rec.ourYield != null) row.ourYield = _num(rec.ourYield)
+        if (rec.orsRank != null) row.orsRank = _num(rec.orsRank)
+        _noteCandidateSource(row, "AS schedule")
+    }
+
+    function _projectMarketsBucket(row, bucket, ourEnterpriseIds, ourNameLow) {
+        if (!row || !bucket) return
+        row.marketsScrapedAt = _firstNum(
+            bucket.competitors && bucket.competitors.scrapedAt,
+            bucket.marketShare && bucket.marketShare.scrapedAt,
+            bucket.ownPricing && bucket.ownPricing.scrapedAt,
+            row.marketsScrapedAt
+        )
+
+        if (bucket.marketShare) {
+            _projectMarketShare(row, bucket.marketShare, ourEnterpriseIds, ourNameLow)
+            _noteCandidateSource(row, "AS market share")
+        }
+        if (bucket.ownPricing) {
+            row.ownPricing = bucket.ownPricing.prices || null
+            row.ownPriceDefaults = bucket.ownPricing.defaults || null
+            row.hasOwnPricing = !!(row.ownPricing && Object.keys(row.ownPricing).length)
+            row.serviceProfileName = bucket.ownPricing.generalSettings
+                && bucket.ownPricing.generalSettings.serviceProfile || row.serviceProfileName || null
+            row.originTerminal = bucket.ownPricing.generalSettings
+                && bucket.ownPricing.generalSettings.originTerminal || row.originTerminal || null
+            row.destinationTerminal = bucket.ownPricing.generalSettings
+                && bucket.ownPricing.generalSettings.destinationTerminal || row.destinationTerminal || null
+            _noteCandidateSource(row, "AS pricing")
+        }
+        if (bucket.competitors) {
+            const stats = _competitorStats(bucket.competitors)
+            Object.assign(row, stats)
+            if (row.competitorCount == null) {
+                const count = stats.competitorFlightPrefixes && stats.competitorFlightPrefixes.length
+                row.competitorCount = count || null
+            }
+            if ((!Array.isArray(row.competitorEntries) || !row.competitorEntries.length)
+                    && stats.competitorFlightPrefixes && stats.competitorFlightPrefixes.length) {
+                row.competitorEntries = stats.competitorFlightPrefixes.map(slot => ({
+                    enterpriseId: null,
+                    name: slot.prefix + "  -  " + slot.flights + " flight" + (slot.flights === 1 ? "" : "s"),
+                    flightsOnRoute: slot.flights,
+                    sampleType: slot.sampleType,
+                    fromFlightList: true
+                }))
+            }
+            _noteCandidateSource(row, "AS competitors")
+        }
+        if (bucket.historic) {
+            row.historicPeriods = bucket.historic.periods || null
+            row.historicCapacities = bucket.historic.capacities || null
+            row.historicPrices = bucket.historic.prices || null
+            _noteCandidateSource(row, "AS historic")
+        }
+    }
+
+    function _projectMarketShare(row, marketShare, ourEnterpriseIds, ourNameLow) {
+        row.marketSharePeriod = marketShare.period || null
+        row.marketSharePax = (marketShare.pax || []).map(e => Object.assign({}, e))
+        row.marketShareCargo = (marketShare.cargo || []).map(e => Object.assign({}, e))
+
+        let ourPaxShare = null
+        for (const e of row.marketSharePax) {
+            if (_isOurMarketShareEntry(e, ourEnterpriseIds, ourNameLow)) {
+                ourPaxShare = e.sharePct
+                break
+            }
+        }
+        row.ourPaxShare = ourPaxShare
+
+        const paxSum = _sumPctValid(row.marketSharePax)
+        const cargoSum = _sumPctValid(row.marketShareCargo)
+        row.marketSharePaxSumPct = paxSum
+        row.marketShareCargoSumPct = cargoSum
+        row.marketShareValidity = paxSum == null ? null
+            : (ourPaxShare == null && row.marketSharePax.length > 0) ? "unmatched"
+            : (paxSum >= 95 && paxSum <= 105) ? "ok"
+            : paxSum >= 80 ? "partial" : "truncated"
+
+        const ids = new Set()
+        const merged = new Map()
+        const addEntry = (e, kind) => {
+            if (!e || _isOurMarketShareEntry(e, ourEnterpriseIds, ourNameLow)) return
+            const key = e.enterpriseId != null ? "id:" + e.enterpriseId
+                : "name:" + String(e.name || "").toLowerCase().trim()
+            if (!key || key === "name:") return
+            ids.add(key)
+            const slot = merged.get(key) || {
+                enterpriseId: e.enterpriseId != null ? e.enterpriseId : null,
+                name: e.name || null,
+                paxShare: null,
+                cargoShare: null,
+                paxRank: null,
+                cargoRank: null,
+                paxChange: null,
+                cargoChange: null
+            }
+            if (e.name && !slot.name) slot.name = e.name
+            if (kind === "pax") {
+                slot.paxShare = e.sharePct
+                slot.paxRank = e.rank
+                slot.paxChange = e.change
+            } else {
+                slot.cargoShare = e.sharePct
+                slot.cargoRank = e.rank
+                slot.cargoChange = e.change
+            }
+            merged.set(key, slot)
+        }
+        for (const e of row.marketSharePax || []) addEntry(e, "pax")
+        for (const e of row.marketShareCargo || []) addEntry(e, "cargo")
+        row.competitorCount = ids.size || row.competitorCount || null
+        row.competitorEntries = Array.from(merged.values())
+    }
+
+    function _projectYieldHistoryRecord(row, rec) {
+        if (!row || !rec || !Array.isArray(rec.snapshots) || !rec.snapshots.length) return
+        const latest = (typeof window.RouteAssistantYieldHistoryStore !== "undefined"
+                && typeof window.RouteAssistantYieldHistoryStore.latestSnapshot === "function")
+            ? window.RouteAssistantYieldHistoryStore.latestSnapshot(rec)
+            : rec.snapshots[rec.snapshots.length - 1]
+        if (!latest) return
+        row.actualProfitPerFlight = _firstNum(latest.profitPerFlight, row.actualProfitPerFlight)
+        row.actualProfitPerWeek = _firstNum(latest.profitPerWeek, row.actualProfitPerWeek)
+        row.actualFrequency = _firstNum(latest.frequency, row.actualFrequency)
+        row.actualSnapshotAt = _firstNum(latest.timestamp, rec.lastSnapshotAt, row.actualSnapshotAt)
+        if (Array.isArray(latest.aircraftTypeNames) && latest.aircraftTypeNames.length) {
+            row.actualAircraftTypes = latest.aircraftTypeNames.slice()
+        }
+        _noteCandidateSource(row, "AS actuals")
+    }
+
+    async function _loadScheduledInfo() {
+        let schedule = null
+        if (_state.server && _state.aircraftId
+                && typeof window.AesAfpScheduleStore !== "undefined"
+                && typeof window.AesAfpScheduleStore.load === "function") {
+            try { schedule = await window.AesAfpScheduleStore.load(_state.server, _state.aircraftId) }
+            catch (_) { schedule = null }
+        }
+        const info = _scheduledInfoFromSchedule(schedule, _state.hub)
+        if (info.flightCount) return info
+
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return info
+        let all = {}
+        try { all = await chrome.storage.local.get(null) || {} }
+        catch (_) { return info }
+        for (const key in all) {
+            const rec = all[key]
+            if (!rec || rec.type !== "aircraftFlights" || !Array.isArray(rec.flights)) continue
+            if (_state.server && rec.server && String(rec.server) !== String(_state.server)) continue
+            if (_state.aircraftId && String(rec.aircraftId) !== String(_state.aircraftId)) continue
+            if (_state.registration && rec.registration
+                    && String(rec.registration) !== String(_state.registration)) continue
+            for (const f of rec.flights) {
+                _addScheduledLeg(info, f && f.originIata, f && f.destinationIata, f && f.flightId)
+            }
+            info.flightCount += rec.flights.length
+            info.scrapedAt = rec.date || rec.scrapedAt || info.scrapedAt
+            info.source = "aircraft-flights"
+        }
+        return info
+    }
+
+    function _summariseCandidateSources(candidates, scheduledInfo) {
+        const sourceCounts = {}
+        let inGameRoutes = 0
+        let priceRoutes = 0
+        let marketRoutes = 0
+        let actualRoutes = 0
+        for (const c of candidates || []) {
+            const sources = c && c.sources && c.sources.length ? c.sources : [c && c.demandSource || "cached route intel"]
+            for (const source of sources) sourceCounts[source] = (sourceCounts[source] || 0) + 1
+            if (_hasInGameCandidateData(c)) inGameRoutes++
+            if (c && (c.hasOwnPricing || c.ownPricing || c.ourPrice != null)) priceRoutes++
+            if (c && (c.marketSharePeriod || c.competitorCount != null || c.competitorMedianPriceY != null)) marketRoutes++
+            if (c && (c.actualProfitPerFlight != null || c.actualProfitPerWeek != null)) actualRoutes++
+        }
+        return {
+            total: (candidates || []).length,
+            sourceCounts,
+            inGameRoutes,
+            priceRoutes,
+            marketRoutes,
+            actualRoutes,
+            scheduledDestinations: scheduledInfo && scheduledInfo.destSet ? scheduledInfo.destSet.size : 0,
+            scheduledFlights: scheduledInfo && scheduledInfo.flightCount || 0,
+            scheduledSource: scheduledInfo && scheduledInfo.source || null
+        }
+    }
+
+    function _hasInGameCandidateData(c) {
+        return !!(c && (
+            c.liveWeeklyFlights != null || c.ownRouteFrequency != null
+            || c.ownPricing || c.hasOwnPricing || c.ourPrice != null
+            || c.marketSharePeriod || c.competitorCount != null || c.competitorMedianPriceY != null
+            || c.actualProfitPerFlight != null || c.actualProfitPerWeek != null
+        ))
     }
 
     async function _hydrateDraft() {
@@ -294,7 +1085,7 @@
         const modal = document.createElement("div")
         modal.style.cssText = "background:#0f1623;color:#e5e7eb;"
             + "border:1px solid #1f2937;border-radius:5px;"
-            + "max-width:min(820px,96vw);width:100%;"
+            + "max-width:min(1080px,96vw);width:100%;"
             + "display:flex;flex-direction:column;overflow:hidden;"
             + "font-size:12px;font-family:'Inter',system-ui,sans-serif;"
         overlay.appendChild(modal)
@@ -440,8 +1231,11 @@
 
         const lbl = document.createElement("div")
         lbl.style.cssText = "color:#9ca3af;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;"
-        lbl.textContent = "Included airports — click chips or type IATA codes"
+        lbl.textContent = "Candidate routes - Route Assistant in-game data + FlightsFrom"
         wrap.appendChild(lbl)
+
+        const summary = _renderCandidateSummary()
+        if (summary) wrap.appendChild(summary)
 
         const manual = document.createElement("input")
         manual.type = "text"
@@ -458,14 +1252,20 @@
         chips.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;"
         const selected = new Set(_state.config.includedIatas)
         const candidates = _state.candidates.slice()
-            .sort((a, b) => (Number(b.weeklyFlights) || 0) - (Number(a.weeklyFlights) || 0))
+            .filter(c => !_state.config.hideScheduled || !c.alreadyScheduled || selected.has(c.destIata))
+            .sort((a, b) => _candidateSortScore(b) - _candidateSortScore(a)
+                || (Number(b.weeklyFlights) || 0) - (Number(a.weeklyFlights) || 0)
+                || String(a.destIata).localeCompare(String(b.destIata)))
             .slice(0, 30)
         if (!candidates.length) {
             const empty = document.createElement("span")
             empty.style.cssText = "color:#6b7280;font-style:italic;font-size:11px;"
             empty.textContent = _state.hub
-                ? "No FlightsFrom data cached for " + _state.hub
-                    + ". Type IATAs above or run a FlightsFrom scrape first."
+                ? (_state.config.hideScheduled
+                    ? "No unscheduled cached candidates for " + _state.hub
+                        + ". Turn off Hide scheduled, type IATAs, or scrape Route Assistant data."
+                    : "No cached candidates for " + _state.hub
+                        + ". Type IATAs above or run a FlightsFrom / Route Assistant scrape first.")
                 : "Pick a hub first."
             chips.appendChild(empty)
         }
@@ -475,11 +1275,16 @@
             const on = selected.has(iata)
             const chip = document.createElement("button")
             chip.type = "button"
-            chip.textContent = iata + (c.weeklyFlights ? " · " + c.weeklyFlights : "")
-            chip.title = (c.destName || iata) + (c.distanceKm ? " · " + Math.round(c.distanceKm) + "km" : "")
+            chip.textContent = iata
+                + (c.paxScore != null ? " · D" + c.paxScore : (c.weeklyFlights ? " · " + c.weeklyFlights : ""))
+                + (c.alreadyScheduled ? " · scheduled" : "")
+            chip.title = (c.destName || iata)
+                + (c.distanceKm ? " · " + Math.round(c.distanceKm) + "km" : "")
+                + (c.sourceSummary ? " · " + c.sourceSummary : "")
+                + (c.demandBasis ? " · " + c.demandBasis : "")
             chip.style.cssText = "background:" + (on ? "#1d4ed8" : "#111827") + ";"
-                + "color:" + (on ? "#f8fafc" : "#cbd5e1") + ";"
-                + "border:1px solid " + (on ? "#2563eb" : "#374151") + ";"
+                + "color:" + (on ? "#f8fafc" : (c.alreadyScheduled ? "#94a3b8" : "#cbd5e1")) + ";"
+                + "border:1px solid " + (on ? "#2563eb" : (c.alreadyScheduled ? "#64748b" : "#374151")) + ";"
                 + "border-radius:3px;padding:4px 8px;font-size:11px;cursor:pointer;"
                 + "font-variant-numeric:tabular-nums;"
             chip.addEventListener("click", () => {
@@ -491,7 +1296,173 @@
             chips.appendChild(chip)
         }
         wrap.appendChild(chips)
+        if (candidates.length) wrap.appendChild(_renderCandidateMatrix(candidates, selected))
         return wrap
+    }
+
+    function _renderCandidateSummary() {
+        const s = _state.candidateSourceSummary
+        if (!s) return null
+        const el = document.createElement("div")
+        el.style.cssText = "color:#6b7280;font-size:10px;line-height:1.35;"
+        const sourceNames = Object.keys(s.sourceCounts || {}).slice(0, 4)
+        const sourceText = sourceNames.length
+            ? sourceNames.map(k => k + " " + s.sourceCounts[k]).join(" · ")
+            : "no source data"
+        el.textContent = s.total + " candidates from " + sourceText
+            + (s.inGameRoutes ? " · " + s.inGameRoutes + " with AS data" : "")
+            + (s.priceRoutes ? " · " + s.priceRoutes + " priced" : "")
+            + (s.marketRoutes ? " · " + s.marketRoutes + " market" : "")
+            + (s.actualRoutes ? " · " + s.actualRoutes + " actuals" : "")
+            + (s.scheduledDestinations
+                ? " · " + s.scheduledDestinations + " already scheduled"
+                    + (s.scheduledSource ? " (" + s.scheduledSource + ")" : "")
+                : "")
+        return el
+    }
+
+    function _renderCandidateMatrix(candidates, selected) {
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "border:1px solid #1f2937;border-radius:3px;overflow:auto;max-height:360px;"
+
+        const grid = document.createElement("div")
+        grid.style.cssText = "min-width:940px;"
+        wrap.appendChild(grid)
+
+        const header = document.createElement("div")
+        header.style.cssText = _candidateRowCss(true)
+        for (const label of ["Dest", "Score", "Demand", "Live", "Price", "Cmp", "Mkt", "Actual", "Source"]) {
+            const cell = document.createElement("div")
+            cell.textContent = label
+            cell.style.cssText = "color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;"
+            header.appendChild(cell)
+        }
+        grid.appendChild(header)
+
+        const rows = candidates.slice(0, 20)
+        for (const c of rows) grid.appendChild(_renderCandidateMatrixRow(c, selected))
+        return wrap
+    }
+
+    function _renderCandidateMatrixRow(c, selected) {
+        const iata = _normaliseIata(c && c.destIata)
+        const on = selected.has(iata)
+        const row = document.createElement("div")
+        row.setAttribute("data-aes-rb-candidate-row", iata)
+        row.setAttribute("data-aes-rb-selected", on ? "1" : "0")
+        row.style.cssText = _candidateRowCss(false)
+            + "background:" + (on ? "#172554" : (c.alreadyScheduled ? "#111827" : "#0b1220")) + ";"
+            + "cursor:pointer;"
+        row.title = (c.destName || iata)
+            + (c.distanceKm ? " - " + Math.round(c.distanceKm) + "km" : "")
+            + (c.sourceSummary ? " - " + c.sourceSummary : "")
+        row.addEventListener("click", () => {
+            const next = new Set(_state.config.includedIatas)
+            if (next.has(iata)) next.delete(iata); else next.add(iata)
+            _state.config.includedIatas = Array.from(next)
+            _renderBody()
+        })
+
+        row.appendChild(_matrixCell(iata + (c.alreadyScheduled ? " *" : ""), "font-weight:700;color:" + (on ? "#bfdbfe" : "#f8fafc") + ";"))
+        row.appendChild(_matrixCell(_fmtInt(_candidateSortScore(c)), "color:#e2e8f0;text-align:right;"))
+        row.appendChild(_matrixCell(_fmtDemand(c), "color:#cbd5e1;"))
+        row.appendChild(_matrixCell(_fmtLiveRoute(c), "color:#bae6fd;"))
+        row.appendChild(_matrixCell(_fmtOwnPrice(c), "color:#fde68a;"))
+        row.appendChild(_matrixCell(_fmtCompetitors(c), "color:#d8b4fe;"))
+        row.appendChild(_matrixCell(_fmtMarketShare(c), "color:#a7f3d0;"))
+        row.appendChild(_matrixCell(_fmtActual(c), "color:" + (_num(c.actualProfitPerFlight) != null && Number(c.actualProfitPerFlight) < 0 ? "#fca5a5" : "#c4b5fd") + ";"))
+        row.appendChild(_matrixCell(_fmtSources(c), "color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"))
+        return row
+    }
+
+    function _candidateRowCss(isHeader) {
+        return "display:grid;grid-template-columns:64px 58px 84px 120px 96px 90px 80px 98px minmax(160px,1fr);"
+            + "gap:8px;align-items:center;padding:" + (isHeader ? "6px 8px" : "7px 8px") + ";"
+            + "border-bottom:1px solid #1f2937;font-size:11px;font-variant-numeric:tabular-nums;"
+            + (isHeader ? "background:#111827;position:sticky;top:0;z-index:1;" : "")
+    }
+
+    function _matrixCell(text, extraCss) {
+        const cell = document.createElement("div")
+        cell.style.cssText = "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" + (extraCss || "")
+        cell.textContent = text || "-"
+        return cell
+    }
+
+    function _fmtInt(v) {
+        const n = _num(v)
+        return n == null ? "-" : String(Math.round(n))
+    }
+
+    function _fmtDemand(c) {
+        const p = _num(c && c.paxScore)
+        const g = _num(c && c.cargoScore)
+        const pp = p == null ? "-" : (p > 10 ? Math.round(p) : Math.round(p * 10) / 10)
+        const gg = g == null ? "-" : (g > 10 ? Math.round(g) : Math.round(g * 10) / 10)
+        return "P" + pp + " / C" + gg
+    }
+
+    function _fmtLiveRoute(c) {
+        const wk = _num(c && (c.liveWeeklyFlights != null ? c.liveWeeklyFlights : c.ownRouteFrequency))
+        if (wk == null || wk <= 0) return "-"
+        const dep = c.liveDeparture ? " " + c.liveDeparture : ""
+        return Math.round(wk) + "/wk" + dep
+    }
+
+    function _fmtOwnPrice(c) {
+        const prices = c && c.ownPricing
+        if (prices && typeof prices === "object") {
+            const y = _num(prices.Y)
+            const cargo = _num(prices.Cargo)
+            if (y != null) return "Y " + _fmtCompactNumber(y)
+            if (cargo != null) return "Cargo " + _fmtCompactNumber(cargo)
+        }
+        if (_num(c && c.ourPrice) != null) return "Y " + _fmtCompactNumber(c.ourPrice)
+        return "-"
+    }
+
+    function _fmtCompetitors(c) {
+        const count = _num(c && c.competitorCount)
+        const y = _num(c && c.competitorMedianPriceY)
+        if (count == null && y == null) return "-"
+        return (count != null ? Math.round(count) + " AS" : "AS")
+            + (y != null ? " / Y " + _fmtCompactNumber(y) : "")
+    }
+
+    function _fmtMarketShare(c) {
+        const share = _num(c && c.ourPaxShare)
+        if (share == null) return c && c.marketSharePeriod ? "seen" : "-"
+        return (Math.round(share * 10) / 10) + "%"
+    }
+
+    function _fmtActual(c) {
+        const pf = _num(c && c.actualProfitPerFlight)
+        const pw = _num(c && c.actualProfitPerWeek)
+        if (pw != null) return _fmtMoneyCompact(pw) + "/wk"
+        if (pf != null) return _fmtMoneyCompact(pf) + "/flt"
+        return "-"
+    }
+
+    function _fmtSources(c) {
+        const sources = c && Array.isArray(c.sources) && c.sources.length
+            ? c.sources
+            : (c && c.sourceSummary ? [c.sourceSummary] : [])
+        return sources.slice(0, 3).join(" + ") || "-"
+    }
+
+    function _fmtCompactNumber(v) {
+        const n = _num(v)
+        if (n == null) return "-"
+        if (Math.abs(n) >= 1000000) return (Math.round(n / 100000) / 10) + "m"
+        if (Math.abs(n) >= 1000) return Math.round(n / 1000) + "k"
+        return String(Math.round(n))
+    }
+
+    function _fmtMoneyCompact(v) {
+        const n = _num(v)
+        if (n == null) return "-"
+        const sign = n < 0 ? "-" : ""
+        return sign + "$" + _fmtCompactNumber(Math.abs(n))
     }
 
     function _renderActions() {
@@ -510,6 +1481,22 @@
         seqLbl.textContent = "Sequential long-haul placement"
         seqWrap.appendChild(seqLbl)
         bar.appendChild(seqWrap)
+
+        const hideWrap = document.createElement("label")
+        hideWrap.style.cssText = "display:flex;align-items:center;gap:6px;color:#9ca3af;font-size:11px;cursor:pointer;"
+        const hide = document.createElement("input")
+        hide.type = "checkbox"
+        hide.checked = _state.config.hideScheduled !== false
+        hide.style.cssText = "margin:0;"
+        hide.addEventListener("change", () => {
+            _state.config.hideScheduled = hide.checked
+            _renderBody()
+        })
+        hideWrap.appendChild(hide)
+        const hideLbl = document.createElement("span")
+        hideLbl.textContent = "Hide scheduled"
+        hideWrap.appendChild(hideLbl)
+        bar.appendChild(hideWrap)
 
         const spacer = document.createElement("div")
         spacer.style.cssText = "flex:1;"
@@ -665,7 +1652,7 @@
                     weeklyFlights: 7, distanceKm: 1500, scoreBlend: 50,
                     _synthetic: true})
             }
-            const allCandidates = _state.candidates.concat(synth)
+            const allCandidates = _plannerCandidatePool(_state.candidates.concat(synth))
 
             const result = window.AesAfpRouteBuilderPlanner.recommend({
                 hubIata:    _state.hub,
@@ -699,6 +1686,17 @@
             _state.running = false
             _renderBody()
         }
+    }
+
+    function _plannerCandidatePool(candidates) {
+        const manual = new Set((_state.config.includedIatas || []).map(_normaliseIata).filter(Boolean))
+        if (!_state.config.hideScheduled || manual.size) {
+            return (candidates || []).filter(c => {
+                const iata = _normaliseIata(c && c.destIata)
+                return iata && (!c.alreadyScheduled || manual.has(iata) || !_state.config.hideScheduled)
+            })
+        }
+        return (candidates || []).filter(c => c && !c.alreadyScheduled)
     }
 
     async function _setLegEdit(seq, patch) {
@@ -878,7 +1876,15 @@
             buildApplyPayload: _buildApplyPayload,
             defaultConfig:    _defaultConfig,
             singleDayMask:    _singleDayMask,
-            dayFromMask:      _dayFromMask
+            dayFromMask:      _dayFromMask,
+            mergeCandidateSources: _mergeCandidateSources,
+            scheduledInfoFromSchedule: _scheduledInfoFromSchedule,
+            candidateSortScore: _candidateSortScore,
+            competitorStats: _competitorStats,
+            projectScheduleRecord: _projectScheduleRecord,
+            projectMarketsBucket: _projectMarketsBucket,
+            projectYieldHistoryRecord: _projectYieldHistoryRecord,
+            summariseCandidateSources: _summariseCandidateSources
         }
     }
 })()

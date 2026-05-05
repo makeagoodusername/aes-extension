@@ -59,8 +59,9 @@ class ScrapeOrchestratorPhases {
     static all() {
         return [
             ScrapeOrchestratorPhases._foundation(),
-            ScrapeOrchestratorPhases._perHub(),
+            ScrapeOrchestratorPhases._demandSeed(),
             ScrapeOrchestratorPhases._perAircraft(),
+            ScrapeOrchestratorPhases._perHub(),
             ScrapeOrchestratorPhases._perRoute(),
             ScrapeOrchestratorPhases._orsRank(),
             ScrapeOrchestratorPhases._perCompetitor(),
@@ -82,6 +83,7 @@ class ScrapeOrchestratorPhases {
         return {
             foundation:   ScrapeOrchestratorPhases.FOUNDATION_TARGETS.length,
             perHub:       hubs.length,
+            demandSeed:   1,
             perAircraft:  aircraft.length * 2,
             perRoute:     routes.length * 2,    // markets + inventory per route
             perCompetitor: competitors.length,
@@ -134,6 +136,56 @@ class ScrapeOrchestratorPhases {
                     // topRoutes publish typically lands within 10–20s.
                     storagePollMs:          25000
                 }))
+            }
+        }
+    }
+
+    /**
+     * Demand-seed — runs the parallel-scanner's `seedAllCountries()` so
+     * `routeAssistant:demand:<IATA>` is populated for every airport in the
+     * game world. Without this phase, demand scoring stays empty after a
+     * "Scrape everything" run because the scanner is otherwise only
+     * reachable via the RA panel's "Seed All Countries" button.
+     *
+     * Slow (5–15 minutes — country fan-out via CountryScraper region
+     * fetches), so kept `optional: true` and `defaultEnabled: false` —
+     * users opt in from the ToS modal.
+     *
+     * No tab fan-out (the scanner uses fetch() + chrome.storage.local
+     * writes), so buildJobs returns an empty list and the entire payload
+     * runs in postRun. Mirrors `_orsRank()`.
+     *
+     * No new POSTs to AS — CountryScraper does GETs only.
+     */
+    static _demandSeed() {
+        return {
+            id:             "demand-seed",
+            label:          "Demand store (slow — country fan-out)",
+            optional:       true,
+            defaultEnabled: false,
+            concurrency:    1,
+            staggerMs:      0,
+            buildJobs:      async () => [],
+            postRun:        async (host) => {
+                if (!window.RouteAssistantParallelScanner) {
+                    return {skipped: true, reason: "parallel-scanner not loaded"}
+                }
+                try {
+                    const ps = new window.RouteAssistantParallelScanner(host.server, {
+                        concurrency: 3,
+                        staggerMs:   1500
+                    })
+                    const out = await ps.seedAllCountries()
+                    return {
+                        ok:              out && out.phase === "done",
+                        countries:       (out && out.total)          || 0,
+                        fetched:         (out && out.fetched)        || 0,
+                        airportsSeeded:  (out && out.airportsSeeded) || 0,
+                        failedCountries: ((out && out.failedCountries) || []).length
+                    }
+                } catch (e) {
+                    return {ok: false, error: (e && e.message) || String(e)}
+                }
             }
         }
     }

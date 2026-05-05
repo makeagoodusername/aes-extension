@@ -1,0 +1,183 @@
+{
+  "ok": false,
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "port": "10019",
+  "result": {
+    "ok": false,
+    "stage": "done",
+    "startedAt": 1777898727007,
+    "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+    "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+    "configured": {
+      "silentAutoEnabled": true,
+      "dryRun": false,
+      "liveWrites": true,
+      "applyEnabled": true,
+      "dryRunOnly": false,
+      "silentLiveAllowed": true,
+      "applyGate": {
+        "applyEnabled": true,
+        "dryRunOnly": false,
+        "scopeName": "silentAuto",
+        "scopeLiveAllowed": true,
+        "forcedDryRun": false,
+        "dryRun": false,
+        "liveWrites": true,
+        "reason": "live"
+      },
+      "strategy": "per-class-elasticity",
+      "followMode": "all",
+      "tickMin": 0.08333333333333333,
+      "tickSec": 5,
+      "tickMs": 5000,
+      "tickLabel": "5 sec",
+      "mutedUntil": null
+    },
+    "previewBefore": {
+      "counts": {
+        "routes": 1,
+        "watchlisted": 0,
+        "pinned": 0,
+        "proposed": 0,
+        "withOwnPricing": 1,
+        "withCompetitors": 1,
+        "withYieldHistory": 0,
+        "withOrs": 0,
+        "withActiveFlights": 0,
+        "cooldownBlocked": 0,
+        "capBlocked": 1,
+        "withOrsIndex": 0,
+        "withOrsPriceIndex": 0
+      },
+      "proposals": []
+    },
+    "observed": [
+      {
+        "at": 1777898730744,
+        "iso": "2026-05-04T12:45:30.744Z",
+        "result": {
+          "applied": 0,
+          "blocked": 1,
+          "capped": 0,
+          "dryRun": false,
+          "eligible": 1,
+          "error": {
+            "code": "capExhausted",
+            "message": "1 capped proposal is waiting on live apply gates"
+          },
+          "perRoute": [
+            {
+              "capBlock": {
+                "code": "capExhausted",
+                "dailyRemaining": 0,
+                "dailyUsed": 1,
+                "hourlyRemaining": 0,
+                "hourlyUsed": 1,
+                "message": "hourly cap + daily cap exhausted"
+              },
+              "cooldown": null,
+              "dest": "CDG",
+              "pair": "LHR-CDG",
+              "reason": "hourly cap + daily cap exhausted",
+              "stage": "cap"
+            }
+          ],
+          "proposed": 0,
+          "ranAt": 1777898730744,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777898735745,
+        "iso": "2026-05-04T12:45:35.745Z",
+        "result": {
+          "applied": 0,
+          "blocked": 1,
+          "capped": 0,
+          "dryRun": false,
+          "eligible": 1,
+          "error": {
+            "code": "capExhausted",
+            "message": "1 capped proposal is waiting on live apply gates"
+          },
+          "perRoute": [
+            {
+              "capBlock": {
+                "code": "capExhausted",
+                "dailyRemaining": 0,
+                "dailyUsed": 1,
+                "hourlyRemaining": 0,
+                "hourlyUsed": 1,
+                "message": "hourly cap + daily cap exhausted"
+              },
+              "cooldown": null,
+              "dest": "CDG",
+              "pair": "LHR-CDG",
+              "reason": "hourly cap + daily cap exhausted",
+              "stage": "cap"
+            }
+          ],
+          "proposed": 0,
+          "ranAt": 1777898735745,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      },
+      {
+        "at": 1777898740744,
+        "iso": "2026-05-04T12:45:40.744Z",
+        "result": {
+          "applied": 0,
+          "blocked": 1,
+          "capped": 0,
+          "dryRun": false,
+          "eligible": 1,
+          "error": {
+            "code": "capExhausted",
+            "message": "1 capped proposal is waiting on live apply gates"
+          },
+          "perRoute": [
+            {
+              "capBlock": {
+                "code": "capExhausted",
+                "dailyRemaining": 0,
+                "dailyUsed": 1,
+                "hourlyRemaining": 0,
+                "hourlyUsed": 1,
+                "message": "hourly cap + daily cap exhausted"
+              },
+              "cooldown": null,
+              "dest": "CDG",
+              "pair": "LHR-CDG",
+              "reason": "hourly cap + daily cap exhausted",
+              "stage": "cap"
+            }
+          ],
+          "proposed": 0,
+          "ranAt": 1777898740744,
+          "simulated": 0,
+          "skipped": 0,
+          "sourcePage": "dashboard"
+        }
+      }
+    ],
+    "intervalsMs": [
+      5001,
+      4999
+    ],
+    "applyLog": {
+      "entriesInRun": 0,
+      "successes": 0,
+      "failures": 0,
+      "entries": []
+    },
+    "restoredSettings": true,
+    "durationMs": 14254
+  },
+  "consoleRows": [],
+  "pageErrors": []
+}

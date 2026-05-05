@@ -464,7 +464,7 @@ async function getInventoryQuickPriceGate(scopeName) {
             const liveScopes = apply.liveScopes || {}
             const scopeLiveAllowed = liveScopes[scope] !== false
             const applyEnabled = apply.enabled !== false
-            const dryRunOnly = apply.dryRunOnly !== false
+            const dryRunOnly = apply.dryRunOnly === true
             return {
                 applyEnabled,
                 dryRunOnly,

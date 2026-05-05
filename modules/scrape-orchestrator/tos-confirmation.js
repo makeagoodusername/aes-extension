@@ -3,14 +3,14 @@
 /**
  * ScrapeTosConfirmation — first-run modal that surfaces the bulk-scrape
  * implications (page count, runtime estimate, AS ToS uncertainty) and
- * captures the user's two optional-phase toggles.
+ * captures the user's optional-phase toggles.
  *
  * Resolves to:
- *   {confirmed: true, includePerCompetitor: bool, includeFlightsFrom: bool}
+ *   {confirmed: true, includePerCompetitor: bool, includeDemandSeed: bool, includeFlightsFrom: bool}
  *   {confirmed: false}
  *
  * Persists `scrapeOrchestrator:tosAccepted: true` to skip the modal on
- * subsequent runs (the two toggles still appear inside the progress
+ * subsequent runs (the optional toggles still appear inside the progress
  * modal header so the user can change them per run).
  */
 class ScrapeTosConfirmation {
@@ -100,6 +100,7 @@ class ScrapeTosConfirmation {
             est.hubs + " hub" + (est.hubs === 1 ? "" : "s") + " — scheduling pages" + ScrapeTosConfirmation._countSuffix(est.perHub),
             est.aircraft + " aircraft × 2 pages each" + ScrapeTosConfirmation._countSuffix(est.perAircraft),
             est.routes + " route" + (est.routes === 1 ? "" : "s") + " — markets + inventory" + ScrapeTosConfirmation._countSuffix(est.perRoute),
+            "Demand store seed (optional, slow country fan-out)" + ScrapeTosConfirmation._countSuffix(est.demandSeed),
             est.competitors + " tracked competitor" + (est.competitors === 1 ? "" : "s") + " (optional)" + ScrapeTosConfirmation._countSuffix(est.perCompetitor),
             est.airports + " airport" + (est.airports === 1 ? "" : "s") + " — flightsfrom.com (optional)" + ScrapeTosConfirmation._countSuffix(est.flightsFrom)
         ]
@@ -134,8 +135,9 @@ class ScrapeTosConfirmation {
         const optWrap = document.createElement("div")
         optWrap.style.cssText = "margin-bottom:" + T.sp[3] + ";"
         const competitorChk = ScrapeTosConfirmation._buildCheckbox(T, "include-competitor", "Include per-competitor enrichment (" + est.perCompetitor + " pages)")
+        const demandSeedChk = ScrapeTosConfirmation._buildCheckbox(T, "include-demand-seed", "Include demand store seed (slow — country fan-out, no tab fan-out)")
         const flightsfromChk = ScrapeTosConfirmation._buildCheckbox(T, "include-flightsfrom", "Include flightsfrom.com (" + est.flightsFrom + " pages, slower)")
-        optWrap.append(competitorChk.label, competitorChk.divider, flightsfromChk.label)
+        optWrap.append(competitorChk.label, competitorChk.divider, demandSeedChk.label, demandSeedChk.divider, flightsfromChk.label)
         card.appendChild(optWrap)
 
         const buttons = document.createElement("div")
@@ -146,6 +148,7 @@ class ScrapeTosConfirmation {
         proceed.addEventListener("click", () => onResult({
             confirmed:            true,
             includePerCompetitor: competitorChk.input.checked,
+            includeDemandSeed:    demandSeedChk.input.checked,
             includeFlightsFrom:   flightsfromChk.input.checked
         }))
         buttons.append(cancel, proceed)

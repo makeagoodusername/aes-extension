@@ -1,0 +1,828 @@
+{
+  "ok": true,
+  "mode": "full-read-only-harvest",
+  "port": "9938",
+  "server": "free1.airlinesim.aero",
+  "dashboardUrl": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "phases": [
+    "foundation",
+    "per-hub",
+    "per-route"
+  ],
+  "launch": false,
+  "profile": null,
+  "startedAt": "2026-05-04T12:19:51.694Z",
+  "before": {
+    "demand": 0,
+    "topRoutes": 0,
+    "marketsCompetitors": 0,
+    "marketsOwnPricing": 0,
+    "marketsMarketShare": 0,
+    "marketsHistoric": 0,
+    "inventory": 0,
+    "ors": 0,
+    "aircraftFleet": 1,
+    "aircraftFlights": 1,
+    "maintenance": 1,
+    "accounting": 7,
+    "crew": 3,
+    "alliance": 1,
+    "serviceProfiles": 0,
+    "scrapeArchives": 0
+  },
+  "after": {
+    "demand": 0,
+    "topRoutes": 0,
+    "marketsCompetitors": 0,
+    "marketsOwnPricing": 0,
+    "marketsMarketShare": 0,
+    "marketsHistoric": 0,
+    "inventory": 0,
+    "ors": 0,
+    "aircraftFleet": 1,
+    "aircraftFlights": 1,
+    "maintenance": 1,
+    "accounting": 7,
+    "crew": 3,
+    "alliance": 1,
+    "serviceProfiles": 0,
+    "scrapeArchives": 0
+  },
+  "progress": [
+    {
+      "at": "2026-05-04T12:20:01.216Z",
+      "current": {
+        "at": 1777897200729,
+        "type": "job-start",
+        "jobId": "foundation-3",
+        "phaseId": "foundation",
+        "url": "https://free1.airlinesim.aero/app/finance/accounting/2"
+      },
+      "recent": [
+        {
+          "at": 1777897196224,
+          "type": "phase-start",
+          "phaseId": "foundation",
+          "label": "Foundation"
+        },
+        {
+          "at": 1777897196225,
+          "type": "run-start",
+          "runId": "run-mor634cg-c550",
+          "totalJobs": 10
+        },
+        {
+          "at": 1777897196225,
+          "type": "job-start",
+          "jobId": "foundation-0",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/fleets"
+        },
+        {
+          "at": 1777897197727,
+          "type": "job-start",
+          "jobId": "foundation-1",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/0"
+        },
+        {
+          "at": 1777897198528,
+          "type": "job-done",
+          "jobId": "foundation-0",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/fleets",
+          "durationMs": 2302,
+          "storageKeys": [
+            "free1CFLAIRaircraftFleet"
+          ],
+          "completed": 1,
+          "total": 10
+        },
+        {
+          "at": 1777897199228,
+          "type": "job-start",
+          "jobId": "foundation-2",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/1"
+        },
+        {
+          "at": 1777897199713,
+          "type": "job-done",
+          "jobId": "foundation-1",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/0",
+          "durationMs": 1986,
+          "storageKeys": [
+            "free1CFLAIRaccounting:income:2026-05-08"
+          ],
+          "completed": 2,
+          "total": 10
+        },
+        {
+          "at": 1777897200729,
+          "type": "job-start",
+          "jobId": "foundation-3",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/2"
+        }
+      ]
+    },
+    {
+      "at": "2026-05-04T12:20:06.218Z",
+      "current": {
+        "at": 1777897205691,
+        "type": "job-done",
+        "jobId": "foundation-5",
+        "phaseId": "foundation",
+        "url": "https://free1.airlinesim.aero/app/finance/capital",
+        "durationMs": 1958,
+        "storageKeys": [
+          "free1CFLAIRaccounting:capital"
+        ],
+        "completed": 6,
+        "total": 10
+      },
+      "recent": [
+        {
+          "at": 1777897196224,
+          "type": "phase-start",
+          "phaseId": "foundation",
+          "label": "Foundation"
+        },
+        {
+          "at": 1777897196225,
+          "type": "run-start",
+          "runId": "run-mor634cg-c550",
+          "totalJobs": 10
+        },
+        {
+          "at": 1777897196225,
+          "type": "job-start",
+          "jobId": "foundation-0",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/fleets"
+        },
+        {
+          "at": 1777897197727,
+          "type": "job-start",
+          "jobId": "foundation-1",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/0"
+        },
+        {
+          "at": 1777897198528,
+          "type": "job-done",
+          "jobId": "foundation-0",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/fleets",
+          "durationMs": 2302,
+          "storageKeys": [
+            "free1CFLAIRaircraftFleet"
+          ],
+          "completed": 1,
+          "total": 10
+        },
+        {
+          "at": 1777897199228,
+          "type": "job-start",
+          "jobId": "foundation-2",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/1"
+        },
+        {
+          "at": 1777897199713,
+          "type": "job-done",
+          "jobId": "foundation-1",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/0",
+          "durationMs": 1986,
+          "storageKeys": [
+            "free1CFLAIRaccounting:income:2026-05-08"
+          ],
+          "completed": 2,
+          "total": 10
+        },
+        {
+          "at": 1777897200729,
+          "type": "job-start",
+          "jobId": "foundation-3",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/2"
+        },
+        {
+          "at": 1777897201227,
+          "type": "job-done",
+          "jobId": "foundation-2",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/1",
+          "durationMs": 1996,
+          "storageKeys": [
+            "free1CFLAIRaccounting:balance:2026-05-08"
+          ],
+          "completed": 3,
+          "total": 10
+        },
+        {
+          "at": 1777897202230,
+          "type": "job-start",
+          "jobId": "foundation-4",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/leasing"
+        },
+        {
+          "at": 1777897202844,
+          "type": "job-done",
+          "jobId": "foundation-3",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/2",
+          "durationMs": 2114,
+          "storageKeys": [
+            "free1CFLAIRaccounting:bank:2026-05-08"
+          ],
+          "completed": 4,
+          "total": 10
+        },
+        {
+          "at": 1777897203732,
+          "type": "job-start",
+          "jobId": "foundation-5",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/capital"
+        },
+        {
+          "at": 1777897204489,
+          "type": "job-done",
+          "jobId": "foundation-4",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/leasing",
+          "durationMs": 2259,
+          "storageKeys": [
+            "free1CFLAIRaccounting:leasing"
+          ],
+          "completed": 5,
+          "total": 10
+        },
+        {
+          "at": 1777897205241,
+          "type": "job-start",
+          "jobId": "foundation-6",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/assets"
+        },
+        {
+          "at": 1777897205691,
+          "type": "job-done",
+          "jobId": "foundation-5",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/capital",
+          "durationMs": 1958,
+          "storageKeys": [
+            "free1CFLAIRaccounting:capital"
+          ],
+          "completed": 6,
+          "total": 10
+        }
+      ]
+    },
+    {
+      "at": "2026-05-04T12:20:11.219Z",
+      "current": {
+        "at": 1777897211002,
+        "type": "job-done",
+        "jobId": "foundation-8",
+        "phaseId": "foundation",
+        "url": "https://free1.airlinesim.aero/action/enterprise/staffPilots",
+        "durationMs": 2758,
+        "storageKeys": [
+          "crewMgmt:pilots"
+        ],
+        "completed": 9,
+        "total": 10
+      },
+      "recent": [
+        {
+          "at": 1777897196225,
+          "type": "run-start",
+          "runId": "run-mor634cg-c550",
+          "totalJobs": 10
+        },
+        {
+          "at": 1777897196225,
+          "type": "job-start",
+          "jobId": "foundation-0",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/fleets"
+        },
+        {
+          "at": 1777897197727,
+          "type": "job-start",
+          "jobId": "foundation-1",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/0"
+        },
+        {
+          "at": 1777897198528,
+          "type": "job-done",
+          "jobId": "foundation-0",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/fleets",
+          "durationMs": 2302,
+          "storageKeys": [
+            "free1CFLAIRaircraftFleet"
+          ],
+          "completed": 1,
+          "total": 10
+        },
+        {
+          "at": 1777897199228,
+          "type": "job-start",
+          "jobId": "foundation-2",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/1"
+        },
+        {
+          "at": 1777897199713,
+          "type": "job-done",
+          "jobId": "foundation-1",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/0",
+          "durationMs": 1986,
+          "storageKeys": [
+            "free1CFLAIRaccounting:income:2026-05-08"
+          ],
+          "completed": 2,
+          "total": 10
+        },
+        {
+          "at": 1777897200729,
+          "type": "job-start",
+          "jobId": "foundation-3",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/2"
+        },
+        {
+          "at": 1777897201227,
+          "type": "job-done",
+          "jobId": "foundation-2",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/1",
+          "durationMs": 1996,
+          "storageKeys": [
+            "free1CFLAIRaccounting:balance:2026-05-08"
+          ],
+          "completed": 3,
+          "total": 10
+        },
+        {
+          "at": 1777897202230,
+          "type": "job-start",
+          "jobId": "foundation-4",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/leasing"
+        },
+        {
+          "at": 1777897202844,
+          "type": "job-done",
+          "jobId": "foundation-3",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/2",
+          "durationMs": 2114,
+          "storageKeys": [
+            "free1CFLAIRaccounting:bank:2026-05-08"
+          ],
+          "completed": 4,
+          "total": 10
+        },
+        {
+          "at": 1777897203732,
+          "type": "job-start",
+          "jobId": "foundation-5",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/capital"
+        },
+        {
+          "at": 1777897204489,
+          "type": "job-done",
+          "jobId": "foundation-4",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/leasing",
+          "durationMs": 2259,
+          "storageKeys": [
+            "free1CFLAIRaccounting:leasing"
+          ],
+          "completed": 5,
+          "total": 10
+        },
+        {
+          "at": 1777897205241,
+          "type": "job-start",
+          "jobId": "foundation-6",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/assets"
+        },
+        {
+          "at": 1777897205691,
+          "type": "job-done",
+          "jobId": "foundation-5",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/capital",
+          "durationMs": 1958,
+          "storageKeys": [
+            "free1CFLAIRaccounting:capital"
+          ],
+          "completed": 6,
+          "total": 10
+        },
+        {
+          "at": 1777897206742,
+          "type": "job-start",
+          "jobId": "foundation-7",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/alliance"
+        },
+        {
+          "at": 1777897207430,
+          "type": "job-done",
+          "jobId": "foundation-6",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/assets",
+          "durationMs": 2190,
+          "storageKeys": [
+            "free1CFLAIRaccounting:assets"
+          ],
+          "completed": 7,
+          "total": 10
+        },
+        {
+          "at": 1777897208244,
+          "type": "job-start",
+          "jobId": "foundation-8",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/action/enterprise/staffPilots"
+        },
+        {
+          "at": 1777897209744,
+          "type": "job-start",
+          "jobId": "foundation-9",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/action/enterprise/staffOverview"
+        },
+        {
+          "at": 1777897210197,
+          "type": "job-done",
+          "jobId": "foundation-7",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/alliance",
+          "durationMs": 3456,
+          "storageKeys": [
+            "alliance:overview"
+          ],
+          "completed": 8,
+          "total": 10
+        },
+        {
+          "at": 1777897211002,
+          "type": "job-done",
+          "jobId": "foundation-8",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/action/enterprise/staffPilots",
+          "durationMs": 2758,
+          "storageKeys": [
+            "crewMgmt:pilots"
+          ],
+          "completed": 9,
+          "total": 10
+        }
+      ]
+    },
+    {
+      "at": "2026-05-04T12:20:16.221Z",
+      "current": {
+        "at": 1777897213635,
+        "type": "done",
+        "aborted": false,
+        "runId": "run-mor634c1-ax6c"
+      },
+      "recent": [
+        {
+          "at": 1777897202844,
+          "type": "job-done",
+          "jobId": "foundation-3",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/accounting/2",
+          "durationMs": 2114,
+          "storageKeys": [
+            "free1CFLAIRaccounting:bank:2026-05-08"
+          ],
+          "completed": 4,
+          "total": 10
+        },
+        {
+          "at": 1777897203732,
+          "type": "job-start",
+          "jobId": "foundation-5",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/capital"
+        },
+        {
+          "at": 1777897204489,
+          "type": "job-done",
+          "jobId": "foundation-4",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/leasing",
+          "durationMs": 2259,
+          "storageKeys": [
+            "free1CFLAIRaccounting:leasing"
+          ],
+          "completed": 5,
+          "total": 10
+        },
+        {
+          "at": 1777897205241,
+          "type": "job-start",
+          "jobId": "foundation-6",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/assets"
+        },
+        {
+          "at": 1777897205691,
+          "type": "job-done",
+          "jobId": "foundation-5",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/capital",
+          "durationMs": 1958,
+          "storageKeys": [
+            "free1CFLAIRaccounting:capital"
+          ],
+          "completed": 6,
+          "total": 10
+        },
+        {
+          "at": 1777897206742,
+          "type": "job-start",
+          "jobId": "foundation-7",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/alliance"
+        },
+        {
+          "at": 1777897207430,
+          "type": "job-done",
+          "jobId": "foundation-6",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/finance/assets",
+          "durationMs": 2190,
+          "storageKeys": [
+            "free1CFLAIRaccounting:assets"
+          ],
+          "completed": 7,
+          "total": 10
+        },
+        {
+          "at": 1777897208244,
+          "type": "job-start",
+          "jobId": "foundation-8",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/action/enterprise/staffPilots"
+        },
+        {
+          "at": 1777897209744,
+          "type": "job-start",
+          "jobId": "foundation-9",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/action/enterprise/staffOverview"
+        },
+        {
+          "at": 1777897210197,
+          "type": "job-done",
+          "jobId": "foundation-7",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/app/alliance",
+          "durationMs": 3456,
+          "storageKeys": [
+            "alliance:overview"
+          ],
+          "completed": 8,
+          "total": 10
+        },
+        {
+          "at": 1777897211002,
+          "type": "job-done",
+          "jobId": "foundation-8",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/action/enterprise/staffPilots",
+          "durationMs": 2758,
+          "storageKeys": [
+            "crewMgmt:pilots"
+          ],
+          "completed": 9,
+          "total": 10
+        },
+        {
+          "at": 1777897213561,
+          "type": "job-done",
+          "jobId": "foundation-9",
+          "phaseId": "foundation",
+          "url": "https://free1.airlinesim.aero/action/enterprise/staffOverview",
+          "durationMs": 3816,
+          "storageKeys": [
+            "crewMgmt:staffOverview:latest"
+          ],
+          "completed": 10,
+          "total": 10
+        },
+        {
+          "at": 1777897213561,
+          "type": "run-done",
+          "reason": "done",
+          "durationMs": 17337,
+          "running": true,
+          "runId": "run-mor634cg-c550",
+          "totalJobs": 10,
+          "completed": 10,
+          "succeeded": 10,
+          "failed": 0,
+          "failedJobs": [],
+          "activeTabs": 0,
+          "haltReason": null,
+          "consecutiveFailures": 0,
+          "breakerTrippedAt": 0,
+          "startedAt": 1777897196224
+        },
+        {
+          "at": 1777897213561,
+          "type": "phase-done",
+          "phaseId": "foundation",
+          "total": 10,
+          "succeeded": 10,
+          "failed": 0,
+          "haltReason": null,
+          "jobs": [
+            {
+              "jobId": "foundation-0",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/app/fleets",
+              "durationMs": 2302,
+              "storageKeys": [
+                "free1CFLAIRaircraftFleet"
+              ]
+            },
+            {
+              "jobId": "foundation-1",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/app/finance/accounting/0",
+              "durationMs": 1986,
+              "storageKeys": [
+                "free1CFLAIRaccounting:income:2026-05-08"
+              ]
+            },
+            {
+              "jobId": "foundation-2",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/app/finance/accounting/1",
+              "durationMs": 1996,
+              "storageKeys": [
+                "free1CFLAIRaccounting:balance:2026-05-08"
+              ]
+            },
+            {
+              "jobId": "foundation-3",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/app/finance/accounting/2",
+              "durationMs": 2114,
+              "storageKeys": [
+                "free1CFLAIRaccounting:bank:2026-05-08"
+              ]
+            },
+            {
+              "jobId": "foundation-4",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/app/finance/leasing",
+              "durationMs": 2259,
+              "storageKeys": [
+                "free1CFLAIRaccounting:leasing"
+              ]
+            },
+            {
+              "jobId": "foundation-5",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/app/finance/capital",
+              "durationMs": 1958,
+              "storageKeys": [
+                "free1CFLAIRaccounting:capital"
+              ]
+            },
+            {
+              "jobId": "foundation-6",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/app/finance/assets",
+              "durationMs": 2190,
+              "storageKeys": [
+                "free1CFLAIRaccounting:assets"
+              ]
+            },
+            {
+              "jobId": "foundation-7",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/app/alliance",
+              "durationMs": 3456,
+              "storageKeys": [
+                "alliance:overview"
+              ]
+            },
+            {
+              "jobId": "foundation-8",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/action/enterprise/staffPilots",
+              "durationMs": 2758,
+              "storageKeys": [
+                "crewMgmt:pilots"
+              ]
+            },
+            {
+              "jobId": "foundation-9",
+              "status": "ok",
+              "url": "https://free1.airlinesim.aero/action/enterprise/staffOverview",
+              "durationMs": 3816,
+              "storageKeys": [
+                "crewMgmt:staffOverview:latest"
+              ]
+            }
+          ],
+          "storageKeys": [
+            "free1CFLAIRaircraftFleet",
+            "free1CFLAIRaccounting:income:2026-05-08",
+            "free1CFLAIRaccounting:balance:2026-05-08",
+            "free1CFLAIRaccounting:bank:2026-05-08",
+            "free1CFLAIRaccounting:leasing",
+            "free1CFLAIRaccounting:capital",
+            "free1CFLAIRaccounting:assets",
+            "alliance:overview",
+            "crewMgmt:pilots",
+            "crewMgmt:staffOverview:latest"
+          ]
+        },
+        {
+          "at": 1777897213584,
+          "type": "phase-start",
+          "phaseId": "per-hub",
+          "label": "Per-hub scheduling"
+        },
+        {
+          "at": 1777897213590,
+          "type": "phase-done",
+          "phaseId": "per-hub",
+          "total": 0,
+          "succeeded": 0,
+          "failed": 0,
+          "skipped": true
+        },
+        {
+          "at": 1777897213594,
+          "type": "phase-start",
+          "phaseId": "per-route",
+          "label": "Per-route markets + inventory"
+        },
+        {
+          "at": 1777897213600,
+          "type": "phase-done",
+          "phaseId": "per-route",
+          "total": 0,
+          "succeeded": 0,
+          "failed": 0,
+          "skipped": true
+        },
+        {
+          "at": 1777897213616,
+          "type": "phase-post-run",
+          "phaseId": "per-route",
+          "result": {
+            "skipped": true,
+            "reason": "no routes"
+          }
+        },
+        {
+          "at": 1777897213635,
+          "type": "done",
+          "aborted": false,
+          "runId": "run-mor634c1-ax6c"
+        }
+      ]
+    }
+  ],
+  "result": {
+    "aborted": false,
+    "runId": "run-mor634c1-ax6c"
+  },
+  "errors": [],
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+  "start": {
+    "started": true,
+    "phases": [
+      "foundation",
+      "per-hub",
+      "per-route"
+    ]
+  },
+  "completedAt": "2026-05-04T12:20:16.229Z"
+}

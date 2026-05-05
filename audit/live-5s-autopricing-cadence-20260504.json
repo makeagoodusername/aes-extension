@@ -1,0 +1,63 @@
+{
+  "startedAt": "2026-05-04T12:22:22.251Z",
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+  "setup": {
+    "hasRunTickIfDue": true,
+    "tickSec": 5,
+    "tickMin": 0.08333333333333333,
+    "dryRunOnly": true,
+    "silentAutoEnabled": true
+  },
+  "observed": {
+    "first": {
+      "lastTickAt": 1777897346298,
+      "result": {
+        "applied": 0,
+        "blocked": 0,
+        "capped": 0,
+        "dryRun": true,
+        "eligible": 0,
+        "error": {
+          "code": "noProposals",
+          "message": "no route met the min delta threshold"
+        },
+        "perRoute": [],
+        "proposed": 0,
+        "ranAt": 1777897346298,
+        "simulated": 0,
+        "skipped": 0,
+        "sourcePage": "dashboard"
+      }
+    },
+    "second": {
+      "lastTickAt": 1777897351298,
+      "result": {
+        "applied": 0,
+        "blocked": 0,
+        "capped": 0,
+        "dryRun": true,
+        "eligible": 0,
+        "error": {
+          "code": "noProposals",
+          "message": "no route met the min delta threshold"
+        },
+        "perRoute": [],
+        "proposed": 0,
+        "ranAt": 1777897351298,
+        "simulated": 0,
+        "skipped": 0,
+        "sourcePage": "dashboard"
+      }
+    },
+    "deltaMs": 5000
+  },
+  "ok": true,
+  "restored": {
+    "silentAutoEnabled": false,
+    "tickSec": 5,
+    "tickMin": 0.08333333333333333,
+    "dryRunOnly": false
+  },
+  "finishedAt": "2026-05-04T12:22:34.702Z"
+}

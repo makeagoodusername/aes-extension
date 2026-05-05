@@ -43,8 +43,18 @@ class CentralHubStrategySlotTradingTile extends window.CentralHubTile {
     async mount(container, ctx, opts) {
         await super.mount(container, ctx, opts)
         this._mountCtx = ctx || null
-        this.subscribeBus("data:slots:available:updated", () => { this.refresh().catch(() => {}) })
-        this.subscribeBus("data:slots:bid:queued",        () => { this.refresh().catch(() => {}) })
+        // slot-store emits these on AesDataBus (not CentralHubBus), so
+        // subscribeBus() would silently miss them. Wire directly.
+        if (window.AesDataBus && typeof window.AesDataBus.on === "function") {
+            const offAvail = window.AesDataBus.on("data:slots:available:updated", () => {
+                this.refresh().catch(() => {})
+            })
+            const offBid = window.AesDataBus.on("data:slots:bid:queued", () => {
+                this.refresh().catch(() => {})
+            })
+            if (typeof offAvail === "function") this._busDisposers.push(offAvail)
+            if (typeof offBid   === "function") this._busDisposers.push(offBid)
+        }
     }
 
     openHandler() {

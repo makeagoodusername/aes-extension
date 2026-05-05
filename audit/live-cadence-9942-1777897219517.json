@@ -1,0 +1,85 @@
+{
+  "ok": true,
+  "port": 9942,
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "started": {
+    "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+    "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+    "modules": {
+      "automator": true,
+      "settings": true,
+      "applier": true,
+      "hub": true
+    },
+    "described": {
+      "silentAutoEnabled": true,
+      "dryRun": true,
+      "liveWrites": false,
+      "applyEnabled": true,
+      "dryRunOnly": true,
+      "silentLiveAllowed": false,
+      "applyGate": {
+        "applyEnabled": true,
+        "dryRunOnly": true,
+        "scopeName": "silentAuto",
+        "scopeLiveAllowed": false,
+        "forcedDryRun": false,
+        "dryRun": true,
+        "liveWrites": false,
+        "reason": "dry-run-only"
+      },
+      "strategy": "per-class-elasticity",
+      "followMode": "all",
+      "tickMin": 0.08333333333333333,
+      "tickSec": 5,
+      "tickMs": 5000,
+      "tickLabel": "5 sec",
+      "mutedUntil": null
+    }
+  },
+  "first": {
+    "at": 1777897221096,
+    "result": {
+      "applied": 0,
+      "blocked": 0,
+      "capped": 0,
+      "dryRun": true,
+      "eligible": 0,
+      "error": {
+        "code": "noProposals",
+        "message": "no route met the min delta threshold"
+      },
+      "perRoute": [],
+      "proposed": 0,
+      "ranAt": 1777897221096,
+      "simulated": 0,
+      "skipped": 0,
+      "sourcePage": "dashboard"
+    }
+  },
+  "second": {
+    "at": 1777897231095,
+    "result": {
+      "applied": 0,
+      "blocked": 0,
+      "capped": 0,
+      "dryRun": true,
+      "eligible": 0,
+      "error": {
+        "code": "noProposals",
+        "message": "no route met the min delta threshold"
+      },
+      "perRoute": [],
+      "proposed": 0,
+      "ranAt": 1777897231095,
+      "simulated": 0,
+      "skipped": 0,
+      "sourcePage": "dashboard"
+    }
+  },
+  "gapMs": 9999,
+  "dryRun": true,
+  "restored": true,
+  "errors": [],
+  "screenshotPath": "audit/live-cadence-9942-1777897232572.png"
+}

@@ -90,6 +90,7 @@
             error:       null,
             pendingTimer: null,
             recomputing: false,
+            rerunRequested: null,
             busOffs:     []
         }
         views.set(name, view)
@@ -123,6 +124,10 @@
     function schedule(name, reason) {
         const view = views.get(name)
         if (!view) return
+        if (view.recomputing) {
+            view.rerunRequested = reason || "reentrant"
+            return
+        }
         if (view.debounceMs > 0) {
             if (view.pendingTimer) clearTimeout(view.pendingTimer)
             view.pendingTimer = setTimeout(() => {
@@ -147,15 +152,12 @@
         const view = views.get(name)
         if (!view) return
         if (view.recomputing) {
-            // Re-entrant trigger during compute — schedule another pass after
-            // this one finishes, so we don't lose the trigger but also don't
-            // recurse.
-            view.pendingTimer = "microtask"
-            Promise.resolve().then(() => {
-                if (view.pendingTimer !== "microtask") return
-                view.pendingTimer = null
-                runCompute(name, reason).catch(() => {})
-            })
+            // Re-entrant trigger during compute — remember that another pass is
+            // needed, but do not schedule a microtask while the current async
+            // compute is still awaiting storage. The old immediate microtask
+            // loop could peg a renderer when a large chrome.storage read was
+            // in flight and the dependency fired again.
+            view.rerunRequested = reason || "reentrant"
             return
         }
         if (computeStack.indexOf(name) >= 0) {
@@ -196,8 +198,11 @@
             })
         } finally {
             view.recomputing = false
+            const rerunReason = view.rerunRequested
+            view.rerunRequested = null
             const idx = computeStack.indexOf(name)
             if (idx >= 0) computeStack.splice(idx, 1)
+            if (rerunReason) schedule(name, "rerun:" + rerunReason)
         }
     }
 
@@ -244,7 +249,8 @@
                 error:       v.error,
                 hasValue:    v.hasValue,
                 debounceMs:  v.debounceMs,
-                recomputing: v.recomputing
+                recomputing: v.recomputing,
+                rerunRequested: v.rerunRequested
             })
         }
         out.sort((a, b) => a.name.localeCompare(b.name))

@@ -373,7 +373,6 @@
     function _renderProposalAction(p) {
         const ag = (_state.settings && _state.settings.apply) || {}
         const enabled  = ag.enabled === true
-        const dryRun   = ag.dryRunOnly !== false
         const advisory = (p.kind === "service-profile-promote")
         const inFlight = _state.applying.has(p.id)
 
@@ -385,17 +384,14 @@
         status.style.cssText = "font-size:10px;color:#64748b;font-style:italic;flex:1;"
         if (advisory) status.textContent = "Advisory — wire profile-id mapping in a future slice."
         else if (!enabled) status.textContent = "Apply gate off — flip apply.enabled in settings."
-        else if (dryRun)   status.textContent = "Dry-run preview will write to the apply log."
         else               status.textContent = "Live apply mutates the wave plan for " + (p.hubIata || "this hub") + "."
 
         const btn = document.createElement("button")
         btn.type = "button"
-        const liveLabel = dryRun ? "Preview · DRY-RUN" : "Apply"
-        btn.textContent = inFlight ? "…" : (advisory ? "Open AS profiles" : liveLabel)
+        btn.textContent = inFlight ? "…" : (advisory ? "Open AS profiles" : "Apply")
         btn.disabled = inFlight || (!enabled && !advisory)
         const tint = advisory ? "#a78bfa"
                    : !enabled ? "#475569"
-                   : dryRun   ? "#fbbf24"
                               : "#86efac"
         btn.style.cssText = "background:rgba(15,23,42,0.6);border:1px solid " + tint + ";"
             + "color:" + tint + ";cursor:" + (btn.disabled ? "not-allowed" : "pointer") + ";"
@@ -424,13 +420,10 @@
         }
         const ag = (_state.settings && _state.settings.apply) || {}
         if (ag.enabled !== true) return
-        // Live apply (not dry-run) gets a confirm prompt.
-        if (ag.dryRunOnly !== true) {
-            const summary = (Array.isArray(p.rationale) ? p.rationale : []).join("\n")
-            const msg = "Apply rebalance: " + (p.kind || "") + "\n\n" + summary
-                + "\n\nThis writes to your wave plan for " + (p.hubIata || "this hub") + ". Continue?"
-            if (!window.confirm(msg)) return
-        }
+        const summary = (Array.isArray(p.rationale) ? p.rationale : []).join("\n")
+        const msg = "Apply rebalance: " + (p.kind || "") + "\n\n" + summary
+            + "\n\nThis writes to your wave plan for " + (p.hubIata || "this hub") + ". Continue?"
+        if (!window.confirm(msg)) return
         _state.applying.add(p.id)
         if (btn) { btn.disabled = true; btn.textContent = "…" }
         let result = null
@@ -440,7 +433,7 @@
             result = {status: "failed", error: (e && e.message) || String(e)}
         }
         _state.applying.delete(p.id)
-        const ok = result && (result.status === "applied" || result.status === "dry-run")
+        const ok = result && result.status === "applied"
         _state.toast = {
             ok: ok,
             status: result && result.status,
@@ -467,10 +460,6 @@
                 + (result.hubIata || p.hubIata || "—")
                 + (result.presetId ? " · preset " + result.presetId.slice(0, 12) : "")
         }
-        if (result.status === "dry-run") {
-            return "Dry-run · " + (result.kind || p.kind) + " · would touch "
-                + (result.hubIata || p.hubIata || "—")
-        }
         if (result.status === "skipped") return "Skipped: " + (result.reason || "unknown")
         if (result.status === "advisory") return "Advisory: " + (result.reason || "not yet wireable")
         return "Failed: " + (result.error || "unknown")
@@ -487,7 +476,7 @@
             : (r.ratioGapHeadlinePct >= 0 ? "+" : "") + r.ratioGapHeadlinePct.toFixed(1) + "pp"
         const ag = (_state.settings && _state.settings.apply) || {}
         const mode = (ag.enabled === true)
-            ? (ag.dryRunOnly === false ? "live · Phase 4" : "live · DRY-RUN · Phase 4")
+            ? "live · Phase 4"
             : "advisory · gates off"
         const toast = _state.toast
             ? ' · <span style="color:' + (toast.ok ? "#86efac" : "#f87171") + '">'

@@ -4,8 +4,7 @@
  * Lane C — fleet-optimizer settings + per-aircraft target resolver.
  *
  * Settings live inside `settings.strategy.fleetOptimizer` (canopy-aware
- * via the existing AesStrategySettings double-write). Defaults preserve
- * legacy behavior bit-for-bit:
+ * via the existing AesStrategySettings double-write). Live-run defaults:
  *
  *   ratioFloorPct:          95         // user comfort floor
  *   headroomPct:            2          // safety margin above floor
@@ -49,11 +48,11 @@
             maxRebalancesPerWindow: 3,
             maxFloorRiseInWindow:   1,
             perAircraft:            {},
-            targetingEnabled:       false,
+            targetingEnabled:       true,
             readinessAck:           null,
             apply: {
-                enabled:           false,
-                dryRunOnly:        true,
+                enabled:           true,
+                dryRunOnly:        false,
                 cooldownMinutes:   60,
                 maxAppliesPer24h:  6
             }
@@ -66,8 +65,8 @@
         const cd = Number(r.cooldownMinutes)
         const mx = Number(r.maxAppliesPer24h)
         return {
-            enabled:           r.enabled === true,
-            dryRunOnly:        r.dryRunOnly !== false,
+            enabled:           r.enabled !== false,
+            dryRunOnly:        false,
             cooldownMinutes:   (isFinite(cd) && cd >= 0  && cd <= 1440) ? cd : d.cooldownMinutes,
             maxAppliesPer24h:  (isFinite(mx) && mx >= 0  && mx <= 200)  ? mx : d.maxAppliesPer24h
         }
@@ -88,7 +87,7 @@
             maxRebalancesPerWindow: (isFinite(mrw) && mrw >= 0  && mrw <= 50)  ? mrw : d.maxRebalancesPerWindow,
             maxFloorRiseInWindow:   (isFinite(mfr) && mfr >= 0  && mfr <= 10)  ? mfr : d.maxFloorRiseInWindow,
             perAircraft:            (r.perAircraft && typeof r.perAircraft === "object") ? r.perAircraft : {},
-            targetingEnabled:       r.targetingEnabled === true,
+            targetingEnabled:       r.targetingEnabled !== false,
             readinessAck:           (r.readinessAck && typeof r.readinessAck === "object") ? r.readinessAck : null,
             apply:                  _normaliseApply(r.apply)
         }

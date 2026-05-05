@@ -19,6 +19,7 @@ tests/**/traces/
 audit/credentials.json
 audit/.pids/
 audit/.route-builder-*.pid
+audit/.live-chrome-*.pid
 audit/scripts/__pycache__/
 __pycache__/
 *.pyc
@@ -58,3 +59,13 @@ CLAUDE/*.html
 CLAUDE/*_files/
 CLAUDE/OLD REFERENCER/
 CLAUDE/.DS_Store
+
+# Root-level browser-saved AS page dumps (same purpose as the gitignored
+# fixtures above — never packaged in the .crx).
+/FGM 105 _ Free1 _ AirlineSim*.html
+/TICKETPRICEADJUSTMENT.html
+/flightmoney.html
+
+# Local copy of the upstream AES extension source — kept on disk for
+# diffing against the fork; never committed.
+AirlineSim-Enhancement-Suite-main/

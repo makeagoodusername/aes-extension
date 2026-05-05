@@ -496,7 +496,7 @@ class CentralHubInventoryTile extends window.CentralHubTile {
                 const liveScopes = apply.liveScopes || {}
                 const manualLiveAllowed = liveScopes.manual !== false
                 const applyEnabled = apply.enabled !== false
-                const dryRunOnly = apply.dryRunOnly !== false
+                const dryRunOnly = apply.dryRunOnly === true
                 return {
                     applyEnabled,
                     dryRun: dryRunOnly || !applyEnabled || !manualLiveAllowed,

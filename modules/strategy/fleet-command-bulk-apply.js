@@ -15,7 +15,7 @@
  *
  * Public API (window.AesFleetCommandBulkApply):
  *   .preview({tails, presetId, ctx?})  → Promise<PreviewResult>
- *   .execute({tails, presetId, ctx, source?, dryRun?}) → Promise<ExecuteResult>
+ *   .execute({tails, presetId, ctx, source?}) → Promise<ExecuteResult>
  *   .loadAuditLog()                    → Promise<BatchEntry[]>
  *   .clearAuditLog()                   → Promise<void>
  *
@@ -241,7 +241,6 @@
         const o = opts || {}
         const ctx = (o.ctx && typeof o.ctx === "object") ? o.ctx : {}
         const source = (o.source && String(o.source).slice(0, 40)) || "fleet-command-bulk"
-        const dryRun = !!o.dryRun
         const startedAt = Date.now()
 
         const prev = await preview({tails: o.tails, presetId: o.presetId, ctx})
@@ -262,8 +261,7 @@
                 elapsedMs:   Date.now() - startedAt,
                 server:      ctx.server || null,
                 accountIds:  _accountIdsFor(prev.eligible),
-                blockers:    prev.readiness.blockers.slice(),
-                dryRun
+                blockers:    prev.readiness.blockers.slice()
             }
             await _appendAudit(entry)
             return Object.assign({
@@ -275,35 +273,6 @@
                 source, blockers: prev.readiness.blockers,
                 preview: prev
             })
-        }
-
-        if (dryRun) {
-            const entry = {
-                batchId, ts: startedAt,
-                presetId:    o.presetId || null,
-                presetName:  prev.preset.name || null,
-                presetHub:   prev.presetHub || null,
-                source,
-                eligibleCount: prev.eligible.length,
-                skippedCount:  prev.skipped.length,
-                succeeded:   0,
-                failed:      0,
-                aborted:     false,
-                elapsedMs:   Date.now() - startedAt,
-                server:      ctx.server || null,
-                accountIds:  _accountIdsFor(prev.eligible),
-                dryRun:      true
-            }
-            await _appendAudit(entry)
-            return {
-                runId: null, batchId,
-                eligibleCount: prev.eligible.length,
-                skippedCount:  prev.skipped.length,
-                succeeded: 0, failed: 0, aborted: false,
-                perAircraft: [], elapsedMs: entry.elapsedMs,
-                source, dryRun: true,
-                preview: prev
-            }
         }
 
         const runs = _runsFromTails(prev.eligible, prev.build)

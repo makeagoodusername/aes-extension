@@ -11,7 +11,7 @@
  *
  * Lifecycle:
  *   const orch = new ScrapeOrchestrator({onProgress, onPhaseStart, onDone, onError})
- *   await orch.start({includePerCompetitor: true, includeFlightsFrom: false})
+ *   await orch.start({includePerCompetitor: true, includeDemandSeed: false, includeFlightsFrom: false})
  *   orch.abort()                    // mid-run cancel
  */
 class ScrapeOrchestrator {
@@ -32,6 +32,7 @@ class ScrapeOrchestrator {
         const source = String(opts.source || "manual")
         const include = {
             "per-competitor": !!opts.includePerCompetitor,
+            "demand-seed":    !!opts.includeDemandSeed,
             "flightsfrom":    !!opts.includeFlightsFrom
         }
         const phaseFilter = Array.isArray(opts.phaseFilter) && opts.phaseFilter.length
@@ -159,6 +160,7 @@ class ScrapeOrchestrator {
             phaseFilter: Array.isArray(opts.phaseFilter) ? opts.phaseFilter.map(String) : [],
             options: {
                 includePerCompetitor: !!opts.includePerCompetitor,
+                includeDemandSeed:    !!opts.includeDemandSeed,
                 includeFlightsFrom:   !!opts.includeFlightsFrom
             },
             perPhase: phases.reduce((out, p) => {
@@ -346,13 +348,11 @@ class ScrapeOrchestrator {
         let server = ""
         let airline = ""
         try { server = AES.getServerName() } catch (_) {}
+        try { airline = AES.getAirlineIdentity() || "" } catch (_) {}
         try {
             const code = AES.getAirlineCode()
-            airline = (code && code.code) || ""
+            if (!airline) airline = (code && code.code) || (code && code.name) || ""
         } catch (_) {}
-        if (!airline) {
-            try { airline = AES.getAirlineIdentity() || "" } catch (_) {}
-        }
         if (!server) return null
         const origin = window.location.protocol + "//" + window.location.host
         return {

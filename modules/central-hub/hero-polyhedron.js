@@ -40,6 +40,7 @@ class CentralHubHeroPolyhedron {
         this._refreshTimer = null
         this._dirty = new Set()
         this._smallSpecs = CentralHubHeroPolyhedron._smallSpecs()
+        this._storageAllPromise = null
     }
 
     static _smallSpecs() {
@@ -353,11 +354,13 @@ class CentralHubHeroPolyhedron {
     // ------------------------------------------------------------------
 
     async _refreshAll() {
+        this._storageAllPromise = null
         const tasks = [
             this._refreshToday().catch(() => {}),
             ...this._smallSpecs.map(spec => this._refreshSmall(spec).catch(() => {}))
         ]
         await Promise.all(tasks)
+        this._storageAllPromise = null
     }
 
     async _refreshToday() {
@@ -492,7 +495,7 @@ class CentralHubHeroPolyhedron {
 
     async _resolveFleet() {
         if (!this.server) return {value: "—", sub: "no server"}
-        const all = await chrome.storage.local.get(null)
+        const all = await this._loadStorageAll()
         const airline = this._airlineKey()
         let chosen = null
         const suffix = "aircraftFleet"
@@ -524,7 +527,7 @@ class CentralHubHeroPolyhedron {
     }
 
     async _resolveTopRoute() {
-        const all = await chrome.storage.local.get(null)
+        const all = await this._loadStorageAll()
         const prefix = "routeAssistant:topRoutes:"
         let best = null
         let bestHub = null
@@ -551,7 +554,7 @@ class CentralHubHeroPolyhedron {
     }
 
     async _resolveAlerts() {
-        const all = await chrome.storage.local.get(null)
+        const all = await this._loadStorageAll()
         const prefix = "routeAssistant:alertRules"
         let rules = []
         for (const k in all) {
@@ -589,7 +592,7 @@ class CentralHubHeroPolyhedron {
             records = Array.from(map.values())
         }
         if (!records) {
-            const all = await chrome.storage.local.get(null)
+            const all = await this._loadStorageAll()
             records = []
             for (const k in all) {
                 if (k.indexOf("routeAssistant:ors:") !== 0) continue
@@ -623,7 +626,7 @@ class CentralHubHeroPolyhedron {
 
     async _resolveMaintenance() {
         if (!this.server) return {value: "—", sub: "no server"}
-        const all = await chrome.storage.local.get(null)
+        const all = await this._loadStorageAll()
         const prefix = "aircraftFlightPlan:wearObservations:" + this.server + ":"
         let total = 0, risk = 0
         for (const k in all) {
@@ -637,6 +640,13 @@ class CentralHubHeroPolyhedron {
         }
         if (!total) return {value: "—", sub: "no wear samples"}
         return {value: String(risk), sub: "at risk · of " + total}
+    }
+
+    async _loadStorageAll() {
+        if (!this._storageAllPromise) {
+            this._storageAllPromise = chrome.storage.local.get(null).catch(() => ({}))
+        }
+        return await this._storageAllPromise || {}
     }
 
     async _resolveWorld() {

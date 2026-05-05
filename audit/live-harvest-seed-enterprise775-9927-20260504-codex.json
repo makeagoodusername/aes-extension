@@ -1,0 +1,42 @@
+{
+  "ok": false,
+  "mode": "standalone-demand-seed-first",
+  "profile": "/tmp/chrome-aes-codex-9927",
+  "port": "9927",
+  "server": "free1.airlinesim.aero",
+  "dashboardUrl": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "startedAt": "2026-05-04T12:01:17.920Z",
+  "progress": [],
+  "restarts": [
+    {
+      "at": "2026-05-04T12:01:47.205Z",
+      "reason": "browserContext.newCDPSession: Target page, context or browser has been closed",
+      "restart": 1
+    }
+  ],
+  "before": {
+    "demand": 0,
+    "topRoutes": 0,
+    "marketsCompetitors": 0,
+    "marketsOwnPricing": 0,
+    "inventory": 0,
+    "ors": 0,
+    "aircraftFleet": 0,
+    "aircraftFlights": 0,
+    "maintenance": 0,
+    "sampleDemand": []
+  },
+  "after": null,
+  "result": null,
+  "errors": [
+    "browserContext.newPage: Target page, context or browser has been closed"
+  ],
+  "loggedIn": true,
+  "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?2&select=775",
+  "start": {
+    "started": true,
+    "hasParallelScanner": true
+  },
+  "completedAt": "2026-05-04T12:01:47.206Z"
+}

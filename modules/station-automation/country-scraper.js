@@ -18,6 +18,12 @@ class CountryScraper {
     static EMPTY_CLASS_RE = /(^|[\s-_.])(empty|off|inactive|bad|low|grey|gray|disabled|bar-empty|bar-off|demand-bar-empty)(\s|$|[-_.])/i
     static FILL_IMG_RE = /full|filled|on\b|active|high/
     static EMPTY_IMG_RE = /empty|off\b|inactive|low/
+    static RETRY_STATUSES = new Set([429, 500, 502, 503, 504])
+    static FETCH_RETRY_LIMIT = 3
+    static FETCH_BASE_BACKOFF_MS = 2500
+    static FETCH_TIMEOUT_MS = 30000
+    static REGION_FETCH_CONCURRENCY = 2
+    static REGION_BATCH_DELAY_MS = 2000
 
     static async loadCountriesList(server) {
         const doc = await CountryScraper._fetchDoc(`https://${server}.airlinesim.aero/action/info/countries`)
@@ -176,7 +182,7 @@ class CountryScraper {
         // Throttle region fetches to avoid AS rate-limiting — a country like
         // USA has 50+ regions and firing them all at once had some regions
         // quietly come back 429/503 with 0 airports.
-        const CONCURRENCY = 6
+        const CONCURRENCY = Math.max(1, Number(CountryScraper.REGION_FETCH_CONCURRENCY) || 2)
         const regionResults = []
         let failedRegions = 0
         for (let i = 0; i < regionIds.length; i += CONCURRENCY) {
@@ -189,6 +195,9 @@ class CountryScraper {
                     })
             ))
             regionResults.push(...results)
+            if (i + CONCURRENCY < regionIds.length) {
+                await CountryScraper._sleep(CountryScraper.REGION_BATCH_DELAY_MS)
+            }
         }
 
         const seen = new Set()
@@ -335,20 +344,76 @@ class CountryScraper {
     }
 
     static async _fetchDoc(url) {
-        try {
-            const resp = await fetch(url, {credentials: "include"})
-            if (!resp.ok) {
-                console.warn(`[AES stationAutomation] ${url} returned HTTP ${resp.status}`)
+        const limit = Math.max(0, Number(CountryScraper.FETCH_RETRY_LIMIT) || 0)
+        for (let attempt = 0; attempt <= limit; attempt++) {
+            let timeoutId = null
+            let controller = null
+            try {
+                const opts = {credentials: "include"}
+                const timeoutMs = Math.max(0, Number(CountryScraper.FETCH_TIMEOUT_MS) || 0)
+                if (timeoutMs && typeof AbortController !== "undefined") {
+                    controller = new AbortController()
+                    opts.signal = controller.signal
+                    timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+                }
+                const resp = await fetch(url, opts)
+                if (!resp.ok) {
+                    if (attempt < limit && CountryScraper.RETRY_STATUSES.has(resp.status)) {
+                        const delay = CountryScraper._retryDelayMs(resp, attempt)
+                        console.warn(`[AES stationAutomation] ${url} returned HTTP ${resp.status}; retrying in ${delay}ms`)
+                        await CountryScraper._sleep(delay)
+                        continue
+                    }
+                    console.warn(`[AES stationAutomation] ${url} returned HTTP ${resp.status}`)
+                    return null
+                }
+                const html = await resp.text()
+                return new DOMParser().parseFromString(html, "text/html")
+            } catch (error) {
+                const timedOut = error && error.name === "AbortError"
+                if (attempt < limit) {
+                    const delay = CountryScraper._retryDelayMs(null, attempt)
+                    console.warn(`[AES stationAutomation] fetch ${timedOut ? "timed out" : "failed"} for ${url}; retrying in ${delay}ms`, error)
+                    await CountryScraper._sleep(delay)
+                    continue
+                }
+                console.warn(`[AES stationAutomation] fetch ${timedOut ? "timed out" : "failed"} for ${url}`, error)
                 return null
+            } finally {
+                if (timeoutId) clearTimeout(timeoutId)
             }
-            const html = await resp.text()
-            return new DOMParser().parseFromString(html, "text/html")
-        } catch (error) {
-            console.warn(`[AES stationAutomation] fetch failed for ${url}`, error)
-            return null
         }
+        return null
+    }
+
+    static _retryDelayMs(resp, attempt) {
+        const retryAfter = resp && resp.headers && resp.headers.get
+            ? resp.headers.get("retry-after")
+            : null
+        if (retryAfter) {
+            const seconds = Number(retryAfter)
+            if (Number.isFinite(seconds) && seconds >= 0) {
+                return Math.min(60000, Math.max(1000, seconds * 1000))
+            }
+            const at = Date.parse(retryAfter)
+            if (Number.isFinite(at)) {
+                return Math.min(60000, Math.max(1000, at - Date.now()))
+            }
+        }
+        const base = Number(CountryScraper.FETCH_BASE_BACKOFF_MS) || 2500
+        return Math.min(60000, base * Math.pow(2, Math.max(0, attempt)))
+    }
+
+    static _sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
     }
 }
 
 function clampScore(n) { return Math.max(0, Math.min(10, n)) }
 function scoreFromRatio(filled, total) { return Math.max(1, Math.min(10, Math.round((filled / total) * 10))) }
+
+if (typeof window !== "undefined") {
+    window.CountryScraper = CountryScraper
+} else if (typeof globalThis !== "undefined") {
+    globalThis.CountryScraper = CountryScraper
+}

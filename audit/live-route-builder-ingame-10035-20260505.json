@@ -1,0 +1,23 @@
+{
+  "server": "free1.airlinesim.aero",
+  "enterpriseId": "775",
+  "aircraftId": "22092",
+  "port": "10035",
+  "loggedIn": true,
+  "profileDir": "/var/folders/zx/0dqhlzq10hvc07_m0nq_jbvc0000gn/T/aes-route-builder-ingame-10035",
+  "result": {
+    "ok": false,
+    "stage": "missing-modules",
+    "missing": [
+      "AesAfp",
+      "AesAfpRouteCandidates",
+      "RouteAssistantSchedulePageScraper"
+    ],
+    "url": "https://free1.airlinesim.aero/action/user/invalidParameter",
+    "title": "AirlineSim",
+    "bodyText": "AIRLINESIM\nDENSITY: COMPACT\n⇧D\n DATABASE \n HELP \n COMMUNITY \n PRIVATE MESSAGES 48\n LAPDANK \nFLY GEMINI \n534,029 AS$\nCOMMERCIAL \nOPERATIONS \nMANAGEMENT \nAES\nBRIDGE\nINVALID REQUEST\n\nYou requested this page with one or more invalid parameter.\nThis might be due to the link you followed being outdated or that you are not allowed to view the page's content (for example another player's aircraft).\n\nv6.13.8\n FREE1  English 2026-05-04 18:57 HT 60 CreditsThis game world will end on Jun 1, 2026 with registrations possible until May 18, 2026.AES: V0.6.13-BETA\n×\nWHAT'S NEW\nRELEASE NOTES\n\nVERSION 0.6.13-BETA - RELEASED 2026-05-04\n\nSelected v0.7.8 (NEWLY2014 fork) modules integrated into the host build.\n\nADDED\nRelease notes dialog auto-opens after a version bump and can be reopened from the footer 'AES: v…' link.\nORS results page now shows a numeric rating next to each rating image and a 'Difference' column (max - row).\nContent-side feedback toast helper available at window.AesFeedbackToast.show(mess"
+  },
+  "screenshotPath": "audit/live-route-builder-ingame-10035-20260505.png",
+  "consoleRows": [],
+  "pageErrors": []
+}

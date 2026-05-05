@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-05-04T11:11:52.135Z",
+  "state": {
+    "startedAt": 1777892962076,
+    "updatedAt": 1777893111770,
+    "done": false,
+    "ok": false,
+    "progress": {
+      "phase": "seeding",
+      "total": 194,
+      "fetched": 150,
+      "airportsSeeded": 2712,
+      "failedCountries": [
+        {
+          "id": "189",
+          "name": "Central African Republic"
+        },
+        {
+          "id": "30",
+          "name": "China"
+        }
+      ],
+      "currentCountryId": "148",
+      "currentCountryName": "Seychelles",
+      "activeCountries": [
+        "Seychelles"
+      ]
+    },
+    "result": null,
+    "error": null,
+    "completedAt": null
+  }
+}

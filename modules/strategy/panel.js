@@ -2459,7 +2459,7 @@
         lineMaybe(summary.crew,          "{n} crew action(s) — total " + summary.headcount + " people")
         lineMaybe(summary.routeCreation, "{n} new route creation(s) — these post legs to NEW aircraft schedules")
         lineMaybe(summary.alliance,      "{n} alliance / interline action(s)")
-        lineMaybe(summary.slotBid,       "{n} slot bid action(s) — dry-run stub until the AS bid form mapping is complete")
+        lineMaybe(summary.slotBid,       "{n} slot bid action(s) — blocked until the AS bid form mapping is complete")
         if (!countsList.children.length) {
             countsList.appendChild(_el("li", "color:" + COLOR.muted + ";font-style:italic;", "No applicable decisions selected."))
         }

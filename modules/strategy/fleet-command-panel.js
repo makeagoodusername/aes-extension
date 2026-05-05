@@ -703,7 +703,7 @@
         }
     }
 
-    async function _runBulkApply(dryRun) {
+    async function _runBulkApply() {
         if (typeof window.AesFleetCommandBulkApply === "undefined") return
         const tails = _selectedTails()
         if (tails.length < 2 || !_state.bulkPresetId) return
@@ -716,11 +716,10 @@
                 tails:    tails,
                 presetId: _state.bulkPresetId,
                 ctx:      {server: tails[0] && tails[0].server || ""},
-                source:   "fleet-command-panel",
-                dryRun:   !!dryRun
+                source:   "fleet-command-panel"
             })
             _state.bulkLastResult = result
-            _toastResult(result, !!dryRun)
+            _toastResult(result)
         } catch (e) {
             console.warn("[fleet-command-panel] execute threw", e)
             _toast("error", "Bulk apply threw: " + ((e && e.message) || String(e)))
@@ -731,19 +730,11 @@
         }
     }
 
-    function _toastResult(result, dryRun) {
+    function _toastResult(result) {
         if (typeof RouteAssistantToast === "undefined") return
-        const verb = dryRun ? "Bulk preview" : "Bulk apply"
+        const verb = "Bulk apply"
         if (result.aborted && (result.blockers || []).length) {
             RouteAssistantToast.warn(verb + " aborted — " + result.blockers.join("; "))
-            return
-        }
-        if (dryRun) {
-            try {
-                RouteAssistantToast.info(verb + " ok — "
-                    + result.eligibleCount + " eligible, "
-                    + result.skippedCount + " skipped (no POST sent).")
-            } catch (_) { /* noop */ }
             return
         }
         const tone = result.aborted ? "warn" : (result.failed ? "warn" : "success")
@@ -862,16 +853,6 @@
         })
         ctas.appendChild(previewBtn)
 
-        const dryBtn = document.createElement("button")
-        dryBtn.type = "button"
-        dryBtn.textContent = "Dry-run audit"
-        dryBtn.disabled = !_state.bulkPresetId || _state.bulkInFlight || !_isApplyable()
-        dryBtn.style.cssText = "background:transparent;color:#cbd5e1;border:1px solid rgba(148,163,184,0.35);"
-            + "border-radius:3px;padding:4px 10px;font-size:11px;cursor:" + (dryBtn.disabled ? "not-allowed" : "pointer") + ";"
-        dryBtn.title = "Append a dry-run audit entry without dispatching to AS."
-        dryBtn.addEventListener("click", () => _runBulkApply(true))
-        ctas.appendChild(dryBtn)
-
         const applyBtn = document.createElement("button")
         applyBtn.type = "button"
         applyBtn.textContent = _state.bulkInFlight ? "Applying…" : "Apply to fleet"
@@ -884,7 +865,7 @@
         applyBtn.title = applyBtn.disabled
             ? "Run Preview first; the apply button enables once the readiness gates pass."
             : "Dispatch the wave plan to every eligible tail. Per-aircraft tier-gates still apply."
-        applyBtn.addEventListener("click", () => _runBulkApply(false))
+        applyBtn.addEventListener("click", () => _runBulkApply())
         ctas.appendChild(applyBtn)
 
         host.appendChild(ctas)
@@ -922,7 +903,6 @@
                 if (e.succeeded)    tags.push(e.succeeded + " ok")
                 if (e.failed)       tags.push(e.failed + " fail")
                 if (e.aborted)      tags.push("aborted")
-                if (e.dryRun)       tags.push("DRY")
                 tail.textContent = tags.join(" · ")
                 row.appendChild(tail)
                 list.appendChild(row)

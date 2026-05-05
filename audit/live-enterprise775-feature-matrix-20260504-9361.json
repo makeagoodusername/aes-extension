@@ -1,0 +1,210 @@
+{
+  "ok": true,
+  "generatedAt": "2026-05-04T11:08:23.864Z",
+  "port": "9361",
+  "selectedUrl": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "checks": {
+    "selectedCompany": {
+      "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+      "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+      "h1": "DASHBOARD",
+      "bodyHasCFLAIR": true,
+      "loggedIn": true
+    },
+    "dashboard": {
+      "hub": true,
+      "tiles": 47,
+      "menu": true,
+      "signalWeather": true,
+      "text": "DASHBOARD\nAIRLINESIM\nDENSITY: COMPACT\n⇧D\n DATABASE \n HELP \n COMMUNITY \n PRIVATE MESSAGES 27\n HALLEU \nCFLAIR \n1,233,409 AS$\nCOMMERCIAL \nOPERATIONS \nMANAGEMENT \nAES\nBRIDGE\nDASHBOARD\nAES HUB\nAirlineSim Enhancement Suite\nSCRAPE EVERYTHING\nSCRAPE CACHE\nno full scrape yet\nAUTO\n· F —\n· H —\n· A —\n· R —\nFREE1 · CFA\nV0.6.13-BETA\nCLASSIC\nCASCADE\nACTIVITY\nQUIET SINCE LAST VISIT\nALERT\n—\nWARN\n—\nINFO\n—\nCASH\nAS$897.1k\nweekly net · 2026-05-08\nFLEET\n4\n4 aircraft\nTOP ROUTE\n—\nopen RA on a hub\nALERTS\n0\nno rules\nORS\n"
+    },
+    "dashboardIntegrated": {
+      "globals": {
+        "AesNotifications": "function",
+        "AesNotification": "function",
+        "aesNotify": "function",
+        "NativeNotification": "function",
+        "AesDataBus": "object",
+        "CentralHubBus": "object",
+        "AesChangeLogAggregator": "object",
+        "AesStrategyPanel": "object",
+        "AesStrategyDecisionDispatch": "object",
+        "AesStrategySlotTuner": "object",
+        "AesRoutePriceAutomator": "object",
+        "RouteLauncher": "object"
+      },
+      "topicState": {
+        "data:notifications:posted": true,
+        "data:route-assistant:ors:health": true,
+        "data:route-assistant:flight-number-pricing:updated": true,
+        "data:strategy:company-reputation:saved": true,
+        "data:slots:available:updated": true,
+        "data:slots:bid:queued": true,
+        "data:audit:change:recorded": true,
+        "data:conductor:trust:decayed": true
+      },
+      "notificationEmitted": true,
+      "demandPhase": {
+        "id": "demand-seed",
+        "label": "Demand store (slow — country fan-out)",
+        "optional": true,
+        "defaultEnabled": false
+      },
+      "demandCadence": 2592000000,
+      "tosHasDemand": true,
+      "tosTextHasDemand": true,
+      "tosCancelled": true,
+      "mainboardHasDemandRow": true,
+      "mainboardHasDemandPhase": true,
+      "mainboardHasDemandFreshness": true,
+      "signalWeatherText": "ALERT · 1\nCash runway · 3 wks\nWARN\n—\nINFO\n—",
+      "expandedTiles": 47,
+      "discoveredRequiredTopics": []
+    },
+    "commandPalette": {
+      "opened": true,
+      "strategyRows": 28,
+      "rows": 29
+    },
+    "aesMenu": {
+      "open": true,
+      "items": 30
+    },
+    "strategyPanel": {
+      "opened": true,
+      "error": null,
+      "sections": [
+        "overview",
+        "readiness",
+        "settings",
+        "decisions",
+        "aircraft",
+        "learning",
+        "journal"
+      ],
+      "textHasStrategy": true
+    },
+    "routeAssistant": {
+      "url": "https://free1.airlinesim.aero/app/com/scheduling/JFKALM?22",
+      "title": "Scheduling | Free1 | AirlineSim",
+      "rootMounted": true,
+      "panelHub": "JFK",
+      "panelRows": 0,
+      "globals": {
+        "RouteAssistantPanel": "function",
+        "RouteAssistantParallelScanner": "function",
+        "RouteAssistantRouteSync": "function",
+        "RouteAssistantOrsIntelligence": "function",
+        "RouteAssistantOrsScraper": "function",
+        "RouteAssistantMarketsPageScraper": "function",
+        "RouteAssistantPricingApplier": "function",
+        "AesRoutePriceAutomator": "object",
+        "AesRouteAssistantFlightNumberResolver": "function",
+        "RouteAssistantToast": "function"
+      },
+      "text": "ROUTE ASSISTANT\n↻\n🛬\n🛩\n🔍\n📜\n⚙\n🔔\n⇅\n▴\nHub JFK\n· FF: not scanned\n· Demand: 0/0 AS\n· Distance: 0/0\n· Specs: 1/1\nSCAN FLIGHTSFROM\nSEED ALL COUNTRIES\nPricing: live (M)\n🔍\nFILTERS\n★ WATCH\n💸 LOSS\n🛠 OVERRIDE\n📝 NOTE\nΔ CHANGED\nView\n(no saved views)\n+\nStrategy\n(no presets saved)\n+\n🌐 Canopy\nAircraft mode\nNone\nFleet (any owned)\nBy type\nBy tail\nAircraft\n(none)\nAll\nPax\nCargo\n≡\nTABLE\nno rows\n📊\nWAVES\ntop-20\n🧪\nSANDBOX\npick route\n🗺\nHEATMAP\nscore\n🧭\nCOMPASS\n◧\nCOMPACT\n\nNo flightsfrom.com data cached for JFK. Click \"Scan flightsfrom\" above."
+    },
+    "ors": {
+      "url": "https://free1.airlinesim.aero/app/info/ors?23",
+      "title": "Online Reservation System | Free1 | AirlineSim",
+      "h1": "ONLINE RESERVATION SYSTEM",
+      "hasOnlineReservationSystem": true,
+      "initType": "function",
+      "initOk": true,
+      "initError": null,
+      "aesNodes": 13
+    },
+    "flightNumbers": {
+      "url": "https://free1.airlinesim.aero/app/com/numbers?24",
+      "title": "Flight Number Management | Free1 | AirlineSim",
+      "h1": "FLIGHT NUMBER MANAGEMENT",
+      "hasGroupsApi": true,
+      "groupsApiShape": [
+        "createGroup",
+        "snapshot",
+        "sortVisibleIntoGroup"
+      ],
+      "quickSearch": true,
+      "tableRows": 47
+    },
+    "bulkPricing": {
+      "url": "https://free1.airlinesim.aero/action/enterprise/flightsPrices?adjust=true",
+      "title": "AirlineSim",
+      "h1": "Modal title",
+      "hasHost": true,
+      "hostText": "AES RECOMMENDATIONS\n\nLive per-route, per-class price recommendations from the AES strategy formula. Select the rows you want to change and click Apply — each apply runs through the existing per-route applier (gated by your Auto-Pricing settings; bulk-recommended scope defaults to dry-run).\n\n↻ Refresh\nSelect all\nSelect none\nApply 0 rows\n\nNo matching routes — pick a filter or scrape some markets pages first.",
+      "deps": {
+        "RouteAssistantFlightsPricesPanel": "function",
+        "RouteAssistantFlightsPricesBridge": "function",
+        "RouteAssistantPricingApplier": "function",
+        "RouteAssistantPricingApplyLog": "function"
+      },
+      "forms": 2,
+      "nativeInputs": 13
+    },
+    "fleet": {
+      "url": "https://free1.airlinesim.aero/app/fleets?25",
+      "title": "Default fleet | Free1 | AirlineSim",
+      "h1": "CFLAIR FLEET MANAGEMENT",
+      "hasFleetManagement": true,
+      "hasFleetCommand": true,
+      "clickedCanvas": true,
+      "canvasOpened": true,
+      "firstAircraftHref": "https://free1.airlinesim.aero/app/fleets/aircraft/22035/0",
+      "aesNodes": 49
+    },
+    "fleetGlobals": {
+      "ScheduleFactors": "function",
+      "SchedulePresets": "function",
+      "ScheduleBuilder": "function",
+      "SchedulePanel": "function",
+      "AesFleetCommandPanel": "object",
+      "AesFleetCommandBulkApply": "object",
+      "AesAfpCandidatePipeline": "function",
+      "AesAfpProxyPageFetcher": "function",
+      "AesAfpActiveDraftStore": "function",
+      "AesAfpSubmitBridge": "function",
+      "AesRouteLauncherController": "undefined"
+    },
+    "aircraftFlightPlan": {
+      "url": "https://free1.airlinesim.aero/app/fleets/aircraft/22035/0?28",
+      "title": "N004CFA | Free1 | AirlineSim",
+      "h1": "AIRCRAFT: N004CFA / BOEING 767-300ER (WINGLETS)",
+      "globals": {
+        "AesAfp": "object",
+        "AesAfpFormDriver": "object",
+        "AesAfpHandoffRemoveConsumer": "object",
+        "AesHandoffStore": "function",
+        "AesHandoffQueue": "function",
+        "AesAfpAutoFlightDeleter": "object",
+        "AesAfpAutoApplyLog": "object",
+        "AesAfpFlightStudio": "object",
+        "AesAfpSettings": "function"
+      },
+      "afpActive": true,
+      "ctx": {
+        "server": "free1",
+        "aircraftId": "22035",
+        "currentLocationIata": "SYD"
+      },
+      "handoffConsumerState": {
+        "consumed": false,
+        "lastRecord": null,
+        "liveGate": false
+      },
+      "aesNodes": 526
+    },
+    "settings": {
+      "url": "https://free1.airlinesim.aero/app/enterprise/settings?30",
+      "title": "Settings | Free1 | AirlineSim",
+      "h1": "SETTINGS FOR CFLAIR",
+      "hasLegacySettings": true,
+      "checkboxes": 3,
+      "aesNodes": 34
+    }
+  },
+  "pageErrors": {},
+  "consoleWarnings": [],
+  "consoleErrors": [],
+  "hardFailures": []
+}

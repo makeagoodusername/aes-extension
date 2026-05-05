@@ -59,6 +59,15 @@ class CentralHubStrategyBriefingTile extends window.CentralHubTile {
             this._cachedLessons = null
             this.refresh().catch(() => {})
         })
+        // company-reputation-store emits on AesDataBus when reputation
+        // records save; the briefing surfaces reputation-derived signals
+        // so refresh on update.
+        if (window.AesDataBus && typeof window.AesDataBus.on === "function") {
+            const off = window.AesDataBus.on("data:strategy:company-reputation:saved", () => {
+                this.refresh().catch(() => {})
+            })
+            if (typeof off === "function") this._busDisposers.push(off)
+        }
         // strategy:current-decision view: re-render summary when dispatch
         // state changes so the "pending dispatch" hint stays live without
         // each tile probing aesStrategy:dispatchPending storage on its own.

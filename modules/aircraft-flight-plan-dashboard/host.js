@@ -87,7 +87,15 @@ class AesAfpDashboardHost {
             return
         }
         this._applyLog     = new AesAfpFnApplyLog()
-        this._applier      = new AesAfpFnApplier(this._server, {applyLog: this._applyLog})
+        let applySettings = null
+        if (typeof AesAfpDashboardSettings !== "undefined"
+                && typeof AesAfpDashboardSettings.load === "function") {
+            try { applySettings = await AesAfpDashboardSettings.load() }
+            catch (_) { applySettings = null }
+        }
+        this._applier      = new AesAfpFnApplier(this._server, Object.assign({
+            applyLog: this._applyLog
+        }, applySettings || {}))
         this._proxyFetcher = new AesAfpProxyPageFetcher(this._server)
         this._pipeline     = new AesAfpCandidatePipeline({
             server:      this._server,

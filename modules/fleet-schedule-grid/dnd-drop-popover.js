@@ -5,10 +5,8 @@
  *
  * Opens at the drop position after a destination card is dropped on a lane.
  * Shows the resolved leg (origin from form context, destination, depTime,
- * pricePct, service, days[]) and offers Dry-run + Apply.
+ * pricePct, service, days[]) and offers live Apply.
  *
- * Slice 3: Dry-run only. Apply is rendered but disabled with a tier-gate
- * banner.
  * Slice 4: Apply is enabled when `autoScheduler.enabled === true && tier
  * === "apply-on-confirm"`; banner explains how to flip the gate otherwise.
  *
@@ -120,12 +118,12 @@ class FleetScheduleGridDropPopover {
     }
 
     async _loadTierGate() {
-        if (typeof AesAfpSettings === "undefined") return {enabled: false, tier: "preview-only"}
+        if (typeof AesAfpSettings === "undefined") return {enabled: true, tier: "apply-on-confirm"}
         try {
             const s = await AesAfpSettings.load()
             const a = (s && s.autoScheduler) || {}
             return {enabled: !!a.enabled, tier: a.tier || "preview-only", maxLegs: +a.maxLegsPerApply || 28}
-        } catch (_) { return {enabled: false, tier: "preview-only"} }
+        } catch (_) { return {enabled: true, tier: "apply-on-confirm"} }
     }
 
     _positionAnchored(root, rect) {
@@ -301,20 +299,6 @@ class FleetScheduleGridDropPopover {
         cancelBtn.type = "button"; cancelBtn.textContent = "Cancel"
         cancelBtn.style.cssText = this._btnCss(T, "default")
         cancelBtn.addEventListener("click", () => this._cancel())
-        const dryBtn = document.createElement("button")
-        dryBtn.type = "button"; dryBtn.textContent = "Dry run"
-        dryBtn.style.cssText = this._btnCss(T, "default")
-        dryBtn.title = "Build the leg, validate, run the apply pipeline in dryRun mode. No flight is created in AS."
-        dryBtn.addEventListener("click", async () => {
-            await this._runApply({
-                dryRun: true,
-                depTime: depTimeInput.value,
-                pricePct: +pricePctInput.value || 100,
-                service: serviceSelect.value || "",
-                days: dayState.slice(),
-                resultLine
-            })
-        })
         const applyBtn = document.createElement("button")
         applyBtn.type = "button"; applyBtn.textContent = "Apply"
         applyBtn.style.cssText = this._btnCss(T, canApply.ok ? "rust" : "default")
@@ -326,7 +310,6 @@ class FleetScheduleGridDropPopover {
         applyBtn.addEventListener("click", async () => {
             if (!canApply.ok) return
             await this._runApply({
-                dryRun: false,
                 depTime: depTimeInput.value,
                 pricePct: +pricePctInput.value || 100,
                 service: serviceSelect.value || "",
@@ -334,7 +317,7 @@ class FleetScheduleGridDropPopover {
                 resultLine
             })
         })
-        footer.append(cancelBtn, dryBtn, applyBtn)
+        footer.append(cancelBtn, applyBtn)
         this._rootEl.appendChild(footer)
 
         // Re-position after first paint to handle viewport collisions.
@@ -366,7 +349,7 @@ class FleetScheduleGridDropPopover {
     }
 
     _canApply(fc, fleetRow, tier) {
-        if (!fc) return {ok: false, reason: "Form context not loaded — refetch and try again, or use Dry run only."}
+        if (!fc) return {ok: false, reason: "Form context not loaded — refetch and try again."}
         if (!tier || !tier.enabled) {
             return {ok: false, reason: "Tier-gated — set settings.aircraftFlightPlan.autoScheduler.enabled = true + .tier = \"apply-on-confirm\" to unlock Apply."}
         }
@@ -381,7 +364,7 @@ class FleetScheduleGridDropPopover {
         this._working = true
         const ctx = this.dropCtx
         const T = (typeof window !== "undefined" && window.AESTokens) || null
-        args.resultLine.textContent = args.dryRun ? "Running dry run…" : "Applying…"
+        args.resultLine.textContent = "Applying…"
         args.resultLine.style.color = (T ? T.color.oxide2 : "#4A413B")
         try {
             if (typeof AesAfpFnApplier === "undefined") {
@@ -395,7 +378,7 @@ class FleetScheduleGridDropPopover {
             // when the popover sits open for a while.
             let fc = this._formContext
             const fcAge = this._formContextAt ? (Date.now() - this._formContextAt) : Infinity
-            if (!args.dryRun && fcAge > FleetScheduleGridDropPopover.FORM_CTX_FRESH_MS) {
+            if (fcAge > FleetScheduleGridDropPopover.FORM_CTX_FRESH_MS) {
                 args.resultLine.textContent = "Refreshing form context…"
                 const fresh = await this._loadFormContext()
                 if (fresh) {
@@ -411,44 +394,25 @@ class FleetScheduleGridDropPopover {
                 pricePct:     args.pricePct,
                 service:      args.service
             }
-            if (args.dryRun) {
-                const applier = new AesAfpFnApplier(this.deps.server, {applyEnabled: false, dryRunOnly: true})
-                const r = await applier.apply(ctx.aircraftId, leg, {
-                    source: "drag-drop-grid",
-                    formContext: fc,
-                    reason: "drag-drop-dry-run"
-                })
-                if (r && r.ok) {
-                    args.resultLine.textContent = "✓ Dry run validated — no flight created. " + (r.bodyPreview ? "POST body composed (" + (r.bodyPreview.length || 0) + " chars)." : "")
-                    args.resultLine.style.color = (T ? T.color.moss : "#2F5F3F")
-                    this._offerOpenInFlightStudio(args.resultLine, T)
-                } else {
-                    const errMsg = (r && (r.error || (r.blockers && r.blockers.join("; ")))) || "Dry run failed."
-                    args.resultLine.textContent = "✗ " + errMsg
-                    args.resultLine.style.color = (T ? T.color.crimson : "#8B2727")
-                }
+            if (typeof AesAfpFleetApplyOrchestrator === "undefined") {
+                args.resultLine.textContent = "AesAfpFleetApplyOrchestrator missing."
+                args.resultLine.style.color = (T ? T.color.crimson : "#8B2727")
+                return
+            }
+            const result = await AesAfpFleetApplyOrchestrator.start({
+                runs: [{aircraftId: ctx.aircraftId, legs: [leg]}],
+                ctx:  {server: this.deps.server},
+                source: "drag-drop-grid"
+            })
+            if (result && result.ok && result.totalSucceeded > 0) {
+                args.resultLine.textContent = "✓ Flight created. " + (result.totalSucceeded || 1) + " leg succeeded."
+                args.resultLine.style.color = (T ? T.color.moss : "#2F5F3F")
+                this.onApplied(result)
+                this._offerOpenInFlightStudio(args.resultLine, T)
             } else {
-                // Slice 4 path — orchestrator dispatch.
-                if (typeof AesAfpFleetApplyOrchestrator === "undefined") {
-                    args.resultLine.textContent = "AesAfpFleetApplyOrchestrator missing."
-                    args.resultLine.style.color = (T ? T.color.crimson : "#8B2727")
-                    return
-                }
-                const result = await AesAfpFleetApplyOrchestrator.start({
-                    runs: [{aircraftId: ctx.aircraftId, legs: [leg]}],
-                    ctx:  {server: this.deps.server},
-                    source: "drag-drop-grid"
-                })
-                if (result && result.ok && result.totalSucceeded > 0) {
-                    args.resultLine.textContent = "✓ Flight created. " + (result.totalSucceeded || 1) + " leg succeeded."
-                    args.resultLine.style.color = (T ? T.color.moss : "#2F5F3F")
-                    this.onApplied(result)
-                    this._offerOpenInFlightStudio(args.resultLine, T)
-                } else {
-                    const reason = (result && (result.abortReason || result.error)) || "apply failed"
-                    args.resultLine.textContent = "✗ " + reason
-                    args.resultLine.style.color = (T ? T.color.crimson : "#8B2727")
-                }
+                const reason = (result && (result.abortReason || result.error)) || "apply failed"
+                args.resultLine.textContent = "✗ " + reason
+                args.resultLine.style.color = (T ? T.color.crimson : "#8B2727")
             }
         } catch (e) {
             args.resultLine.textContent = "✗ " + ((e && e.message) || String(e))
@@ -464,7 +428,7 @@ class FleetScheduleGridDropPopover {
     }
 
     /**
-     * Track C — after Apply or Dry-run validates, write a dnd-grid handoff
+     * Track C — after Apply succeeds, write a dnd-grid handoff
      * and surface an "Open in Flight Studio" button. The AFP page consumes
      * the handoff on mount, scrolls its candidates table to the matching
      * destination row, and (when Flight Studio is mounted) pre-fills the

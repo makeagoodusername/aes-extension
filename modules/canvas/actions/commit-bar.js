@@ -206,8 +206,8 @@ class CanvasCommitBar {
         } catch (_) {}
         return {
             applier: new window.RouteAssistantPricingApplier(this.server, {
-                dryRunOnly:           cfg.dryRunOnly !== false,
-                applyEnabled:         !!cfg.enabled,
+                dryRunOnly:           cfg.dryRunOnly === true,
+                applyEnabled:         cfg.enabled !== false,
                 liveScopes:           cfg.liveScopes || {},
                 cooldownMinPerRoute:  cfg.cooldownMinPerRoute,
                 cooldownMinGlobal:    cfg.cooldownMinGlobal,

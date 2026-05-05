@@ -260,15 +260,35 @@ class AES {
      * @param {function(object): void} [callback]
      */
     static updateSettings(mutator, callback) {
+        const finish = function (latest) {
+            if (typeof callback === "function") {
+                callback(latest)
+            }
+        }
+        const bridge = (typeof AesSettings !== "undefined") ? AesSettings : null
+        if (bridge && typeof bridge._enqueueWrite === "function") {
+            bridge._enqueueWrite(function (current) {
+                if (typeof mutator === "function") {
+                    mutator(current)
+                }
+                return current
+            }, {area: "settings", sections: ["*"]})
+                .then(finish)
+                .catch(function (err) {
+                    console.warn("[AES] updateSettings failed", err)
+                    finish(null)
+                })
+            return
+        }
         chrome.storage.local.get(["settings"], function (result) {
             const current = result.settings || {}
             if (typeof mutator === "function") {
                 mutator(current)
             }
-            chrome.storage.local.set({ settings: current }, function () {
-                if (typeof callback === "function") {
-                    callback(current)
-                }
+            const payload = {}
+            payload.settings = current
+            chrome.storage.local.set(payload, function () {
+                finish(current)
             })
         })
     }

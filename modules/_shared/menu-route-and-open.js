@@ -39,6 +39,69 @@
         return window.location.origin + "/app/fleets"
     }
 
+    function _aircraftFlightPlanUrl(aircraftId) {
+        const id = String(aircraftId || "").match(/\d+/)
+        return id ? window.location.origin + "/app/fleets/aircraft/" + id[0] + "/0" : null
+    }
+
+    function _currentAircraftIdFromPath() {
+        const m = window.location.pathname.match(/\/app\/fleets\/aircraft\/(\d+)\b/)
+        return m ? m[1] : null
+    }
+
+    function _firstAircraftIdFromPage() {
+        const links = document.querySelectorAll('a[href*="/app/fleets/aircraft/"]')
+        for (const a of links) {
+            const href = a.getAttribute("href") || ""
+            const m = href.match(/\/app\/fleets\/aircraft\/(\d+)\b/)
+            if (m) return m[1]
+        }
+        return null
+    }
+
+    function _firstAircraftIdFromStoredFleet() {
+        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
+            return Promise.resolve(null)
+        }
+        return new Promise(resolve => {
+            try {
+                chrome.storage.local.get(null, all => {
+                    if (chrome.runtime && chrome.runtime.lastError) {
+                        resolve(null)
+                        return
+                    }
+                    let best = null
+                    for (const key in (all || {})) {
+                        if (key.lastIndexOf("aircraftFleet") !== key.length - "aircraftFleet".length) continue
+                        const rec = all[key]
+                        const fleet = rec && Array.isArray(rec.fleet) ? rec.fleet : []
+                        if (!fleet.length) continue
+                        if (!best || fleet.length > best.fleet.length) best = {fleet}
+                    }
+                    const first = best && best.fleet.find(a => a && a.aircraftId != null)
+                    resolve(first ? String(first.aircraftId) : null)
+                })
+            } catch (_) {
+                resolve(null)
+            }
+        })
+    }
+
+    async function _routePlannerTargetUrl(intent) {
+        const argId = intent && intent.args && intent.args.aircraftId
+        const fromArgs = _aircraftFlightPlanUrl(argId)
+        if (fromArgs) return fromArgs
+
+        const fromPath = _aircraftFlightPlanUrl(_currentAircraftIdFromPath())
+        if (fromPath) return fromPath
+
+        const fromPage = _aircraftFlightPlanUrl(_firstAircraftIdFromPage())
+        if (fromPage) return fromPage
+
+        const fromStorage = _aircraftFlightPlanUrl(await _firstAircraftIdFromStoredFleet())
+        return fromStorage || _fleetsUrl()
+    }
+
     const intents = {
         "strategy:open": {
             target: _enterpriseDashboardUrl,
@@ -56,7 +119,7 @@
             method: "open"
         },
         "route-planner:open": {
-            target: _fleetsUrl,
+            target: _routePlannerTargetUrl,
             global: "AesAfpRoutePlannerPanel",
             method: "open"
         }
@@ -111,6 +174,33 @@
         setTimeout(tick, 0)
     }
 
+    function _pollRoutePlannerTargetThenOpen(intent) {
+        const start = Date.now()
+        const tick = () => {
+            if (_tryOpenNow(intent)) {
+                _clearPending()
+                return
+            }
+            _routePlannerTargetUrl(intent).then(nextUrl => {
+                const fp = _aircraftFlightPlanUrl(_currentAircraftIdFromPath())
+                if (fp && _isOnTarget(fp)) {
+                    _pollAndOpen(intent)
+                    return
+                }
+                if (nextUrl && /\/app\/fleets\/aircraft\/\d+\/0\b/.test(nextUrl)) {
+                    window.location.href = nextUrl
+                    return
+                }
+                if (Date.now() - start > POLL_BUDGET_MS) return
+                setTimeout(tick, POLL_MS)
+            }).catch(() => {
+                if (Date.now() - start > POLL_BUDGET_MS) return
+                setTimeout(tick, POLL_MS)
+            })
+        }
+        setTimeout(tick, 0)
+    }
+
     function dispatch(opts) {
         const kind = opts && opts.kind
         const def = intents[kind]
@@ -119,21 +209,52 @@
         const intent = {kind: kind, args: opts.args || null}
         if (_tryOpenNow(intent)) return true
 
+        _stashAndRoute(intent, def)
+        return true
+    }
+
+    function _stashIntent(intent) {
         try {
             sessionStorage.setItem(PENDING_KEY, JSON.stringify({
-                kind: kind,
+                kind: intent.kind,
                 args: intent.args,
                 ts: Date.now()
             }))
         } catch (_) { /* private mode */ }
+    }
 
-        const targetUrl = (typeof def.target === "function") ? def.target() : def.target
-        if (_isOnTarget(targetUrl)) {
-            _pollAndOpen(intent)
-        } else {
-            window.location.href = targetUrl
-        }
-        return true
+    function _resolveTargetUrl(def, intent) {
+        const target = (typeof def.target === "function") ? def.target(intent) : def.target
+        return Promise.resolve(target)
+            .then(url => url || window.location.href)
+            .catch(e => {
+                console.warn("[AES menu route] target resolution failed", intent.kind, e)
+                return window.location.href
+            })
+    }
+
+    function _routeOrPoll(intent, def) {
+        _resolveTargetUrl(def, intent).then(targetUrl => {
+            if (_tryOpenNow(intent)) {
+                _clearPending()
+                return
+            }
+            if (_isOnTarget(targetUrl)) {
+                if (intent.kind === "route-planner:open"
+                        && !/\/app\/fleets\/aircraft\/\d+\/0\b/.test(window.location.pathname)) {
+                    _pollRoutePlannerTargetThenOpen(intent)
+                } else {
+                    _pollAndOpen(intent)
+                }
+            } else {
+                window.location.href = targetUrl
+            }
+        })
+    }
+
+    function _stashAndRoute(intent, def) {
+        _stashIntent(intent)
+        _routeOrPoll(intent, def)
     }
 
     function _consumeOnLoad() {
@@ -156,7 +277,7 @@
             return
         }
 
-        _pollAndOpen({kind: pending.kind, args: pending.args})
+        _routeOrPoll({kind: pending.kind, args: pending.args}, intents[pending.kind])
     }
 
     window.AesMenuRouteAndOpen = {

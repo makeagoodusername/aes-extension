@@ -15,9 +15,8 @@
  *
  * Two-gate (NORTH-STAR §4.1):
  *   - applyEnabled  — user kill switch (settings.crewPay.apply.enabled)
- *   - dryRunOnly    — codebase readiness gate (default TRUE; set false in
- *                     settings.crewPay.apply.dryRunOnly only after manual
- *                     verification per §4.18)
+ *   - dryRunOnly    — explicit rehearsal override. v0.6.9-live defaults
+ *                     it to false so salary form updates POST live.
  * Both must be cleared before any POST reaches the wire.
  *
  * Public API:
@@ -43,7 +42,7 @@ class CrewMgmtPayTierApplier {
      * @param {object} [opts]
      * @param {CrewMgmtPayTierApplyLog} [opts.applyLog]
      * @param {boolean} [opts.applyEnabled=true]
-     * @param {boolean} [opts.dryRunOnly=true]   — codebase gate; default ON
+     * @param {boolean} [opts.dryRunOnly=false]  — explicit rehearsal gate
      */
     constructor(server, opts) {
         if (!server) throw new Error("CrewMgmtPayTierApplier: server required")
@@ -51,7 +50,7 @@ class CrewMgmtPayTierApplier {
         this.server       = server
         this.applyLog     = opts.applyLog || null
         this.applyEnabled = opts.applyEnabled !== false
-        this.dryRunOnly   = opts.dryRunOnly !== false
+        this.dryRunOnly   = opts.dryRunOnly === true
     }
 
     static _baseUrl(server) {
@@ -176,8 +175,7 @@ class CrewMgmtPayTierApplier {
         const body = CrewMgmtPayTierApplier.buildBody(formContext, positionId, numAmount)
         baseEnvelope.bodyPreview = CrewMgmtPayTierApplier._summariseBody(body)
 
-        // Tier gate — codebase readiness. Audit logged as dry-run so the
-        // user can preview the would-be POST without firing it.
+        // Explicit rehearsal override.
         if (this.dryRunOnly) {
             return await this._completeAsDryRun(Object.assign({}, baseEnvelope, {
                 warning: "dryRunOnly=true — POST suppressed (audit logged as dry-run)"

@@ -16,12 +16,18 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
         this.section = "routes"
         this.priority = 10
         this.requiresAirline = false
+
+        this._autoPricingRefreshMs = 5000
+        this._autoPricingRefreshTimer = null
+        this._autoPricingRefreshCtx = null
+        this._autoPricingRefreshInFlight = false
+        this._lastAutoPricingPreviewAt = null
     }
 
     watchedStorageKeys() {
         return [
             "settings",
-            "routeAssistant:topRoutes:",
+            "routeAssistant:topRoutes",
             "routeAssistant:ors:",
             "routeAssistant:orsHealth",
             "routeAssistant:markets:",
@@ -29,6 +35,66 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
             "routeAssistant:yieldHistory:",
             "routeAssistant:override"
         ]
+    }
+
+    async mount(container, ctx, opts) {
+        await super.mount(container, ctx, opts)
+        // ors-intelligence emits `data:route-assistant:ors:health` on AesDataBus
+        // when an ORS run updates the orsHealth record (cooldown enter/exit,
+        // breaker trip). Storage-watch already triggers on the same key, but the
+        // bus signal arrives before the storage write resolves cross-tab, so
+        // wiring it cuts perceived refresh latency.
+        if (window.AesDataBus && typeof window.AesDataBus.on === "function") {
+            const off = window.AesDataBus.on("data:route-assistant:ors:health", () => {
+                this.refresh().catch(() => {})
+            })
+            if (typeof off === "function") this._busDisposers.push(off)
+        }
+        if (this.expanded) this._startAutoPricingRefresh(ctx)
+    }
+
+    toggle() {
+        super.toggle()
+        if (this.expanded) this._startAutoPricingRefresh(this.ctx)
+        else this._stopAutoPricingRefresh()
+    }
+
+    dispose() {
+        this._stopAutoPricingRefresh()
+        super.dispose()
+    }
+
+    _startAutoPricingRefresh(ctx) {
+        this._autoPricingRefreshCtx = ctx || this.ctx || null
+        this._stopAutoPricingRefresh()
+        this._autoPricingRefreshTimer = setInterval(() => {
+            this._refreshAutoPricingPreviewLive().catch(() => {})
+        }, this._autoPricingRefreshMs)
+    }
+
+    _stopAutoPricingRefresh() {
+        if (!this._autoPricingRefreshTimer) return
+        clearInterval(this._autoPricingRefreshTimer)
+        this._autoPricingRefreshTimer = null
+    }
+
+    async _refreshAutoPricingPreviewLive() {
+        if (!this.expanded || !this.bodyEl || !this.root) return
+        if (this._autoPricingBusy || this._autoPricingRefreshInFlight) return
+        this._autoPricingRefreshInFlight = true
+        try {
+            if (this._autoPricingShouldAutoRun(this._lastAutoPricingPreview)) {
+                await this._runAutoPricingTick(this._autoPricingRefreshCtx || this.ctx, {
+                    automatic: true,
+                    forceDryRun: false,
+                    maxRoutes: 5
+                })
+            } else {
+                await this._renderBodySafe()
+            }
+        } finally {
+            this._autoPricingRefreshInFlight = false
+        }
     }
 
     openHandler() {
@@ -42,16 +108,66 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
     }
 
     async _loadHubs() {
-        const entries = await this._loadByPrefix("routeAssistant:topRoutes")
-        const out = []
+        const entries = await this._loadByPrefix("routeAssistant:topRoutes", {includeExactKey: true})
+        const byHub = new Map()
+        const accountId = this._currentAccountId()
         for (const e of entries) {
-            // Skip ":perClass:" companion snapshots and any deeper-keyed siblings.
-            if (e.suffix.indexOf(":") >= 0) continue
-            if (!e.suffix || !e.value) continue
-            out.push({hub: e.suffix, record: e.value})
+            const info = this._topRoutesEntryInfo(e, accountId)
+            if (!info || !e.value) continue
+            const rec = e.value
+            if (rec.accountId && accountId && rec.accountId !== accountId) continue
+            if (rec.accountId && !accountId) continue
+            const hub = info.hub || String(rec.hub || "").toUpperCase()
+            if (!hub) continue
+            const next = {
+                hub,
+                record: rec,
+                priority: info.scoped ? 0 : (info.exact ? 2 : 1),
+                stamp: Number(rec.snapshotAt || rec.scrapedAt || 0) || 0
+            }
+            const prev = byHub.get(hub)
+            if (!prev
+                    || next.priority < prev.priority
+                    || (next.priority === prev.priority && next.stamp > prev.stamp)) {
+                byHub.set(hub, next)
+            }
         }
+        const out = Array.from(byHub.values()).map(x => ({hub: x.hub, record: x.record}))
         out.sort((a, b) => (b.record.snapshotAt || 0) - (a.record.snapshotAt || 0))
         return out
+    }
+
+    _currentAccountId() {
+        try {
+            if (typeof currentAccountIdSync === "function") return currentAccountIdSync() || null
+        } catch (_) {}
+        try {
+            if (window.AesAccountKey && typeof window.AesAccountKey.currentAccountIdSync === "function") {
+                return window.AesAccountKey.currentAccountIdSync() || null
+            }
+        } catch (_) {}
+        return window.__aesAccountId || null
+    }
+
+    _topRoutesEntryInfo(entry, accountId) {
+        if (!entry) return null
+        const rec = entry.value || {}
+        const suffix = String(entry.suffix || "")
+        if (!suffix) {
+            const hub = String(rec.hub || "").toUpperCase()
+            return hub ? {hub, exact: true, scoped: false} : null
+        }
+        if (suffix.indexOf("acct:") === 0) {
+            const parts = suffix.split(":")
+            if (parts.length < 3) return null
+            const keyAccountId = parts[1]
+            if (!accountId || keyAccountId !== accountId) return null
+            const hub = parts.slice(2).join(":").toUpperCase()
+            return hub && hub.indexOf(":") < 0 ? {hub, exact: false, scoped: true} : null
+        }
+        // Skip ":perClass:" companion snapshots and any deeper-keyed siblings.
+        if (suffix.indexOf(":") >= 0) return null
+        return {hub: suffix.toUpperCase(), exact: false, scoped: false}
     }
 
     _firstSchedulingTarget(hubs) {
@@ -256,9 +372,11 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
             return box
         }
         this._lastAutoPricingPreview = preview
+        this._lastAutoPricingPreviewAt = Date.now()
 
         const state = preview && preview.state || {}
         const counts = preview && preview.counts || {}
+        const autoRun = this._autoPricingShouldAutoRun(preview)
         const status = document.createElement("div")
         status.style.cssText = [
             "display:flex",
@@ -270,7 +388,7 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
             "letter-spacing:" + T.track.mono
         ].join(";")
         status.append(
-            this._signalChip(state.liveWrites ? "live gate" : "dry-run gate", state.liveWrites ? "warn" : "ok", T),
+            this._signalChip(state.liveWrites ? "live gate" : "blocked gate", state.liveWrites ? "warn" : "muted", T),
             this._signalChip((state.strategy || "per-class-elasticity"), "muted", T),
             this._signalChip((state.followMode || "watchlist"), "muted", T),
             this._signalChip((counts.proposed || 0) + " proposed", counts.proposed ? "ok" : "muted", T),
@@ -279,7 +397,9 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
             this._signalChip((counts.withOwnPricing || 0) + " priced", counts.withOwnPricing ? "ok" : "muted", T),
             this._signalChip((counts.withOrs || 0) + " ORS", counts.withOrs ? "ok" : "muted", T),
             this._signalChip((counts.withActiveFlights || 0) + " in-air", counts.withActiveFlights ? "warn" : "muted", T),
-            this._signalChip((counts.withYieldHistory || 0) + " history", counts.withYieldHistory ? "ok" : "muted", T)
+            this._signalChip((counts.withYieldHistory || 0) + " history", counts.withYieldHistory ? "ok" : "muted", T),
+            this._signalChip((autoRun ? "auto " : "refresh ") + Math.round(this._autoPricingRefreshMs / 1000) + "s",
+                autoRun ? "warn" : "muted", T)
         )
         box.appendChild(status)
 
@@ -314,12 +434,7 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
         refreshBtn.addEventListener("click", () => this._renderBodySafe())
         actions.appendChild(refreshBtn)
 
-        const dryRunBtn = this._autoPricingButton("Dry-run tick", T, true)
-        dryRunBtn.disabled = !!this._autoPricingBusy
-        dryRunBtn.addEventListener("click", () => this._runAutoPricingTick(ctx, {forceDryRun: true}))
-        actions.appendChild(dryRunBtn)
-
-        const gatedBtn = this._autoPricingButton(state.liveWrites ? "Run live gate" : "Run gate", T, false)
+        const gatedBtn = this._autoPricingButton(state.liveWrites ? "Run live tick" : "Run gate", T, false)
         gatedBtn.disabled = !!this._autoPricingBusy
         gatedBtn.addEventListener("click", () => {
             if (state.liveWrites && !window.confirm("Run a live silent-auto pricing tick with the current write gate?")) return
@@ -391,21 +506,35 @@ class CentralHubRouteAssistantTile extends window.CentralHubTile {
         return Array.from(byPair.values()).slice(0, 6)
     }
 
+    _autoPricingShouldAutoRun(preview) {
+        const state = preview && preview.state || {}
+        const counts = preview && preview.counts || {}
+        return !!(state.silentAutoEnabled
+            && state.liveWrites
+            && !state.mutedUntil
+            && Number(counts.proposed || 0) > 0)
+    }
+
     async _runAutoPricingTick(ctx, opts) {
-        if (!window.AesRoutePriceAutomator
-                || typeof window.AesRoutePriceAutomator.runTick !== "function") return
+        const automator = window.AesRoutePriceAutomator
+        if (!automator || typeof automator.runTick !== "function") return
         if (this._autoPricingBusy) return
         this._autoPricingBusy = true
         await this._renderBodySafe()
         try {
+            const automatic = !!(opts && opts.automatic)
             const runOpts = {
-                force: true,
-                maxRoutes: 5,
+                maxRoutes: opts && isFinite(opts.maxRoutes) ? Math.max(1, Math.floor(Number(opts.maxRoutes))) : 5,
                 limit: 75
             }
+            if (!automatic) runOpts.force = true
+            if (automatic) runOpts.source = "dashboard-auto-5s"
             if (this._autoPricingFollowMode()) runOpts.followMode = this._autoPricingFollowMode()
             if (opts && opts.forceDryRun) runOpts.forceDryRun = true
-            this._lastAutoPricingTick = await window.AesRoutePriceAutomator.runTick(this._autoPricingHost(ctx), runOpts)
+            const tick = automatic && typeof automator.runTickIfDue === "function"
+                ? await automator.runTickIfDue(this._autoPricingHost(ctx), runOpts)
+                : await automator.runTick(this._autoPricingHost(ctx), runOpts)
+            if (!(tick && tick.skipped)) this._lastAutoPricingTick = tick
         } catch (e) {
             this._lastAutoPricingTick = {
                 ranAt: Date.now(),

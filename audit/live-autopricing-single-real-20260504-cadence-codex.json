@@ -1,0 +1,45 @@
+{
+  "startedAt": 1777897924154,
+  "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+  "previewBefore": {
+    "counts": {
+      "routes": 0,
+      "watchlisted": 0,
+      "pinned": 0,
+      "proposed": 0,
+      "withOwnPricing": 0,
+      "withCompetitors": 0,
+      "withYieldHistory": 0,
+      "withOrs": 0,
+      "withActiveFlights": 0,
+      "cooldownBlocked": 0,
+      "capBlocked": 0,
+      "withOrsIndex": 0,
+      "withOrsPriceIndex": 0
+    },
+    "proposals": []
+  },
+  "tick": {
+    "ranAt": 1777897924169,
+    "sourcePage": "dashboard",
+    "eligible": 0,
+    "proposed": 0,
+    "applied": 0,
+    "simulated": 0,
+    "capped": 0,
+    "blocked": 0,
+    "skipped": 0,
+    "dryRun": false,
+    "error": {
+      "code": "noProposals",
+      "message": "no route met the min delta threshold"
+    },
+    "perRoute": []
+  },
+  "entries": [],
+  "restoredSettings": true,
+  "restoreError": null,
+  "ok": false,
+  "finishedAt": "2026-05-04T12:32:04.184Z"
+}

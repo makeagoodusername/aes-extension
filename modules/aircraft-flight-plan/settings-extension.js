@@ -55,6 +55,7 @@ class AesAfpSettings {
 
     static _defaults() {
         return {
+            permanentLiveMode: true,
             enabled:           true,
             defaultTopN:       10,
             defaultPricePct:   100,        // "Route or default prices"
@@ -74,14 +75,13 @@ class AesAfpSettings {
             // (legacy fallback). The wave-picker writes through both so
             // there's no need for an offline migration step.
             activePresetIdByHub: {},
-            // Track 3 — auto-scheduler. Phase-1 ships disabled behind the
-            // "preview-only" tier gate; consumers (Track 5) flip the tier when
-            // the user opts in. `weights` deep-merges so a future tuning agent
-            // can patch one field without clobbering siblings.
+            // Track 3 — auto-scheduler. v0.6.9-live ships apply-ready:
+            // generated schedules use the existing background-tab submit
+            // path once the operator clicks Apply.
             autoScheduler: {
-                enabled:                     false,
-                tier:                        "preview-only",   // "preview-only" | "apply-on-confirm"
-                requireConfirm:              true,
+                enabled:                     true,
+                tier:                        "apply-on-confirm",   // "preview-only" | "apply-on-confirm"
+                requireConfirm:              false,
                 maxLegsPerApply:             28,
                 minMaintenanceRatio:         100,
                 maintenanceWaitDays:         3,
@@ -134,20 +134,22 @@ class AesAfpSettings {
             // background-tab path after a toast confirm. `auto` mode is
             // deferred to a later phase.
             //
-            // `dragSubmit.dryRunOnly: true` is the kill-switch — when true,
-            // every G9 drop is preview-only regardless of dragSubmitMode.
-            // Default true so the gesture is safe to enable broadly while
-            // the user evaluates it.
+            // `dragSubmit.dryRunOnly: true` remains the kill-switch. Live
+            // mode defaults it off so confirmed drops submit through AS.
             dragSubmit: {
                 dryRunOnly: false
             },
             dragSubmitMode: "confirmed",   // "manual" | "confirmed" | "auto"
+            apply: {
+                enabled:    true,
+                dryRunOnly: false
+            },
             // Track 9 — Flight Studio (Slice S1+). Compose-and-apply
             // surface for the AS New Flight Number form, reachable from
             // AESMenu. Independent from autoScheduler — one's per-flight
             // composition, the other's whole-aircraft optimisation.
-            // S1 ships in dry-run mode by default; pre-fill (S2) and
-            // submit (S5) tiers gate behind defaultMode + featureFlags.
+            // Live mode defaults Flight Studio to submit. Pre-fill and
+            // dry-run remain explicit fallback modes.
             studio: {
                 enabled:                  true,
                 defaultMode:              "submit",   // "dry-run" | "pre-fill" | "submit"
@@ -191,6 +193,8 @@ class AesAfpSettings {
         const bDiff   = bAuto.diff        || {}
         const defStudio = def.studio      || {}
         const bStudio   = b.studio        || {}
+        const defApply  = def.apply       || {enabled: true, dryRunOnly: false}
+        const bApply    = b.apply         || {}
         const defStudioPaste = defStudio.paste        || {}
         const bStudioPaste   = bStudio.paste          || {}
         const defStudioFlags = defStudio.featureFlags || {}
@@ -253,7 +257,13 @@ class AesAfpSettings {
         const dragSubmit = {
             dryRunOnly: (typeof bDrag.dryRunOnly === "boolean") ? bDrag.dryRunOnly : defDrag.dryRunOnly
         }
-        return {
+        const apply = {
+            enabled:    (typeof bApply.enabled === "boolean") ? bApply.enabled : defApply.enabled,
+            dryRunOnly: (typeof bApply.dryRunOnly === "boolean") ? bApply.dryRunOnly : defApply.dryRunOnly
+        }
+        const liveMode = b.permanentLiveMode !== false
+        const out = {
+            permanentLiveMode:      liveMode,
             enabled:               (typeof b.enabled === "boolean") ? b.enabled : def.enabled,
             defaultTopN:           numField(b.defaultTopN,     def.defaultTopN),
             defaultPricePct:       numField(b.defaultPricePct, def.defaultPricePct),
@@ -263,10 +273,21 @@ class AesAfpSettings {
             lastSelectedPresetId:  (typeof b.lastSelectedPresetId === "string") ? b.lastSelectedPresetId : def.lastSelectedPresetId,
             activePresetIdByHub:   AesAfpSettings._normHubPresetMap(b.activePresetIdByHub),
             autoScheduler:         autoScheduler,
+            apply:                 apply,
             studio:                studio,
             dragSubmit:            dragSubmit,
             dragSubmitMode:        validDragMode(b.dragSubmitMode) ? b.dragSubmitMode : def.dragSubmitMode
         }
+        if (liveMode) {
+            out.autoScheduler.enabled = true
+            out.autoScheduler.tier = "apply-on-confirm"
+            out.dragSubmit.dryRunOnly = false
+            out.apply.enabled = true
+            out.apply.dryRunOnly = false
+            out.studio.enabled = true
+            out.studio.defaultMode = "submit"
+        }
+        return out
     }
 
     /**
@@ -289,7 +310,13 @@ class AesAfpSettings {
     static async load() {
         const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
         const block = await window.AesSettings.getAreaScoped("aircraftFlightPlan", id)
-        return AesAfpSettings._mergeAircraftFlightPlan(AesAfpSettings._defaults(), block)
+        const merged = AesAfpSettings._mergeAircraftFlightPlan(AesAfpSettings._defaults(), block)
+        AesAfpSettings._cached = merged
+        return merged
+    }
+
+    static cached() {
+        return AesAfpSettings._cached ? {aircraftFlightPlan: AesAfpSettings._cached} : null
     }
 
     /**
@@ -344,6 +371,11 @@ class AesAfpSettings {
             current.activePresetIdByHub || {},
             p.activePresetIdByHub || {}
         )
+        const mergedApply = Object.assign(
+            {},
+            current.apply || {},
+            p.apply || {}
+        )
         const next = AesAfpSettings._mergeAircraftFlightPlan(
             AesAfpSettings._defaults(),
             Object.assign({}, current, p,
@@ -354,12 +386,14 @@ class AesAfpSettings {
                     p.candidateChips || {}
                 )},
                 {autoScheduler:       mergedAuto},
+                {apply:               mergedApply},
                 {studio:              mergedStudio},
                 {activePresetIdByHub: mergedHubMap}
             )
         )
         const id = (typeof currentAccountIdSync === "function") ? currentAccountIdSync() : null
         await window.AesSettings.saveAreaScoped("aircraftFlightPlan", next, id)
+        AesAfpSettings._cached = next
         return next
     }
 }

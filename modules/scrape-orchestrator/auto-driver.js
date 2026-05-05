@@ -30,7 +30,7 @@
      // selects by overdue-ratio, not list position. Including it here lets
      // the auto-driver refresh ORS competitive data on its 4h cadence
      // independently of the heavier per-route scrape.
-    const MANDATORY_PHASES = ["foundation", "per-hub", "per-aircraft", "per-route", "ors-rank"]
+    const MANDATORY_PHASES = ["foundation", "per-aircraft", "per-hub", "per-route", "ors-rank"]
 
     let _selfTimer  = null
     let _lastTickAt = 0
@@ -113,9 +113,9 @@
             try { if (typeof AES !== "undefined") server = AES.getServerName() || "" } catch (_) {}
             try {
                 if (typeof AES !== "undefined") {
+                    if (AES.getAirlineIdentity) airline = AES.getAirlineIdentity() || ""
                     const code = AES.getAirlineCode()
-                    airline = (code && code.code) || ""
-                    if (!airline) airline = AES.getAirlineIdentity() || ""
+                    if (!airline) airline = (code && code.code) || (code && code.name) || ""
                 }
             } catch (_) {}
             if (!server) return null

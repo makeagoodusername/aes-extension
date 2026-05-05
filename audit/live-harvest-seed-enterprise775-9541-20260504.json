@@ -1,0 +1,20 @@
+{
+  "ok": false,
+  "mode": "standalone-demand-seed-first",
+  "profile": "/tmp/aes-live-enterprise775-9541",
+  "port": "9541",
+  "server": "free1.airlinesim.aero",
+  "dashboardUrl": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+  "startedAt": "2026-05-04T11:33:00.702Z",
+  "progress": [],
+  "before": null,
+  "after": null,
+  "result": null,
+  "errors": [
+    "not logged in"
+  ],
+  "loggedIn": false,
+  "title": "AirlineSim | The online airline simulation and management game",
+  "url": "https://airlinesim.aero/auth/login?od=https://free1.airlinesim.aero/app/redirectAfterLogin",
+  "completedAt": "2026-05-04T11:33:13.802Z"
+}

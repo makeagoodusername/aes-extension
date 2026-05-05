@@ -1,0 +1,172 @@
+{
+  "startedAt": "2026-05-04T12:33:03.963Z",
+  "marketPage": {
+    "url": "https://free1.airlinesim.aero/app/com/markets/LHRCDG?7",
+    "title": "Market Analysis | Free1 | AirlineSim",
+    "hasAes": 1
+  },
+  "marketCache": {
+    "keys": [
+      "routeAssistant:markets:competitors:acct:9db46384cfe3:LHR-CDG",
+      "routeAssistant:markets:historic:acct:9db46384cfe3:LHR-CDG",
+      "routeAssistant:markets:ownPricing:acct:9db46384cfe3:LHR-CDG"
+    ],
+    "records": [
+      {
+        "key": "routeAssistant:markets:competitors:acct:9db46384cfe3:LHR-CDG",
+        "scrapedAt": 1777897987967,
+        "hasPrices": false,
+        "competitors": 250
+      },
+      {
+        "key": "routeAssistant:markets:historic:acct:9db46384cfe3:LHR-CDG",
+        "scrapedAt": 1777897987967,
+        "hasPrices": false,
+        "competitors": null
+      },
+      {
+        "key": "routeAssistant:markets:ownPricing:acct:9db46384cfe3:LHR-CDG",
+        "scrapedAt": 1777897987967,
+        "hasPrices": true,
+        "competitors": null
+      }
+    ]
+  },
+  "result": {
+    "startedAt": 1777897993201,
+    "url": "https://free1.airlinesim.aero/app/enterprise/dashboard?3&select=775",
+    "title": "Dashboard: CFLAIR | Free1 | AirlineSim",
+    "previewBefore": {
+      "counts": {
+        "routes": 1,
+        "watchlisted": 0,
+        "pinned": 0,
+        "proposed": 1,
+        "withOwnPricing": 1,
+        "withCompetitors": 1,
+        "withYieldHistory": 0,
+        "withOrs": 0,
+        "withActiveFlights": 0,
+        "cooldownBlocked": 0,
+        "capBlocked": 0,
+        "withOrsIndex": 0,
+        "withOrsPriceIndex": 0
+      },
+      "proposals": [
+        {
+          "pair": "LHR-CDG",
+          "prices": {
+            "Y": 101,
+            "C": 193
+          },
+          "prevPrices": {
+            "C": 205,
+            "Cargo": 77,
+            "F": 287,
+            "Y": 107
+          },
+          "reason": "silent-auto · per-class · Y/C · Y 107→101 (Δ -5.6%) · controls Δ -5.6% → -5.6%"
+        }
+      ]
+    },
+    "tick": {
+      "ranAt": 1777897993234,
+      "sourcePage": "dashboard",
+      "eligible": 1,
+      "proposed": 1,
+      "applied": 1,
+      "simulated": 0,
+      "capped": 0,
+      "blocked": 0,
+      "skipped": 0,
+      "dryRun": false,
+      "error": null,
+      "perRoute": [
+        {
+          "pair": "LHR-CDG",
+          "dest": "CDG",
+          "stage": "applied",
+          "applyStatus": "verified",
+          "reason": "silent-auto · per-class · Y/C · Y 107→101 (Δ -5.6%) · controls Δ -5.6% → -5.6%",
+          "prevY": 107,
+          "newY": 101,
+          "deltaPct": -5.607476635514018,
+          "priceSummary": "Y 107->101 (-5.6%) · C 205->193 (-5.9%)",
+          "prices": {
+            "Y": 101,
+            "C": 193
+          },
+          "activeFlightControls": null,
+          "controlVariables": {
+            "demandStrong": false,
+            "demandWeak": false,
+            "highlyElastic": false,
+            "orsStrong": false,
+            "orsWeak": false,
+            "orsSevere": false,
+            "competitionWeight": 1,
+            "competitorCount": 86,
+            "effectiveRank": null,
+            "effectiveGap": null,
+            "historyWeak": false,
+            "historyStrong": false,
+            "historyLoss": false,
+            "historyDeteriorating": false,
+            "historySampleCount": 0,
+            "historyLatestProfitPerFlight": null,
+            "historyTrendPct": null,
+            "airborne": false,
+            "classKey": "Y",
+            "demandSide": "pax",
+            "classScore": null,
+            "classDemandPool": 8921,
+            "classElasticity": null,
+            "paxScore": null,
+            "cargoScore": null,
+            "rmTightness": null,
+            "paxElasticity": null,
+            "cargoElasticity": null,
+            "rankAny": null,
+            "ratingGapToTop": null,
+            "inflight": 0,
+            "avgCm5": null,
+            "factor": 1,
+            "notes": []
+          },
+          "errorCode": null
+        }
+      ]
+    },
+    "entries": [
+      {
+        "route": "LHR-CDG",
+        "status": "verified",
+        "dryRun": false,
+        "prevPrices": {
+          "C": 205,
+          "Cargo": 77,
+          "F": 287,
+          "Y": 107
+        },
+        "newPrices": {
+          "C": 193,
+          "Cargo": 77,
+          "F": 287,
+          "Y": 101
+        },
+        "verifiedPrices": {
+          "C": 193,
+          "Cargo": 77,
+          "F": 287,
+          "Y": 101
+        },
+        "reason": "dashboard route management - silent-auto · per-class · Y/C · Y 107→101 (Δ -5.6%) · controls Δ -5.6% → -5.6%",
+        "error": null
+      }
+    ],
+    "restoredSettings": true,
+    "restoreError": null
+  },
+  "ok": true,
+  "finishedAt": "2026-05-04T12:33:17.681Z"
+}

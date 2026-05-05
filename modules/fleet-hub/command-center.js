@@ -3640,7 +3640,7 @@ class FleetHubCommandCenter {
             hub,
             aircraft: this._rows.filter(r => this._rowHasVisibleHub(r) && String(r.hub).toUpperCase() === hub)
         })))
-        row.appendChild(mk("applyToFleet", "Dry-run fleet apply", () => this._dryRunWaveFleetApply(hub, ctx)))
+        row.appendChild(mk("applyToFleet", "Apply fleet", () => this._applyWaveFleetApply(hub, ctx)))
         return row
     }
 
@@ -5700,8 +5700,8 @@ class FleetHubCommandCenter {
         }
     }
 
-    async _dryRunWaveFleetApply(hub, ctx) {
-        const key = "waveDryRun:" + hub
+    async _applyWaveFleetApply(hub, ctx) {
+        const key = "waveApply:" + hub
         if (this._busy.has(key)) return
         if (!ctx || !ctx.preset) return
         if (typeof window.AesFleetCommandBulkApply === "undefined"
@@ -5709,9 +5709,9 @@ class FleetHubCommandCenter {
             this._toast("error", "Bulk wave apply is not loaded on this page.")
             return
         }
-        const ok = window.confirm("Run a dry-run fleet apply for "
+        const ok = window.confirm("Apply fleet wave for "
             + (ctx.preset.name || "this wave preset") + " at " + hub
-            + "? This records a dry-run preview only; it does not submit AirlineSim schedule changes.")
+            + "? This submits AirlineSim schedule changes for every eligible aircraft in this hub.")
         if (!ok) return
         this._setBusy(key, true)
         this._scheduleRepaint()
@@ -5720,20 +5720,20 @@ class FleetHubCommandCenter {
                 tails:    this._hubRowsFor(hub),
                 presetId: ctx.preset.id,
                 ctx:      {server: this.server, airlineCode: this.airlineCode, hubIata: hub},
-                source:   "fleet-hub-waves",
-                dryRun:   true
+                source:   "fleet-hub-waves"
             })
             const blockers = result.blockers || []
             if (blockers.length) {
-                this._toast("warn", "Dry-run blocked: " + blockers.join("; "))
+                this._toast("warn", "Fleet apply blocked: " + blockers.join("; "))
             } else {
-                this._toast("info", "Dry-run ready: " + result.eligibleCount
-                    + " aircraft · " + ((result.preview && result.preview.flightCount) || 0) + " legs each.")
+                this._toast("info", "Fleet apply finished: "
+                    + (result.succeeded || result.totalSucceeded || 0) + " succeeded, "
+                    + (result.failed || result.totalFailed || 0) + " failed.")
             }
             return result
         } catch (err) {
-            console.warn("[AES Fleet CC] wave dry-run failed", err)
-            this._toast("error", "Dry-run failed: " + ((err && err.message) || String(err)))
+            console.warn("[AES Fleet CC] wave apply failed", err)
+            this._toast("error", "Fleet apply failed: " + ((err && err.message) || String(err)))
             return null
         } finally {
             this._setBusy(key, false)

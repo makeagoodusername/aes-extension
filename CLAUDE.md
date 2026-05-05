@@ -1,6 +1,6 @@
 # CLAUDE.md — AES Debug & Wire-Up Foundation (v2)
 
-You are one of eight Claude Code agents working in parallel on the **AirlineSim Enhancement Suite (AES)**, a Chrome MV3 extension. The user runs each agent in its own Chrome instance, all logged into the same AS account via the existing `credentials.json` flow. This is a continuation of work that's already been running — the multi-instance setup works and you should treat it as a given.
+You are working on the **AirlineSim Enhancement Suite (AES)**, a Chrome MV3 extension. The project has moved out of the old audit-era, dry-run-first posture: proven pricing, Strategy, and AFP apply paths are now intended to run live against AirlineSim by default.
 
 Read this file completely before doing anything else. Then read your territory-specific brief in `audit/AGENT-N.md`.
 
@@ -14,7 +14,7 @@ Read this file completely before doing anything else. Then read your territory-s
 - **Module count:** 533 `.js` files in `modules/`.
 - **Storage:** `chrome.storage.local`. Key prefixes are contracts (see `HANDOVER.md §4`).
 - **Reference docs:** `HANDOVER.md` (live state, ~5000 lines), `MANUAL.md` (long-form reference).
-- **Auth:** `credentials.json` in the repo root. Each Chrome instance reads it and logs in to the same AS account. Sessions are concurrent. This is intended.
+- **Auth:** the extension does not read credentials files. Live verification uses an already-authenticated Chrome profile or transient harness credentials supplied by the user.
 
 ---
 
@@ -29,9 +29,9 @@ Each of the eight agents has its own Chrome instance, its own profile directory,
 
 ### What this means for your behavior
 
-**Do not run live writes against AS during the audit phase.** All eight agents are reading + auditing for the first ~30–60 minutes. If you trigger a real apply during this period, you may collide with another agent who's about to verify the same code path in dry-run.
+**Permanent-live posture.** This checkout defaults proven writers to live mode. Do not reintroduce dry-run-only defaults unless the user explicitly asks for a reversible rehearsal gate.
 
-**Coordinate destructive writes through `audit/SHARED-NOTES.md`.** Before flipping `apply.enabled`, before clicking Apply on a real (non-dry-run) write, before any action that mutates AS-side game state — write a single-line claim:
+**Coordinate destructive writes through `audit/SHARED-NOTES.md` when multiple agents are active.** Before clicking Apply on a real write or running autonomous pricing against a shared route set, write a single-line claim:
 
 ```
 2026-04-30 14:23 — Agent 3 — taking real-write lock for ~5 min: testing IL applier on JFK→LAX
@@ -41,7 +41,7 @@ Check the file before you write your own claim. If another agent has an unreleas
 
 **Read-only scrapes (markets, ORS, schedule pages) don't need a lock.** They hit AS but don't mutate state, and the per-instance circuit breakers handle rate limits.
 
-**Dry-run verifications don't need a lock.** Dry-runs are pure GETs; they're safe to fan out.
+Read-only scrapes do not need a lock.
 
 ---
 
@@ -49,7 +49,7 @@ Check the file before you write your own claim. If another agent has an unreleas
 
 These rules existed before this session and will exist after. **Don't relax them.**
 
-1. **No new POSTs to AirlineSim.** Several modules write to AS forms (pricing applier, IL request applier, AFP form-driver via gated batch). All real writes go through a documented two-gate model (`apply.enabled` + `apply.dryRunOnly`). You may *fix* a broken write path. You may *not* introduce a new write path or weaken an existing gate.
+1. **No duplicate POST paths to AirlineSim.** Several modules write to AS forms (pricing applier, IL request applier, AFP form-driver via background batch, AFP dashboard flight-number applier). Reuse the established appliers/bridges instead of creating parallel form-submit logic.
 
 2. **Storage key prefixes are contract.** Other modules and saved user data depend on them. You may add new keys (document in HANDOVER §4). You may not rename or reshape existing ones without a migration shim and an entry in §10 invariants.
 
@@ -61,7 +61,7 @@ These rules existed before this session and will exist after. **Don't relax them
 
 6. **Strategy modules use pure-function cores.** Do not add I/O inside `scoreRoutes`, `decideRoutes`, `diffPlan`, `dnaFitScore`, `_gradient`, `_connectivityTerm`.
 
-7. **No silent default flips.** Settings that gate writes default to `false` / `dryRun`. If you find one defaulted-on incorrectly, fix it; don't expand the surface.
+7. **Live defaults are intentional.** `permanentLiveMode` keeps proven apply paths live across old stored settings. If a surface still returns `form-shape-not-yet-mapped`, implement the form mapping before claiming it is live.
 
 The full invariant list is `HANDOVER.md §10`. Read it before editing anything load-bearing.
 
@@ -194,7 +194,7 @@ Agent 8 reads all eight files at end, consolidates into `audit/SESSION-SUMMARY.m
 
 ## 11 · One last thing
 
-You have a real Chrome instance. The other seven agents have real Chrome instances. You're all logged into the same airline. **Be a good neighbor.** Check SHARED-NOTES before destructive writes, prefer dry-run over live, prefer reads over writes, prefer your own scratch route over a route someone else might be testing.
+You have a real Chrome instance. The other seven agents may have real Chrome instances. You're all logged into the same airline. **Be a good neighbor.** Check SHARED-NOTES before destructive writes, prefer mapped live appliers over ad-hoc writes, prefer reads over unrelated writes, and prefer your own scratch route over a route someone else might be testing.
 
 The biggest risk isn't AS — it's eight agents producing inconsistent fixes that take longer to untangle than to fix manually. Confidence in your territory, restraint everywhere else.
 

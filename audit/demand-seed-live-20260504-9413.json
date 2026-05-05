@@ -1,0 +1,24 @@
+{
+  "generatedAt": "2026-05-04T11:07:12.021Z",
+  "state": {
+    "startedAt": 1777892772011,
+    "updatedAt": 1777892831192,
+    "done": false,
+    "ok": false,
+    "progress": {
+      "phase": "seeding",
+      "total": 194,
+      "fetched": 55,
+      "airportsSeeded": 1384,
+      "failedCountries": [],
+      "currentCountryId": "43",
+      "currentCountryName": "Eritrea",
+      "activeCountries": [
+        "Eritrea"
+      ]
+    },
+    "result": null,
+    "error": null,
+    "completedAt": null
+  }
+}

@@ -11,23 +11,48 @@ class ScrapeOrchestratorEnumerators {
     /**
      * Hubs the airline operates at. Sources, in order:
      *   1. Distinct `aircraftFleet.fleet[].location` values (canonical).
-     *   2. RA settings `recentHubs` if no fleet record yet.
+     *   2. Distinct `aircraftFlights[].originIata/destinationIata` values.
+     *   3. RA settings `recentHubs` if no fleet/flight records yet.
      */
     static async enumerateHubs(server, airline) {
         const hubs = new Set()
 
         const all = await chrome.storage.local.get(null)
         const fleetSuffix = "aircraftFleet"
+        const fleetCandidates = []
         for (const k in all) {
             if (k.indexOf(server) !== 0) continue
             if (k.lastIndexOf(fleetSuffix) !== k.length - fleetSuffix.length) continue
             const rec = all[k]
             if (!rec || rec.type !== "aircraftFleet" || !Array.isArray(rec.fleet)) continue
-            // Disambiguate by airline if specified; fall back to the largest fleet.
-            if (airline && rec.airline && String(rec.airline) === String(airline)) {
+            fleetCandidates.push(rec)
+            if (!airline || ScrapeOrchestratorEnumerators._sameAirline(rec.airline, airline)) {
                 ScrapeOrchestratorEnumerators._collectHubsFromFleet(rec.fleet, hubs)
-            } else if (!airline) {
-                ScrapeOrchestratorEnumerators._collectHubsFromFleet(rec.fleet, hubs)
+            }
+        }
+
+        if (!hubs.size && fleetCandidates.length) {
+            const chosen = fleetCandidates.slice().sort((a, b) => b.fleet.length - a.fleet.length)[0]
+            ScrapeOrchestratorEnumerators._collectHubsFromFleet(chosen.fleet, hubs)
+        }
+
+        if (!hubs.size) {
+            const flightCandidates = []
+            for (const k in all) {
+                if (server && k.indexOf(server) !== 0) continue
+                if (k.indexOf("aircraftFlights") < 0) continue
+                const rec = all[k]
+                if (!rec || rec.type !== "aircraftFlights" || !Array.isArray(rec.flights)) continue
+                if (server && rec.server && String(rec.server) !== String(server)) continue
+                flightCandidates.push(rec)
+                if (!airline || ScrapeOrchestratorEnumerators._sameAirline(rec.airline, airline)) {
+                    ScrapeOrchestratorEnumerators._collectHubsFromFlights(rec.flights, hubs)
+                }
+            }
+            if (!hubs.size) {
+                for (const rec of flightCandidates) {
+                    ScrapeOrchestratorEnumerators._collectHubsFromFlights(rec.flights, hubs)
+                }
             }
         }
 
@@ -46,6 +71,26 @@ class ScrapeOrchestratorEnumerators {
             const loc = a.location || a.hub || a.station
             if (loc) set.add(String(loc).toUpperCase())
         }
+    }
+
+    static _collectHubsFromFlights(flights, set) {
+        for (const f of (flights || [])) {
+            if (!f) continue
+            const origin = f.originIata || f.origin || f.from
+            const dest = f.destinationIata || f.destIata || f.destination || f.to
+            if (origin) set.add(String(origin).toUpperCase())
+            if (dest) set.add(String(dest).toUpperCase())
+        }
+    }
+
+    static _sameAirline(a, b) {
+        const aa = ScrapeOrchestratorEnumerators._normaliseAirlineKey(a)
+        const bb = ScrapeOrchestratorEnumerators._normaliseAirlineKey(b)
+        return !!aa && aa === bb
+    }
+
+    static _normaliseAirlineKey(value) {
+        return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "")
     }
 
     /**

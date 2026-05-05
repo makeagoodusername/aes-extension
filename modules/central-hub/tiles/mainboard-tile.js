@@ -13,6 +13,7 @@
     const PHASES = [
         {id: "foundation",     label: "Foundation",             optional: false},
         {id: "per-hub",        label: "Per-hub scheduling",     optional: false},
+        {id: "demand-seed",    label: "Demand store seed",      optional: true},
         {id: "per-aircraft",   label: "Per-aircraft plan/logs", optional: false},
         {id: "per-route",      label: "Per-route markets",      optional: false},
         {id: "ors-rank",       label: "ORS rank refresh",       optional: false},
@@ -23,6 +24,7 @@
     const DEFAULT_CADENCE_MS = {
         "foundation":     2 * 60 * 60 * 1000,
         "per-hub":        6 * 60 * 60 * 1000,
+        "demand-seed":    30 * 24 * 60 * 60 * 1000,
         "per-aircraft":  12 * 60 * 60 * 1000,
         "per-route":     24 * 60 * 60 * 1000,
         "ors-rank":       4 * 60 * 60 * 1000,
@@ -34,6 +36,7 @@
         hubs:         {phase: "per-hub",      label: "Run per-hub scheduling"},
         routes:       {phase: "per-hub",      label: "Run per-hub scheduling"},
         schedule:     {phase: "per-hub",      label: "Run per-hub scheduling"},
+        demand:       {phase: "demand-seed",  label: "Run demand-store seed"},
         ors:          {phase: "ors-rank",     label: "Run ORS rank refresh"},
         markets:      {phase: "per-route",    label: "Run per-route markets"},
         fleet:        {phase: "foundation",   label: "Run foundation"},
@@ -60,6 +63,7 @@
             return [
                 "scrapeOrchestrator:",
                 "aesAutoDrive:",
+                "routeAssistant:demand:",
                 "routeAssistant:topRoutes",
                 "routeAssistant:ors:",
                 "routeAssistant:markets:",
@@ -308,6 +312,19 @@
                 owner: PHASE_OWNER.schedule
             }))
 
+            const demandCadence = this._phaseCadence(phases, "demand-seed")
+            const demandStats = this._demandFromStorage(storageAll, demandCadence, now)
+            rows.push(this._row({
+                label: "Demand store",
+                status: demandStats.count > 0
+                    ? (demandStats.stale > 0 ? "stale" : "fresh")
+                    : "optional",
+                detail: demandStats.count > 0
+                    ? demandStats.count + " airports cached · newest " + this._fmtAge(demandStats.newestAgeMs) + " old"
+                    : "Optional seed not run yet",
+                owner: PHASE_OWNER.demand
+            }))
+
             const orsCadence = this._phaseCadence(phases, "ors-rank")
             const orsStats = this._timestampStats(routes.map(x => x.route && x.route.orsScrapedAt), orsCadence, now)
             rows.push(this._row({
@@ -520,6 +537,23 @@
                 break
             }
             return out
+        }
+
+        _demandFromStorage(storageAll, maxAgeMs, now) {
+            const timestamps = []
+            for (const key of Object.keys(storageAll || {})) {
+                if (key.indexOf("routeAssistant:demand:") !== 0) continue
+                const rec = storageAll[key]
+                const ts = rec && (rec.scrapedAt || rec.updatedAt || rec.createdAt)
+                if (Number.isFinite(Number(ts)) && Number(ts) > 0) timestamps.push(Number(ts))
+            }
+            const stale = timestamps.filter(ts => now - ts >= maxAgeMs).length
+            const newest = timestamps.length ? Math.max.apply(null, timestamps) : null
+            return {
+                count: timestamps.length,
+                stale,
+                newestAgeMs: newest ? now - newest : Infinity
+            }
         }
 
         _parseServerDate(row) {

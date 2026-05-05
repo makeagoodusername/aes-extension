@@ -1,7 +1,7 @@
 "use strict"
 
 /**
- * AFP Dashboard — Schedule Control modal (Tier 1: dry-run preview only).
+ * AFP Dashboard — Schedule Control modal (live one-leg apply).
  *
  * Mounts as a fixed-position overlay on `/app/fleets*`. Opens via
  * FleetHubInlineTable's new D action chip (`aes-fleet-hub:action-d`).
@@ -11,12 +11,12 @@
  *   │ Preset: [picker ▾]   [Generate]                                    │
  *   │ Status: hub <IATA> · cands <N> · build <M legs>                    │
  *   │ ┌─ Build preview ──────────────────────────────────────────────┐  │
- *   │ │ → JFK → ATL · 09:00 · 100% · ___  [Dry-run]                  │  │
- *   │ │   ▸ POST body preview                                         │  │
- *   │ │ ← ATL → JFK · 14:00 · 100% · ___  [Dry-run]                  │  │
+ *   │ │ → JFK → ATL · 09:00 · 100% · ___  [Apply]                    │  │
+ *   │ │   ▸ POST body preview / receipt                               │  │
+ *   │ │ ← ATL → JFK · 14:00 · 100% · ___  [Apply]                    │  │
  *   │ └──────────────────────────────────────────────────────────────┘  │
  *   │ ▸ Recent applies (10)                                              │
- *   │ 🔒 Live submit gated to Tier 2 — dry-run only.                     │
+ *   │ Live submit enabled; each leg writes through AS's New Flight form. │
  *   └────────────────────────────────────────────────────────────────────┘
  *
  * Single-instance host: opening the panel for a different aircraft re-uses
@@ -82,7 +82,7 @@ class AesAfpDashboardPanel {
         this._schedule = schedule || null
 
         // Fetch the form context proactively — the user almost certainly
-        // wants to dry-run a leg, and the GET is the slowest step.
+        // wants to apply a leg, and the GET is the slowest step.
         if (this.proxyFetcher) {
             const r = await this.proxyFetcher.fetchAircraftFormContext(row.aircraftId)
             if (r.ok) this._formContext = r.formContext
@@ -433,11 +433,11 @@ class AesAfpDashboardPanel {
 
         const dryBtn = document.createElement("button")
         dryBtn.type = "button"
-        dryBtn.textContent = "Dry-run"
-        dryBtn.title = "Compose the AS POST body for this leg and append it to the audit log without sending."
-        dryBtn.style.cssText = "background:#0b1220;color:#cbd5e1;border:1px solid #374151;"
+        dryBtn.textContent = "Apply"
+        dryBtn.title = "Create this flight number in AirlineSim via the live New Flight form."
+        dryBtn.style.cssText = "background:#7f1d1d;color:#fee2e2;border:1px solid #ef4444;"
             + "border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;flex:0 0 auto;"
-        dryBtn.addEventListener("click", () => this._onDryRunLeg(flight, row))
+        dryBtn.addEventListener("click", () => this._onApplyLeg(flight, row))
         row.appendChild(dryBtn)
 
         return row
@@ -517,11 +517,9 @@ class AesAfpDashboardPanel {
         const wrap = document.createElement("div")
         wrap.style.cssText = "padding:8px 12px;border-top:1px solid #1f2937;color:#9ca3af;"
             + "font-size:11px;display:flex;align-items:center;gap:8px;background:#0b1220;"
-        wrap.innerHTML = "<span>🔒</span>"
-            + "<span><strong style=\"color:#cbd5e1;\">Tier 1 — dry-run only.</strong> "
-            + "<code style=\"color:#fbbf24;\">dryRunOnly=true</code> · "
-            + "<code style=\"color:#fbbf24;\">applyEnabled=false</code>. "
-            + "Live submit unlocks in Tier 2.</span>"
+        wrap.innerHTML = "<span>●</span>"
+            + "<span><strong style=\"color:#cbd5e1;\">Live submit enabled.</strong> "
+            + "Apply posts directly to AS and writes the receipt to the per-aircraft apply log.</span>"
         return wrap
     }
 
@@ -559,7 +557,7 @@ class AesAfpDashboardPanel {
         this._render({phase: "ready"})
     }
 
-    async _onDryRunLeg(flight, rowEl) {
+    async _onApplyLeg(flight, rowEl) {
         if (!this.applier || !this._formContext) return
         const leg = {
             origin:      flight.origin || (this._formContext.currentLocationIata || null),
@@ -568,10 +566,21 @@ class AesAfpDashboardPanel {
             pricePct:    100,
             service:     ""
         }
+        const ok = window.confirm("Create " + (leg.origin || "?") + " → "
+            + (leg.destination || "?") + " at " + (leg.depTime || "?")
+            + " on " + ((this._row && this._row.registration) || this._row.aircraftId)
+            + " in AirlineSim now?")
+        if (!ok) return
         const result = await this.applier.apply(this._row.aircraftId, leg, {
-            source:      "dashboard-dry-run",
+            source:      "dashboard-live",
             formContext: this._formContext
         })
+        if (result && result.ok && this.proxyFetcher) {
+            try {
+                const fresh = await this.proxyFetcher.fetchAircraftFormContext(this._row.aircraftId)
+                if (fresh && fresh.ok) this._formContext = fresh.formContext
+            } catch (_) { /* current form may expire; next open refetches */ }
+        }
         // Inline expander beneath the leg row so the user can see the body
         // without scrolling to the audit log.
         const old = rowEl.nextSibling && rowEl.nextSibling.dataset
@@ -584,7 +593,9 @@ class AesAfpDashboardPanel {
         expand.style.cssText = "padding:6px 12px 8px 24px;font-size:11px;"
             + "background:#0b1220;border-bottom:1px solid #1f2937;"
         const summary = document.createElement("div")
-        const statusColor = result.status === "dry-run" ? "#60a5fa"
+        const statusColor = result.status === "verified" ? "#10b981"
+            : result.status === "posted" ? "#fbbf24"
+            : result.status === "dry-run" ? "#60a5fa"
             : result.status === "aborted" ? "#fbbf24" : "#f87171"
         summary.innerHTML = "<span style=\"color:" + statusColor + ";font-weight:700;text-transform:uppercase;\">"
             + escapeHtml(result.status) + "</span>"

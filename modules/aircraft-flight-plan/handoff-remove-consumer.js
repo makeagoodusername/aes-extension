@@ -15,7 +15,7 @@
  *   - For moveRoute: same removeRoute handling, then enqueue an addRoute
  *     for `targetAircraftId` via AesHandoffQueue so the next page load
  *     resumes the move.
- *   - Live writer: when settings.aircraftFlightPlan.apply.enabled === true
+ *   - Live writer: when settings.aircraftFlightPlan.apply.enabled !== false
  *     AND settings.aircraftFlightPlan.apply.dryRunOnly !== true AND
  *     AesAfpAutoFlightDeleter is available with autoScheduler tier
  *     "apply-on-confirm", invoke deleter.start with the resolved flightIds.
@@ -26,8 +26,8 @@
  *      AesAfpAutoFlightDeleter pipeline.
  *   2. No new storage prefix. Reuses _shared:handoff:wave-designer (via
  *      AesHandoffStore.consume) and AesAfpAutoApplyLog.
- *   3. apply.enabled + apply.dryRunOnly default false → no live behaviour
- *      change without an explicit user opt-in.
+ *   3. Live defaults are enabled; missing settings fall back to the same
+ *      live apply shape used by AesAfpSettings.
  */
 ;(function () {
     if (typeof window === "undefined" || window.AesAfpHandoffRemoveConsumer) return
@@ -51,14 +51,16 @@
         try {
             const s = window.AesAfpSettings && typeof window.AesAfpSettings.cached === "function"
                 ? window.AesAfpSettings.cached() : null
-            return (s && s.aircraftFlightPlan) ? s.aircraftFlightPlan : null
+            if (s && s.aircraftFlightPlan) return s.aircraftFlightPlan
+            if (s && s.autoScheduler) return s
+            return {apply: {enabled: true, dryRunOnly: false}}
         } catch (_) { return null }
     }
 
     function _gatesAllowLive() {
         const s = _readSettings()
         if (!s || !s.apply) return false
-        return s.apply.enabled === true && s.apply.dryRunOnly !== true
+        return s.apply.enabled !== false && s.apply.dryRunOnly !== true
     }
 
     /** Find flight(s) on the current aircraft heading to `destIata`.

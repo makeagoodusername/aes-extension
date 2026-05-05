@@ -260,14 +260,15 @@ class RouteAssistantSettings {
                 lastBulkScrapeAt:   null,    // unix-ms; surfaces in the expander
                 priceMaxAgeDays:    null,    // null = never expire; set to N to re-scrape entries older than N days
 
-                // Tier 3 — apply / write-back configuration. Two gates have to
-                // be cleared for a real POST: `apply.enabled` (top-level kill
-                // switch) AND `apply.dryRunOnly === false`. Tier 3.1 ships
-                // with `apply.dryRunOnly = true` so the user can rehearse the
-                // full pipeline (preflight, body construction, apply log)
-                // without any AS-side effect. Tier 3.2 flips dryRunOnly's
-                // default to false; Tier 3.3 adds the silent-auto loop.
+                // Tier 3 — apply / write-back configuration. Live POST is the
+                // default for the proven pricing surfaces; dry-run is now an
+                // explicit operator override, not the shipped stance.
                 apply: {
+                    // User-requested permanent-live mode. When true, the
+                    // merge path below keeps every existing pricing write
+                    // scope live even if older storage still has dry-run
+                    // flags from the audit era.
+                    permanentLiveMode:      true,
                     enabled:               true,
                     dryRunOnly:            false,   // 3.2 default; user can re-enable via Settings → Auto-Pricing toggle
                     // Endpoint dispatch — "markets" (default) targets the
@@ -328,25 +329,22 @@ class RouteAssistantSettings {
                     refreshMaxAgeMinProjection:   5,
                     refreshMaxAgeMinApply:        1,
 
-                    // Tier 3.4 — narrow live-writes scope. When `enabled`
-                    // is true, ALL writes are unlocked unless one of these
-                    // flips back to false. Manual = single-route apply
-                    // modal, Bulk = multi-row bulk modal, SilentAuto = the
-                    // background loop. Keeping bulk + silent-auto disabled
-                    // by default lets the operator unlock manual writes
-                    // first, build trust, then expand scope per axis.
+                    // Tier 3.4 — live-writes scope. Manual = single-route
+                    // apply modal, Bulk = multi-row bulk modal, SilentAuto =
+                    // foreground/background loop, BulkRecommended = AS native
+                    // flightsPrices recommendation panel. Live-run builds keep
+                    // every existing pricing scope unlocked by default.
                     // Read at the panel call site, not by the applier:
                     // when a scope is locked, the call forces dryRun=true
                     // regardless of the top-level toggle.
                     liveScopes: {
                         manual:           true,
-                        bulk:             false,
-                        silentAuto:       false,
+                        bulk:             true,
+                        silentAuto:       true,
                         // Bulk-recommended apply scope used by the
-                        // flightsPrices?adjust=true page. Default false →
-                        // dry-run-only until the user explicitly opts in,
-                        // matching the bulk + silent-auto stance.
-                        bulkRecommended:  false
+                        // flightsPrices?adjust=true page. Live-run builds
+                        // keep this unlocked with bulk + silent-auto.
+                        bulkRecommended:  true
                     },
 
                     // Hard floor anchored to the AS-stated Minimum Price
@@ -401,15 +399,16 @@ class RouteAssistantSettings {
                 // applier (so the breaker spans manual + bulk + auto).
                 // Setting any cap to 0 disables that axis.
                 autonomyMode:       "off",   // off | suggest | oneClick | batch (legacy/unused — kept for forward-compat)
-                silentAutoEnabled:  false,   // top-level gate; flipping prompts the confirm modal when confirmedAt is null
-                silentAutoTickMin:      30,  // minutes between automatic ticks (clamped to [5, 240])
-                silentAutoMaxPerDay:    20,  // hard cap on successful silent-auto applies in any 24h window; 0 = disabled
-                silentAutoMaxPerHour:   5,   // hard cap in any 1h window; 0 = disabled
+                silentAutoEnabled:  true,    // permanent-live mode starts the foreground/dashboard auto-pricer
+                silentAutoTickMin:      1 / 12,  // legacy minutes field; background alarm clamps sub-minute values
+                silentAutoTickSec:      5,       // foreground tab cadence override; 5s target for automatic updates
+                silentAutoMaxPerDay:    0,   // 0 = cap disabled
+                silentAutoMaxPerHour:   0,   // 0 = cap disabled
                 silentAutoMinDeltaPct:  3,   // |Δ%| below this is skipped (proposer noise floor)
                 silentAutoMaxStepPct:   10,  // |Δ%| clamp — single biggest move per route per tick
                 silentAutoStrategy:     "per-class-elasticity",  // Y/C/F/Cargo demand-aware default; existing users keep their persisted setting via deep-merge
-                silentAutoFollowMode:   "watchlist",          // "watchlist" (★-only) | "all" (every eligible route)
-                silentAutoConfirmedAt:  null,                 // ms epoch; non-null skips the confirm modal on subsequent flips
+                silentAutoFollowMode:   "all",                // "watchlist" (★-only) | "all" (every eligible route)
+                silentAutoConfirmedAt:  1,                    // non-null skips the legacy confirm modal
                 silentAutoLastTickAt:   null,                 // ms epoch — last tick run; surfaces in the panel sub-block
                 silentAutoLastTickResult: null,               // {ranAt, eligible, proposed, applied, capped, blocked, skipped, error?}
                 silentAutoMutedUntil:   null,                 // ms epoch; while non-null and in the future, ticks no-op (auto-disable on N consecutive errors)
@@ -796,6 +795,27 @@ class RouteAssistantSettings {
             defApply.defaultScope || {},
             bApply.defaultScope   || {}
         )
+        out.apply.liveScopes = Object.assign(
+            {},
+            defApply.liveScopes || {},
+            bApply.liveScopes   || {}
+        )
+        if (out.apply.permanentLiveMode !== false) {
+            out.apply.permanentLiveMode = true
+            out.apply.enabled = true
+            out.apply.dryRunOnly = false
+            out.apply.liveScopes = Object.assign({}, out.apply.liveScopes || {}, {
+                manual: true,
+                bulk: true,
+                silentAuto: true,
+                bulkRecommended: true
+            })
+            out.silentAutoEnabled = true
+            out.silentAutoFollowMode = "all"
+            if (!out.silentAutoConfirmedAt) out.silentAutoConfirmedAt = 1
+        }
+        out.silentAutoTickSec = RouteAssistantSettings._normaliseSilentAutoTickSec(def, b)
+        out.silentAutoTickMin = out.silentAutoTickSec / 60
         // Per-class proposer maps — deep-merge so a saved partial like
         // {Cargo: false} doesn't wipe the Y/C/F defaults. Same pattern
         // as serviceProfiles.classYieldMult / classCostPerPax above.
@@ -823,6 +843,26 @@ class RouteAssistantSettings {
             v => typeof v === "number" && isFinite(v) && v >= 0
         )
         return out
+    }
+
+    static _normaliseSilentAutoTickSec(defaults, block) {
+        const def = defaults || {}
+        const b = block || {}
+        let seconds = null
+        if (typeof b.silentAutoTickSec === "number" && isFinite(b.silentAutoTickSec)) {
+            seconds = b.silentAutoTickSec
+        } else if (typeof b.silentAutoTickMin === "number" && isFinite(b.silentAutoTickMin)) {
+            // Legacy saves stored minutes. Preserve that cadence for
+            // already-configured profiles instead of silently migrating
+            // them to the new 5s default.
+            seconds = b.silentAutoTickMin * 60
+        } else if (typeof def.silentAutoTickSec === "number" && isFinite(def.silentAutoTickSec)) {
+            seconds = def.silentAutoTickSec
+        } else if (typeof def.silentAutoTickMin === "number" && isFinite(def.silentAutoTickMin)) {
+            seconds = def.silentAutoTickMin * 60
+        }
+        if (!isFinite(seconds) || seconds <= 0) seconds = 5
+        return Math.max(5, Math.min(14400, Number(seconds)))
     }
 
     /**

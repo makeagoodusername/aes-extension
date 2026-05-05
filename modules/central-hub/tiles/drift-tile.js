@@ -5,9 +5,8 @@
  *
  * One row per scenario whose CUSUM detector is currently in `drifted=true`,
  * plus a recent-history list of resolved proposals. Each row shows the
- * residual sparkline + polarity badge + Accept/Dismiss buttons. Accept
- * routes through threshold-store with `dryRunOnly:true` by default per
- * §4.18; user must flip the per-scenario gate explicitly to apply live.
+ * residual sparkline + polarity badge + Apply button. Permanent-live
+ * builds write drift proposals straight to the threshold overlay.
  *
  * Refresh triggers:
  *   - on `signal:conductor:drift` bus event
@@ -123,7 +122,7 @@
 
         async _liveEnabled(host) {
             const blob = await this._read(this._gateKey(host), {})
-            return !!(blob && blob.liveApplyEnabled)
+            return !(blob && blob.liveApplyEnabled === false)
         }
 
         async _setLiveEnabled(host, value) {
@@ -197,8 +196,8 @@
             const foot = document.createElement("div")
             foot.style.cssText = "margin-top:8px;font-size:10px;color:" + (T && T.color.slate || "#94a3b8") + ";line-height:1.4"
             foot.textContent = this._cache.liveEnabled
-                ? "Live overlay ENABLED for this airline. Live applies write to aesConductor:thresholds; scenarios fire at the overlay value on next tick."
-                : "Apply gate is dry-run by default. Click 'Apply (live)' to enable per-airline live overlay (one-time confirm)."
+                ? "Permanent-live overlay is enabled. Apply writes to aesConductor:thresholds; scenarios fire at the overlay value on next tick."
+                : "Live overlay was disabled in storage. Apply will re-enable it and write the proposed threshold."
             hostEl.appendChild(foot)
         }
 
@@ -239,52 +238,20 @@
             delta.textContent = (p.current != null ? p.current : "—") + " → " + (p.proposed != null ? p.proposed : "—")
             row.appendChild(delta)
 
-            const dryBtn = document.createElement("button")
-            dryBtn.type = "button"
-            dryBtn.textContent = p.accepted ? "Previewed" : "Apply (dry-run)"
-            dryBtn.disabled = !!p.accepted
-            dryBtn.style.cssText = "background:transparent;border:1px solid " + (T && T.color.slate || "rgba(148,163,184,0.35)")
-                + ";color:" + (T && T.color.text || "#e2e8f0")
-                + ";padding:2px 8px;border-radius:3px;font-size:10.5px;cursor:" + (p.accepted ? "default" : "pointer")
-            dryBtn.addEventListener("click", async () => {
-                if (p.accepted) return
-                const host = _resolveHost()
-                const ts = window.AesConductorThresholdStore
-                if (!host || !ts) return
-                await ts.apply(host, p.scenarioId, p.key, p.proposed,
-                               {enabled: false, dryRun: true, source: "drift"})
-                p.accepted = true
-                this._cache = null
-                this.refresh && this.refresh()
-            })
-            row.appendChild(dryBtn)
-
             const liveBtn = document.createElement("button")
             liveBtn.type = "button"
-            liveBtn.textContent = p.appliedLive ? "Live ✓" : "Apply (live)"
+            liveBtn.textContent = p.appliedLive ? "Applied" : "Apply"
             liveBtn.disabled = !!p.appliedLive
             liveBtn.style.cssText = "background:transparent;border:1px solid " + (p.appliedLive ? "#34d399" : "#f97316")
                 + ";color:" + (p.appliedLive ? "#34d399" : "#f97316")
-                + ";padding:2px 8px;border-radius:3px;font-size:10.5px;margin-left:4px;cursor:" + (p.appliedLive ? "default" : "pointer")
+                + ";padding:2px 8px;border-radius:3px;font-size:10.5px;cursor:" + (p.appliedLive ? "default" : "pointer")
             liveBtn.title = "Writes the proposed threshold to the overlay; scenarios fire at the new value on the next tick."
             liveBtn.addEventListener("click", async () => {
                 if (p.appliedLive) return
                 const host = _resolveHost()
                 const ts = window.AesConductorThresholdStore
                 if (!host || !ts) return
-                let enabled = await this._liveEnabled(host)
-                if (!enabled) {
-                    const ok = window.confirm(
-                        "Enable LIVE threshold overlays for " + host.server + "/" + (host.airline || "(global)") + "?\n\n"
-                        + "Future drift proposals on this airline will write to aesConductor:thresholds; "
-                        + "scenarios will fire at the overlay values until cleared. Reversible: clear the per-airline "
-                        + "blob in DevTools storage to revert.\n\n"
-                        + "First proposal applied: " + p.scenarioId + "." + p.key + " = " + p.proposed
-                    )
-                    if (!ok) return
-                    await this._setLiveEnabled(host, true)
-                    enabled = true
-                }
+                await this._setLiveEnabled(host, true)
                 await ts.apply(host, p.scenarioId, p.key, p.proposed,
                                {enabled: true, dryRun: false, source: "drift-live"})
                 p.appliedLive = true

@@ -78,7 +78,7 @@
                 + '  <h3 class="aes-fp-panel-title">AES recommendations</h3>'
                 + '  <p class="aes-fp-blurb">Live per-route, per-class price recommendations from the AES strategy formula. '
                 +     'Select the rows you want to change and click <strong>Apply</strong> — each apply runs through the existing '
-                +     'per-route applier (gated by your Auto-Pricing settings; bulk-recommended scope defaults to dry-run).</p>'
+                +     'per-route applier (gated by your Auto-Pricing settings; bulk-recommended scope defaults live).</p>'
                 + '  <div class="aes-fp-summary"></div>'
                 + '  <div class="aes-fp-actions">'
                 + '    <button type="button" class="btn btn-default aes-fp-refresh" title="Re-read storage caches and rebuild the strategy snapshot">↻ Refresh</button>'
@@ -274,8 +274,8 @@
             const apply = (this.settings && this.settings.routeAssistant
                 && this.settings.routeAssistant.pricing
                 && this.settings.routeAssistant.pricing.apply) || {};
-            const liveScopes = apply.liveScopes || {};
-            const dryRun = apply.dryRunOnly === true || apply.enabled === false || liveScopes.bulkRecommended !== true;
+            const liveScopes = Object.assign({bulkRecommended: true}, apply.liveScopes || {});
+            const dryRun = apply.dryRunOnly === true || apply.enabled === false || liveScopes.bulkRecommended === false;
             const chips = [];
             chips.push('<span class="aes-fp-stat">'
                 + totalRoutes + ' routes · ' + totalRows + ' class rows · ' + selected + ' selected'
@@ -283,7 +283,7 @@
                 + (stale ? ' · <span class="muted">' + stale + '/' + inScope + ' missing flight-info</span>' : '')
                 + '</span>');
             chips.push('<span class="aes-fp-mode ' + (dryRun ? 'muted' : 'good') + '">'
-                + (dryRun ? '⏸ Dry-run (set liveScopes.bulkRecommended=true to write live)'
+                + (dryRun ? '⏸ Dry-run (bulkRecommended scope is disabled)'
                           : '⚡ Live writes enabled')
                 + '</span>');
             if (this._lastDiagnostics.strategyAvailable === false) {
@@ -334,9 +334,9 @@
             const apply = (this.settings && this.settings.routeAssistant
                 && this.settings.routeAssistant.pricing
                 && this.settings.routeAssistant.pricing.apply) || {};
-            const liveScopes = apply.liveScopes || {};
+            const liveScopes = Object.assign({bulkRecommended: true}, apply.liveScopes || {});
             const dryRun = apply.dryRunOnly === true || apply.enabled === false
-                || liveScopes.bulkRecommended !== true;
+                || liveScopes.bulkRecommended === false;
             if (!dryRun) {
                 const confirmed = await this._confirmLiveWrites(selectedRows);
                 if (!confirmed) {
@@ -389,7 +389,7 @@
                     + '<div class="aes-fp-confirm-modal" role="dialog" aria-modal="true">'
                     + '  <h4>Apply live ticket-price changes?</h4>'
                     + '  <p>This will POST to AirlineSim per route — real money in-game. The'
-                    +    ' two-gate model (apply.enabled + liveScopes.bulkRecommended) has cleared.</p>'
+                    +    ' live gate (apply.enabled + bulkRecommended scope) has cleared.</p>'
                     + '  <ul>'
                     + '    <li><strong>' + pairs.size + '</strong> route' + (pairs.size === 1 ? '' : 's')
                     +      ' — <strong>' + selectedRows.length + '</strong> class change'

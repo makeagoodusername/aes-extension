@@ -5,20 +5,19 @@
  *
  * Mirrors the Slice 19 marketing-budget-applier shape: ships a stub
  * surface so the tuner / panel can route decisions through the right
- * function name, but the actual POST path is `dryRunOnly` until the AS
- * bid form shape is mapped against a live sample. The two-gate model
- * is enforced through `AesStrategySettings.canApply(s, "slotBid")`,
- * which returns true only when both the master tier gate and the
- * `slotBidApplyEnabled` flag are set by the user.
+ * function name, but the actual POST path is unavailable until the AS
+ * bid form shape is mapped against a live sample. Permanent-live builds
+ * do not mark these as successful dry-runs; they fail closed until the
+ * form mapping exists.
  *
  * Public API (window.AesSlotBidder):
- *   apply({server, iata, bidAmount, slotId, dryRun?}) → Promise<ApplyReport>
+ *   apply({server, iata, bidAmount, slotId}) → Promise<ApplyReport>
  *
  * ApplyReport: {ok, dryRun, reason?, recordId?}
  *
- * The applier always logs the attempt to `aesStrategy:slots:bids` via
- * `AesSlotStore.recordBid` regardless of dryRun, so the change-log can
- * surface every queued bid even before the POST path is live.
+ * The applier always logs the attempted live bid to
+ * `aesStrategy:slots:bids` via `AesSlotStore.recordBid`, so the
+ * change-log can surface every blocked bid while the POST path is mapped.
  */
 ;(function () {
     if (typeof window === "undefined") return
@@ -30,18 +29,16 @@
         const iata       = req.iata
         const slotId     = req.slotId
         const bidAmount  = Number(req.bidAmount)
-        const explicitDryRun = (req.dryRun === true || req.dryRun === false) ? req.dryRun : null
 
         if (!server || !iata)             return _fail("missing-server-or-iata")
         if (!isFinite(bidAmount) || bidAmount <= 0) return _fail("invalid-bid-amount")
 
         const settings = await _loadSettings()
         const allowed  = _canApply(settings)
-        const dryRun   = explicitDryRun != null ? explicitDryRun : !allowed
 
-        await _logBid({server, iata, slotId, bidAmount, dryRun, allowed})
+        await _logBid({server, iata, slotId, bidAmount, dryRun: false, allowed})
 
-        if (dryRun) return {ok: true, dryRun: true, reason: "dry-run-stub"}
+        if (!allowed) return _fail("apply-disabled")
 
         // Live POST path is deliberately not implemented in v1 — the AS
         // bid form shape needs to be mapped against a real sample first.
@@ -76,7 +73,7 @@
         catch (_) { return null }
     }
 
-    function _fail(reason) { return {ok: false, dryRun: true, reason: reason} }
+    function _fail(reason) { return {ok: false, dryRun: false, reason: reason} }
 
     window.AesSlotBidder = {apply}
 })()

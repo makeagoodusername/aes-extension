@@ -9,20 +9,9 @@
  * — Wicket page-version IDs invalidate per interaction, so every apply
  * does its own fresh handshake and never reuses a session across calls.
  *
- * Slicing — this file ships in three increments:
- *   - **Tier 3.1 (this slice)** — foundation + dry-run only. `apply()`
- *     accepts `opts.dryRun`; the default is governed by `dryRunOnly` /
- *     `applyEnabled` settings. When dryRun=true the applier walks the
- *     full pipeline (preflight → fetch handshake → buildBody) but
- *     SKIPS the actual POST and writes a `dry-run` log entry instead.
- *     Settings.applyEnabled is OFF by default; flipping it doesn't yet
- *     enable writes because `dryRunOnly` is also true. Both gates have
- *     to be cleared for Tier 3.2.
- *   - **Tier 3.2 (next session)** — flips `dryRunOnly` to false, wires
- *     real POST + `verify()` post-write check + `_undoableSave` Undo
- *     restoration. Per-route + global cooldown enforced.
- *   - **Tier 3.3 (next session)** — bulk apply modal Apply CTA enabled
- *     + silent-auto loop behind `silentAutoEnabled` with hard caps.
+ * Current behavior: live POST is the default for every proven pricing scope
+ * unless the caller explicitly sets `dryRunOnly:true`, `applyEnabled:false`,
+ * `opts.dryRun:true`, or disables that scope in `liveScopes`.
  *
  * Storage of per-apply records is in pricing-apply-log.js. This file
  * stays focused on the network handshake + parsing + body construction.
@@ -154,9 +143,8 @@ class RouteAssistantPricingApplier {
      * @param {boolean} [opts.dryRunOnly=false]  — hard gate; when true, apply()
      *   never POSTs even if `dryRun` arg is false. Route Assistant settings
      *   pass their current `pricing.apply.dryRunOnly` value here.
-     * @param {boolean} [opts.applyEnabled=true] — secondary gate. The user
-     *   has to flip this on AND `dryRunOnly` has to be off before any
-     *   real write happens. Belt-and-braces.
+     * @param {boolean} [opts.applyEnabled=true] — secondary gate. Set false
+     *   to block live writes from this instance.
      * @param {object} [opts.liveScopes] — per-source live-write permissions
      *   from settings.routeAssistant.pricing.apply.liveScopes.
      * @param {number} [opts.cooldownMinPerRoute=60] — minutes; preflight
@@ -174,11 +162,12 @@ class RouteAssistantPricingApplier {
         if (!server) throw new Error("RouteAssistantPricingApplier: server required")
         opts = opts || {}
         this.server = server
-        this.dryRunOnly         = opts.dryRunOnly !== false
-        this.applyEnabled       = opts.applyEnabled === true
-        this.liveScopes         = (opts.liveScopes && typeof opts.liveScopes === "object")
-            ? Object.assign({}, opts.liveScopes)
-            : {}
+        this.dryRunOnly         = opts.dryRunOnly === true
+        this.applyEnabled       = opts.applyEnabled !== false
+        this.liveScopes         = Object.assign(
+            {manual: true, bulk: true, silentAuto: true, bulkRecommended: true},
+            (opts.liveScopes && typeof opts.liveScopes === "object") ? opts.liveScopes : {}
+        )
         this.cooldownMinPerRoute = isFinite(opts.cooldownMinPerRoute) ? Math.max(0, opts.cooldownMinPerRoute) : 60
         this.cooldownMinGlobal   = isFinite(opts.cooldownMinGlobal)   ? Math.max(0, opts.cooldownMinGlobal)   : 5
         this.warnAboveDeltaPct  = isFinite(opts.warnAboveDeltaPct) ? Math.max(0, opts.warnAboveDeltaPct) : 5
@@ -1037,9 +1026,18 @@ class RouteAssistantPricingApplier {
         }
         const src = apply && typeof apply === "object" ? apply : {}
         const enabled = src.enabled !== false
-        const dryRunOnly = src.dryRunOnly !== false
-        const liveScopes = src.liveScopes && typeof src.liveScopes === "object" ? src.liveScopes : {}
-        const scopeLiveAllowed = scopeName ? liveScopes[scopeName] === true : true
+        const dryRunOnly = src.permanentLiveMode === true ? false : src.dryRunOnly === true
+        const liveScopes = Object.assign(
+            {manual: true, bulk: true, silentAuto: true, bulkRecommended: true},
+            src.liveScopes && typeof src.liveScopes === "object" ? src.liveScopes : {}
+        )
+        if (src.permanentLiveMode === true) {
+            liveScopes.manual = true
+            liveScopes.bulk = true
+            liveScopes.silentAuto = true
+            liveScopes.bulkRecommended = true
+        }
+        const scopeLiveAllowed = scopeName ? liveScopes[scopeName] !== false : true
         const forcedDryRun = !!(opts && opts.forceDryRun)
         const dryRun = forcedDryRun || dryRunOnly || !enabled || !scopeLiveAllowed
         return {

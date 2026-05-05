@@ -33,7 +33,8 @@
  *
  * Candidate shape:
  *   {originIata, destIata, destName, distanceKm, distanceNm, paxScore, cargoScore,
- *    weeklyFlights, seatsPerWeek, airlineCount,
+ *    weeklyFlights, seatsPerWeek, airlineCount, liveWeeklyFlights, liveDeparture,
+ *    liveAircraftType,
  *    fits: "fit"|"tight"|"oor"|"unknown", scoreBlend, alreadyScheduled, notes,
  *    score (alias of scoreBlend), aircraftFit ("optimal"|"falloff"|"oor"|null)}
  *
@@ -58,6 +59,8 @@
         {key: "paxScore",      label: "Pax",   natural: "desc"},
         {key: "cargoScore",    label: "Cargo", natural: "desc"},
         {key: "weeklyFlights", label: "Wkly",  natural: "desc"},
+        {key: "liveWeeklyFlights", label: "AS/w", natural: "desc"},
+        {key: "liveDepartureMin",  label: "AS dep", natural: "asc"},
         {key: "airlineCount",  label: "Air",   natural: "asc"},
         {key: "sizeOrder",     label: "Size",  natural: "desc"},
         {key: "fuelKgRT",      label: "Fuel",  natural: "asc"},
@@ -129,8 +132,9 @@
                 ? await FlightsFromStore.loadAirport(originIata)
                 : null
             this._lastFfData = ffData
-            let routes = (ffData && Array.isArray(ffData.routes)) ? ffData.routes : []
-            if (!routes.length) routes = await this._loadCachedRouteRows(originIata)
+            const ffRoutes = (ffData && Array.isArray(ffData.routes)) ? ffData.routes : []
+            const cachedRoutes = await this._loadCachedRouteRows(originIata)
+            const routes = this._mergeRouteRows(ffRoutes, cachedRoutes)
             if (!routes.length) { this.last = []; return [] }
 
             const iatas = routes.map(r => String(r.destIata || "").toUpperCase()).filter(Boolean)
@@ -173,6 +177,22 @@
                 } catch (e) { /* non-fatal */ }
             }
 
+            // Cache-only live AS schedule data scraped by the Route Assistant
+            // from /app/com/scheduling/<HUB><DEST>. FlightsFrom remains the
+            // demand/frequency source; these fields tell the route builder
+            // what the in-game route already flies today.
+            let scheduleMap = null
+            if (typeof RouteAssistantSchedulePageScraper !== "undefined"
+                    && typeof RouteAssistantSchedulePageScraper.bulkLoadCache === "function") {
+                try {
+                    const pairs = iatas.map(d => ({hub: originIata, dest: d}))
+                    const cfg = settings && settings.pricing || {}
+                    const maxAgeDays = cfg.priceMaxAgeDays
+                    scheduleMap = await RouteAssistantSchedulePageScraper.bulkLoadCache(
+                        pairs, {maxAgeDays: maxAgeDays})
+                } catch (e) { /* non-fatal */ }
+            }
+
             // Cache-only airport metadata (size / runway / noise / curfew /
             // station turnaround) keyed by airportId. Resolved via the demand
             // store which already carries airportId per IATA. Missing entries
@@ -199,6 +219,7 @@
             }
             this._iataToAirportId = iataToAirportId
             this._lastAirportMeta = airportMetaMap
+            this._lastScheduleMap = scheduleMap
 
             // Watchlist set (defensive — chip stays inert when store missing).
             this._watchlistKeys = null
@@ -218,7 +239,7 @@
                 : null
             const rows = routes.map(r => this._buildRow(r, originIata, demandMap, distMap,
                 rangeNm, scheduled, alphaMap, burn, airportMetaMap, iataToAirportId,
-                cruiseKmh, ffDemandContext))
+                cruiseKmh, ffDemandContext, scheduleMap))
             this._stampDepartureSuggestions(rows, (opts && opts.scheduleLegs) || [], originIata)
 
             const scoringCfg = (settings && settings.scoring) || {}
@@ -245,6 +266,77 @@
          * from AS pages: top-routes blobs, ticket-price / pricing records,
          * watchlist entries, and legacy routeAnalysis snapshots.
          */
+        _mergeRouteRows(ffRoutes, cachedRows) {
+            const byDest = new Map()
+            const order = []
+
+            const addSource = (row, source) => {
+                const s = String(source || "").trim()
+                if (!s) return
+                row._sources = Array.isArray(row._sources) ? row._sources : []
+                if (row._sources.indexOf(s) === -1) row._sources.push(s)
+                row._fallbackSources = row._sources.join(" + ")
+            }
+            const demandPriority = (row) => {
+                const src = String(row && (row.source || row.demandSource || row._fallbackSources) || "").toLowerCase()
+                if (src.indexOf("flightsfrom") >= 0) return 1
+                if (src.indexOf("route-assistant") >= 0
+                        || src.indexOf("top routes") >= 0
+                        || src.indexOf("cached top routes") >= 0
+                        || src.indexOf("demand") >= 0
+                        || src.indexOf("route analysis") >= 0) return 3
+                if (src.indexOf("ticket-price") >= 0 && Number(row && row.weeklyFlights) > 0) return 2
+                return 1
+            }
+            const mergeField = (dst, src, field) => {
+                if (dst[field] !== null && dst[field] !== undefined && dst[field] !== "") return
+                if (src[field] !== null && src[field] !== undefined && src[field] !== "") dst[field] = src[field]
+            }
+            const add = (raw, source, primary) => {
+                const dest = String(raw && (raw.destIata || raw.dest || raw.destination || raw.iata) || "").toUpperCase()
+                if (!/^[A-Z]{3}$/.test(dest)) return
+                const row = Object.assign({}, raw, {destIata: dest})
+                const priority = primary ? 1 : demandPriority(row)
+                const cur = byDest.get(dest)
+                if (!cur) {
+                    row._demandPriority = priority
+                    addSource(row, source || row.source || row.demandSource || "route intel")
+                    byDest.set(dest, row)
+                    order.push(dest)
+                    return
+                }
+
+                addSource(cur, source || row.source || row.demandSource || "route intel")
+                for (const field of [
+                    "destName", "name", "distanceKm", "distanceNm", "weeklyFlights",
+                    "seatsPerWeek", "airlineCount", "suggestedDepTime", "status",
+                    "liveDeparture", "liveAircraftType", "liveAircraftReg",
+                    "liveAircraftTypeId", "liveCruiseSpeed", "liveScrapedAt",
+                    "liveWeeklyFlights", "liveDaysPerWeek"
+                ]) mergeField(cur, row, field)
+                if (!Array.isArray(cur.liveDailyFlights) && Array.isArray(row.liveDailyFlights)) {
+                    cur.liveDailyFlights = row.liveDailyFlights.slice()
+                }
+
+                const demandFields = ["paxScore", "cargoScore", "score", "scoreBlend", "demandSource", "demandBasis"]
+                if (priority > (cur._demandPriority || 0)) {
+                    for (const field of demandFields) {
+                        if (row[field] !== null && row[field] !== undefined && row[field] !== "") cur[field] = row[field]
+                    }
+                    cur._demandPriority = priority
+                } else {
+                    for (const field of demandFields) mergeField(cur, row, field)
+                }
+            }
+
+            for (const r of (Array.isArray(ffRoutes) ? ffRoutes : [])) add(r, "FlightsFrom cache", true)
+            for (const r of (Array.isArray(cachedRows) ? cachedRows : [])) {
+                add(r, r && (r.source || r.demandSource || r._fallbackSources) || "cached route intel", false)
+            }
+
+            return order.map(dest => byDest.get(dest)).filter(Boolean)
+        },
+
         async _loadCachedRouteRows(originIata) {
             if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) return []
             const hub = String(originIata || "").toUpperCase()
@@ -346,6 +438,14 @@
             if (rec.distanceKm != null) fields.distanceKm = Number(rec.distanceKm)
             if (rec.weeklyFlights != null) fields.weeklyFlights = Number(rec.weeklyFlights)
             if (rec.departureTime) fields.suggestedDepTime = String(rec.departureTime)
+            if (rec.departureTime) fields.liveDeparture = String(rec.departureTime)
+            if (rec.primaryAircraftType) fields.liveAircraftType = rec.primaryAircraftType
+            if (rec.primaryAircraftReg) fields.liveAircraftReg = rec.primaryAircraftReg
+            if (rec.primaryAircraftTypeId != null) fields.liveAircraftTypeId = rec.primaryAircraftTypeId
+            if (rec.cruiseSpeedKmh != null) fields.liveCruiseSpeed = Number(rec.cruiseSpeedKmh)
+            if (rec.daysPerWeek != null) fields.liveDaysPerWeek = Number(rec.daysPerWeek)
+            if (Array.isArray(rec.dailyFlights)) fields.liveDailyFlights = rec.dailyFlights.slice(0, 7)
+            if (rec.weeklyFlights != null) fields.liveWeeklyFlights = Number(rec.weeklyFlights)
 
             if (/ticketPrice/.test(key)) {
                 fields.source = "ticket-price cache"
@@ -496,17 +596,36 @@
         },
 
         _buildRow(r, originIata, demandMap, distMap, rangeNm, scheduled, alphaMap, burn,
-                  airportMetaMap, iataToAirportId, cruiseKmh, ffDemandContext) {
+                  airportMetaMap, iataToAirportId, cruiseKmh, ffDemandContext, scheduleMap) {
             const destIata = String(r.destIata || "").toUpperCase()
             const demand   = demandMap && demandMap.get(destIata)
+            const schedulePairKey = (typeof RouteAssistantSchedulePageScraper !== "undefined"
+                    && typeof RouteAssistantSchedulePageScraper._pairKey === "function")
+                ? RouteAssistantSchedulePageScraper._pairKey(originIata, destIata)
+                : (originIata + "-" + destIata)
+            const scheduleRec = scheduleMap && scheduleMap.get(schedulePairKey)
+            const liveWeeklyFlights = this._liveWeeklyFlights(r, scheduleRec)
+            const liveDailyFlights = this._liveDailyFlights(r, scheduleRec)
+            const liveDeparture = this._liveDeparture(r, scheduleRec)
+            const liveDepartureMin = this._hhmmToMin(liveDeparture)
+            const liveAircraftType = scheduleRec && scheduleRec.primaryAircraftType || r.liveAircraftType || null
+            const liveAircraftReg = scheduleRec && scheduleRec.primaryAircraftReg || r.liveAircraftReg || null
+            const liveAircraftTypeId = scheduleRec && scheduleRec.primaryAircraftTypeId || r.liveAircraftTypeId || null
+            const liveCruiseSpeed = scheduleRec && scheduleRec.cruiseSpeedKmh || r.liveCruiseSpeed || null
+            const liveScrapedAt = scheduleRec && scheduleRec.scrapedAt || r.liveScrapedAt || null
+            const liveDaysPerWeek = scheduleRec && scheduleRec.daysPerWeek != null
+                ? scheduleRec.daysPerWeek
+                : (r.liveDaysPerWeek != null ? r.liveDaysPerWeek
+                    : (Array.isArray(liveDailyFlights) ? liveDailyFlights.filter(n => Number(n) > 0).length : null))
             const hasPaxDemand = demand && demand.paxScore !== null && demand.paxScore !== undefined
                 && isFinite(Number(demand.paxScore))
+            const hasRowPaxDemand = r && r.paxScore !== null && r.paxScore !== undefined
+                && isFinite(Number(r.paxScore))
             const ffDemand = (!hasPaxDemand && ffDemandContext
+                    && !hasRowPaxDemand
                     && typeof FlightsFromStore.demandForRoute === "function")
                 ? FlightsFromStore.demandForRoute(r, ffDemandContext)
                 : null
-            const hasRowPaxDemand = r && r.paxScore !== null && r.paxScore !== undefined
-                && isFinite(Number(r.paxScore))
             let distanceKm = (typeof r.distanceKm === "number" && isFinite(r.distanceKm))
                 ? r.distanceKm : null
             if (distanceKm == null && distMap) {
@@ -555,9 +674,16 @@
             if (fits === "tight")   notes.push("Tight fit — within 5% of range")
             if (fits === "unknown") notes.push("Distance unresolved")
             if (alreadyScheduled)   notes.push("Already scheduled")
+            if (liveWeeklyFlights != null) {
+                notes.push("In-game schedule: " + liveWeeklyFlights + "/wk"
+                    + (liveDeparture ? " at " + liveDeparture : "")
+                    + (liveAircraftType ? " on " + liveAircraftType : ""))
+            }
             if (!hasPaxDemand && ffDemand) notes.push("Demand inferred from FlightsFrom frequency")
             else if (!hasPaxDemand && hasRowPaxDemand) {
-                notes.push(r.demandBasis || "Demand inferred from cached route intel")
+                notes.push(r.demandSource === "flightsfrom"
+                    ? "Demand inferred from FlightsFrom frequency"
+                    : (r.demandBasis || "Demand inferred from cached route intel"))
             } else if (!hasPaxDemand)        notes.push("No demand cached")
 
             // Round-trip fuel burn = (cycleL × 2) + perKmL × distanceKm × 2.
@@ -591,6 +717,16 @@
                 weeklyFlights:   typeof r.weeklyFlights === "number" ? r.weeklyFlights : null,
                 seatsPerWeek:    typeof r.seatsPerWeek    === "number" ? r.seatsPerWeek  : null,
                 airlineCount:    Array.isArray(r.airlines) ? r.airlines.length : null,
+                liveWeeklyFlights: liveWeeklyFlights,
+                liveDailyFlights:  liveDailyFlights,
+                liveDaysPerWeek:   liveDaysPerWeek,
+                liveDeparture:     liveDeparture,
+                liveDepartureMin:  liveDepartureMin,
+                liveAircraftType:  liveAircraftType,
+                liveAircraftTypeId: liveAircraftTypeId,
+                liveAircraftReg:   liveAircraftReg,
+                liveCruiseSpeed:   liveCruiseSpeed,
+                liveScrapedAt:     liveScrapedAt,
                 suggestedDepTime: r.suggestedDepTime || null,
                 fits:            fits,
                 aircraftFit:     aircraftFit,
@@ -610,6 +746,49 @@
                 noiseLabel:       meta ? meta.noiseLabel : null,
                 stationTurnMin:   meta ? meta.turnaroundMin : null
             }
+        },
+
+        _liveWeeklyFlights(row, scheduleRec) {
+            const direct = scheduleRec && scheduleRec.weeklyFlights != null
+                ? Number(scheduleRec.weeklyFlights)
+                : (row && row.liveWeeklyFlights != null ? Number(row.liveWeeklyFlights) : NaN)
+            if (Number.isFinite(direct)) return direct
+            const daily = this._liveDailyFlights(row, scheduleRec)
+            if (Array.isArray(daily)) {
+                const sum = daily.reduce((s, n) => s + (Number.isFinite(Number(n)) ? Number(n) : 0), 0)
+                return sum > 0 ? sum : null
+            }
+            return null
+        },
+
+        _liveDailyFlights(row, scheduleRec) {
+            const src = scheduleRec && Array.isArray(scheduleRec.dailyFlights)
+                ? scheduleRec.dailyFlights
+                : (row && Array.isArray(row.liveDailyFlights) ? row.liveDailyFlights : null)
+            if (!src) return null
+            const out = src.slice(0, 7).map(n => {
+                const v = Number(n)
+                return Number.isFinite(v) && v > 0 ? v : 0
+            })
+            while (out.length < 7) out.push(0)
+            return out
+        },
+
+        _liveDeparture(row, scheduleRec) {
+            const raw = scheduleRec && scheduleRec.departureTime
+                ? scheduleRec.departureTime
+                : (row && (row.liveDeparture || row.departureTime))
+            const s = String(raw || "").trim()
+            return HHMM_RE.test(s) ? s : null
+        },
+
+        _hhmmToMin(value) {
+            const m = String(value || "").match(HHMM_RE)
+            if (!m) return null
+            const h = Number(m[1])
+            const mm = Number(m[2])
+            if (!Number.isFinite(h) || !Number.isFinite(mm) || h > 23 || mm > 59) return null
+            return h * 60 + mm
         },
 
         _classifyFit(distanceNm, rangeNm) {
@@ -1086,6 +1265,16 @@
             const paxCell   = this._mkNumCell((c.paxScore   == null) ? "—" : ("★" + c.paxScore))
             const cargoCell = this._mkNumCell((c.cargoScore == null) ? "—" : ("★" + c.cargoScore))
             const wklyCell  = this._mkNumCell(c.weeklyFlights == null ? "—" : c.weeklyFlights)
+            const liveWklyCell = this._mkNumCell(c.liveWeeklyFlights == null ? "—" : c.liveWeeklyFlights)
+            if (c.liveWeeklyFlights != null) {
+                liveWklyCell.style.color = "#a7f3d0"
+                liveWklyCell.title = this._liveScheduleTitle(c)
+            }
+            const liveDepCell = this._mkNumCell(c.liveDeparture || "—")
+            if (c.liveDeparture) {
+                liveDepCell.style.color = "#a7f3d0"
+                liveDepCell.title = this._liveScheduleTitle(c)
+            }
             const airCell   = this._mkNumCell(c.airlineCount  == null ? "—" : c.airlineCount)
             if (c.demandSource === "flightsfrom") {
                 paxCell.title = "Demand inferred from FlightsFrom frequency"
@@ -1182,12 +1371,24 @@
                 ? this._mkFitCell(waveFitCtx.fitByDest.get(String(c.destIata || "").toUpperCase()))
                 : null
 
-            const tail = [destCell, distCell, timeCell, paxCell, cargoCell, wklyCell, airCell,
+            const tail = [destCell, distCell, timeCell, paxCell, cargoCell, wklyCell,
+                liveWklyCell, liveDepCell, airCell,
                 sizeCell, fuelCell, alphaCell, scoreCell]
             if (fitCell) tail.push(fitCell)
             tail.push(restrCell, depCell)
             tr.append(...tail)
             return tr
+        },
+
+        _liveScheduleTitle(c) {
+            const bits = []
+            if (c.liveWeeklyFlights != null) bits.push("In-game " + c.liveWeeklyFlights + " flight(s)/wk")
+            if (Array.isArray(c.liveDailyFlights)) bits.push("pattern " + c.liveDailyFlights.join(""))
+            if (c.liveDeparture) bits.push("primary dep " + c.liveDeparture)
+            if (c.liveAircraftType) bits.push(c.liveAircraftType)
+            if (c.liveAircraftReg) bits.push(c.liveAircraftReg)
+            if (c.liveScrapedAt) bits.push("scraped " + new Date(c.liveScrapedAt).toLocaleString())
+            return bits.length ? bits.join(" · ") : "No in-game schedule scrape cached"
         },
 
         _showDepartureWarning(c) {
@@ -1255,6 +1456,8 @@
             foot.textContent = shown + " of " + filtered.length + " · sorted by "
                 + (sortLabel ? sortLabel.label : this._sortState.field)
                 + " " + this._sortState.dir
+                + " · AS live "
+                + filtered.filter(c => c.liveWeeklyFlights != null || c.liveDeparture).length
             host.append(foot)
         },
 

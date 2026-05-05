@@ -8,9 +8,10 @@
  * to the right of AS's native bulk-adjustment form. The panel reads the
  * form's filter state on every change, asks
  * `RouteAssistantFlightsPricesBridge` for per-route per-class
- * recommendations, and routes Apply through the existing per-route
- * applier (gated by the documented two-gate model + the new
- * `liveScopes.bulkRecommended` scope which defaults to dry-run-only).
+     * recommendations, and routes Apply through the existing per-route
+     * applier. Proven pricing scopes default live; `dryRunOnly:true`,
+     * `enabled:false`, or `liveScopes.bulkRecommended:false` can still
+     * clamp this page back to dry-run.
  *
  * The native AS form is left intact — the AES panel is an alternative
  * path next to it, never a replacement.
@@ -154,7 +155,7 @@
         const ra = (settings && settings.routeAssistant) || {};
         const cfg = (ra.pricing && ra.pricing.apply) || {};
         const gate = {
-            dryRunOnly:   cfg.dryRunOnly !== false,
+            dryRunOnly:   cfg.dryRunOnly === true,
             applyEnabled: cfg.enabled !== false
         };
         const log = (typeof RouteAssistantPricingApplyLog !== "undefined" && server)
@@ -166,7 +167,10 @@
         return new RouteAssistantPricingApplier(server, {
             dryRunOnly:               gate.dryRunOnly,
             applyEnabled:             gate.applyEnabled,
-            liveScopes:               cfg.liveScopes || {},
+            liveScopes:               Object.assign(
+                {manual: true, bulk: true, silentAuto: true, bulkRecommended: true},
+                cfg.liveScopes || {}
+            ),
             cooldownMinPerRoute:      cfg.cooldownMinPerRoute,
             cooldownMinGlobal:        cfg.cooldownMinGlobal,
             warnAboveDeltaPct:        cfg.warnAboveDeltaPct,

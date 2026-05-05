@@ -42,7 +42,7 @@
         const accepted = await window.ScrapeTosConfirmation.hasAccepted()
         let opts
         if (accepted) {
-            opts = {includePerCompetitor: false, includeFlightsFrom: false}
+            opts = {includePerCompetitor: false, includeDemandSeed: false, includeFlightsFrom: false}
         } else {
             const result = await window.ScrapeTosConfirmation.show(estimate)
             if (!result || !result.confirmed) {
@@ -51,6 +51,7 @@
             }
             opts = {
                 includePerCompetitor: !!result.includePerCompetitor,
+                includeDemandSeed:    !!result.includeDemandSeed,
                 includeFlightsFrom:   !!result.includeFlightsFrom
             }
         }
@@ -63,6 +64,7 @@
         const phases = window.ScrapeOrchestratorPhases.all().filter(p =>
             !p.optional
             || (p.id === "per-competitor" && opts.includePerCompetitor)
+            || (p.id === "demand-seed"    && opts.includeDemandSeed)
             || (p.id === "flightsfrom"    && opts.includeFlightsFrom)
         )
 
