@@ -88,11 +88,20 @@ class MarketScanSession {
             }
             return out
         }
-        const all = await chrome.storage.local.get(null)
         const prefix = server + "marketScan:" + scanId + ":r:"
-        for (const k in all) {
-            if (k.indexOf(prefix) === 0) {
-                const blob = all[k]
+        const allKeys = chrome.storage.local.getKeys
+            ? await chrome.storage.local.getKeys()
+            : Object.keys(await chrome.storage.local.get(null))
+
+        const fetchKeys = []
+        for (let i = 0; i < allKeys.length; i++) {
+            if (allKeys[i].indexOf(prefix) === 0) fetchKeys.push(allKeys[i])
+        }
+
+        if (fetchKeys.length) {
+            const data = await chrome.storage.local.get(fetchKeys)
+            for (const k in data) {
+                const blob = data[k]
                 if (blob && blob.type) out[blob.type] = blob
             }
         }
@@ -112,11 +121,15 @@ class MarketScanSession {
      */
     static async deleteScan(server, scanId) {
         if (!scanId) return
-        const all = await chrome.storage.local.get(null)
         const sessionKey = MarketScanSession._sessionKey(server, scanId)
         const prefix = sessionKey + ":r:"
+        const allKeys = chrome.storage.local.getKeys
+            ? await chrome.storage.local.getKeys()
+            : Object.keys(await chrome.storage.local.get(null))
+
         const toRemove = []
-        for (const k in all) {
+        for (let i = 0; i < allKeys.length; i++) {
+            const k = allKeys[i]
             if (k === sessionKey || k.indexOf(prefix) === 0) toRemove.push(k)
         }
         if (toRemove.length) await chrome.storage.local.remove(toRemove)
@@ -127,27 +140,49 @@ class MarketScanSession {
      * Called from the dashboard panel on load.
      */
     static async cleanupOld(server, keepScanId, maxAgeMs) {
-        const all = await chrome.storage.local.get(null)
+        const allKeys = chrome.storage.local.getKeys
+            ? await chrome.storage.local.getKeys()
+            : Object.keys(await chrome.storage.local.get(null))
+
         const cutoff = Date.now() - (maxAgeMs || 24 * 60 * 60 * 1000)
         const keepSession = MarketScanSession._sessionKey(server, keepScanId)
         const keepPrefix = keepSession + ":r:"
-        const toRemove = []
         const sessionPrefix = server + "marketScan:"
-        for (const k in all) {
+
+        const sessionKeysToCheck = []
+        for (let i = 0; i < allKeys.length; i++) {
+            const k = allKeys[i]
             if (k.indexOf(sessionPrefix) !== 0) continue
             if (k === keepSession || k.indexOf(keepPrefix) === 0) continue
+            if (k.indexOf(":r:") === -1) {
+                sessionKeysToCheck.push(k)
+            }
+        }
+
+        const sessionsData = sessionKeysToCheck.length ? await chrome.storage.local.get(sessionKeysToCheck) : {}
+        const keysSet = new Set(allKeys)
+
+        const toRemove = []
+        for (let i = 0; i < allKeys.length; i++) {
+            const k = allKeys[i]
+            if (k.indexOf(sessionPrefix) !== 0) continue
+            if (k === keepSession || k.indexOf(keepPrefix) === 0) continue
+
             const isSession = k.indexOf(":r:") === -1
             if (isSession) {
-                const rec = all[k]
+                const rec = sessionsData[k]
                 if (!rec || !rec.startedAt || rec.startedAt < cutoff) {
                     toRemove.push(k)
                 }
             } else {
                 // Orphan result blob with no live session — drop it.
                 const owner = k.split(":r:")[0]
-                if (!all[owner]) toRemove.push(k)
+                if (!keysSet.has(owner)) {
+                    toRemove.push(k)
+                }
             }
         }
+
         if (toRemove.length) await chrome.storage.local.remove(toRemove)
     }
 }
