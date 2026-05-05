@@ -48,13 +48,26 @@
     }
 
     function mountIfReady() {
-        if (document.getElementById("aes-central-hub")) return true
+        if (document.getElementById("aes-central-hub") || document.querySelector(".aes-canopy-dashboard")) return true
         const anchor = findAnchor()
         if (!anchor) return false
-        if (typeof window.CentralHubShell !== "function") {
+
+        if (typeof window.CanopyDashboardHost === "function") {
+            const host = new window.CanopyDashboardHost(anchor);
+            mountAttempts++;
+            host.mount().catch(err => {
+                console.warn("[AES Hub] Canopy dashboard mount failed", err);
+                if (document.querySelector(".aes-canopy-dashboard")) return;
+                if (mountAttempts >= MAX_MOUNT_ATTEMPTS) return;
+                window.__aesCentralHubMounted = false;
+                setTimeout(tick, POLL_MS);
+            });
+            return true;
+        } else if (typeof window.CentralHubShell !== "function") {
             console.warn("[AES Hub] CentralHubShell not loaded — check manifest order")
             return true
         }
+
         const {server, airline} = resolveContext()
         const shell = new window.CentralHubShell({server, airline})
         window.__aesCentralHub = shell
