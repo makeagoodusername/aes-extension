@@ -1263,8 +1263,14 @@ class RouteAssistantPanel {
         // view. Replaces the table; mutually exclusive with Wave View
         // and ORS Sandbox (both win when active because their branches
         // run first in _renderRows).
+
         this._heatmapBtn = makeBtn("🗺", "Yield heatmap (toggle hubs × destinations matrix)",
             () => this._toggleHeatmap())
+
+        // World Explorer — full-screen interactive map and table
+        this._worldExplorerBtn = makeBtn("🌍", "World Explorer (toggle interactive map view)",
+            () => this._toggleWorldExplorer())
+
         // Bulk-open stations from scraped airports — launches the same
         // OpenStationsModal the dashboard's Schedule Management uses, but
         // pre-seeded with the panel's current hub so distances and
@@ -1295,7 +1301,7 @@ class RouteAssistantPanel {
         const configBtn = makeBtn("⇅", "Export / import config (JSON roundtrip)",
             (e) => this._openConfigMenu(e.currentTarget))
         const toggleBtn = makeBtn("_", "Minimise", () => this._toggleCollapse())
-        header.append(title, refreshBtn, this._compactBtn, this._waveBtn, this._orsSandboxBtn, this._heatmapBtn, openStationsBtn, stationStatusHost, this._retireBtn, settingsBtn, this._notifBtn, configBtn, toggleBtn)
+        header.append(title, refreshBtn, this._compactBtn, this._waveBtn, this._orsSandboxBtn, this._heatmapBtn, this._worldExplorerBtn, openStationsBtn, stationStatusHost, this._retireBtn, settingsBtn, this._notifBtn, configBtn, toggleBtn)
 
         this.statusBar = document.createElement("div")
         Object.assign(this.statusBar.style, {
@@ -1517,6 +1523,7 @@ class RouteAssistantPanel {
      * Sandbox; render branch order is wave → sandbox → heatmap → table.
      * Persists to settings.heatmap.enabled so the mode survives reloads.
      */
+
     async _toggleHeatmap() {
         const cfg = (this.settings && this.settings.heatmap) || {}
         const next = !cfg.enabled
@@ -1529,8 +1536,34 @@ class RouteAssistantPanel {
                 ? "Yield heatmap ON — hubs × destinations matrix. Click to return to the table."
                 : "Yield heatmap OFF — table view. Click to switch to the matrix."
         }
+        // World explorer visual state.
+        const weCfg = (this.settings && this.settings.worldExplorer) || {}
+        const weOn = !!weCfg.enabled
+        if (this._worldExplorerBtn) {
+            this._worldExplorerBtn.style.opacity = weOn ? "1" : "0.6"
+            this._worldExplorerBtn.title = weOn
+                ? "World Explorer ON. Click to return to the table."
+                : "World Explorer OFF. Click to switch to the interactive map."
+        }
+
         this._render()
     }
+
+    async _toggleWorldExplorer() {
+        const cfg = (this.settings && this.settings.worldExplorer) || {}
+        const next = !cfg.enabled
+        if (this.settings) this.settings.worldExplorer = Object.assign({}, cfg, {enabled: next})
+        try { await RouteAssistantSettings.save({worldExplorer: this.settings.worldExplorer}) }
+        catch (e) { /* non-fatal */ }
+        if (this._worldExplorerBtn) {
+            this._worldExplorerBtn.style.opacity = next ? "1" : "0.6"
+            this._worldExplorerBtn.title = next
+                ? "World Explorer ON. Click to return to the table."
+                : "World Explorer OFF. Click to switch to the interactive map."
+        }
+        this._render()
+    }
+
 
     // ---------- Data refresh ----------
 
@@ -3939,7 +3972,16 @@ class RouteAssistantPanel {
             return
         }
 
+
+        // World Explorer. Replaces the table; mutually exclusive with the others.
+        const weCfg = this.settings && this.settings.worldExplorer
+        if (weCfg && weCfg.enabled) {
+            this._renderWorldExplorer(sorted)
+            return
+        }
+
         this._drawTable(sorted)
+
     }
 
     _applyFilters(rows) {
@@ -4770,7 +4812,270 @@ class RouteAssistantPanel {
         this.tableHost.append(foot)
     }
 
+
+
+    // ---------- World Explorer ----------
+
+
+
+    async _renderWorldExplorer(sorted) {
+        this.tableHost.innerHTML = ""
+
+        // Full screen overlay style container
+        const wrap = document.createElement("div")
+        wrap.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;"
+            + "background:#111;color:#fcd34d;font-family:monospace;display:flex;flex-direction:column;"
+            + "padding:20px;box-sizing:border-box;overflow:hidden;"
+
+        // Header
+        const header = document.createElement("div")
+        header.style.cssText = "display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #fcd34d;padding-bottom:10px;margin-bottom:20px;"
+
+        const title = document.createElement("div")
+        title.style.cssText = "font-size:24px;font-weight:bold;letter-spacing:2px;"
+        title.textContent = "DEPARTURES BOARD - WORLD EXPLORER"
+        header.append(title)
+
+        // Filter controls
+        const filterWrap = document.createElement("div")
+        filterWrap.style.cssText = "display:flex;gap:15px;align-items:center;font-size:14px;"
+
+        const makeToggle = (label, color, stateKey) => {
+            const lbl = document.createElement("label")
+            lbl.style.cssText = "display:flex;align-items:center;gap:5px;cursor:pointer;color:" + color + ";"
+            const cb = document.createElement("input")
+            cb.type = "checkbox"
+            cb.checked = this.settings && this.settings.worldExplorer && this.settings.worldExplorer[stateKey] !== false
+            cb.addEventListener("change", async () => {
+                this.settings.worldExplorer = Object.assign({}, this.settings.worldExplorer || {}, {[stateKey]: cb.checked})
+                try { await RouteAssistantSettings.save({worldExplorer: this.settings.worldExplorer}) } catch (e) {}
+                this._renderRows()
+            })
+            lbl.append(cb, document.createTextNode(label))
+            return lbl
+        }
+
+        filterWrap.append(
+            makeToggle("Competitors", "#fca5a5", "showCompetitors"),
+            makeToggle("Interlining", "#86efac", "showInterlining"),
+            makeToggle("Alliance", "#d8b4fe", "showAlliance")
+        )
+        header.append(filterWrap)
+
+        const closeBtn = document.createElement("button")
+        closeBtn.textContent = "✕ CLOSE"
+        closeBtn.style.cssText = "background:none;border:1px solid #fcd34d;color:#fcd34d;padding:5px 15px;font-family:monospace;font-size:16px;cursor:pointer;"
+        closeBtn.addEventListener("click", () => this._toggleWorldExplorer())
+        header.append(closeBtn)
+
+        wrap.append(header)
+
+        // Main content area - flex layout
+        const main = document.createElement("div")
+        main.style.cssText = "display:flex;flex:1;gap:20px;min-height:0;"
+
+        // Left: Split-flap table style
+        const tablePane = document.createElement("div")
+        tablePane.style.cssText = "flex:1;display:flex;flex-direction:column;border:1px solid #333;background:#000;overflow:auto;"
+
+        const table = document.createElement("table")
+        table.style.cssText = "width:100%;border-collapse:collapse;text-align:left;"
+
+        const thead = document.createElement("thead")
+        thead.innerHTML = "<tr style='background:#222;color:#fbbf24;border-bottom:2px solid #555;'><th style='padding:10px;'>FLIGHT</th><th style='padding:10px;'>DESTINATION</th><th style='padding:10px;'>COMPETITORS</th><th style='padding:10px;'>STATUS</th></tr>"
+        table.append(thead)
+
+        const tbody = document.createElement("tbody")
+
+        // Right: Map area
+        const mapPane = document.createElement("div")
+        mapPane.style.cssText = "flex:2;background:#1a1a1a;border:1px solid #444;position:relative;overflow:hidden;"
+
+        // Base SVG layer for the map
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+        svg.style.cssText = "width:100%;height:100%;position:absolute;top:0;left:0;"
+
+        // Simple Equirectangular projection mapping logic
+        // lon: -180 to +180 -> x: 0% to 100%
+        // lat: +90 to -90 -> y: 0% to 100%
+        const getProj = (lat, lon) => {
+            if (lat == null || lon == null) return null
+            const x = ((lon + 180) / 360) * 100
+            const y = ((-lat + 90) / 180) * 100
+            return {x, y}
+        }
+
+        // Draw the Hub
+        let hubX = 50, hubY = 50
+        const hubRec = this.demandMap ? this.demandMap.get(this.hubIata) : null
+        if (hubRec && hubRec.latitude != null && hubRec.longitude != null) {
+            const proj = getProj(hubRec.latitude, hubRec.longitude)
+            if (proj) {
+                hubX = proj.x
+                hubY = proj.y
+            }
+        }
+
+        const hubCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle")
+        hubCircle.setAttribute("cx", hubX + "%")
+        hubCircle.setAttribute("cy", hubY + "%")
+        hubCircle.setAttribute("r", "5")
+        hubCircle.setAttribute("fill", "#fcd34d")
+        svg.append(hubCircle)
+
+        const hubText = document.createElementNS("http://www.w3.org/2000/svg", "text")
+        hubText.setAttribute("x", (hubX + 1) + "%")
+        hubText.setAttribute("y", (hubY - 1) + "%")
+        hubText.setAttribute("fill", "#fcd34d")
+        hubText.textContent = this.hubIata
+        svg.append(hubText)
+
+        // Store map line references so we can highlight them
+        const linesMap = new Map()
+
+        // Pre-fetch configs to color lines
+        const weCfg = (this.settings && this.settings.worldExplorer) || {}
+        const showCmp = weCfg.showCompetitors !== false
+        const showIL = weCfg.showInterlining !== false
+        const showAl = weCfg.showAlliance !== false
+
+        // Populate the rows with brutalist aesthetic
+        for (const [idx, r] of sorted.entries()) {
+            const tr = document.createElement("tr")
+            tr.style.cssText = "border-bottom:1px solid #222;cursor:pointer;"
+
+            // Map coordinates from demandStore if possible
+            let destX = null, destY = null
+            const destRec = this.demandMap ? this.demandMap.get(r.destIata) : null
+            if (destRec && destRec.latitude != null && destRec.longitude != null) {
+                const proj = getProj(destRec.latitude, destRec.longitude)
+                if (proj) {
+                    destX = proj.x
+                    destY = proj.y
+                }
+            } else {
+                // Radial scatter fallback
+                const angle = (idx / sorted.length) * Math.PI * 2
+                const distance = 20 + Math.random() * 30
+                destX = 50 + Math.cos(angle) * distance
+                destY = 50 + Math.sin(angle) * distance
+            }
+
+            // Basic line coloring based on relationships
+            let baseColor = "#444"
+            let lineColor = "#444"
+
+            const partnersMap = this._partnersByEnterpriseId
+            let hasIL = false
+            let hasAl = false
+
+            if (r.competitorEntries && r.competitorEntries.length) {
+                for (const cmp of r.competitorEntries) {
+                    const pk = cmp.enterpriseId != null ? String(cmp.enterpriseId) : null
+                    const rels = (partnersMap && pk) ? partnersMap.get(pk) : null
+                    if (rels) {
+                        if (rels.includes("INTERLINING")) hasIL = true
+                        if (rels.includes("ALLIANCE")) hasAl = true
+                    }
+                }
+            }
+
+            if (hasAl && showAl) baseColor = "#d8b4fe"
+            else if (hasIL && showIL) baseColor = "#86efac"
+            else if (r.competitorCount > 0 && showCmp) baseColor = "#fca5a5"
+            else if (!showCmp && !hasIL && !hasAl) {
+                if (r.competitorCount > 0) continue
+            }
+
+            if (!showCmp && !hasIL && !hasAl) {
+                if (r.competitorCount > 0) continue
+            }
+
+            lineColor = baseColor
+
+            const line = document.createElementNS("http://www.w3.org/2000/svg", "line")
+            line.setAttribute("x1", hubX + "%")
+            line.setAttribute("y1", hubY + "%")
+            line.setAttribute("x2", destX + "%")
+            line.setAttribute("y2", destY + "%")
+            line.setAttribute("stroke", lineColor)
+            line.setAttribute("stroke-width", "1")
+            line.setAttribute("opacity", "0.6")
+            svg.append(line)
+
+            const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle")
+            dot.setAttribute("cx", destX + "%")
+            dot.setAttribute("cy", destY + "%")
+            dot.setAttribute("r", "3")
+            dot.setAttribute("fill", lineColor)
+            svg.append(dot)
+
+            const lbl = document.createElementNS("http://www.w3.org/2000/svg", "text")
+            lbl.setAttribute("x", (destX + 1) + "%")
+            lbl.setAttribute("y", (destY - 1) + "%")
+            lbl.setAttribute("fill", "#888")
+            lbl.setAttribute("font-size", "10px")
+            lbl.textContent = r.destIata
+            svg.append(lbl)
+
+            linesMap.set(r.destIata, {line, dot, lbl, baseColor})
+
+            tr.addEventListener("mouseenter", () => {
+                tr.style.background = "#222"
+                line.setAttribute("stroke", "#fcd34d")
+                line.setAttribute("stroke-width", "3")
+                line.setAttribute("opacity", "1")
+                dot.setAttribute("fill", "#fcd34d")
+                dot.setAttribute("r", "5")
+                lbl.setAttribute("fill", "#fcd34d")
+                lbl.setAttribute("font-weight", "bold")
+            })
+            tr.addEventListener("mouseleave", () => {
+                tr.style.background = "transparent"
+                line.setAttribute("stroke", baseColor)
+                line.setAttribute("stroke-width", "1")
+                line.setAttribute("opacity", "0.6")
+                dot.setAttribute("fill", baseColor)
+                dot.setAttribute("r", "3")
+                lbl.setAttribute("fill", "#888")
+                lbl.setAttribute("font-weight", "normal")
+            })
+
+            tr.dataset.dest = String(r.destIata || "").toUpperCase()
+
+            const tdFlight = document.createElement("td")
+            tdFlight.style.cssText = "padding:8px 10px;font-size:16px;letter-spacing:1px;"
+            tdFlight.textContent = this.hubIata + " - " + r.destIata
+
+            const tdDest = document.createElement("td")
+            tdDest.style.cssText = "padding:8px 10px;font-size:16px;letter-spacing:1px;"
+            tdDest.textContent = r.destName || r.destIata
+
+            const tdCmp = document.createElement("td")
+            tdCmp.style.cssText = "padding:8px 10px;font-size:16px;letter-spacing:1px;"
+            tdCmp.textContent = r.competitorCount != null ? r.competitorCount : (r.airlineCount != null ? r.airlineCount : 0)
+
+            const tdStatus = document.createElement("td")
+            tdStatus.style.cssText = "padding:8px 10px;font-size:16px;letter-spacing:1px;"
+            tdStatus.textContent = r.status || "UNKNOWN"
+
+            tr.append(tdFlight, tdDest, tdCmp, tdStatus)
+            tbody.append(tr)
+        }
+
+        table.append(tbody)
+        tablePane.append(table)
+
+        mapPane.append(svg)
+
+        main.append(tablePane, mapPane)
+        wrap.append(main)
+
+        this.tableHost.append(wrap)
+    }
+
     _buildHeatmapHeader(cfg) {
+
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;align-items:center;gap:10px;padding:8px 10px;"
             + "background:rgba(59,130,246,0.10);border:1px solid rgba(59,130,246,0.35);"
@@ -11830,6 +12135,7 @@ class RouteAssistantPanel {
         }
         middle.append(nameRow)
 
+
         if (entry.bannerUrl) {
             const banner = document.createElement("img")
             banner.src = entry.bannerUrl
@@ -11845,7 +12151,23 @@ class RouteAssistantPanel {
             sub.style.cssText = "color:#6b7280;font-size:9px;"
             middle.append(sub)
         }
+
+        // --- Add new stats ---
+        const statsRow = document.createElement("div")
+        statsRow.style.cssText = "display:flex;gap:4px;color:#9ca3af;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;"
+
+        const stats = []
+        if (entry.aircraftOwned != null) stats.push(entry.aircraftOwned + " a/c")
+        if (entry.aircraftAge != null) stats.push("avg " + entry.aircraftAge + "y")
+        if (entry.routesFlown != null) stats.push(entry.routesFlown + " routes")
+
+        if (stats.length) {
+            statsRow.textContent = stats.join(" · ")
+            middle.append(statsRow)
+        }
+
         wrap.append(middle)
+
 
         // Right-side share block. The merged shape exposes
         // {paxShare, cargoShare, paxRank, cargoRank, paxChange, cargoChange};

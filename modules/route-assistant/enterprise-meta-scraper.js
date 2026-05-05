@@ -311,14 +311,37 @@ function parseEnterpriseHtml(html, server, enterpriseId) {
     if (!bannerUrl && !avatarUrl) notes.push("no enterprise images matched (selectors may need tuning)")
     if (!name) notes.push("name not parsed")
 
+
+    // --- Stats ---
+    let aircraftOwned = null
+    let aircraftAge = null
+    let routesFlown = null
+
+    for (const row of doc.querySelectorAll("tr, dl > div, li")) {
+        const text = (row.textContent || "").trim()
+        if (/Aircraft(?: in fleet)?\s*:?\s*(\d+)/i.test(text)) {
+            aircraftOwned = parseInt(text.match(/Aircraft(?: in fleet)?\s*:?\s*(\d+)/i)[1], 10)
+        }
+        if (/Average (?:fleet )?age\s*:?\s*([\d.]+)/i.test(text)) {
+            aircraftAge = parseFloat(text.match(/Average (?:fleet )?age\s*:?\s*([\d.]+)/i)[1])
+        }
+        if (/Routes\s*:?\s*(\d+)/i.test(text)) {
+            routesFlown = parseInt(text.match(/Routes\s*:?\s*(\d+)/i)[1], 10)
+        }
+    }
+
     return {
         name:         name,
         iata:         iata,
         bannerUrl:    bannerUrl,
         avatarUrl:    avatarUrl,
+        aircraftOwned: aircraftOwned,
+        aircraftAge:  aircraftAge,
+        routesFlown:  routesFlown,
         parserNotes:  notes.length ? notes.join("; ") : null
     }
 }
+
 
 /**
  * Resolve an `<img src>` against the AS base URL. Handles absolute
