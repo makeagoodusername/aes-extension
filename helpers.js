@@ -241,3 +241,24 @@ function escapeHtml(s) {
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
 }
+
+// ── ?aes-debug smoke tests (no test runner — project convention) ───
+try {
+    if (typeof location !== "undefined"
+            && /[?&]aes-debug\b/.test(location.search || "")) {
+        console.assert(escapeHtml(null) === "", "[AES helpers smoke] escapeHtml(null)")
+        console.assert(escapeHtml(undefined) === "", "[AES helpers smoke] escapeHtml(undefined)")
+        console.assert(escapeHtml("") === "", "[AES helpers smoke] escapeHtml(\"\")")
+        console.assert(escapeHtml(0) === "0", "[AES helpers smoke] escapeHtml(0)")
+        console.assert(escapeHtml(false) === "false", "[AES helpers smoke] escapeHtml(false)")
+        console.assert(escapeHtml("&") === "&amp;", "[AES helpers smoke] escapeHtml(&)")
+        console.assert(escapeHtml("<") === "&lt;", "[AES helpers smoke] escapeHtml(<)")
+        console.assert(escapeHtml(">") === "&gt;", "[AES helpers smoke] escapeHtml(>)")
+        console.assert(escapeHtml('"') === "&quot;", "[AES helpers smoke] escapeHtml(\")")
+        console.assert(escapeHtml("'") === "&#39;", "[AES helpers smoke] escapeHtml(')")
+        console.assert(escapeHtml("&<>'\"") === "&amp;&lt;&gt;&#39;&quot;", "[AES helpers smoke] escapeHtml(multiple)")
+        console.assert(escapeHtml(123) === "123", "[AES helpers smoke] escapeHtml(number)")
+
+        console.log("[AES helpers] escapeHtml smoke tests passed")
+    }
+} catch (_) { /* never let smoke break the page */ }
