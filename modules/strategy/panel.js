@@ -65,10 +65,11 @@
         slotBid:            "Slot bids",
         sister:             "Cross-Airline & Sister Coordination",
         "fleet-renewal":    "Fleet renewal",
-        marketing:          "Marketing & Brand"
+        marketing:          "Marketing & Brand",
+        hubDesigner:        "Hub Network Designer"
     }
     const DOMAIN_ORDER = ["schedule", "service", "price", "crew", "routeCreation",
-        "competitorReaction", "alliance", "slotBid", "sister", "fleet-renewal", "marketing"]
+        "competitorReaction", "alliance", "slotBid", "sister", "fleet-renewal", "marketing", "hubDesigner"]
 
     const FILTER_DEFAULT = {
         search:         "",

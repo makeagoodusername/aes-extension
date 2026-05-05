@@ -256,4 +256,43 @@
 
     const ns = window.AesStrategy || (window.AesStrategy = {})
     ns.designHubs = designHubs
+    ns.proposeHubMoves = proposeAll
+
+    async function proposeAll(snapshot, opts) {
+        const report = designHubs(snapshot, opts)
+        if (!report) return []
+        const out = []
+
+        for (const c of report.opens) {
+            out.push({
+                id: "hubDesigner:open:" + c.iata,
+                domain: "hubDesigner",
+                kind: "hub-open",
+                title: "Open Hub · " + c.iata,
+                subtitle: "fit " + c.fitness.toFixed(2),
+                rationale: c.rationale,
+                payload: c,
+                applicable: false,
+                applicableNote: "Hub moves are advisory only. Apply manually in AS.",
+                advisoryOnly: true
+            })
+        }
+
+        for (const c of report.closes) {
+            out.push({
+                id: "hubDesigner:close:" + c.iata,
+                domain: "hubDesigner",
+                kind: "hub-close",
+                title: "Close Hub · " + c.iata,
+                subtitle: "redundancy " + (c.redundancyScore * 100).toFixed(0) + "%",
+                rationale: c.rationale,
+                payload: c,
+                applicable: false,
+                applicableNote: "Hub moves are advisory only. Apply manually in AS.",
+                advisoryOnly: true
+            })
+        }
+
+        return out
+    }
 })()
