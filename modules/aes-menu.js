@@ -108,6 +108,10 @@ class AESMenu {
             icon: { className: "fa-th-large" },
             onClick: () => this.#openCommandBridge()
         },{
+            label: "World Explorer",
+            icon: { className: "fa-globe" },
+            onClick: () => this.#openWorldExplorer()
+        },{
             label: "Open AES Settings",
             icon: { className: "fa-cog" },
             onClick: () => {
@@ -437,6 +441,23 @@ class AESMenu {
             null,
             "Route Planner runs from an aircraft's Flight Plan tab. Open Fleets → an aircraft → Flight Plan, then try again."
         )
+    }
+
+    #openWorldExplorer() {
+        const fallback = () => {
+            try {
+                if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
+                    window.open(chrome.runtime.getURL("world-explorer.html"), "aes-we")
+                }
+            } catch (_) {}
+        }
+        try {
+            if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                chrome.runtime.sendMessage({ action: "aes_ping_world_explorer" }, (res) => {
+                    if (chrome.runtime.lastError || !res) fallback()
+                })
+            } else { fallback() }
+        } catch (_) { fallback() }
     }
 
     #openCommandBridge() {

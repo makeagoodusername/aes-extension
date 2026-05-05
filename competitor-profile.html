@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>AES — Competitor Profile</title>
+    <link rel="stylesheet" href="css/design-tokens.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/command-bridge.css">
+</head>
+<body>
+    <main class="aes-bridge" id="aes-competitor-profile-root">
+        <header class="aes-bridge__masthead">
+            <h1 class="aes-bridge__h1">Competitor Profile</h1>
+            <span class="aes-bridge__tagline">enterprise intelligence</span>
+            <div class="aes-bridge__masthead-stats" id="aes-cp-masthead-stats"></div>
+            <span class="aes-bridge__version" id="aes-cp-version">v?</span>
+        </header>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div>
+                <section class="aes-bridge__section" id="aes-cp-summary"></section>
+                <section class="aes-bridge__section" id="aes-cp-financials"></section>
+            </div>
+            <div>
+                <section class="aes-bridge__section" id="aes-cp-aircraft"></section>
+                <section class="aes-bridge__section" id="aes-cp-network"></section>
+            </div>
+        </div>
+
+        <footer class="aes-bridge__footer">
+            <span>AirlineSim Enhancement Suite</span>
+            <a id="aes-bridge-footer-options" href="#">Open Data Manager</a>
+            <a href="https://forums.airlinesim.aero/t/introducing-airlinesim-enhancement-suite-beta/" target="_blank" rel="noreferrer noopener">Forum</a>
+            <a href="https://github.com/ZoeBijl/airlinesim-enhancement-suite" target="_blank" rel="noreferrer noopener">GitHub</a>
+        </footer>
+    </main>
+
+    <script src="modules/_shared/account-registry.js"></script>
+    <script src="modules/_shared/fleet-roster.js"></script>
+    <script src="modules/canopy/affiliations-store.js"></script>
+    <script src="helpers.js"></script>
+    <script src="modules/canopy/orgs-store.js"></script>
+    <script src="modules/aircraft-flight-plan/schedule-store.js"></script>
+    <script src="modules/strategy/portfolio.js"></script>
+    <script src="modules/competitor-intel/competitor-store.js"></script>
+    <script src="modules/competitor-intel/aggregator.js"></script>
+    <script src="modules/competitor-intel/competitor-profile-app.js"></script>
+</body>
+</html>
