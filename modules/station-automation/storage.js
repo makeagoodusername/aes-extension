@@ -155,13 +155,25 @@ class StationAutomationStorage {
      */
     static async deleteRun(server, airlineId, runId) {
         if (!runId) return
-        const all = await chrome.storage.local.get(null)
         const sessionKey = StationAutomationStorage._runKey(server, airlineId, runId)
-        const prefix = sessionKey + ":r:"
-        const toRemove = []
-        for (const k in all) {
-            if (k === sessionKey || k.indexOf(prefix) === 0) toRemove.push(k)
+        const runData = await chrome.storage.local.get([sessionKey])
+        const runRec = runData[sessionKey]
+
+        const toRemove = [sessionKey]
+
+        if (runRec && typeof runRec.total === 'number') {
+            for (let i = 0; i < runRec.total; i++) {
+                toRemove.push(`${sessionKey}:r:${i}`)
+            }
+        } else {
+            // Fallback for older formats or corrupted records without total
+            const all = await chrome.storage.local.get(null)
+            const prefix = sessionKey + ":r:"
+            for (const k in all) {
+                if (k.indexOf(prefix) === 0) toRemove.push(k)
+            }
         }
+
         if (toRemove.length) await chrome.storage.local.remove(toRemove)
     }
 
