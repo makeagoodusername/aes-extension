@@ -132,17 +132,20 @@ class FleetScheduleGridPanel {
     async _mount() {
         const T = (typeof window !== "undefined" && window.AESTokens) || null
 
+        const inlineContainer = this._getInlineContainer();
+
         const overlay = document.createElement("div")
-        overlay.className = FleetScheduleGridPanel.OVERLAY_CLASS
-        overlay.style.cssText = "position:fixed;inset:0;background:rgba(20,18,15,0.62);"
-            + "z-index:" + (T ? T.z.modal : 10000) + ";display:flex;align-items:stretch;justify-content:center;"
-            + "padding:24px;box-sizing:border-box;"
-        overlay.addEventListener("click", e => { if (e.target === overlay) this.close() })
+        overlay.className = inlineContainer ? "aes-fleet-schedule-grid-inline" : FleetScheduleGridPanel.OVERLAY_CLASS
+        overlay.style.cssText = inlineContainer
+            ? "display:flex;align-items:stretch;justify-content:center;margin-top:16px;"
+            : "position:fixed;inset:0;background:rgba(20,18,15,0.62);z-index:" + (T ? T.z.modal : 10000) + ";display:flex;align-items:stretch;justify-content:center;padding:24px;box-sizing:border-box;"
+
+        if (!inlineContainer) overlay.addEventListener("click", e => { if (e.target === overlay) this.close() })
 
         const modal = document.createElement("div")
         modal.style.cssText = "background:" + (T ? T.color.bone : "#F4F1EA") + ";"
             + "color:" + (T ? T.color.oxide : "#2B2520") + ";"
-            + "border:" + (T ? T.geom.bw2 : "2px") + " solid " + (T ? T.color.oxide : "#2B2520") + ";"
+            + (inlineContainer ? "border:1px solid " + (T ? T.color.oxide : "#2B2520") + ";" : "border:" + (T ? T.geom.bw2 : "2px") + " solid " + (T ? T.color.oxide : "#2B2520") + ";")
             + "border-radius:0;flex:1 1 auto;max-width:1600px;display:flex;flex-direction:column;"
             + "overflow:hidden;font-family:" + (T ? T.font.display : "system-ui, sans-serif") + ";"
             + "font-size:" + (T ? T.fs.body : "12px") + ";"
@@ -174,7 +177,13 @@ class FleetScheduleGridPanel {
 
         modal.appendChild(bodyWrap)
         overlay.appendChild(modal)
-        document.body.appendChild(overlay)
+
+        if (inlineContainer) {
+            inlineContainer.appendChild(overlay)
+            this._hideNativeTable();
+        } else {
+            document.body.appendChild(overlay)
+        }
 
         this._overlayEl = overlay
         this._gridEl = gridEl
@@ -199,9 +208,11 @@ class FleetScheduleGridPanel {
             if (typeof FleetScheduleGridDropPopover !== "undefined"
                     && FleetScheduleGridDropPopover._active) return
             e.preventDefault()
-            this.close()
+            if (!inlineContainer) this.close()
         }
-        document.addEventListener("keydown", this._keydownHandler, true)
+        if (!inlineContainer) {
+            document.addEventListener("keydown", this._keydownHandler, true)
+        }
 
         // Resolve the fleet roster — the AS fleet management page already
         // wrote it; we just re-aggregate it through FleetHubAircraftAggregator
@@ -279,13 +290,15 @@ class FleetScheduleGridPanel {
         status.textContent = "Initializing…"
         this._statusEl = status
 
-        const close = document.createElement("button")
-        close.type = "button"
-        close.textContent = "× Close"
-        close.title = "Close (Esc)"
-        close.style.cssText = this._btnStyle(T, "default")
-        close.addEventListener("click", () => this.close())
-        this._closeBtn = close
+        if (!this._getInlineContainer()) {
+            const close = document.createElement("button")
+            close.type = "button"
+            close.textContent = "× Close"
+            close.title = "Close (Esc)"
+            close.style.cssText = this._btnStyle(T, "default")
+            close.addEventListener("click", () => this.close())
+            this._closeBtn = close
+        }
 
         h.append(title, subtitle, status)
 
@@ -304,8 +317,31 @@ class FleetScheduleGridPanel {
             h.append(cockpitBtn)
         }
 
-        h.append(close)
+        if (this._closeBtn) h.append(this._closeBtn)
         return h
+    }
+
+    _getInlineContainer() {
+        if (typeof document === "undefined") return null;
+        const isFleetPage = document.querySelector(".as-page-fleet-management");
+        if (isFleetPage) {
+            const col = document.querySelector(".as-page-fleet-management > .row > .col-md-9");
+            return col || null;
+        }
+        return null;
+    }
+
+    _hideNativeTable() {
+        if (typeof document === "undefined") return;
+        const panel = document.querySelector(".as-page-fleet-management > .row > .col-md-9 > .as-panel:nth-of-type(1)");
+        if (panel) {
+            // Keep it in DOM for scraper, but hide visually so it takes no space.
+            panel.style.display = "none";
+        }
+        const legacyFleetHubPanel = document.querySelector(".as-page-fleet-management .as-panel:nth-of-type(2)");
+        if (legacyFleetHubPanel && legacyFleetHubPanel.textContent.includes("aircrafts stored")) {
+            legacyFleetHubPanel.style.display = "none";
+        }
     }
 
     /**
@@ -657,6 +693,10 @@ class FleetScheduleGridPanel {
         this._renderer.schedules = this.schedules
         this._renderer.maintenance = this.maintenance
         this._renderer._showBlockLabels = this._showBlockLabels
+        // Pass down wave layers from the picker if they exist, to power the "Visual Layers" collision UI.
+        if (this._wavePicker) {
+            this._renderer._waveLayers = this._wavePicker.getLayers() || [];
+        }
         this._renderer.render()
         this._renderLegend(null)
         // Keep the cockpit's schedule summary current as bulk-scrape lands.
@@ -1238,9 +1278,17 @@ class FleetScheduleGridPanel {
             return (h < 10 ? "0" + h : h) + ":" + (r < 10 ? "0" + r : r)
         }
         const sign = s.deltaMin > 0 ? "+" : ""
+        const snapBadge = s.snappedToWave ? " ✨ (Snapped to Wave)" : "";
         this._flightDragReadoutEl.textContent =
             "Dep " + fmt(s.origStartMin) + " → " + fmt(s.origStartMin + s.deltaMin)
-            + "  (" + sign + s.deltaMin + " min)"
+            + "  (" + sign + s.deltaMin + " min)" + snapBadge;
+    }
+
+    _parseHHMM(timeStr) {
+        if (!timeStr) return null;
+        const parts = timeStr.split(":");
+        if (parts.length !== 2) return null;
+        return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
     }
 
     _hideFlightDragReadout() {

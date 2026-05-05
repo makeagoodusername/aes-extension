@@ -359,6 +359,22 @@ class FleetScheduleGridRenderer {
                 "Day " + (FleetScheduleGridRenderer.DAY_NAMES[b.dayIdx] || b.dayIdx),
                 Math.round(b.durationMin) + " min"
             ]
+
+            // ORS INTEGRATION: Try to append ORS/pricing data if it is available in the scrape
+            if (b.flight && b.flight.orsMetrics) {
+                 const loadFactor = Math.round(b.flight.orsMetrics.loadFactor * 100);
+                 titleParts.push("ORS: " + loadFactor + "% LF (" + b.flight.orsMetrics.rating + "★)");
+
+                 // Show a tiny dot indicator for poor ORS load factor directly on the block UI
+                 if (loadFactor < 50) {
+                     const warningDot = document.createElement("div");
+                     warningDot.style.cssText = "position:absolute;bottom:2px;right:2px;width:6px;height:6px;border-radius:50%;background-color:" + (T ? T.color.rust : "#B8472A") + ";";
+                     warningDot.title = "Poor ORS load factor (" + loadFactor + "%)";
+                     el.appendChild(warningDot);
+                     el.style.border = "1px solid " + (T ? T.color.rustDeep : "#8B3520");
+                     titleParts.unshift("⚠️ LOW LF");
+                 }
+            }
         } else if (b.kind === "location") {
             const iata = b.location && b.location.iata ? b.location.iata : ""
             el.style.background = T ? T.color.bone3 : "#E0DAC8"
@@ -476,6 +492,43 @@ class FleetScheduleGridRenderer {
         }
 
         return el
+    }
+
+    _checkCollisions(block, aircraftId, dayIdx) {
+        // If wave layers are loaded via a parent component (like the wave picker in panel.js),
+        // they are passed down in `this._waveLayers`. We do a quick check to see if the block
+        // time window overlaps but falls partially outside an expected connection window.
+        if (!this._waveLayers || !this._waveLayers.length || block.kind !== "flight") return null;
+
+        const startMin = block.startMin;
+        const endMin = block.endMin != null ? block.endMin : (block.startMin + block.durationMin);
+        let collisions = [];
+
+        for (const layer of this._waveLayers) {
+            if (!layer.days || !layer.days[dayIdx] || layer.role !== "active") continue;
+
+            // Example collision logic based on arrival/departure windows.
+            if (layer.arrivalWindow && layer.departureWindow) {
+                const arrWinStart = (this._parseHHMM(layer.arrivalWindow.start) || 0) + (layer.timeShiftMin || 0) + (layer.arrShiftMin || 0);
+                const arrWinEnd = (this._parseHHMM(layer.arrivalWindow.end) || 0) + (layer.timeShiftMin || 0) + (layer.arrShiftMin || 0);
+                const depWinStart = (this._parseHHMM(layer.departureWindow.start) || 0) + (layer.timeShiftMin || 0) + (layer.depShiftMin || 0);
+                const depWinEnd = (this._parseHHMM(layer.departureWindow.end) || 0) + (layer.timeShiftMin || 0) + (layer.depShiftMin || 0);
+
+                // If a flight's arrival happens AFTER the departure window starts, or its departure happens BEFORE the arrival window ends,
+                // it fundamentally breaks the wave connectivity pattern.
+                if (endMin > depWinStart && startMin < depWinEnd) {
+                     collisions.push(layer);
+                }
+            }
+        }
+        return collisions;
+    }
+
+    _parseHHMM(timeStr) {
+        if (!timeStr) return null;
+        const parts = timeStr.split(":");
+        if (parts.length !== 2) return null;
+        return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
     }
 
     _fireFilterEvent() {
