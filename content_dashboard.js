@@ -1062,12 +1062,12 @@ function displayIndex(index) {
 
 function displayIndexChange(index) {
     if (index > 0) {
-        return ' (<span class="good">+' + index + '</span>)';
+        return ' (<span class="good">+' + escapeHtml(index) + '</span>)';
     }
     if (index < 0) {
-        return ' (<span class="bad">' + index + '</span>)';
+        return ' (<span class="bad">' + escapeHtml(index) + '</span>)';
     }
-    return ' (<span class="warning">' + index + '</span>)';
+    return ' (<span class="warning">' + escapeHtml(index) + '</span>)';
 }
 //Display General
 function displayGeneral() {
@@ -3126,7 +3126,7 @@ async function displayStationAutomation() {
                 $('<td></td>').text(row.iata),
                 $('<td></td>').text(row.country),
                 $('<td></td>').text(row.chunkIdx + 1),
-                $('<td></td>').html('<span class="' + klass + '">' + row.status + '</span>'),
+                $('<td></td>').html('<span class="' + klass + '">' + escapeHtml(row.status) + '</span>'),
                 $('<td></td>').text(row.detail)
             ));
         });
@@ -3617,7 +3617,7 @@ async function displayUsedAircraftScanner() {
         const done = counts.ok + counts.error + counts.timeout;
 
         scanStatusInline.html(
-            "<strong>" + session.status.toUpperCase() + "</strong> "
+            "<strong>" + escapeHtml(session.status.toUpperCase()) + "</strong> "
             + "— preset: " + escapeHtml(session.presetName || "(unsaved)") + " "
             + "— " + done + "/" + total + " complete "
             + "(" + counts.inflight + " in flight, " + counts.error + " errors, " + counts.timeout + " timeouts)"
@@ -3673,7 +3673,7 @@ async function displayUsedAircraftScanner() {
         };
         const color = colors[status] || "#666";
         return '<span style="display:inline-block; padding:2px 8px; border-radius:4px; '
-            + 'background:' + color + '; color:white; font-size:85%;">' + status + '</span>';
+            + 'background:' + color + '; color:white; font-size:85%;">' + escapeHtml(status) + '</span>';
     }
 
     function escapeHtml(s) {
@@ -3878,9 +3878,9 @@ async function displayFlightsFrom() {
         if (!scan) return;
         const phase = scan.progress && scan.progress.phase ? scan.progress.phase : "";
         const parts = [
-            "<strong>" + scan.iata + "</strong>",
-            scan.status.toUpperCase(),
-            phase ? "(" + phase + ")" : ""
+            "<strong>" + escapeHtml(scan.iata) + "</strong>",
+            escapeHtml(scan.status.toUpperCase()),
+            phase ? "(" + escapeHtml(phase) + ")" : ""
         ].filter(Boolean);
         statusBlock.html('<div>' + parts.join(" — ") + (scan.error ? ' <span style="color:#dc2626;">' + escapeHtml(scan.error) + '</span>' : '') + '</div>');
     }
@@ -3946,10 +3946,10 @@ async function displayFlightsFrom() {
         routesBlock.empty();
         const rec = await FlightsFromStore.loadAirport(iata);
         if (!rec || !rec.routes || !rec.routes.length) {
-            routesBlock.html('<p style="color:#666;">No routes stored for ' + iata + '.</p>');
+            routesBlock.html('<p style="color:#666;">No routes stored for ' + escapeHtml(iata) + '.</p>');
             return;
         }
-        routesBlock.append('<h4 style="margin:0 0 6px 0;">' + iata + (rec.airportName ? ' — ' + escapeHtml(rec.airportName) : '') + ' · ' + rec.routes.length + ' routes</h4>');
+        routesBlock.append('<h4 style="margin:0 0 6px 0;">' + escapeHtml(iata) + (rec.airportName ? ' — ' + escapeHtml(rec.airportName) : '') + ' · ' + rec.routes.length + ' routes</h4>');
         const table = $('<table class="table table-bordered table-striped" style="font-size:90%;"></table>');
         table.append('<thead><tr>'
             + '<th>Dest</th><th>Name</th>'
