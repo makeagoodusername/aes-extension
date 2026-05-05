@@ -823,139 +823,35 @@ After seeding demand (paxScore = 10/10 for ATL): Pax LF jumps from 0.75 → 0.95
 
 ---
 
-## 16 · Roadmap (letter-coded, prioritised)
+## 16 · Strategic Roadmap (Updated)
 
-Letters are stable across commits and breakdown-tooltip references. Status reflects HANDOVER.md as of v0.6.9-beta — see HANDOVER §9 for the current open-work list.
+The project roadmap has been fundamentally restructured into four Core Strategic Themes to address current stability issues and provide a clear path from fixing the foundation to building the ultimate multi-account "Canopy".
 
-### Status overview
+### Phase 1: Foundation & Stability (Immediate Priority)
+*Context: The existing files do not work well. Many features are unstable, buttons are dud, and performance is suffering. Before stacking more features, we must fix the foundation.*
 
-| Letter | Item | Status |
-|---|---|---|
-| **A** | Fuel cost automation (world price + per-aircraft burn) | ✅ Shipped Phase 2.7. Scrapes ASc$/l from `/action/portal/index`. When **Auto (per-type fuel)** is on, fuel cost per flight = (cycle_L + per_km_L × dist × 2) × ASc/l ÷ 100. Per-type cycle/per_km from a heuristic (loadProxy + speedClass) calibrated against forum data within ±15%; per-type override available. |
-| **B** | Yield-by-demand modulation (pax + cargo) | ✅ Shipped Phase 2.5 |
-| **C** | Crew + maintenance + other-fixed costs | ✅ Shipped Phase 2.5 |
-| **L** (legacy) | Aircraft-age fuel penalty (`fuelAgePenaltyPerYear`) | ✅ Shipped Phase 2.5. (The letter "L" has since been reassigned to the multi-account canopy roadmap item — see new entry below. The fuel-age penalty does not need a letter any more, retaining the historical row only for traceability.) |
-| **D** | Distance cache invalidation | ✅ Shipped Phase 2.6 |
-| **E** | Per-route LF / yield override | ✅ Shipped Phase 2.6 |
-| **F** | Full carrier list per route + AS-native enterprise enrichment + contractual partners | ✅ **All slices shipped.** Slice 1: per-pair flightsfrom carriers scrape + colored intensity badge. Slice 2: AS-native banner/avatar enrichment via `/app/info/enterprises/<id>` cache. Slice 3 (this session): contractual partners (alliance / interlining / lessor) glyphs in the Cmp popover, sourced from your-own `?tab=1` page. See §19 (Carriers). |
-| **G** | Yield-timeline / actual-yields feedback | ✅ **Slice 1 shipped.** Closed-loop estimator-vs-actuals attribution; per-route snapshot history, ASCII sparkline + tail-mix tooltip extension, "Calibrate from actuals" affordance in the per-route override editor. Slice 2 (delta-mode + auto-snapshot + batch-calibrate) deferred. See §20 (Yield Feedback). |
-| **H** | Wave + interlining + slot management workspace | Tier 3, ~600 LOC, multi-session. Open. |
-| **I** | ORS-aware pricing simulation | ✅ **Slice 1 shipped.** New panel mode (🧪 toggle) + `modules/route-assistant/ors-model.js` (pure-function simulator). Closed-form rating shift (linear-in-percent) → numeric-stable softmax share → pool×share for pax/wk → existing profit estimator with overrides for revenue/profit. Per-route T calibration via cached marketShare leaderboard. Read-only against AS. **Slice 2 deferred:** cargo branch, Save-as-override CTA, multi-route batch sweep, sensitivity sparkline, three-class price sliders, frequency synthesis. See HANDOVER §1 + §10 for the full pipeline + invariants. |
-| **J** | Used Aircraft Scanner — GUI + smarter scoring + frequency-aware route-fit | ✅ **Slices 1–4 v3 shipped.** Family-card grid, six deal columns ($/seat, $/seat·km/yr, BE days, Maint pill, Fleet badge, Route-fit), tooltips on every column, and v3 route-fit reads `weeklyFlights` for a weekly-frequency capacity gate. See §23 (Used Aircraft Scanner). |
-| **K** | Deeper per-route demand from AS market analysis | ✅ **Shipped.** Per-class historic via `?payload=` query param on the markets page, inventory-page scraper for RM buckets, pure-function demand-derivator computing pool / elasticity / RM tightness. New "Demand depth" expander + 5 scoring fields + 6 columns. Profit estimator gains opt-in `useRealDemandForLF`. Unblocked I. See §22 (Demand Depth). |
-| **Auto-Pricing T1** | Live route-data scrape (scheduling page) | ✅ Shipped. `routeAssistant:ticketPrice:<HUB>-<DEST>` carries `dailyFlights[7]`, `weeklyFlights`, primary aircraft + cruise speed. Eq/Dep/Wk columns on the panel. See §18 (Auto-Pricing). |
-| **Auto-Pricing T2a** | Markets-page scraper | ✅ Shipped. 4 split key families (`competitors`, `ownPricing`, `marketShare`, `historic`) under `routeAssistant:markets:*:<HUB>-<DEST>`. Mkt%/Cmp#/Cmp$/Drft columns. See §18. |
-| **Auto-Pricing T2b** | ORS rank | ✅ Shipped. `/app/info/ors` GET → POST handshake, every connection cached, 5 rank flavors + 4 ratings exposed. Concurrency=2, stagger=1500ms, circuit breaker on 3× consecutive 429/503. See §21 (ORS Rank). |
-| **Auto-Pricing T3** | Apply / write-back | **OPEN — HIGH risk.** POST to `/app/com/markets/<HUB><DEST>?<wicket>-pair~form` with `classes:prices:N:newPrice` body. One-click + batch-confirm by default; silent auto-apply behind `settings.pricing.silentAutoEnabled`. |
-| **Service Profiles** | Per-tail Y/C/F seats + per-class fares + AS service-profile auto-detect | ✅ Shipped. Replaces manual class-mix / service-level inputs with values scraped from the Fleet, Markets, and serviceProfile pages. See §18 + §24 (Service Profiles). |
-| **Tabbed RA view** | Pax / Cargo / All view modes | ✅ Shipped. `settings.routeAssistant.viewMode` gates which scoring fields contribute and which columns render. |
-| **L** (new) | Multi-account "canopy" — manage multiple AS accounts as one virtual airline group | **OPEN — Tier 4, ~2000+ LOC, ultimate roadmap target.** Account-vault store, background tab orchestrator, cross-account aggregator, conflict flagging. Prereqs: every existing scraper must become canopy-aware first (refactor work). See HANDOVER §9 row "L (new — user-requested, ultimate goal)" for the full design sketch. |
+- **Codebase Modularization:** Break apart massive monolithic files (especially `panel.js`, which is ~2700 lines). Separate UI rendering, state management, and business logic into distinct, maintainable modules.
+- **Bug Squashing & UX Polish:** Audit all UI surfaces. Fix dud buttons, resolve runtime errors, and ensure all existing features function correctly without silently failing or throwing exceptions.
+- **Performance Tuning:** Optimize renders and storage access to prevent the extension from slowing down the browser or the game.
 
-### Open work (HANDOVER §9 — current as of v0.6.9-beta)
+### Phase 2: Closed-Loop Automation (The "Make Money" Phase)
+*Context: Focus strictly on features that directly automate the most tedious parts of the game and optimize revenue.*
 
-| Item | Tier | Size | Status |
-|---|---|---|---|
-| **Auto-Pricing T3 — Apply / write-back** | 3 | ~200 LOC | OPEN. Highest-risk gate in the auto-pricing roadmap. Confirmed posture: per-route Apply + batch-confirm modal default, silent auto-apply behind `settings.pricing.silentAutoEnabled`. |
-| ~~**I — ORS-aware pricing simulation**~~ | 3 | ~625 LOC | ✅ **Slice 1 shipped.** See HANDOVER §1 (ORS Sandbox) for the full pipeline. Slice 2 (cargo branch, Save-as-override CTA, batch sweep, sensitivity sparkline, three-class sliders, frequency synthesis) deferred. |
-| **H — Wave + interlining + slot workspace** | 3 | ~600 LOC | OPEN. Multi-session build. Reuses `modules/schedule-management/`. |
-| **G slice 2 — Yield-feedback delta-mode + auto-snapshot** | 2 | ~150 LOC | OPEN. Snapshot-to-snapshot deltas for true periodic yield (currently cumulative averages); auto-snapshot-on-mount; batch "calibrate all flagged" CTA. |
-| **J slice 5+ — Scanner roadmap continuation** | 2 | ~80–150 LOC each | OPEN buckets (e.g. break-even tooltip surfacing daily-revenue inputs already on the row). |
-| **F slice 4 — IL discovery beyond own enterprise** | 2 | ~80 LOC | OPEN — only relevant if user wants reciprocal-IL detection (currently only your-own page is scraped). |
-| **L — Multi-account "canopy"** | 4 | ~2000+ LOC | OPEN — ultimate roadmap target. Prereq: every existing scraper must be canopy-aware first. See HANDOVER §9 for the full design sketch. |
+- **Auto-Pricing Write-back (Tier 3.2 & 3.3):** Move from dry-run to actively writing prices back to the game. Includes single-route writes, bulk writes, and silent-auto updates based on ORS Sandbox projections.
+- **Schedule Optimization (Wave Overlay H Slices 2+):** Advance the Wave overlay so you can drag-and-drop slots and save schedules directly to the `ScheduleStore`.
 
-### Tier 3 — large, dedicated planning sessions
+### Phase 3: Advanced Decision Support (The "Work Smarter" Phase)
+*Context: Enhance the tools that help you make strategic decisions and visualize data effectively.*
 
-#### G — Yield-timeline integration / actual-yields feedback loop
+- **ORS Sandbox Enhancements (Letter I, Slices 4-6):** Sweet-spot finder, sensitivity heatmaps, historical pax/wk overlays, and A/B scenario comparisons.
+- **Fleet & Market Intelligence:** Fleet age/condition heatmaps to predict retirement clusters, and comparing two enterprises side-by-side to analyze market share battles.
 
-✅ **Slice 1 shipped.** Closed-loop estimator-vs-actuals attribution; per-route snapshot history at `routeAssistant:yieldHistory:<HUB>-<DEST>` (newest 12 by default); ASCII sparkline + tail-mix appended to the existing $/flt tooltip; "Calibrate from actuals" button in the per-route override editor pre-fills the yield value that would make the estimator match the latest snapshot. Attribution mode user-selectable (default: frequency-weighted). See **§19 (Yield Feedback)** for the full algorithm. Slice 2 (delta-mode + auto-snapshot + batch-calibrate) deferred — listed under Open work above.
+### Phase 4: Scale & Canopy (The "Empire" Phase)
+*Context: When the core game loop for one airline is perfected, expand it to manage a whole empire.*
 
-#### H — Wave + interlining + slot management workspace (~600 LOC, multi-session, OPEN)
+- **Project Canopy (L):** Multi-account management. A single AES interface holding saved credentials and session cookies for every account, transparently logging in/out, and aggregating routes, fleets, yields, and market shares into one consolidated cross-server dashboard.
 
-The user's mental model: integrate the Route Assistant with the existing `modules/schedule-management/` (which already has `range-buckets.js`, `schedule-builder.js`, `schedule-panel.js`, `presets-store.js`) into a single workspace where they can:
-- See all current routes laid out as a wave-and-slot timeline.
-- Overlay competitor schedules (sourced from F).
-- Plan interlining (sharing flights with partner airlines).
-- Manipulate slot allocations and see how proposed changes affect connection-graph and ORS rank.
-
-**Reuse:**
-- `ScheduleFactors` (range-buckets.js): default range buckets, `aircraftCanFly`, `kmToNm/nmToKm`, `haversineNm`, `parseHHMM/formatHHMM`, `withinWindow`, `resolveDayMask`. Fully reusable.
-- `ScheduleBuilder` (schedule-builder.js): preset → routes → wave assignment → flight evaluation. Already produces wave-aware flight records with warnings.
-- `SchedulePresets` (presets-store.js): wave templates, factor blocks.
-- `SchedulePanel` (schedule-panel.js): existing UI that's currently isolated to the dashboard.
-
-**New work:**
-- `modules/route-assistant/wave-overlay.js` — bridges Route Assistant rows + ScheduleBuilder placements. Given current scoring weights + selected aircraft, produces a "recommended wave structure" by feeding the top-N rows into ScheduleBuilder.assignRoutes().
-- `modules/route-assistant/interline-store.js` — track interlining partners per route. `routeAssistant:interline:<HUB>-<DEST>` → `[{partner, productClass, share}]`. Manual entry + UI; later sourced from real AS data if scrapable.
-- `modules/route-assistant/slot-store.js` — per-airport slot inventory and planned allocations. Persistent.
-- New panel mode: "Wave View" toggle on the existing Route Assistant panel — switches the table to a Gantt-style timeline rendering (hours of day on x-axis, routes on y-axis, wave bands shaded). Click a route to drag/edit its slot.
-- Connection-graph computation: given placements, compute how many destination pairs become online connections (within minTransferMinutes / maxTransferMinutes).
-
-**Out of scope for v1:**
-- Auto-optimise (LP / heuristic) — start with manual placement + score.
-- Multi-hub network optimisation — single-hub view only.
-
-This is a major piece. Worth its own design doc once Tier 1 + F + G are done so the integration points are stable.
-
-#### I — ORS-aware pricing simulation (slice 1 — ~625 LOC, ✅ SHIPPED)
-
-Slice 1 ships a forward-projection layer on top of cached F (carriers + enterprise meta) + G (yield feedback) + K (demand depth) + Tier 2b (ORS rank). New panel mode toggled by 🧪 in the panel header replaces the table with a per-route pricing simulator. Read-only against AS — no scraping, no writes back to the game in slice 1.
-
-**Module split:**
-- `modules/route-assistant/ors-model.js` (~510 LOC, NEW) — pure-function simulator. Public API `RouteAssistantOrsModel.project({route, scenario, modelParams, economics, useRealDemandForLF})` returning `{baseline, projected, delta, perClass, notes, modelParams, scaledPrices, …}`. Plus `calibrateTemperature({allRatings, ourIndices, observedShare})` (bisection over `[1, 200]`) and `findOurInLeaderboard(marketSharePax, ourEnterpriseId)`. Reuses `RouteAssistantProfitEstimator.estimate` with `override.paxLF` / `override.yieldPerKm` for the revenue/cost half — slice 1 is a thin layer on existing plumbing.
-- `panel.js` (~1380 LOC of additions) — header toggle + render branch + 5 supporting render methods + settings drawer expander + right-click menu split.
-
-**Pipeline:**
-1. **Rating projection** (per cabin class). `newRating = clamp(base − α_price × ΔpriceRatio + α_comfort × Δcomfort, [0.5×, 1.5×] × base)`. Linear-in-percent (NOT log-ratio). Defaults α_price = 8 (rating points per ±100% price), α_comfort = 5 (per service-level step). Mutates only "every-leg-ours" connections; mixed-ownership multi-leg connections (interline) keep their rating fixed.
-2. **Rank projection.** Re-sort cached `byClass.<class>.connections[]` (top 50) by mutated rating descending; mirror `RouteAssistantOrsScraper.computeRanks` to derive `rankAny / rankFirstLegOurs / rankAllOurs / rankNonstop / rankBookable`.
-3. **Share projection.** Numeric-stable softmax `weights = exp((rating − maxRating) / T)`; `ourShare = sum(weights[i] for i in ourIndices) / sum(weights)`. Default T = 25; per-route override populated by Calibrate-T button.
-4. **Pax/week.** `paxDemandPool × ourShare`, with the pool first scaled by `(newPriceY/observedPriceY)^paxElasticity` when both are present.
-5. **Revenue/profit.** `RouteAssistantProfitEstimator.estimate({distanceKm, spec, frequency, paxScore, paxDemandPool, override: {paxLF, yieldPerKm}, economics, useRealDemandForLF, …})`.
-
-**UI structure:**
-- Header strip: title · `<HUB>→<DEST>` route label · "↗ Open route in AS" link · "Pick another" button. Empty state shows a route-picker dropdown sourced from `this.scoredRows.filter(r => r.orsByClass)`.
-- Two-column body: Scenario card (Y price multiplier slider + C/F preview labels + frequency input + comfort selector + Calibrate-T button + global-vs-perRoute T banner) and Outcome card (3-column Base / Projected / Δ table for rating, rank, share, pax/wk, rev/wk, profit/wk).
-- Notes footer — every model caveat surfaced as a list (clamped rating, mixed-ownership rows, no own connection, no demand pool, etc.).
-
-**Drill-in:** 🧪 header toggle (`settings.routeAssistant.orsSandbox.enabled`) and right-click row menu — 2-item ("Modify yield / LF…" preserves existing override-editor muscle memory + "Open in ORS Sandbox 🧪" routes to `_openInOrsSandbox`).
-
-**Mutual exclusion** with Wave View: branch order in `_renderRows` is Wave View → ORS Sandbox → table. Wave wins when both flags are on.
-
-**Calibrate-T:** solves the softmax equation for T given the cached `marketShare.pax[]` row matching `settings.carriers.myEnterpriseIds[0]`. Refuses when marketShare missing, our enterprise not in leaderboard, or `Math.abs(scrapedAt_marketShare − scrapedAt_ors) > 7 days`. Persists per-route under `settings.routeAssistant.orsSandbox.perRouteTemperature[<HUB>-<DEST>]`. Returns the closer endpoint when target share is unbracketable in `[1, 200]` (informative — user reads "T = 200" as "share can't be fully reproduced from rating alone").
-
-**Slice 2 deferrals:** cargo branch (parallel cargo elasticity + share projection from `byClass.CARGO`); "Save scenario as route override" CTA writing paxLF/yieldPerKm/serviceLevel; multi-route batch sweep; sensitivity sparkline; three-class price sliders (independent Y/C/F adjustments); frequency synthesis (option b — generate connection rows when freq exceeds current); auto-calibrate-on-mount; warning banner when calibration is unbracketed.
-
-**Slice 2c — per-route per-class rating-price elasticity (✅ shipped).** Replaces the global `α_price = 8` with a per-route per-class value derived from observations logged on every ORS scrape. Pipeline:
-
-1. **Observation log** at `routeAssistant:ratingObservations:<HUB>-<DEST>` (directional, append-only, FIFO cap 50, 90d age prune). Each scrape's `_logRatingObservation` (inside `ors-scraper.js`, NOT panel — bulk syncs covered) joins the saved ORS record's `byClass.<cls>.ourTopRating` with the matching markets-page `ownPricing.prices[<cls>]`, plus per-class connection counts (own + competitor), `comfortLevel`, and timestamps for both scrapes. Auto-log default `true` (stable across versions; flagged in settings-store comment).
-2. **Per-class regression** in `RouteAssistantDemandDerivator._ratingPriceElasticity(observations, cls, notes, opts)` — five confounder filters (>24h pricing/ORS gap, comfort change, ownConnections delta ≥ 1, competitor count churn > 20%) + sample floor (≥ 4 surviving) + range gate (max-min priceDev% ≥ 8% lever arm) + distinct-bucket gate (≥ 2 buckets at 1% rounding) + OLS via existing `_linregSlope` + slope→magnitude negation + non-monotone reject + `[0, 50]` clip. Returns `{alpha, usedCount}` per class; pushes per-skip notes to `ratingDerivationNotes` so the UI can surface the gating reason.
-3. **Cascade resolver** in `panel.js:_recomputeOrsSandbox`. Per-class α resolution order: **override > derived (≥minObs) > siblingDerived > fleetMedian > global default**. Sibling cascade is single-hop (only fires from classes whose source on this route is exactly `derived`). Fleet-median computed across all rows once per `_applyCachedDemand` pass, skipped when fewer than 5 routes contributed (small-sample medians are unstable). The global default is `settings.orsSandbox.modelParams.ratingPriceElasticity` (default 8) — unchanged from slice 1.
-4. **Sign convention.** α is stored everywhere as a positive magnitude in `[0, 50]`. The OLS slope is naturally negative on well-behaved routes; negate ONCE inside `_ratingPriceElasticity`. The model formula at `ors-model.js:466` keeps its existing `base − α × priceRatio` shape (no `Math.abs` at the consumer). Reads use `Number.isFinite`, never `||`, so a user override of `0` ("rating doesn't respond to price for this class on this route") is honored.
-5. **Manual override store** at `routeAssistant:ratingAlpha:<HUB>-<DEST>` (sibling to `route-overrides-store`, kept SEPARATE because the existing `_clean` uses full-replace semantics that would silently erase α fields on every override save without them). Optional `{Y, C, F}` fields, range `[0, 50]`. The override-editor UI is a collapsed `<details>` expander mounted INSIDE the Outcome card via `_buildOrsSandboxAlphaExpander(result, route)`; each row shows the resolved α + source label and lets the user pin a manual value. Save wraps in `_undoableSave`.
-6. **Notes footer.** Model emits one source-labeled line per class: "α=6.2 (derived from 12 observations)" / "α=8.5 (borrowed from sibling class on this route)" / "α=7.1 (fleet median, n=14)" / "α=8 (global default — no per-route data yet)". Plus all derivation-skip reasons from the regression's confounder pipeline.
-7. **Cold-start UX.** Slice 2c does literally nothing on day one. As scrapes accumulate observations passing the gates, derivation kicks in per class. The cascade ensures partial-coverage routes (e.g. user only adjusts Y prices) still get sensible C/F αs from the sibling-class on the same route, then fleet median, only falling through to the global default when nothing else applies. Surface visible in the per-class α expander's "auto: X (source)" hint text + the model's notes footer.
-8. **Settings drawer.** `_renderOrsSandboxSection` adds an "Auto-log rating observations on every ORS scrape" checkbox + a total observation count + a destructive "Reset all observations" button (confirms before wiping; manual α overrides are NOT touched).
-
-#### J — Used Aircraft Scanner overhaul
-
-✅ **Slices 1, 2, 3, 4 v3 all shipped.** See **§22 (Used Aircraft Scanner)** for the full per-slice breakdown.
-
-#### K — Deeper per-route demand from AS market analysis
-
-✅ **Shipped.** See **§21 (Demand Depth)** for the full design + per-class historic + RM bucket parsing + demand-derivator.
-
-### Tier 4 — speculative / explicit non-goals
-
-| Item | Notes |
-|---|---|
-| AS rate-limit backoff | The ORS scraper already has a circuit breaker (3× consecutive 429/503 → 10-min cooldown). Other scrapers don't yet — speculative. |
-| AS scheduling-page state side-effects | HANDOVER §7. Watch for Wicket session weirdness from tier-1 distance fetches. |
-| Schedule writing | Out of scope until Auto-Pricing Tier 3 ships and proves the write-back pattern. |
-| Aircraft purchasing from panel | Out of scope until user asks. |
-| Per-route load factors from competitor schedules | Subsumed by K + I; not pursued. |
-| **L (multi-account canopy)** | Listed under Open work above. ~2000+ LOC. Tier 4 only because it requires every existing scraper to become canopy-aware first. |
-
----
-
+*(Legacy granular slice planning has been archived in favor of this thematic structure to ensure stability is prioritized before scaling).*
 ## 17 · Open invariants (don't break these without checking)
 
 From `HANDOVER.md §12` plus Phase 2 additions:
