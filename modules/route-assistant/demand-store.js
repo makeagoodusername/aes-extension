@@ -144,16 +144,17 @@ class RouteAssistantDemandStore {
             }
             const keys = Object.keys(writes)
             const chunkSize = RouteAssistantDemandStore.WRITE_CHUNK_SIZE || 250
+            const promises = []
             for (let i = 0; i < keys.length; i += chunkSize) {
                 const chunk = {}
                 for (const key of keys.slice(i, i + chunkSize)) chunk[key] = writes[key]
                 if (typeof AesWriteThrough !== "undefined") {
-                    await AesWriteThrough.set(chunk)
+                    promises.push(AesWriteThrough.set(chunk))
                 } else {
-                    await chrome.storage.local.set(chunk)
+                    promises.push(chrome.storage.local.set(chunk))
                 }
-                if (i + chunkSize < keys.length) await RouteAssistantDemandStore._yield()
             }
+            await Promise.all(promises)
             RouteAssistantDemandStore._emitSaved(hint)
         }
     }
