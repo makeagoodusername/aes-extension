@@ -622,10 +622,12 @@ class MarketPanelFilterChips {
             pill.type = "button"
             pill.className = "aes-chip aes-chip--active"
             pill.title = "Remove this filter"
+            pill.setAttribute("aria-label", "Remove filter: " + p.label)
             pill.style.cssText = "display:inline-flex;align-items:center;gap:4px;"
             pill.append(document.createTextNode(p.label))
             const x = document.createElement("span")
             x.textContent = "×"
+            x.setAttribute("aria-hidden", "true")
             x.style.cssText = "font-weight:bold;opacity:0.75;"
             pill.append(x)
             pill.addEventListener("click", p.remove)

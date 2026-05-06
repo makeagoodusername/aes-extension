@@ -1,3 +1,0 @@
-## 2024-03-24 - Custom Button Focus States
-**Learning:** Custom UI components defined within HTML files using specific class names (e.g., `.aes-data-tools__btn` and `.aes-data-tools__select` in `options.html`) were missing the standard global `:focus-visible` ring defined in the main CSS file for other components (like `.aes-btn`). This means keyboard users navigating those custom interfaces had no clear visual indicator.
-**Action:** Always verify that localized or page-specific custom UI components implement the same focus-visible design tokens as the global components to ensure a consistent and accessible keyboard navigation experience.
