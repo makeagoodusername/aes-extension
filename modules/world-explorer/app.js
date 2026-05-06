@@ -15,19 +15,76 @@
 
     let map = null;
     let board = null;
+    let details = null;
+    let networkGraph = null;
+    let activeRoutes = [];
 
     async function boot() {
         console.log("World Explorer Booting")
 
         map = new WorldExplorerMap("aes-we-map");
         board = new WorldExplorerDeparturesBoard("aes-we-board");
+        details = new WorldExplorerDetailsPane("aes-we-details");
+        networkGraph = new WorldExplorerNetworkGraph("aes-we-network-graph");
 
         map.init();
         board.init();
+        details.init();
+        networkGraph.init();
+
+        // Setup Tabs
+        const btnMap = document.getElementById("we-tab-map");
+        const btnNetwork = document.getElementById("we-tab-network");
+        const viewMap = document.getElementById("we-view-map");
+        const viewNetwork = document.getElementById("we-view-network");
+
+        if (btnMap && btnNetwork) {
+            btnMap.addEventListener("click", () => {
+                btnMap.style.background = "#3b82f6";
+                btnMap.style.color = "white";
+                btnNetwork.style.background = "#e2e8f0";
+                btnNetwork.style.color = "#334155";
+                viewMap.style.display = "block";
+                viewNetwork.style.display = "none";
+                map.resize();
+            });
+
+            btnNetwork.addEventListener("click", () => {
+                btnNetwork.style.background = "#3b82f6";
+                btnNetwork.style.color = "white";
+                btnMap.style.background = "#e2e8f0";
+                btnMap.style.color = "#334155";
+                viewMap.style.display = "none";
+                viewNetwork.style.display = "block";
+                networkGraph.resize();
+            });
+        }
 
         // Setup syncing
+        // Setup Filters
+        const filterOurs = document.getElementById("we-filter-our-flights");
+        const filterComps = document.getElementById("we-filter-competitors");
+
+        function updateFilters() {
+            const filters = {
+                showOurFlights: filterOurs ? filterOurs.checked : true,
+                showCompetitors: filterComps ? filterComps.checked : true
+            };
+            map.setFilters(filters);
+            board.setFilters(filters);
+        }
+
+        if (filterOurs) filterOurs.addEventListener("change", updateFilters);
+        if (filterComps) filterComps.addEventListener("change", updateFilters);
+
+        // Initial filters setup
+        updateFilters();
+
         map.onSelect((id) => {
             board.selectRoute(id);
+            const route = activeRoutes.find(r => r.id === id);
+            if (route) details.setRoute(route);
+            else details.clear();
         });
 
         board.onHover((id) => {
@@ -37,6 +94,9 @@
 
         board.onSelect((id) => {
             map.selectRoute(id);
+            const route = activeRoutes.find(r => r.id === id);
+            if (route) details.setRoute(route);
+            else details.clear();
         });
 
         const server = (typeof AES !== "undefined" && AES.getServerName) ? AES.getServerName() : localStorage.getItem("aes_active_server");
@@ -49,7 +109,6 @@
             accountId = Object.keys(data.aesAccounts?.accounts || {})[0] || null;
         }
 
-        let activeRoutes = [];
         if (server && accountId && typeof chrome !== "undefined" && chrome.storage) {
             const scheduleKey = `scheduleStore:${server}:acct:${accountId}:active`;
             const data = await chrome.storage.local.get([scheduleKey]);
@@ -80,6 +139,7 @@
 
         if (activeRoutes.length === 0) {
             activeRoutes = [
+ feat/world-explorer-map-interactions-889865835095403658
                 { id: "1", hub: "JFK", dest: "LHR", hubLat: 40.64, hubLon: -73.78, destLat: 51.47, destLon: -0.45, airline: "Fly Nyon", isOurs: true, isAlliance: false, flightNumber: "FN101" },
                 { id: "2", hub: "JFK", dest: "CDG", hubLat: 40.64, hubLon: -73.78, destLat: 49.00, destLon: 2.55, airline: "Air France", isOurs: false, isAlliance: false, flightNumber: "AF001" },
                 { id: "3", hub: "LHR", dest: "DXB", hubLat: 51.47, hubLon: -0.45, destLat: 25.25, destLon: 55.36, airline: "Emirates", isOurs: false, isAlliance: false, flightNumber: "EK002" },

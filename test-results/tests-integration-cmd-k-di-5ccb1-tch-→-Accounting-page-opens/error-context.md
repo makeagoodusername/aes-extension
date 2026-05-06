@@ -12,17 +12,15 @@
 # Error details
 
 ```
-Error: expect(locator).toBeVisible() failed
-
-Locator: locator('.aes-menu__trigger').filter({ hasText: 'AES' }).first()
-Expected: visible
-Timeout: 10000ms
-Error: element(s) not found
-
-Call log:
-  - Expect "toBeVisible" with timeout 10000ms
-  - waiting for locator('.aes-menu__trigger').filter({ hasText: 'AES' }).first()
-
+Error: browserType.launchPersistentContext: Executable doesn't exist at /home/jules/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell
+╔════════════════════════════════════════════════════════════╗
+║ Looks like Playwright was just installed or updated.       ║
+║ Please run the following command to download new browsers: ║
+║                                                            ║
+║     npx playwright install                                 ║
+║                                                            ║
+║ <3 Playwright Team                                         ║
+╚════════════════════════════════════════════════════════════╝
 ```
 
 # Test source
@@ -56,7 +54,8 @@ Call log:
   26 |         || "https://free1.airlinesim.aero/app/enterprise/dashboard?aes-fixture=1"
   27 |     const modKey = process.platform === "darwin" ? "Meta" : "Control"
   28 |
-  29 |     const ctx = await chromium.launchPersistentContext(profileDir, {
+> 29 |     const ctx = await chromium.launchPersistentContext(profileDir, {
+     |                 ^ Error: browserType.launchPersistentContext: Executable doesn't exist at /home/jules/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell
   30 |         headless: true,
   31 |         args: [
   32 |             `--disable-extensions-except=${extPath}`,
@@ -74,8 +73,7 @@ Call log:
   44 |         await page.goto(dashboardUrl, {waitUntil: "domcontentloaded"})
   45 |
   46 |         await expect(page.locator(".aes-menu__trigger", {hasText: "AES"}).first())
-> 47 |             .toBeVisible({timeout: 10000})
-     |              ^ Error: expect(locator).toBeVisible() failed
+  47 |             .toBeVisible({timeout: 10000})
   48 |         await expect(page.locator("#aes-central-hub").first())
   49 |             .toBeVisible({timeout: 10000})
   50 |
