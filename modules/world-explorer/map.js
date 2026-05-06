@@ -65,7 +65,6 @@ class WorldExplorerMap {
                         <button id="we-btn-zoomin" style="width: 30px; height: 30px; font-weight: bold;">+</button>
                         <button id="we-btn-zoomout" style="width: 30px; height: 30px; font-weight: bold;">-</button>
                     </div>
-=======
                 <div class="aes-bridge__card-body" style="height: 400px; padding: 0; background-color: #f8fafc; overflow: hidden; position: relative;">
                     <canvas id="we-map-canvas" width="800" height="400" style="width: 100%; height: 100%; display: block;"></canvas>
  main
@@ -151,9 +150,56 @@ class WorldExplorerMap {
         this.draw();
     }
 
+    updateAirlineFilterOptions() {
+        const select = document.getElementById("we-filter-airline");
+        if (!select) return;
+
+        const currentVal = select.value;
+        select.innerHTML = '<option value="all">All Airlines</option>';
+
+        const airlines = new Set();
+        this.routes.forEach(r => {
+            if (r.airline) airlines.add(r.airline);
+        });
+
+        Array.from(airlines).sort().forEach(airline => {
+            const option = document.createElement("option");
+            option.value = airline;
+            option.textContent = airline;
+            select.appendChild(option);
+        });
+
+        if (airlines.has(currentVal)) {
+            select.value = currentVal;
+        }
+    }
+
+    generateAirlineColors() {
+        const airlines = new Set();
+        this.routes.forEach(r => {
+            if (r.airline) airlines.add(r.airline);
+        });
+
+        // A nice set of categorical colors for map lines
+        const colors = [
+            "#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6",
+            "#ec4899", "#06b6d4", "#f97316", "#84cc16", "#6366f1"
+        ];
+
+        let colorIdx = 0;
+        Array.from(airlines).sort().forEach(airline => {
+            if (!this.airlineColors.has(airline)) {
+                this.airlineColors.set(airline, colors[colorIdx % colors.length]);
+                colorIdx++;
+            }
+        });
+    }
+
     setRoutes(routes) {
         // Expected route format: { id, hubLat, hubLon, destLat, destLon, airline, isOurs, flights, ... }
         this.routes = routes;
+        this.updateAirlineFilterOptions();
+        this.generateAirlineColors();
         this.draw();
     }
 
@@ -275,6 +321,15 @@ class WorldExplorerMap {
         return false;
     }
 
+    shouldDrawRoute(route) {
+        if (this.filterOwnership === "ours" && !route.isOurs) return false;
+        if (this.filterOwnership === "competitors" && route.isOurs) return false;
+
+        if (this.filterAirline !== "all" && route.airline !== this.filterAirline) return false;
+
+        return true;
+    }
+
     drawRoute(route) {
         const p1 = this.project(route.hubLat, route.hubLon);
         const p2 = this.project(route.destLat, route.destLon);
@@ -367,6 +422,9 @@ class WorldExplorerMap {
 
             const p1 = this.project(route.hubLat, route.hubLon);
             const p2 = this.project(route.destLat, route.destLon);
+
+            // Scale the arc height based on zoom (same as in drawRoute)
+            const arcHeight = 30 * this.transform.k;
 
             // Fast bounding box check first
             const minX = Math.min(p1.x, p2.x) - threshold;
