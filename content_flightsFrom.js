@@ -506,11 +506,74 @@ function extractRoute(row, hubIata) {
     // a .ff-flights-daily span with text like "14-16 flights per day".
     // We try this path first, then fall back to generic selectors.
 
+    let nameAnchor = null;
+    let strong = null;
+    let dailyEl = null;
+    let airlineImg = null;
+    let airlineBadge = null;
+
+    let inRowName = false;
+    let inAirline = false;
+    let inAnchor = false;
+
+    // Single DOM walk to avoid multiple slow querySelectors per row
+    const walk = (node) => {
+        if (node.nodeType !== 1) return; // Only element nodes
+
+        const tagName = node.tagName;
+        const className = typeof node.className === 'string' ? node.className : '';
+
+        const wasInRowName = inRowName;
+        const wasInAirline = inAirline;
+        const wasInAnchor = inAnchor;
+
+        if (className.includes('ff-row-name')) inRowName = true;
+        if (className.includes('airline')) inAirline = true;
+
+        if (!nameAnchor && tagName === 'A' && node.hasAttribute('href')) {
+            const href = node.getAttribute('href');
+            if (inRowName || (href && href.startsWith('/'))) {
+                nameAnchor = node;
+                inAnchor = true;
+            }
+        }
+
+        // strong must be inside the anchor
+        if (!strong && tagName === 'STRONG' && inAnchor) {
+            strong = node;
+        }
+
+        if (!dailyEl && (className.includes('ff-flights-daily-desktop') || className.includes('ff-flights-daily'))) {
+            dailyEl = node;
+        }
+
+        if (!airlineImg && tagName === 'IMG' && (className.includes('ff-image-airline') || (inAirline && node.hasAttribute('alt')))) {
+            airlineImg = node;
+        }
+
+        if (!airlineBadge && (className.includes('flightsfrom-list-airline-ball') || className.includes('airline-ball'))) {
+            airlineBadge = node;
+        }
+
+        // Only traverse further if we haven't found everything
+        if (nameAnchor && strong && dailyEl && airlineImg && airlineBadge) return;
+
+        let child = node.firstElementChild;
+        while(child) {
+            walk(child);
+            child = child.nextElementSibling;
+        }
+
+        inRowName = wasInRowName;
+        inAirline = wasInAirline;
+        inAnchor = wasInAnchor;
+    };
+    walk(row);
+
     let destIata = null
     let destName = null
     let detailHref = null
 
-    const nameAnchor = row.querySelector(".ff-row-name a[href], a[href^='/']")
     if (nameAnchor) {
         const href = nameAnchor.getAttribute("href") || ""
         detailHref = href
@@ -533,7 +596,6 @@ function extractRoute(row, hubIata) {
             const m = /\b([A-Z]{3})\b/.exec(nameAnchor.textContent || "")
             if (m && m[1] !== hubIata) destIata = m[1]
         }
-        const strong = nameAnchor.querySelector("strong")
         if (strong) destName = (strong.textContent || "").trim()
     }
 
@@ -544,7 +606,6 @@ function extractRoute(row, hubIata) {
 
     // Frequency: prefer the dedicated `.ff-flights-daily*` span, fall back to
     // any per-day / per-week phrase anywhere in the row text.
-    const dailyEl = row.querySelector(".ff-flights-daily-desktop, .ff-flights-daily")
     let weeklyFlights = parseFlightFrequency(dailyEl ? (dailyEl.textContent || "") : null)
     if (!weeklyFlights) weeklyFlights = parseFlightFrequency((row.textContent || ""))
 
@@ -553,8 +614,6 @@ function extractRoute(row, hubIata) {
     // total airline count, so the Route Assistant's airlineCount column and
     // scoring still work via Array.isArray(r.airlines).
     let airlines = null
-    const airlineImg = row.querySelector("img.ff-image-airline, [class*='airline'] img[alt]")
-    const airlineBadge = row.querySelector(".flightsfrom-list-airline-ball, [class*='airline-ball']")
     if (airlineImg) {
         const primary = (airlineImg.getAttribute("alt") || airlineImg.getAttribute("title") || "").trim()
         let extra = 0
