@@ -13,6 +13,7 @@ function fakeDoc(rows) {
         querySelectorAll(sel) {
             if (sel !== "table tr") return []
             return rows.map(([label, value]) => ({
+                cells: [{textContent: label}, {textContent: value}],
                 querySelectorAll(innerSel) {
                     if (innerSel !== "th, td") return []
                     return [{textContent: label}, {textContent: value}]

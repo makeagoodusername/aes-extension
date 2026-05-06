@@ -71,7 +71,7 @@ class AESAircraftTypeSpecs {
 
         const trs = doc.querySelectorAll("table tr")
         for (const tr of trs) {
-            const cells = tr.querySelectorAll("th, td")
+            const cells = tr.cells || tr.querySelectorAll("th, td")
             if (cells.length < 2) continue
             const label = ((cells[0].textContent || "") + "").trim()
             const labelLow = label.toLowerCase()
