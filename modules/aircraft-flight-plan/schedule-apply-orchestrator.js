@@ -49,6 +49,16 @@
         }
 
         let r = null
+        if (mode === "auto") {
+            try {
+                r = await window.AesAfpFormDriver.fillAndSubmit(leg)
+                _toast("Auto-scheduled " + leg.destination + " · " + (leg.depTime || "—"));
+                return {ok: !!(r && r.ok !== false), mode, leg, set: r && r.set, missed: r && r.missed}
+            } catch (err) {
+                return {ok: false, mode, leg, message: String(err && err.message || err)}
+            }
+        }
+
         try { r = await window.AesAfpFormDriver.fill(leg) }
         catch (err) {
             return {ok: false, mode, leg, message: String(err && err.message || err)}
@@ -70,8 +80,8 @@
             return {ok: true, mode, leg, set: r && r.set, missed: r && r.missed}
         }
 
-        return {ok: false, mode, leg,
-            message: "dragSubmitMode=auto is reserved for a later phase."}
+        // mode === "auto" returns earlier. This path is unreachable.
+        return {ok: false, mode, leg, message: "Unknown dragSubmitMode"}
     }
 
     function _normaliseDropToLeg(drop) {

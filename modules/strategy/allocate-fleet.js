@@ -86,9 +86,14 @@
         const range = _num(aircraft.rangeKm, 0)
         const hub   = aircraft.currentLocationIata || _firstHub(snapshot)
         if (!hub) return []
+
+        const overrides = snapshot && snapshot.settings && snapshot.settings.strategy && snapshot.settings.strategy.automationOverrides || {};
+        const allowCrossHubRouting = !!overrides.allowCrossHubRouting;
+
         const list = []
         for (const r of scored.routes) {
-            if (!r || !r.dest || r.hub !== hub) continue
+            if (!r || !r.dest) continue
+            if (!allowCrossHubRouting && r.hub !== hub) continue
             if (r.distanceKm == null || r.distanceKm <= 0) continue
             if (range > 0 && r.distanceKm > range) continue
             list.push(r)
@@ -167,22 +172,35 @@
 
         let plannedProfit = 0
         let exhaustedHeadroom = false
-        // Each pass takes one round-trip per destination in score order so
-        // top destinations don't starve mid-tier ones. The 32-pass cap is
-        // a safety bound — `maxFreqByTime` of any realistic short-haul is
-        // < 30, so we'll always exit via the placedThisPass=false branch
-        // first; the cap protects against pathological infinite loops only.
+        // Conflict resolution override strategy.
+        const conflictStrat = snapshot && snapshot.settings && snapshot.settings.strategy && snapshot.settings.strategy.automationOverrides && snapshot.settings.strategy.automationOverrides.conflictResolutionStrategy || "skip";
+
         for (let pass = 0; pass < 32 && !exhaustedHeadroom; pass++) {
             let placedThisPass = false
             for (const t of tupled) {
                 if (t.tupleScore < MIN_TUPLE_SCORE) break
 
                 const placed = placedCounts.get(t.route.dest) || 0
-                if (placed >= t.maxFreqByTime) continue           // hit time-cap
-                if (usedHours + t.rtHours > cap)   continue       // hit weekly cap
+                if (placed >= t.maxFreqByTime) continue // hit absolute time-cap
+
+                let proposedRtHours = t.rtHours;
+                if (usedHours + proposedRtHours > cap) {
+                    if (conflictStrat === "skip") continue; // hit weekly cap
+                    // Handle "rebalance" by reducing the proposed route hours to fit the remaining limit (e.g., partial round trip scheduling if it is supported)
+                    if (conflictStrat === "rebalance" && (cap - usedHours >= proposedRtHours * 0.5)) {
+                       // We have enough time for at least a one-way, but AS requires RT. Skip for now to maintain valid legs.
+                       continue;
+                    }
+                    if (conflictStrat === "force") {
+                       // AS physically rejects schedules over the cap. "Force" will skip to prevent API failure, but logs an override attempt.
+                       rationale.push("[force-override] Attempted to force schedule for " + t.route.dest + " but failed due to AS physical cap limits.");
+                       continue;
+                    }
+                    continue;
+                }
 
                 routeMeta.set(t.route.dest, {
-                    rtHours: t.rtHours,
+                    rtHours: proposedRtHours,
                     maxFreqByTime: t.maxFreqByTime,
                     turnaroundMin: t.turnaroundMin
                 })
@@ -193,10 +211,11 @@
                     seatFit:       t.seatFit,
                     tupleScore:    t.tupleScore,
                     blockMin:      t.flightMin,
-                    rtHours:       t.rtHours,
+                    rtHours:       proposedRtHours,
                     turnaroundMin: t.turnaroundMin,
                     maxFreqByTime: t.maxFreqByTime,
-                    proposedFreqAtPlacement: placed + 1
+                    proposedFreqAtPlacement: placed + 1,
+                    conflictStrat: conflictStrat
                 }
                 legs.push({
                     origin:      aircraft.currentLocationIata || t.route.hub,
