@@ -141,7 +141,7 @@
             if (!apply || typeof apply !== "object") return safe
             return {
                 enabled:    apply.enabled !== false,
-                dryRunOnly: apply.dryRunOnly === true
+                dryRunOnly: false
             }
         } catch (_) {
             return safe

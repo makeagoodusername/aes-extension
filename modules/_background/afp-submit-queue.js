@@ -644,6 +644,18 @@ async function _afpRunSubmit(req, sender) {
 
     if (fillResp.posting) {
       try {
+        if (fillResp.fetch) {
+          // If the form-driver used the headless fetch POST bypass, the Wicket form
+          // won't automatically reload the page. We must trigger a reload explicitly
+          // so the DOM reflects the newly created flight for _afpApplySchedulingForLeg.
+          await new Promise((resolve, reject) => {
+            chrome.tabs.reload(tab.id, {}, () => {
+              const err = chrome.runtime.lastError;
+              if (err) reject(new Error(err.message));
+              else resolve();
+            });
+          });
+        }
         await _waitForTabComplete(tab.id, AFP_SUBMIT_POST_LOAD_TIMEOUT_MS);
       } catch (e) {
         return { ok: false, error: 'post-submit reload did not complete: ' + e.message };
@@ -807,6 +819,15 @@ async function _afpRunBatchSubmit(req, sender) {
           progress({ phase: 'leg-done', legIdx: i, seq, ok: false, error: err });
         } else if (fillResp.posting) {
           try {
+            if (fillResp.fetch) {
+              await new Promise((resolve, reject) => {
+                chrome.tabs.reload(tab.id, {}, () => {
+                  const err = chrome.runtime.lastError;
+                  if (err) reject(new Error(err.message));
+                  else resolve();
+                });
+              });
+            }
             await _waitForTabComplete(tab.id, AFP_BATCH_RELOAD_TIMEOUT_MS);
             progress({ phase: 'flight-created', legIdx: i, seq });
             const scheduled = await _afpApplySchedulingForLeg(tab.id, host, req, taggedLeg, knownFlightIds);
