@@ -12,8 +12,7 @@ class WorldExplorerMap {
         this.hoveredRoute = null;
         this.onSelectCallback = null;
 
- feat/world-explorer-map-interactions-889865835095403658
-        // Transform properties
+        // Viewport transform
         this.scale = 1;
         this.offsetX = 0;
         this.offsetY = 0;
@@ -153,8 +152,13 @@ class WorldExplorerMap {
     }
 
     setRoutes(routes) {
-        // Expected route format: { id, hubLat, hubLon, destLat, destLon, airline, isOurs, flights }
+        // Expected route format: { id, hubLat, hubLon, destLat, destLon, airline, isOurs, flights, ... }
         this.routes = routes;
+        this.draw();
+    }
+
+    setPerformanceMode(isPerformance) {
+        this.performanceMode = isPerformance;
         this.draw();
     }
 
@@ -167,7 +171,7 @@ class WorldExplorerMap {
         this.draw();
     }
 
-    // Very basic lat/lon to X/Y projection (Equirectangular)
+    // Very basic lat/lon to X/Y projection (Equirectangular) -> returns world coordinates
     project(lat, lon) {
  feat/world-explorer-map-interactions-889865835095403658
         // Base mapping to the unscaled canvas
@@ -183,6 +187,14 @@ class WorldExplorerMap {
             y: y * this.scale + this.offsetY
         };
 
+    }
+
+    // Transform screen coordinates to world coordinates
+    screenToWorld(x, y) {
+        return {
+            x: (x - this.offsetX) / this.scale,
+            y: (y - this.offsetY) / this.scale
+        };
     }
 
     draw() {
@@ -223,6 +235,8 @@ class WorldExplorerMap {
                 this.drawRoute(route);
             }
         }
+
+        this.ctx.restore();
     }
 
     shouldShowRoute(route) {
@@ -265,29 +279,37 @@ class WorldExplorerMap {
         const p1 = this.project(route.hubLat, route.hubLon);
         const p2 = this.project(route.destLat, route.destLon);
 
-        // Map affiliation kinds to colors
-        const kindColors = {
-            "self":      "#10b981", // Kin (green)
-            "allied":    "#a855f7", // Allied (purple)
-            "interline": "#3b82f6", // Interline (blue)
-            "codeshare": "#06b6d4", // Codeshare (cyan)
-            "neutral":   "#94a3b8", // Neutral (gray)
-            "adversary": "#ef4444"  // Adversary (red)
-        };
+        let color = "#4b5563"; // default gray
+        let isDashed = false;
 
-        const baseColor = kindColors[route.kind] || (route.isOurs ? kindColors.self : kindColors.neutral);
+        if (route.isOurs) color = "#f59e0b"; // Amber
+        else if (route.isAlliance) color = "#3b82f6"; // Blue
+        else if (route.isSubsidiary) color = "#93c5fd"; // Lighter blue
+        else if (route.isCompetitor) color = "#ef4444"; // Red
+        else if (route.isRealWorld) {
+            color = "#10b981"; // Green
+            isDashed = true;
+        } else if (route.isPotential) {
+            color = "#a855f7"; // Purple
+            isDashed = true;
+        } else if (route.isInterlining) {
+            color = "#f472b6"; // Pink
+            isDashed = true;
+        }
 
-        let color = baseColor;
         let lineWidth = route.isOurs ? 2 : 1;
         let alpha = route.isOurs ? 0.8 : 0.4;
 
+        // Scale line width so it doesn't get huge when zoomed in
+        lineWidth = lineWidth / Math.max(1, this.scale * 0.5);
+
         if (this.selectedRoute === route.id) {
-            color = "#f59e0b"; // Highlight selected in amber
-            lineWidth = 3;
+            color = "#ffffff"; // Highlight selected in white
+            lineWidth = 3 / Math.max(1, this.scale * 0.5);
             alpha = 1.0;
         } else if (this.hoveredRoute === route.id) {
             color = "#fcd34d"; // Highlight hovered
-            lineWidth = 3;
+            lineWidth = 3 / Math.max(1, this.scale * 0.5);
             alpha = 0.9;
         }
 
@@ -295,30 +317,51 @@ class WorldExplorerMap {
         this.ctx.globalAlpha = alpha;
         this.ctx.strokeStyle = color;
         this.ctx.lineWidth = lineWidth;
+
+        if (isDashed && !this.performanceMode) {
+            this.ctx.setLineDash([5 / this.scale, 5 / this.scale]); // 'em dash recurring' equivalent
+        }
+
         this.ctx.beginPath();
         this.ctx.moveTo(p1.x, p1.y);
 
-        // Draw a slight arc for aesthetic
-        const midX = (p1.x + p2.x) / 2;
-        const midY = (p1.y + p2.y) / 2 - 30 * this.transform.k; // Control point offset scaled by zoom
-        this.ctx.quadraticCurveTo(midX, midY, p2.x, p2.y);
+        if (this.performanceMode) {
+            // Draw straight lines in performance mode
+            this.ctx.lineTo(p2.x, p2.y);
+        } else {
+            // Draw a slight arc for aesthetic
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+
+            // Adjust curve based on distance
+            const midX = (p1.x + p2.x) / 2;
+            const midY = (p1.y + p2.y) / 2 - (dist * 0.2); // Control point offset relative to distance
+
+            this.ctx.quadraticCurveTo(midX, midY, p2.x, p2.y);
+        }
+
         this.ctx.stroke();
 
         // Draw endpoints
         const radius = Math.max(2, 3 * this.scale);
         this.ctx.fillStyle = color;
         this.ctx.beginPath();
-        this.ctx.arc(p1.x, p1.y, radius, 0, Math.PI * 2);
+        const nodeRadius = 3 / Math.max(1, this.scale * 0.5);
+        this.ctx.arc(p1.x, p1.y, nodeRadius, 0, Math.PI * 2);
         this.ctx.fill();
         this.ctx.beginPath();
-        this.ctx.arc(p2.x, p2.y, radius, 0, Math.PI * 2);
+        this.ctx.arc(p2.x, p2.y, nodeRadius, 0, Math.PI * 2);
         this.ctx.fill();
 
         this.ctx.restore();
     }
 
-    // Basic hit detection for the bezier curves
-    getHitRoute(x, y) {
+    // Hit detection now works in world coordinates
+    getHitRoute(worldX, worldY) {
+        // Adjust threshold based on zoom
+        const threshold = 10 / this.scale;
+
         for (const route of this.routes) {
             if (!this.shouldDrawRoute(route)) continue;
 
@@ -326,14 +369,29 @@ class WorldExplorerMap {
             const p2 = this.project(route.destLat, route.destLon);
 
             // Fast bounding box check first
-            const minX = Math.min(p1.x, p2.x) - 10;
-            const maxX = Math.max(p1.x, p2.x) + 10;
-            const minY = Math.min(p1.y, p2.y) - 40 * this.transform.k; // Account for curve and zoom
-            const maxY = Math.max(p1.y, p2.y) + 10;
+            const minX = Math.min(p1.x, p2.x) - threshold;
+            const maxX = Math.max(p1.x, p2.x) + threshold;
+            // Arc goes "up" (lower Y) so account for it
+            const minY = Math.min(p1.y, p2.y) - (this.performanceMode ? threshold : Math.sqrt(Math.pow(p2.x-p1.x,2)+Math.pow(p2.y-p1.y,2))*0.2 + threshold);
+            const maxY = Math.max(p1.y, p2.y) + threshold;
 
-            if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
-                // Good enough for now, real implementation would sample the curve
-                return route;
+            if (worldX >= minX && worldX <= maxX && worldY >= minY && worldY <= maxY) {
+                // If performance mode or straight line, use point-to-line distance
+                if (this.performanceMode) {
+                    const l2 = Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2);
+                    if (l2 === 0) continue; // Same point
+                    let t = ((worldX - p1.x) * (p2.x - p1.x) + (worldY - p1.y) * (p2.y - p1.y)) / l2;
+                    t = Math.max(0, Math.min(1, t));
+                    const projX = p1.x + t * (p2.x - p1.x);
+                    const projY = p1.y + t * (p2.y - p1.y);
+                    const distSq = Math.pow(worldX - projX, 2) + Math.pow(worldY - projY, 2);
+                    if (distSq <= threshold * threshold) {
+                        return route;
+                    }
+                } else {
+                    // Simple hit box is okay for now, real curve sampling is complex
+                    return route;
+                }
             }
         }
         return null;
@@ -372,9 +430,24 @@ class WorldExplorerMap {
     }
 
     handleMouseMove(e) {
+        if (this.isDragging) {
+            const dx = e.clientX - this.lastDragX;
+            const dy = e.clientY - this.lastDragY;
+            this.offsetX += dx;
+            this.offsetY += dy;
+            this.lastDragX = e.clientX;
+            this.lastDragY = e.clientY;
+            this.draw();
+            return;
+        }
+
+        if (!this.canvas) return;
         const rect = this.canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+        const screenX = e.clientX - rect.left;
+        const screenY = e.clientY - rect.top;
+
+        // Ensure we are hovering over the canvas
+        if (screenX < 0 || screenX > rect.width || screenY < 0 || screenY > rect.height) return;
 
         if (this.isDragging) {
             const dx = e.clientX - this.dragStart.x;
@@ -392,22 +465,58 @@ class WorldExplorerMap {
 
         if (this.hoveredRoute !== hitId) {
             this.hoveredRoute = hitId;
-            this.canvas.style.cursor = hit ? "pointer" : "grab";
+            if (!this.isDragging) {
+                this.canvas.style.cursor = hit ? "pointer" : "grab";
+            }
             this.draw();
         } else {
             this.canvas.style.cursor = hit ? "pointer" : "grab";
         }
     }
 
-    handleClick(e) {
-        // Simple heuristic: if we were dragging, it's not a click.
-        // For a better implementation, measure distance dragged.
+    handleMouseUp(e) {
+        this.isDragging = false;
+        if (this.canvas) {
+            this.canvas.style.cursor = this.hoveredRoute ? "pointer" : "grab";
+        }
+    }
+
+    handleWheel(e) {
+        e.preventDefault();
 
         const rect = this.canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
 
-        const hit = this.getHitRoute(x, y);
+        // Determine zoom direction and factor
+        const zoomIntensity = 0.1;
+        const wheel = e.deltaY < 0 ? 1 : -1;
+        const zoomFactor = Math.exp(wheel * zoomIntensity);
+
+        const newScale = this.scale * zoomFactor;
+
+        // Limit scale to prevent issues
+        if (newScale < 0.1 || newScale > 20) return;
+
+        // Zoom relative to mouse position
+        this.offsetX = mouseX - (mouseX - this.offsetX) * zoomFactor;
+        this.offsetY = mouseY - (mouseY - this.offsetY) * zoomFactor;
+        this.scale = newScale;
+
+        this.draw();
+    }
+
+    handleClick(e) {
+        // Don't register click if we were dragging
+        // Simplistic check: could track distance dragged instead
+
+        const rect = this.canvas.getBoundingClientRect();
+        const screenX = e.clientX - rect.left;
+        const screenY = e.clientY - rect.top;
+
+        const worldPos = this.screenToWorld(screenX, screenY);
+        const hit = this.getHitRoute(worldPos.x, worldPos.y);
+
         if (hit) {
             this.selectRoute(hit.id);
             if (this.onSelectCallback) {
