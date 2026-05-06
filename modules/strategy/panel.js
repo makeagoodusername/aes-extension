@@ -944,7 +944,7 @@
 
     // ── Render ───────────────────────────────────────────────────────────
 
-    function _renderHeader(host, plan, settings) {
+    function _renderHeader(host, plan, settings, diff) {
         host.textContent = ""
         const wrap = _el("div", [
             "display:flex",
@@ -964,11 +964,15 @@
         left.appendChild(_badge("tier · " + tier, tone))
 
         if (plan) {
-            const profit = plan.summary && plan.summary.predictedWeeklyProfit
+            // Diff summary provides the complete aggregated dollar impact across all domains,
+            // while plan.summary.predictedWeeklyProfit only sees initial schedule placements.
+            const profit = (diff && diff.summary && typeof diff.summary.dollarImpactWeekly === "number")
+                ? diff.summary.dollarImpactWeekly
+                : (plan.summary && plan.summary.predictedWeeklyProfit)
             const ors    = plan.summary && plan.summary.predictedOrsAvg
             const sub = _el("span", "color:" + COLOR.muted + ";font:13px sans-serif;",
                             (plan.server || "?") + (plan.airlineCode ? " · " + plan.airlineCode : "")
-                                + " · plan " + (plan.planId || "?")
+                                + (plan.planId ? " · plan " + plan.planId : "")
                                 + (profit != null ? " · pred $" + Math.round(profit).toLocaleString() + "/wk" : "")
                                 + (ors != null ? " · ORS " + Number(ors).toFixed(2) : ""))
             left.appendChild(sub)
@@ -1329,7 +1333,7 @@
         tierSel.addEventListener("change", async () => {
             await window.AesStrategySettings.save({tier: tierSel.value})
             _state.settings = await window.AesStrategySettings.load()
-            _renderHeader(_state.headerHost, _state.plan, _state.settings)
+            _renderHeader(_state.headerHost, _state.plan, _state.settings, _state.diff)
             _renderSettingsStrip(_state.settingsHost, _state.settings)
             _renderFooter(_state.footerHost)
         })
@@ -2621,7 +2625,7 @@
             }
 
             _state.bodyHost.textContent = ""
-            _renderHeader(_state.headerHost, _state.plan, _state.settings)
+            _renderHeader(_state.headerHost, _state.plan, _state.settings, _state.diff)
             _renderSectionMenu(_state.menuHost)
             _resetSectionHosts()
             _renderSummaryStrip(_state.summaryHost, _state.diff)
@@ -2755,7 +2759,7 @@
             _state.plan     = opts.plan
             _state.snapshot = opts.snapshot
             _state.diff     = opts.diff
-            _renderHeader(_state.headerHost, _state.plan, _state.settings)
+            _renderHeader(_state.headerHost, _state.plan, _state.settings, _state.diff)
             _renderSectionMenu(_state.menuHost)
             _resetSectionHosts()
             _renderSummaryStrip(_state.summaryHost, _state.diff)
@@ -2776,7 +2780,7 @@
             _renderFooter(_state.footerHost)
             _focusSection(_state.focusSection || "overview", {instant: true})
         } else {
-            _renderHeader(_state.headerHost, null, _state.settings)
+            _renderHeader(_state.headerHost, null, _state.settings, null)
             // First open: probe + auto-seed any missing/stale stores
             // before composing. Seeders are idempotent — if everything's
             // already filled, _runSeedThenRefresh degrades to a plain

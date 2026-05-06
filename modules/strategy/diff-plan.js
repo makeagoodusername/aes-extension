@@ -511,7 +511,7 @@
         summary.lockedLegs       = locked
         summary.aircraftWithDiff = aircraftWithDiff
         summary.aircraftMissingDiff = aircraftMissingDiff
-        summary.scheduleDiffMode = currentSchedules ? "real" : "stub"
+        summary.scheduleDiffMode = (currentSchedules && currentSchedules.size > 0) ? "real" : "stub"
 
         // Convenience counters for the UI even when the plan summary is empty.
         summary.byKind = {}
