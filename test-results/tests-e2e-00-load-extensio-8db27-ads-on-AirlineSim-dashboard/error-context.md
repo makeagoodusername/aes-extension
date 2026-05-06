@@ -12,15 +12,28 @@
 # Error details
 
 ```
-Error: browserType.launchPersistentContext: Executable doesn't exist at /home/jules/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell
-╔════════════════════════════════════════════════════════════╗
-║ Looks like Playwright was just installed or updated.       ║
-║ Please run the following command to download new browsers: ║
-║                                                            ║
-║     npx playwright install                                 ║
-║                                                            ║
-║ <3 Playwright Team                                         ║
-╚════════════════════════════════════════════════════════════╝
+Error: browserType.launchPersistentContext: Target page, context or browser has been closed
+Browser logs:
+
+╔════════════════════════════════════════════════════════════════════════════════════════════════╗
+║ Looks like you launched a headed browser without having a XServer running.                     ║
+║ Set either 'headless: true' or use 'xvfb-run <your-playwright-app>' before running Playwright. ║
+║                                                                                                ║
+║ <3 Playwright Team                                                                             ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════╝
+Call log:
+  - <launching> /home/jules/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-component-update --no-default-browser-check --disable-default-apps --disable-dev-shm-usage --disable-extensions --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --enable-automation --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --no-sandbox --disable-extensions-except=/app --load-extension=/app --user-data-dir=/tmp/aes-e2e-profile-Xcju8K --remote-debugging-pipe about:blank
+  - <launched> pid=119955
+  - [pid=119955][err] [119955:119955:0506/155709.890098:ERROR:ui/ozone/platform/x11/ozone_platform_x11.cc:256] Missing X server or $DISPLAY
+  - [pid=119955][err] [119955:119955:0506/155709.890179:ERROR:ui/aura/env.cc:246] The platform failed to initialize.  Exiting.
+  - [pid=119955] <gracefully close start>
+  - [pid=119955] <kill>
+  - [pid=119955] <will force kill>
+  - [pid=119955] <process did exit: exitCode=1, signal=null>
+  - [pid=119955] starting temporary directories cleanup
+  - [pid=119955] finished temporary directories cleanup
+  - [pid=119955] <gracefully close end>
+
 ```
 
 # Test source
@@ -51,8 +64,8 @@ Error: browserType.launchPersistentContext: Executable doesn't exist at /home/ju
   23 |         || "https://free1.airlinesim.aero/app/enterprise/dashboard?aes-fixture=1"
   24 |
 > 25 |     const ctx = await chromium.launchPersistentContext(profileDir, {
-     |                 ^ Error: browserType.launchPersistentContext: Executable doesn't exist at /home/jules/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell
-  26 |         headless: true,
+     |                 ^ Error: browserType.launchPersistentContext: Target page, context or browser has been closed
+  26 |         headless: false,
   27 |         args: [
   28 |             `--disable-extensions-except=${extPath}`,
   29 |             `--load-extension=${extPath}`,
