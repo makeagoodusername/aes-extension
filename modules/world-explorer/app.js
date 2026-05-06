@@ -130,6 +130,7 @@
                         hubLat, hubLon, destLat, destLon,
                         airline: "Our Airline",
                         isOurs: true,
+                        isAlliance: false,
                         flightNumber: f.flightNumber || "N/A"
                     });
                 });
@@ -138,12 +139,13 @@
 
         if (activeRoutes.length === 0) {
             activeRoutes = [
-                { id: "1", hub: "JFK", dest: "LHR", hubLat: 40.64, hubLon: -73.78, destLat: 51.47, destLon: -0.45, airline: "Fly Nyon", isOurs: true, kind: "self", flightNumber: "FN101" },
-                { id: "2", hub: "JFK", dest: "CDG", hubLat: 40.64, hubLon: -73.78, destLat: 49.00, destLon: 2.55, airline: "Air France", isOurs: false, kind: "allied", flightNumber: "AF001" },
-                { id: "3", hub: "LHR", dest: "DXB", hubLat: 51.47, hubLon: -0.45, destLat: 25.25, destLon: 55.36, airline: "Emirates", isOurs: false, kind: "codeshare", flightNumber: "EK002" },
-                { id: "4", hub: "DXB", dest: "SYD", hubLat: 25.25, hubLon: 55.36, destLat: -33.94, destLon: 151.17, airline: "Fly Nyon", isOurs: true, kind: "self", flightNumber: "FN202" },
-                { id: "5", hub: "SYD", dest: "SIN", hubLat: -33.94, hubLon: 151.17, destLat: 1.35, destLon: 103.98, airline: "Singapore Airlines", isOurs: false, kind: "interline", flightNumber: "SQ101" },
-                { id: "6", hub: "SIN", dest: "LHR", hubLat: 1.35, hubLon: 103.98, destLat: 51.47, destLon: -0.45, airline: "British Airways", isOurs: false, kind: "adversary", flightNumber: "BA002" },
+ feat/world-explorer-map-interactions-889865835095403658
+                { id: "1", hub: "JFK", dest: "LHR", hubLat: 40.64, hubLon: -73.78, destLat: 51.47, destLon: -0.45, airline: "Fly Nyon", isOurs: true, isAlliance: false, flightNumber: "FN101" },
+                { id: "2", hub: "JFK", dest: "CDG", hubLat: 40.64, hubLon: -73.78, destLat: 49.00, destLon: 2.55, airline: "Air France", isOurs: false, isAlliance: false, flightNumber: "AF001" },
+                { id: "3", hub: "LHR", dest: "DXB", hubLat: 51.47, hubLon: -0.45, destLat: 25.25, destLon: 55.36, airline: "Emirates", isOurs: false, isAlliance: false, flightNumber: "EK002" },
+                { id: "4", hub: "DXB", dest: "SYD", hubLat: 25.25, hubLon: 55.36, destLat: -33.94, destLon: 151.17, airline: "Fly Nyon", isOurs: true, isAlliance: false, flightNumber: "FN202" },
+                { id: "5", hub: "LHR", dest: "CDG", hubLat: 51.47, hubLon: -0.45, destLat: 49.00, destLon: 2.55, airline: "British Airways", isOurs: false, isAlliance: true, flightNumber: "BA001" },
+                { id: "6", hub: "JFK", dest: "SYD", hubLat: 40.64, hubLon: -73.78, destLat: -33.94, destLon: 151.17, airline: "Qantas", isOurs: false, isAlliance: true, flightNumber: "QF001" },
             ];
         }
 
