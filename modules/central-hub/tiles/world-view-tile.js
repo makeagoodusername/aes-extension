@@ -157,12 +157,22 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
         return out
     }
 
+    async _loadCompetitorCache() {
+        if (typeof window.AesCompetitorStore === "undefined" || !window.AesCompetitorStore.bulkLoadEnterprises) return null
+        try {
+            return await window.AesCompetitorStore.bulkLoadEnterprises()
+        } catch (_) {
+            return null
+        }
+    }
+
     async _buildOrLoadNetwork(snapshot, alliance, hub) {
         const server = (snapshot && snapshot.server) || (this.ctx && this.ctx.server)
         const airline = (snapshot && snapshot.airlineCode) || (this.ctx && this.ctx.airline)
 
         const ownIds = await this._collectOwnEnterpriseIds()
         const partnerCache = await this._loadPartnerCache(ownIds)
+        const competitorCache = await this._loadCompetitorCache()
         const routeIntelFreshness = await this._loadRouteIntelFreshness(snapshot, hub)
 
         if (window.WorldViewNetworkCache) {
@@ -183,7 +193,8 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
                 const liveSameSize = partnerCache.size === cachedPartnerCount
                 const liveRouteIntelSame = routeIntelFreshness.maxTs <= cachedRouteIntelTs + 1000
                     && routeIntelFreshness.populatedCount === cachedRouteIntelCount
-                const liveSnapshotSame = liveSnapshotTs <= cachedSnapshotTs + 1000
+                // F-DASH-501
+                const liveSnapshotSame = liveSnapshotTs === cachedSnapshotTs
                 if (allianceTs <= cachedAt + 1000 && liveSameSize && liveRouteIntelSame && liveSnapshotSame) return cached
             }
         }
@@ -193,6 +204,7 @@ class CentralHubWorldViewTile extends window.CentralHubTile {
             snapshot: snapshot,
             alliance: alliance,
             partnerCache: partnerCache,
+            competitorCache: competitorCache,
             ownEnterpriseIds: ownIds,
             hub: hub
         })

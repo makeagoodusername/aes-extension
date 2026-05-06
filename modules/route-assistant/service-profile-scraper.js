@@ -197,24 +197,38 @@ class RouteAssistantServiceProfileScraper {
     static parseListFromDoc(doc) {
         const out = []
         if (!doc) return out
-        const tables = doc.querySelectorAll(".as-table-well table")
-        for (const table of tables) {
-            for (const tr of table.querySelectorAll("tbody tr")) {
-                const cells = tr.querySelectorAll("td")
-                if (cells.length < 4) continue
-                const name = (cells[0].textContent || "").trim()
-                if (!name) continue
-                const distText = (cells[1].textContent || "").trim()
-                const minDistanceKm = RouteAssistantServiceProfileScraper._parseInt(distText)
-                const isDefault = /default\s*profile/i.test(cells[2].textContent || "")
-                let id = null
-                const editLink = cells[3].querySelector("a[href*='serviceProfile?id=']")
-                if (editLink) {
-                    const m = /id=(\d+)/.exec(editLink.getAttribute("href") || "")
-                    if (m) id = parseInt(m[1], 10)
-                }
-                if (id != null) {
-                    out.push({id, name, minDistanceKm: minDistanceKm || 0, isDefault: !!isDefault})
+        const tableWells = doc.getElementsByClassName("as-table-well")
+        for (let i = 0; i < tableWells.length; i++) {
+            const tables = tableWells[i].getElementsByTagName("table")
+            for (let j = 0; j < tables.length; j++) {
+                const table = tables[j]
+                const tbody = table.tBodies.length > 0 ? table.tBodies[0] : null
+                if (!tbody) continue
+                for (const tr of tbody.rows) {
+                    const cells = tr.cells
+                    if (!cells || cells.length < 4) continue
+                    const name = (cells[0].textContent || "").trim()
+                    if (!name) continue
+                    const distText = (cells[1].textContent || "").trim()
+                    const minDistanceKm = RouteAssistantServiceProfileScraper._parseInt(distText)
+                    const isDefault = /default\s*profile/i.test(cells[2].textContent || "")
+
+                    let id = null
+                    let editLink = null
+                    const links = cells[3].getElementsByTagName("a")
+                    for (let k = 0; k < links.length; k++) {
+                        if ((links[k].getAttribute("href") || "").indexOf("serviceProfile?id=") !== -1) {
+                            editLink = links[k]
+                            break
+                        }
+                    }
+                    if (editLink) {
+                        const m = /id=(\d+)/.exec(editLink.getAttribute("href") || "")
+                        if (m) id = parseInt(m[1], 10)
+                    }
+                    if (id != null) {
+                        out.push({id, name, minDistanceKm: minDistanceKm || 0, isDefault: !!isDefault})
+                    }
                 }
             }
         }
@@ -244,27 +258,31 @@ class RouteAssistantServiceProfileScraper {
         if (!walker) return null
 
         // Use a TreeWalker-style iteration through the form so headings
-        // and radios appear in document order. document.querySelectorAll is
-        // good enough for both since each radio group sits inside its
-        // <h4>'s sibling table. We collect headings and use the first
-        // radio's prefix that follows each.
-        const all = walker.querySelectorAll("h4, input[type='radio']")
-        for (const node of all) {
-            if (node.tagName && node.tagName.toLowerCase() === "h4") {
+        // and radios appear in document order.
+        const all = walker.getElementsByTagName("*")
+        for (let i = 0; i < all.length; i++) {
+            const node = all[i]
+            const tag = node.tagName.toLowerCase()
+            if (tag === "h4") {
                 currentCategory = RouteAssistantServiceProfileScraper._slugifyCategory((node.textContent || "").trim())
                 continue
             }
-            const name = node.getAttribute("name") || ""
-            if (name.length < 3) continue
-            const prefix = name.slice(0, 2).toLowerCase()
-            if (currentCategory && !prefixToCategory[prefix]) {
-                prefixToCategory[prefix] = currentCategory
+            if (tag === "input" && node.type === "radio") {
+                const name = node.getAttribute("name") || ""
+                if (name.length < 3) continue
+                const prefix = name.slice(0, 2).toLowerCase()
+                if (currentCategory && !prefixToCategory[prefix]) {
+                    prefixToCategory[prefix] = currentCategory
+                }
             }
         }
 
         const categories = {}
         const maxByPrefix = {}
-        for (const radio of walker.querySelectorAll("input[type='radio']")) {
+        const radios = walker.getElementsByTagName("input")
+        for (let i = 0; i < radios.length; i++) {
+            const radio = radios[i]
+            if (radio.type !== "radio") continue
             const name = radio.getAttribute("name") || ""
             if (name.length < 3) continue
             const prefix = name.slice(0, 2).toLowerCase()

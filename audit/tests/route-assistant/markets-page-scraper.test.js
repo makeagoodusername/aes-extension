@@ -37,6 +37,16 @@ class FakeElement {
         if (selector === "table tbody tr") return this.children.filter(c => c.kind === "row")
         return []
     }
+
+    getElementsByTagName(tag) {
+        if (tag === "span") return this.children.filter(c => c.kind === "span")
+        if (tag === "a") return this.children.filter(c => c.kind === "a")
+        if (tag === "input") return this.children.filter(c => c.kind === "priceInput" || c.kind === "input")
+        if (tag === "div") return this.children.filter(c => c.kind === "div")
+        if (tag === "table") return this.children.filter(c => c.kind === "table")
+        if (tag === "tbody") return this.children.filter(c => c.kind === "tbody")
+        return []
+    }
 }
 
 class FakeDocument {
@@ -62,6 +72,29 @@ class FakeDocument {
         }
         return []
     }
+
+    getElementById(id) {
+        if (id === "inventory-table") return this.inventoryTable
+        return null
+    }
+
+    getElementsByTagName(tag) {
+        if (tag === "script") {
+            return [new FakeElement("script", {}, [], [
+                "slider({value: 100, min: 1, max: 200});",
+                "slider({value: 250, min: 1, max: 500});",
+                "slider({value: 400, min: 1, max: 800});",
+                "slider({value: 0.85, min: 0, max: 2});"
+            ].join(""))]
+        }
+        if (tag === "fieldset") return [this.pricingFieldset]
+        return []
+    }
+
+    getElementsByClassName(cls) {
+        if (cls === "marketShareData") return []
+        return []
+    }
 }
 
 function makeCell(text, children) {
@@ -83,11 +116,16 @@ function makeCompetitorRow(serviceClass, price) {
 }
 
 function makeCompetitorTable() {
-    return new FakeElement("table", {}, [
+    const table = new FakeElement("table", {}, [])
+    const tbody = new FakeElement("tbody", {}, [
         makeCompetitorRow("Cargo", "0.85"),
         makeCompetitorRow("Freight", "0.95"),
         makeCompetitorRow("Business", "220")
     ])
+    tbody.children.forEach(tr => { tr.cells = tr.children })
+    tbody.rows = tbody.children
+    table.tBodies = [tbody]
+    return table
 }
 
 function makePricingRow(cls, current, value, defaultValue) {
@@ -101,12 +139,20 @@ function makePricingRow(cls, current, value, defaultValue) {
 }
 
 function makePricingFieldset() {
-    return new FakeElement("fieldset", {}, [
-        new FakeElement("legend", {}, [], "Pricing"),
+    const table = new FakeElement("table", {}, [])
+    const tbody = new FakeElement("tbody", {}, [
         makePricingRow("Economy", "100", "100", "110"),
         makePricingRow("Business", "250", "250", "275"),
         makePricingRow("First", "400", "400", "440"),
         makePricingRow("Freight", "0.85", "0.85", "0.95")
+    ])
+    tbody.children.forEach(tr => { tr.cells = tr.children })
+    tbody.rows = tbody.children
+    table.tBodies = [tbody]
+
+    return new FakeElement("fieldset", {}, [
+        new FakeElement("legend", {}, [], "Pricing"),
+        table
     ])
 }
 

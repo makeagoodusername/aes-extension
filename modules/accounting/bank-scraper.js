@@ -19,18 +19,31 @@ class AccountingBankScraper {
         const rows = []
 
         if (pane) {
-            for (const table of pane.querySelectorAll("table.table")) {
-                const headers = Array.from(table.querySelectorAll("thead th"))
-                    .map(th => (th.textContent || "").trim())
-                for (const tr of table.querySelectorAll("tbody tr")) {
+            const tables = pane.getElementsByTagName("table")
+            for (let i = 0; i < tables.length; i++) {
+                const table = tables[i]
+                if (!table.classList.contains("table")) continue
+
+                const head = table.tHead ? table.tHead.rows[0] : (table.rows.length > 0 ? table.rows[0] : null)
+                const headers = head && head.cells ? Array.from(head.cells).map(th => (th.textContent || "").trim()) : []
+
+                const tbody = table.tBodies.length > 0 ? table.tBodies[0] : null
+                if (!tbody) continue
+                for (const tr of tbody.rows) {
                     if (tr.classList.contains("figure-margin")) continue
-                    const cells = Array.from(tr.children).map(td => (td.textContent || "").trim())
+                    const cells = Array.from(tr.cells).map(td => (td.textContent || "").trim())
                     if (!cells.length) continue
-                    const numericCells = tr.querySelectorAll("td.number")
-                    const numericValues = Array.from(numericCells).map(td => ({
-                        raw: (td.textContent || "").trim(),
-                        value: AES.cleanInteger(td.textContent || "")
-                    }))
+
+                    const numericValues = []
+                    for (let j = 0; j < tr.cells.length; j++) {
+                        const td = tr.cells[j]
+                        if (td.classList.contains("number")) {
+                            numericValues.push({
+                                raw: (td.textContent || "").trim(),
+                                value: AES.cleanInteger(td.textContent || "")
+                            })
+                        }
+                    }
                     rows.push({headers, cells, numericValues})
                 }
             }

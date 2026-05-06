@@ -106,6 +106,7 @@
             const snapshot     = input && input.snapshot
             const alliance     = input && input.alliance
             const partnerCache = (input && input.partnerCache) || null
+            const competitorCache = (input && input.competitorCache) || null
             const ownIds       = new Set(((input && input.ownEnterpriseIds) || []).map(String))
             const hub          = _norm(input && input.hub)
 
@@ -162,6 +163,18 @@
                     name: alliance.allianceName,
                     members: Array.isArray(alliance.members) ? alliance.members.slice() : [],
                     scrapedAt: alliance.scrapedAt || null
+                }
+
+                // F-DASH-508: Attempt to resolve the alliance id
+                // since AllianceOverviewScraper does not provide it, and recommend-alliance uses it for identity matching.
+                if (competitorCache && ownIds.size > 0) {
+                    for (const id of ownIds) {
+                        const rec = competitorCache.get(id)
+                        if (rec && rec.alliance && rec.alliance.id != null) {
+                            out.myAlliance.id = String(rec.alliance.id)
+                            break
+                        }
+                    }
                 }
             }
             const allianceDestSet = _allianceDestSet(alliance)
