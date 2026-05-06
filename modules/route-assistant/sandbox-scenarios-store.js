@@ -99,6 +99,20 @@ class RouteAssistantSandboxScenariosStore {
         const cleaned = RouteAssistantSandboxScenariosStore._cleanEntry(fields || {})
         if (!cleaned) return null
 
+        // Add creator info
+        cleaned.creatorAccountId = accountId
+        if (typeof window !== "undefined" && window.AesAccountRegistry && accountId) {
+            try {
+                const acct = await window.AesAccountRegistry.get(accountId)
+                if (acct && acct.airlineIdentity) cleaned.creatorName = acct.airlineIdentity
+            } catch(e) {}
+        }
+        if (!cleaned.creatorName && typeof window !== "undefined" && window.AES && typeof window.AES.getAirlineIdentity === "function") {
+            try { cleaned.creatorName = window.AES.getAirlineIdentity() } catch(e) {}
+        } else if (!cleaned.creatorName && typeof AES !== "undefined" && typeof AES.getAirlineIdentity === "function") {
+            try { cleaned.creatorName = AES.getAirlineIdentity() } catch(e) {}
+        }
+
         const key = RouteAssistantSandboxScenariosStore._keyForAccount(accountId, hubU, destU)
         const existing = (await chrome.storage.local.get([key]))[key] || null
         const now = Date.now()
@@ -207,6 +221,8 @@ class RouteAssistantSandboxScenariosStore {
         return {
             id,
             name:     name.substring(0, RouteAssistantSandboxScenariosStore.MAX_NAME_LEN),
+            creatorAccountId: fields.creatorAccountId || null,
+            creatorName: fields.creatorName || null,
             scenario: cleaned
         }
     }
