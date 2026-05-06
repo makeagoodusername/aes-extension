@@ -34,6 +34,39 @@
         host.mount().catch(err => {
             console.warn("[AES competitor-intel] enterprise mount failed", err)
         })
+
+        // Inject Full Profile button
+        const anchor = findAnchor();
+        if (anchor && !document.getElementById("aes-full-profile-btn")) {
+            const btn = document.createElement("button");
+            btn.id = "aes-full-profile-btn";
+            btn.className = "btn btn-default btn-xs";
+            btn.textContent = "Open Full Profile (AES)";
+            btn.style.marginLeft = "10px";
+
+            const urlMatch = window.location.href.match(/\/enterprises\/(\d+)/);
+            const enterpriseId = urlMatch ? urlMatch[1] : "";
+
+            btn.onclick = (e) => {
+                e.preventDefault();
+                const fallback = () => {
+                    try {
+                        if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
+                            window.open(chrome.runtime.getURL(`competitor-profile.html?enterpriseId=${enterpriseId}`), "aes-cp");
+                        }
+                    } catch (_) {}
+                };
+                try {
+                    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                        chrome.runtime.sendMessage({ action: "aes_ping_competitor_profile", enterpriseId }, (res) => {
+                            if (chrome.runtime.lastError || !res) fallback();
+                        });
+                    } else { fallback(); }
+                } catch (_) { fallback(); }
+            };
+
+            anchor.appendChild(btn);
+        }
     }
 
     if (findAnchor()) { start(); return }

@@ -78,6 +78,12 @@ class CentralHubRouteLauncherTile extends window.CentralHubTile {
         await super.mount(container, ctx, opts)
         this.subscribeBus("focus-aircraft", ({aircraftId}) => {
             if (!aircraftId) return
+
+            // F-DASH-505: Explicitly call setActive to fix cold-start race
+            if (window.RouteLauncher && typeof window.RouteLauncher.setActive === "function") {
+                window.RouteLauncher.setActive({aircraftId})
+            }
+
             if (!this.expanded) this.toggle()
             if (this.root) this.root.scrollIntoView({behavior: "smooth", block: "start"})
         })

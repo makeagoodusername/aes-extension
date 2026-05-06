@@ -163,7 +163,11 @@ class RouteAssistantAggregator {
                 seatsByClass:          null,
                 weeklySeatsByClass:    null,
                 weeklySeatsTotal:      null,
-                classBreakdown:        null
+                classBreakdown:        null,
+                rmTightnessY:          demand ? (demand.rmTightnessByClass && demand.rmTightnessByClass.Y) : null,
+                rmTightnessC:          demand ? (demand.rmTightnessByClass && demand.rmTightnessByClass.C) : null,
+                rmTightnessF:          demand ? (demand.rmTightnessByClass && demand.rmTightnessByClass.F) : null,
+                rmTightnessCargo:      demand ? (demand.rmTightnessByClass && demand.rmTightnessByClass.Cargo) : null
             }
 
             if (yieldHistoryMap) RouteAssistantAggregator._applyYieldHistory(row, yieldHistoryMap, hubIata)
@@ -384,6 +388,37 @@ class RouteAssistantAggregator {
         row.actualTotalKnownTails   = latest.totalKnownTails   || null
         row.actualSnapshots         = rec.snapshots.slice()
         row.actualSnapshotMode      = latest.mode || "cumulative"
+
+        // 3-Day Stable Price Logic
+        // Check if the last 3 days of snapshots have exactly the same price
+        row.stablePrice3Days = false;
+
+        if (rec.snapshots.length >= 3 && row.ownPricing && row.ownPricing.Y) {
+            const now = Date.now();
+            const threeDaysAgo = now - (3 * 24 * 60 * 60 * 1000);
+
+            // Collect snapshots from the last 3 days
+            const recentSnaps = rec.snapshots.filter(s => s.timestamp >= threeDaysAgo);
+
+            // If we have at least 3 snapshots within the last 3 days, check variance
+            // Note: Since yield history might not explicitly store ticket price,
+            // we proxy stability by checking if the observed actual yield/profit was very stable
+            // or just use the existence of the last 3 days as a proxy if we can't extract price directly.
+            // For now, if we have >=3 snapshots within 3 days and standard deviation of profitPerFlight is < 1%
+            // or they are identical, we consider it "stable".
+
+            if (recentSnaps.length >= 3) {
+                const profits = recentSnaps.map(s => s.profitPerFlight).filter(p => typeof p === "number");
+                if (profits.length >= 3) {
+                    const avg = profits.reduce((a, b) => a + b, 0) / profits.length;
+                    const maxDiff = Math.max(...profits.map(p => Math.abs(p - avg)));
+
+                    if (avg > 0 && maxDiff / avg < 0.01) {
+                        row.stablePrice3Days = true;
+                    }
+                }
+            }
+        }
     }
 
     /**

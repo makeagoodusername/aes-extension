@@ -170,6 +170,16 @@
         return {value: v, unit: "pct", tone: v > 0 ? "ok" : "warn",
                 label: (v > 0 ? "+" : "") + v + "% budget"}
     }
+    function _impactHubDesigner(payload) {
+        if (!payload) return null
+        if (payload.fitness != null) {
+            return {value: payload.fitness, unit: "fit", tone: "ok", label: "fit " + payload.fitness.toFixed(2)}
+        }
+        if (payload.redundancyScore != null) {
+            return {value: payload.redundancyScore, unit: "redund", tone: "warn", label: "redund " + Math.round(payload.redundancyScore * 100) + "%"}
+        }
+        return null
+    }
     function _impactSlotBid(payload) {
         const v = _num(payload && payload.score, NaN)
         if (!isFinite(v)) return null
@@ -461,6 +471,7 @@
             else if (d.domain === "fleet-renewal") imp = _impactFleetRenewal(d.payload)
             else if (d.domain === "marketing")     imp = _impactMarketing(d.payload)
             else if (d.domain === "slotBid")       imp = _impactSlotBid(d.payload)
+            else if (d.domain === "hubDesigner")   imp = _impactHubDesigner(d.payload)
             if (imp) dec._impact = imp
             out.push(dec)
         }
@@ -529,6 +540,7 @@
         if (!plan && !advisory.length && !(allianceMoves && allianceMoves.length)) {
             return {summary: _summary(null, [], currentSchedules), decisions: []}
         }
+        const standingOrdersDecisions = opts && Array.isArray(opts.standingOrdersDecisions) ? opts.standingOrdersDecisions : []
         const decisions = []
             .concat(_scheduleDecisions(plan, currentSchedules, scheduleDiffOptions))
             .concat(_serviceDecisions(plan))
@@ -537,6 +549,7 @@
             .concat(_routeCreationDecisions(plan))
             .concat(_competitorReactionDecisions(plan))
             .concat(_allianceDecisions(allianceMoves))
+            .concat(standingOrdersDecisions)
             .concat(_advisoryDecisions(advisory))
         // Stable order — apply-pipeline order, then by id within domain.
         // Competitor reactions / alliance / slot / sister-coordination /
@@ -545,7 +558,7 @@
         const domainOrder = {
             schedule: 0, service: 1, price: 2, crew: 3, routeCreation: 4,
             competitorReaction: 5, alliance: 6,
-            slotBid: 7, sister: 8, "fleet-renewal": 9, marketing: 10
+            slotBid: 7, sister: 8, "fleet-renewal": 9, marketing: 10, hubDesigner: 11, standingOrder: 12
         }
         decisions.sort((a, b) => {
             const da = domainOrder[a.domain] ?? 99
@@ -586,6 +599,12 @@
                 const r = await window.AesStrategyMarketingTuner.computeProposals({snapshot: snapshot})
                 if (Array.isArray(r)) for (const d of r) if (d) out.push(d)
             } catch (e) { console.warn("[AES diff-plan] marketing tuner threw", e) }
+        }
+        if (window.AesStrategy && typeof window.AesStrategy.proposeHubMoves === "function") {
+            try {
+                const r = await window.AesStrategy.proposeHubMoves(snapshot, {})
+                if (Array.isArray(r)) for (const d of r) if (d) out.push(d)
+            } catch (e) { console.warn("[AES diff-plan] hub designer proposer threw", e) }
         }
         if (window.AesStrategySlotTuner
                 && typeof window.AesStrategySlotTuner.computeProposals === "function") {

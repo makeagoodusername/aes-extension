@@ -21,7 +21,11 @@ class AccountingBalanceScraper {
     static scrape(root = document) {
         const pane = AccountingBalanceScraper._activePane(root)
         if (!pane) return null
-        const tables = pane.querySelectorAll("table.table")
+        const allTables = pane.getElementsByTagName("table")
+        const tables = []
+        for (let i = 0; i < allTables.length; i++) {
+            if (allTables[i].classList.contains("table")) tables.push(allTables[i])
+        }
         if (!tables.length) return null
 
         const rows = []
@@ -29,8 +33,10 @@ class AccountingBalanceScraper {
 
         for (const table of tables) {
             const headers = AccountingBalanceScraper._readHeaders(table)
-            for (const tbody of table.querySelectorAll("tbody")) {
-                for (const tr of tbody.children) {
+            const tbodies = table.tBodies
+            for (let i = 0; i < tbodies.length; i++) {
+                const tbody = tbodies[i]
+                for (const tr of tbody.rows) {
                     if (tr.classList.contains("figure-margin")) continue
                     const parsed = AccountingBalanceScraper._parseRow(tr, headers)
                     if (!parsed) continue
@@ -55,20 +61,31 @@ class AccountingBalanceScraper {
     }
 
     static _readHeaders(table) {
-        const ths = table.querySelectorAll("thead th")
-        return Array.from(ths).map(th => (th.textContent || "").trim())
+        const head = table.tHead ? table.tHead.rows[0] : (table.rows.length > 0 ? table.rows[0] : null)
+        const ths = head && head.cells ? Array.from(head.cells) : []
+        return ths.map(th => (th.textContent || "").trim())
     }
 
     static _parseRow(tr, headers) {
         const isTotal = tr.classList.contains("figure-total")
-        const labelEl = isTotal
-            ? tr.querySelector("th span") || tr.querySelector("th")
-            : tr.querySelector("td, th")
+        let labelEl = null
+        if (isTotal) {
+            const ths = tr.getElementsByTagName("th")
+            if (ths.length > 0) {
+                const spans = ths[0].getElementsByTagName("span")
+                labelEl = spans.length > 0 ? spans[0] : ths[0]
+            }
+        } else {
+            labelEl = tr.cells.length > 0 ? tr.cells[0] : null
+        }
         if (!labelEl) return null
         const label = (labelEl.textContent || "").trim()
         if (!label) return null
 
-        const numCells = tr.querySelectorAll("td.number")
+        const numCells = []
+        for (let j = 0; j < tr.cells.length; j++) {
+            if (tr.cells[j].classList.contains("number")) numCells.push(tr.cells[j])
+        }
         if (!numCells.length) return null
 
         const values = []

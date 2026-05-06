@@ -23,7 +23,7 @@ test("AES extension loads on AirlineSim dashboard", async () => {
         || "https://free1.airlinesim.aero/app/enterprise/dashboard?aes-fixture=1"
 
     const ctx = await chromium.launchPersistentContext(profileDir, {
-        headless: false,
+        headless: true,
         args: [
             `--disable-extensions-except=${extPath}`,
             `--load-extension=${extPath}`,

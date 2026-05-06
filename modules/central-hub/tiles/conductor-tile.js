@@ -430,8 +430,14 @@
                 + "border:1px solid " + T.color.paperRule + ";"
                 + "background:" + T.color.bone2 + ";"
 
+            // K9 & K4 filter out scenarios addressing locked resources.
+            let eligibleFires = fires
+            if (window.AesConductorAttention && typeof window.AesConductorAttention.filterLockedFires === "function") {
+                eligibleFires = window.AesConductorAttention.filterLockedFires(fires, locks)
+            }
+
             const counts = {alert: 0, warn: 0, info: 0}
-            for (const f of fires) {
+            for (const f of eligibleFires) {
                 if (counts[f.severity] != null) counts[f.severity]++
                 else counts.info++
             }
@@ -445,10 +451,10 @@
             if (counts.alert) headerBits.push(counts.alert + " alert")
             if (counts.warn)  headerBits.push(counts.warn + " warn")
             if (counts.info)  headerBits.push(counts.info + " info")
-            header.textContent = "Scenarios · " + (headerBits.length ? headerBits.join(" · ") : (fires.length + " recent"))
+            header.textContent = "Scenarios · " + (headerBits.length ? headerBits.join(" · ") : (eligibleFires.length + " recent"))
             wrap.appendChild(header)
 
-            if (!fires.length) {
+            if (!eligibleFires.length) {
                 const empty = document.createElement("div")
                 empty.style.cssText = "padding:" + T.sp[2] + " " + T.sp[3] + ";"
                     + "color:" + T.color.slate + ";font-size:" + T.fs.micro + ";font-style:italic;"
@@ -457,7 +463,7 @@
                 return wrap
             }
 
-            const sorted = _sortFires(fires, trustByScenario, fireUxSettings)
+            const sorted = _sortFires(eligibleFires, trustByScenario, fireUxSettings)
             const now = Date.now()
             const limit = Math.min(sorted.length, 5)
             for (let i = 0; i < limit; i++) {

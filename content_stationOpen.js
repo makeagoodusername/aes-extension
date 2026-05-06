@@ -255,14 +255,30 @@ function appearsInStationsTable(iata) {
     const want = iata.toUpperCase()
     const wantWord = new RegExp(`\\b${want}\\b`)
     const paren = `(${want})`
-    const tables = Array.from(document.querySelectorAll("table")).filter(t => {
-        const h = (t.querySelector("thead")?.innerText || t.querySelector("tr")?.innerText || "").toLowerCase()
-        return h.includes("iata") || h.includes("code") || h.includes("apt") || h.includes("station")
-    })
-    for (const table of tables) {
-        for (const row of table.querySelectorAll("tbody tr, tr")) {
-            if (row.querySelector("th") && !row.querySelector("td")) continue
-            const txt = (row.innerText || "").toUpperCase()
+    const tables = document.getElementsByTagName("table")
+    for (let i = 0; i < tables.length; i++) {
+        const table = tables[i]
+        const headRow = table.tHead ? table.tHead.rows[0] : table.rows[0]
+        const h = (headRow ? (headRow.innerText || headRow.textContent || "") : "").toLowerCase()
+
+        if (!(h.includes("iata") || h.includes("code") || h.includes("apt") || h.includes("station"))) {
+             continue;
+        }
+
+        const rows = table.rows;
+        for (let j = 0; j < rows.length; j++) {
+            const row = rows[j];
+
+            let hasTh = false;
+            let hasTd = false;
+            for (let k = 0; k < row.cells.length; k++) {
+                const tagName = row.cells[k].tagName;
+                if (tagName === "TH") hasTh = true;
+                if (tagName === "TD") hasTd = true;
+            }
+            if (hasTh && !hasTd) continue;
+
+            const txt = (row.innerText || row.textContent || "").toUpperCase()
             if (!txt) continue
             if (txt.includes(paren) || wantWord.test(txt)) return true
         }
@@ -322,12 +338,12 @@ const ERROR_BANNER_SELECTORS = [
     ".alert", ".error",
 ]
 
+const COMBINED_ERROR_BANNER_SELECTOR = ERROR_BANNER_SELECTORS.join(', ');
+
 function findErrorBannerText() {
-    for (const sel of ERROR_BANNER_SELECTORS) {
-        for (const el of document.querySelectorAll(sel)) {
-            const text = (el.innerText || "").trim()
-            if (text && text.length < 500) return text
-        }
+    for (const el of document.querySelectorAll(COMBINED_ERROR_BANNER_SELECTOR)) {
+        const text = (el.innerText || "").trim()
+        if (text && text.length < 500) return text
     }
     return ""
 }
@@ -341,4 +357,26 @@ function listActionableElements() {
         if (items.length >= 12) break
     }
     return items.length ? items.join(" | ") : "no visible buttons/links"
+}
+
+// --- BENCHMARK ---
+try {
+    if (typeof window !== "undefined" && window.location && window.location.search && window.location.search.includes("aes-debug")) {
+        console.assert(appearsInStationsTable("XYZ") === false, "Smoke test: XYZ not in table");
+
+        window.aesBenchmarkStationOpen = function() {
+            const iataToFind = "XYZ";
+            const ITERATIONS = 1000;
+
+            console.log(`Starting benchmark for appearsInStationsTable('${iataToFind}')...`);
+            const start = performance.now();
+            for (let i = 0; i < ITERATIONS; i++) {
+                appearsInStationsTable(iataToFind);
+            }
+            const end = performance.now();
+            console.log(`Benchmark completed. Execution time for ${ITERATIONS} iterations: ${(end - start).toFixed(2)} ms`);
+        };
+    }
+} catch (e) {
+    // Ignore execution contexts without window
 }

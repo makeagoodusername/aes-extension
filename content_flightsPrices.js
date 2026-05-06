@@ -131,16 +131,30 @@
         };
     }
 
+    let _wiredForm = null;
     function wireFormChange(handler) {
         const form = document.querySelector("form[action='flightsPrices'], form[action$='flightsPrices']")
             || document.querySelector("form.as-panel");
-        if (!form) return;
-        form.addEventListener("change", handler);
-        // Submit interception — never let the AS native bulk-form submit
-        // sneak past silently. We don't BLOCK the form (the user may want
-        // the native uniform adjustment); we only refresh our preview to
-        // keep the UI honest while the page transitions.
-        form.addEventListener("submit", () => handler());
+
+        if (form && form !== _wiredForm) {
+            _wiredForm = form;
+            form.addEventListener("change", handler);
+            form.addEventListener("submit", () => handler());
+        }
+
+        if (!window._aesFPMutationObserver) {
+            window._aesFPMutationObserver = new MutationObserver(() => {
+                const newForm = document.querySelector("form[action='flightsPrices'], form[action$='flightsPrices']")
+                    || document.querySelector("form.as-panel");
+                if (newForm && newForm !== _wiredForm) {
+                    _wiredForm = newForm;
+                    newForm.addEventListener("change", handler);
+                    newForm.addEventListener("submit", () => handler());
+                    handler();
+                }
+            });
+            window._aesFPMutationObserver.observe(document.body, {childList: true, subtree: true});
+        }
     }
 
     function debounce(fn, ms) {

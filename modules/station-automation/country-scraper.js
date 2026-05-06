@@ -30,15 +30,28 @@ class CountryScraper {
         if (!doc) return []
 
         const byId = new Map()
-        for (const table of doc.querySelectorAll("table")) {
+        const tables = doc.getElementsByTagName("table")
+        for (let i = 0; i < tables.length; i++) {
+            const table = tables[i]
             const cols = CountryScraper._detectCountryColumns(table)
             if (cols.nameIdx == null) continue
 
-            for (const row of table.querySelectorAll("tbody tr, tr")) {
-                if (row.querySelector("th") && !row.querySelector("td")) continue
-                const cells = row.querySelectorAll("td")
-                if (cells.length < 2) continue
-                const idMatch = row.querySelector("a[href*='country?id=']")?.getAttribute("href")?.match(/id=(\d+)/)
+            const rows = table.rows
+            if (!rows) continue
+            for (const row of rows) {
+                if (row.getElementsByTagName("th").length && !row.getElementsByTagName("td").length) continue
+                const cells = row.cells
+                if (!cells || cells.length < 2) continue
+
+                let idMatch = null
+                const links = row.getElementsByTagName("a")
+                for (let k = 0; k < links.length; k++) {
+                    const href = links[k].getAttribute("href") || ""
+                    if (href.indexOf("country?id=") !== -1) {
+                        idMatch = href.match(/id=(\d+)/)
+                        break
+                    }
+                }
                 if (!idMatch) continue
                 const id = idMatch[1]
                 if (byId.has(id)) continue
@@ -60,9 +73,18 @@ class CountryScraper {
 
     static _detectCountryColumns(table) {
         const out = {nameIdx: null, codeIdx: null, airportsIdx: null}
-        if (!table.querySelector("a[href*='country?id=']")) return out
+        let hasLink = false
+        const links = table.getElementsByTagName("a")
+        for (let i = 0; i < links.length; i++) {
+            if ((links[i].getAttribute("href") || "").indexOf("country?id=") !== -1) {
+                hasLink = true
+                break
+            }
+        }
+        if (!hasLink) return out
 
-        const headerCells = table.querySelectorAll("thead th, tr:first-child th, tr:first-child td")
+        const head = table.tHead ? table.tHead.rows[0] : (table.rows.length > 0 ? table.rows[0] : null)
+        const headerCells = head && head.cells ? Array.from(head.cells) : []
         headerCells.forEach((cell, i) => {
             const t = (cell.textContent || "").trim().toLowerCase()
             if (!t) return
@@ -142,19 +164,29 @@ class CountryScraper {
         if (!doc) return new Set()
         const iatas = new Set()
         // 1. Links to station-detail pages carry the IATA in the path.
-        for (const a of doc.querySelectorAll("a[href*='/ops/stations/'], a[href*='ops/stations/']")) {
-            const m = (a.getAttribute("href") || "").match(/\/stations\/([A-Za-z]{3})(?:[/?#]|$)/)
-            if (m) iatas.add(m[1].toUpperCase())
+        const allLinks = doc.getElementsByTagName("a")
+        for (let i = 0; i < allLinks.length; i++) {
+            const href = allLinks[i].getAttribute("href") || ""
+            if (href.indexOf("/ops/stations/") !== -1 || href.indexOf("ops/stations/") !== -1) {
+                const m = href.match(/\/stations\/([A-Za-z]{3})(?:[/?#]|$)/)
+                if (m) iatas.add(m[1].toUpperCase())
+            }
         }
         // 2. Station-looking tables: any 3-letter all-caps cell is a plausible IATA.
-        const stationTables = Array.from(doc.querySelectorAll("table")).filter(t => {
-            const h = (t.querySelector("thead")?.textContent || t.querySelector("tr")?.textContent || "").toLowerCase()
+        const allTables = doc.getElementsByTagName("table")
+        const stationTables = Array.from(allTables).filter(t => {
+            const head = t.tHead ? t.tHead.rows[0] : (t.rows.length > 0 ? t.rows[0] : null)
+            const h = (head ? head.textContent : "").toLowerCase()
             return h.includes("iata") || h.includes("code") || h.includes("station") || h.includes("apt")
         })
         for (const table of stationTables) {
-            for (const row of table.querySelectorAll("tbody tr, tr")) {
-                if (row.querySelector("th") && !row.querySelector("td")) continue
-                for (const td of row.querySelectorAll("td")) {
+            const rows = table.rows
+            if (!rows) continue
+            for (const row of rows) {
+                if (row.getElementsByTagName("th").length && !row.getElementsByTagName("td").length) continue
+                const cells = row.cells
+                if (!cells) continue
+                for (const td of cells) {
                     const txt = (td.textContent || "").trim().toUpperCase()
                     if (/^[A-Z]{3}$/.test(txt)) iatas.add(txt)
                 }
@@ -174,10 +206,14 @@ class CountryScraper {
         if (direct.length) return direct
 
         const regionIds = []
-        doc.querySelectorAll("a[href*='county?id=']").forEach(a => {
-            const m = a.getAttribute("href").match(/id=(\d+)/)
-            if (m && !regionIds.includes(m[1])) regionIds.push(m[1])
-        })
+        const links = doc.getElementsByTagName("a")
+        for (let i = 0; i < links.length; i++) {
+            const href = links[i].getAttribute("href") || ""
+            if (href.indexOf("county?id=") !== -1) {
+                const m = href.match(/id=(\d+)/)
+                if (m && !regionIds.includes(m[1])) regionIds.push(m[1])
+            }
+        }
 
         // Throttle region fetches to avoid AS rate-limiting — a country like
         // USA has 50+ regions and firing them all at once had some regions
@@ -214,8 +250,11 @@ class CountryScraper {
     }
 
     static _parseAirportsTable(doc) {
-        for (const table of doc.querySelectorAll("table")) {
-            const headerText = (table.querySelector("thead, tr:first-child")?.textContent || "").toLowerCase()
+        const tables = doc.getElementsByTagName("table")
+        for (let i = 0; i < tables.length; i++) {
+            const table = tables[i]
+            const head = table.tHead ? table.tHead.rows[0] : (table.rows.length > 0 ? table.rows[0] : null)
+            const headerText = (head ? head.textContent : "").toLowerCase()
             // "passeng" matches both "Passengers" and "Passenger demand".
             if (!headerText.includes("iata") || !headerText.includes("passeng")) continue
             return CountryScraper._readAirportRows(table)
@@ -225,7 +264,8 @@ class CountryScraper {
 
     static _readAirportRows(table) {
         const idx = {name: 0, iata: 1, icao: 2, runway: 3, size: 4, pax: 5, cargo: 6}
-        const headerCells = table.querySelectorAll("thead th, tr:first-child th, tr:first-child td")
+        const head = table.tHead ? table.tHead.rows[0] : (table.rows.length > 0 ? table.rows[0] : null)
+        const headerCells = head && head.cells ? Array.from(head.cells) : []
         headerCells.forEach((th, i) => {
             const t = (th.textContent || "").trim().toLowerCase()
             if (!t) return
@@ -239,13 +279,22 @@ class CountryScraper {
         })
 
         const airports = []
-        for (const row of table.querySelectorAll("tbody tr")) {
-            const cells = row.querySelectorAll("td")
-            if (cells.length < 3) continue
+        const tbody = table.tBodies.length > 0 ? table.tBodies[0] : null
+        const rows = tbody ? tbody.rows : []
+        for (const row of rows) {
+            const cells = row.cells
+            if (!cells || cells.length < 3) continue
             const iata = (cells[idx.iata]?.textContent || "").trim().toUpperCase()
             if (!/^[A-Z]{3}$/.test(iata)) continue
             const name = (cells[idx.name]?.textContent || "").trim()
-            const airportLink = row.querySelector("a[href*='airport']")
+            let airportLink = null
+            const links = row.getElementsByTagName("a")
+            for (let k = 0; k < links.length; k++) {
+                if ((links[k].getAttribute("href") || "").indexOf("airport") !== -1) {
+                    airportLink = links[k]
+                    break
+                }
+            }
             const airportIdMatch = airportLink?.getAttribute("href")?.match(/id=(\d+)|airports\/(\d+)/)
             const airportId = airportIdMatch ? (airportIdMatch[1] || airportIdMatch[2]) : null
             airports.push({
@@ -268,7 +317,9 @@ class CountryScraper {
     static _readDemandBars(cell) {
         if (!cell) return 0
 
-        for (const img of cell.querySelectorAll("img")) {
+        const imgs = cell.getElementsByTagName("img")
+        for (let i = 0; i < imgs.length; i++) {
+            const img = imgs[i]
             const alt = (img.getAttribute("alt") || "").trim()
             const m = alt.match(/(?:pax|passenger|cargo|demand)\s*(\d+)/i) || alt.match(/^(\d+)$/)
             if (m) return clampScore(parseInt(m[1], 10))
@@ -279,7 +330,7 @@ class CountryScraper {
             if (srcMatch) return clampScore(parseInt(srcMatch[1], 10) - 1)
         }
 
-        const descendants = cell.querySelectorAll("*")
+        const descendants = cell.getElementsByTagName("*")
         const attrBag = Array.from(descendants).concat(cell)
             .flatMap(el => [
                 el.getAttribute?.("title"),
@@ -311,13 +362,19 @@ class CountryScraper {
             if (bgFilled > 0) return scoreFromRatio(bgFilled, bars.length)
         }
 
-        const pb = cell.querySelector("[style*='width']")
+        let pb = null
+        for (let i = 0; i < descendants.length; i++) {
+            const s = descendants[i].getAttribute("style") || ""
+            if (s.indexOf("width") !== -1) {
+                pb = descendants[i]
+                break
+            }
+        }
         if (pb) {
             const m = (pb.getAttribute("style") || "").match(/width:\s*(\d+(?:\.\d+)?)%/)
             if (m) return clampScore(Math.round(parseFloat(m[1]) / 10))
         }
 
-        const imgs = cell.querySelectorAll("img")
         if (imgs.length >= 2) {
             let filled = 0, empty = 0
             for (const img of imgs) {

@@ -14,8 +14,8 @@ class RouteAssistantOrsIntelligence {
     static DEFAULT_CLASSES = ["ECONOMY", "BUSINESS", "FIRST", "CARGO"]
     static DEFAULT_STALE_MS = 7 * 86400000
     static DEFAULT_COOLDOWN_MS = 10 * 60 * 1000
-    static DEFAULT_STAGGER_MS = 1500
-    static DEFAULT_CONCURRENCY = 2
+    static DEFAULT_STAGGER_MS = 500
+    static DEFAULT_CONCURRENCY = 4
 
     constructor(server, opts) {
         opts = opts || {}

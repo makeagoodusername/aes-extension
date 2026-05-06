@@ -11,11 +11,11 @@
     "action": {
         "default_popup": "popup.html",
         "default_icon": {
-            "256": "images/AES-logo-256.png",
-            "128": "images/AES-logo-128.png",
-            "48": "images/AES-logo-48.png",
+            "16": "images/AES-logo-16.png",
             "32": "images/AES-logo-32.png",
-            "16": "images/AES-logo-16.png"
+            "48": "images/AES-logo-48.png",
+            "128": "images/AES-logo-128.png",
+            "256": "images/AES-logo-256.png"
         }
     },
     "options_ui": {
@@ -23,16 +23,25 @@
         "open_in_tab": true
     },
     "icons": {
-        "256": "images/AES-logo-256.png",
-        "128": "images/AES-logo-128.png",
-        "48": "images/AES-logo-48.png",
+        "16": "images/AES-logo-16.png",
         "32": "images/AES-logo-32.png",
-        "16": "images/AES-logo-16.png"
+        "48": "images/AES-logo-48.png",
+        "128": "images/AES-logo-128.png",
+        "256": "images/AES-logo-256.png"
     },
     "background": {
         "service_worker": "background.js"
     },
     "content_scripts": [
+        {
+            "matches": [
+                "https://*.airlinesim.aero/auth/login*",
+                "https://airlinesim.aero/auth/login*"
+            ],
+            "js": [
+                "content_login.js"
+            ]
+        },
         {
             "css": [
                 "css/design-tokens.css",
@@ -166,6 +175,7 @@
                 "modules/unified-settings/tab-coverage.js",
                 "modules/unified-settings/tab-about.js",
                 "modules/unified-settings/shell.js",
+                "modules/unified-settings/tab-features.js",
                 "modules/unified-settings/host.js",
                 "modules/unified-settings/adapters/_helpers.js",
                 "modules/unified-settings/adapters/strategy.js",
@@ -347,6 +357,9 @@
                 "modules/conductor/routine-engine.js",
                 "modules/conductor/routines/_registry.js",
                 "modules/conductor/routines/maintenance-rebalance.js",
+                "modules/conductor/routines/regional-feeder.js",
+                "modules/conductor/routines/internal-hub-transfer.js",
+                "modules/conductor/routines/flagship-international.js",
                 "modules/conductor/routines/route-profit-recovery.js",
                 "modules/conductor/routines/cash-runway-defence.js",
                 "modules/conductor/outcome-driver.js",
@@ -379,6 +392,13 @@
                 "modules/central-hub/tiles/aircraft-profitability-tile.js",
                 "modules/central-hub/tiles/route-assistant-tile.js",
                 "modules/canopy/cubist-map.js",
+                "modules/command-bridge/priority-store.js",
+                "modules/command-bridge/subsidiary-cards.js",
+                "modules/command-bridge/priority-board.js",
+                "modules/command-bridge/activity-ribbon.js",
+                "modules/command-bridge/coalitions-panel.js",
+                "modules/command-bridge/opportunities-panel.js",
+                "modules/command-bridge/bridge-app.js",
                 "modules/route-assistant/service-profile-scraper.js",
                 "modules/route-assistant/service-profile-apply-log.js",
                 "modules/route-assistant/service-profile-applier.js",
@@ -468,7 +488,16 @@
                 "modules/world-view/views/destinations-treemap.js",
                 "modules/world-view/views/recommendations-pane.js",
                 "modules/central-hub/tiles/world-view-tile.js",
+                "modules/canopy-dashboard/expansion-store.js",
+                "modules/canopy-dashboard/views/expansion-planner.js",
+                "modules/canopy-dashboard/expansion-orchestrator.js",
+                "modules/canopy-dashboard/views/combined-view.js",
+                "modules/canopy-dashboard/host.js",
                 "modules/central-hub/host.js",
+                "modules/station-automation/country-scraper.js",
+                "modules/route-assistant/demand-store.js",
+                "modules/route-assistant/country-resolver.js",
+                "modules/route-assistant/parallel-scanner.js",
                 "modules/scrape-orchestrator/enumerators.js",
                 "modules/scrape-orchestrator/phases.js",
                 "modules/scrape-orchestrator/progress-modal.js",
@@ -562,6 +591,9 @@
                 "modules/strategy/cross-airline-opportunities.js",
                 "modules/strategy/journal-panel.js",
                 "modules/strategy/risk-profiles.js",
+                "modules/strategy/standing-orders-store.js",
+                "modules/strategy/standing-orders.js",
+                "modules/strategy/probabilistic.js",
                 "modules/strategy/tuning-panel.js",
                 "modules/strategy/pricing-compass.js",
                 "modules/strategy/backtest.js",
@@ -896,14 +928,6 @@
             "matches": [
                 "https://*.airlinesim.aero/app/info/airports/*",
                 "https://*.airlinesim.aero/app/ops/stations*"
-            ]
-        },
-        {
-            "js": [
-                "content_personelManagement.js"
-            ],
-            "matches": [
-                "https://*.airlinesim.aero/action/enterprise/staffOverview*"
             ]
         },
         {
@@ -1287,6 +1311,9 @@
                 "modules/strategy/cross-airline-opportunities.js",
                 "modules/strategy/journal-panel.js",
                 "modules/strategy/risk-profiles.js",
+                "modules/strategy/standing-orders-store.js",
+                "modules/strategy/standing-orders.js",
+                "modules/strategy/probabilistic.js",
                 "modules/strategy/tuning-panel.js",
                 "modules/strategy/pricing-compass.js",
                 "modules/strategy/backtest.js",
@@ -1416,7 +1443,19 @@
         {
             "resources": [
                 "/images/*",
-                "/fonts/*"
+                "/fonts/*",
+                "world-explorer.html",
+                "css/command-bridge.css",
+                "css/design-tokens.css",
+                "css/components.css",
+                "helpers.js",
+                "modules/world-explorer/*",
+                "modules/_shared/account-registry.js",
+                "modules/_shared/fleet-roster.js",
+                "modules/canopy/affiliations-store.js",
+                "modules/canopy/orgs-store.js",
+                "modules/aircraft-flight-plan/schedule-store.js",
+                "modules/strategy/portfolio.js"
             ],
             "matches": [
                 "https://*.airlinesim.aero/*"

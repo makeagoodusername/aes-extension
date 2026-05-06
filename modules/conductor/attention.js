@@ -93,6 +93,44 @@
         return list
     }
 
+    /** Filter out fires whose target resource is currently locked by a K4 routine.
+     *  Expects a lock table fetched via `AesConductorLockStore.loadCached(host)`. */
+    function filterLockedFires(fires, lockTable) {
+        if (!Array.isArray(fires)) return []
+        if (!lockTable) return fires.slice()
+
+        return fires.filter(f => {
+            if (!f || !f.payload) return true
+            const p = f.payload
+            let resType = null
+            let resId = null
+
+            // K4: We infer the likely resource target from the fire's payload shape.
+            // This mirrors how _lockSpec assigns locks for routines.
+            if (p.aircraftId) {
+                resType = "aircraft"
+                resId = String(p.aircraftId)
+            } else if (p.hub && p.dest) {
+                resType = "route"
+                resId = String(p.hub).toUpperCase() + "-" + String(p.dest).toUpperCase()
+            }
+
+            if (!resType || !resId) return true // No obvious resource, so it's not locked.
+            const compositeKey = String(resType) + ":" + String(resId)
+
+            // If the lock exists and has not expired, we filter this fire out.
+            const lock = lockTable[compositeKey]
+            if (lock && lock.owner) {
+                const acq = (typeof lock.acquiredAt === "number") ? lock.acquiredAt : 0
+                const ttl = (typeof lock.ttlMs === "number" && lock.ttlMs > 0) ? lock.ttlMs : (10 * 60 * 1000)
+                if (Date.now() - acq <= ttl) {
+                    return false // Resource is locked
+                }
+            }
+            return true
+        })
+    }
+
     /** Convenience reader for the settings blob; returns the shape every
      *  consumer expects even when storage is empty / unavailable. */
     async function readFireUxSettings(host) {
@@ -153,7 +191,7 @@
     }
 
     window.AesConductorAttention = {
-        score, sortFires, readFireUxSettings, applyFireUx,
+        score, sortFires, filterLockedFires, readFireUxSettings, applyFireUx,
         SEVERITY_WEIGHT, HALF_LIFE_MS, PIN_BONUS
     }
 })()

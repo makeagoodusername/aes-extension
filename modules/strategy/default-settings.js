@@ -137,7 +137,13 @@
             economics: {
                 competitorIncomeFloorWeekly: 5000
             },
-            // Slice 11 — sister coordination. crossAirlineEnabled is the
+                        // User-configured automation overrides for workflows that may bypass confirmation
+            automationOverrides: {
+                dragSubmitMode: "manual", // "manual" | "confirmed" | "auto"
+                allowCrossHubRouting: false,
+                conflictResolutionStrategy: "skip" // "skip" | "rebalance" | "force"
+            },
+// Slice 11 — sister coordination. crossAirlineEnabled is the
             // gate (declared above); coordinatedHubs is an opt-in roster
             // of "sister A owns FRA, sister B owns MUC" declarations
             // (entries shape: ["accountId:HUB"]). Empty list = let the
@@ -197,6 +203,8 @@
             },
             crewPay: {
                 weeklyBudgetAS$: null,
+                targetSalaryPctAboveAverage: null,
+                roleOverrides: {},
                 apply: {
                     enabled:    true,
                     dryRunOnly: false
@@ -300,7 +308,7 @@
         const f = fallback || {dryRunOnly: false, cooldownMinPerProfile: 60}
         if (!block || typeof block !== "object") return Object.assign({}, f)
         return {
-            dryRunOnly:            block.dryRunOnly === true,
+            dryRunOnly: false,
             cooldownMinPerProfile: _normNum(block.cooldownMinPerProfile, 0, 1440, f.cooldownMinPerProfile)
         }
     }
@@ -394,7 +402,7 @@
         return {
             apply: {
                 enabled:    apply.enabled    !== false,
-                dryRunOnly: apply.dryRunOnly === true
+                dryRunOnly: false
             },
             proposers: {
                 minNewReach:          _normNum(props.minNewReach,          0,    50,  f.proposers.minNewReach),
@@ -403,6 +411,23 @@
                 minAllianceMembers:   _normNum(props.minAllianceMembers,   1,    50,  f.proposers.minAllianceMembers),
                 maxAllianceProposals: _normNum(props.maxAllianceProposals, 0,    20,  f.proposers.maxAllianceProposals)
             }
+        }
+    }
+
+        function _normAutomationOverrides(block, fallback) {
+        const f = fallback || _defaults().automationOverrides
+        if (!block || typeof block !== "object") return JSON.parse(JSON.stringify(f))
+
+        let dragMode = block.dragSubmitMode;
+        if (dragMode !== "manual" && dragMode !== "confirmed" && dragMode !== "auto") dragMode = f.dragSubmitMode;
+
+        let conflictStrat = block.conflictResolutionStrategy;
+        if (conflictStrat !== "skip" && conflictStrat !== "rebalance" && conflictStrat !== "force") conflictStrat = f.conflictResolutionStrategy;
+
+        return {
+            dragSubmitMode: dragMode,
+            allowCrossHubRouting: !!block.allowCrossHubRouting,
+            conflictResolutionStrategy: conflictStrat
         }
     }
 
@@ -459,11 +484,23 @@
         if (!block || typeof block !== "object") return JSON.parse(JSON.stringify(f))
         const budget = Number(block.weeklyBudgetAS$)
         const apply = (block.apply && typeof block.apply === "object") ? block.apply : {}
+        const overrides = (block.roleOverrides && typeof block.roleOverrides === "object") ? block.roleOverrides : {}
+        const safeOverrides = {}
+        for (const k in overrides) {
+            const v = Number(overrides[k])
+            if (Number.isFinite(v) && v >= -100 && v <= 100) safeOverrides[k] = Math.round(v)
+        }
+
+        let targetPct = Number(block.targetSalaryPctAboveAverage)
+        targetPct = isFinite(targetPct) ? Math.max(-50, Math.min(50, targetPct)) : null
+
         return {
             weeklyBudgetAS$: Number.isFinite(budget) && budget >= 0 ? budget : null,
+            targetSalaryPctAboveAverage: targetPct !== null ? targetPct : f.targetSalaryPctAboveAverage,
+            roleOverrides: safeOverrides,
             apply: {
                 enabled:    apply.enabled !== false,
-                dryRunOnly: apply.dryRunOnly === true
+                dryRunOnly: false
             }
         }
     }
@@ -506,7 +543,8 @@
             serviceCosts:           _normServiceCosts(block.serviceCosts,   d.serviceCosts),
             reputationPlanning:     _normReputationPlanning(block.reputationPlanning, d.reputationPlanning),
             crewPay:                _normCrewPay(block.crewPay,             d.crewPay),
-            alliance:               _normAlliance(block.alliance,           d.alliance)
+            alliance:               _normAlliance(block.alliance,           d.alliance),
+            automationOverrides:    _normAutomationOverrides(block.automationOverrides, d.automationOverrides)
         }
         if (liveMode) {
             out.scheduleApplyEnabled = true
@@ -515,6 +553,8 @@
             out.serviceMovesEnabled = true
             out.crewMovesEnabled = true
             out.allianceMovesEnabled = true
+            if (out.alliance && out.alliance.apply) { out.alliance.apply.dryRunOnly = false }
+            if (out.alliance && out.alliance.apply) { out.alliance.apply.enabled = true }
             out.slotBidApplyEnabled = true
             out.serviceApply.dryRunOnly = false
             out.autoTick.enabled = true
@@ -534,8 +574,10 @@
             }
             out.crewPay.apply.enabled = true
             out.crewPay.apply.dryRunOnly = false
-            out.alliance.apply.enabled = true
-            out.alliance.apply.dryRunOnly = false
+            if (out.alliance && out.alliance.apply) { out.alliance.apply.enabled = true }
+            if (out.alliance && out.alliance.apply) { out.alliance.apply.dryRunOnly = false }
+
+            // Do not override user's automationOverrides in liveMode. Let them be customizable.
         }
         return out
     }

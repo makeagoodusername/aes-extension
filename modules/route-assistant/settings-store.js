@@ -255,8 +255,8 @@ class RouteAssistantSettings {
             pricing: {
                 // Tier 1 — visibility layer.
                 showPricingColumns: true,    // gate the ourPrice / ourYield / orsRank columns
-                concurrency:        4,       // parallel fetches during bulk scrape
-                staggerMs:          800,     // ms between launches in a wave
+                concurrency:        8,       // parallel fetches during bulk scrape
+                staggerMs:          400,     // ms between launches in a wave
                 lastBulkScrapeAt:   null,    // unix-ms; surfaces in the expander
                 priceMaxAgeDays:    null,    // null = never expire; set to N to re-scrape entries older than N days
 
@@ -451,8 +451,8 @@ class RouteAssistantSettings {
                 // line 119-121), so this is safe for routes without cached data.
                 // Existing users with persisted false stay false.
                 useRealDemandForLF:   true,
-                concurrency:          3,       // gentle — coexists with parallel ORS sync
-                staggerMs:            1200,
+                concurrency:          6,       // gentle — coexists with parallel ORS sync
+                staggerMs:            600,
                 historicWindowPeriods: 12,     // last N weeks for the elasticity regression
                 lastBulkScrapeAt:     null,
                 historicMaxAgeDays:   14,      // 14-day cadence aligns with auto-refresh threshold below
@@ -476,8 +476,8 @@ class RouteAssistantSettings {
                 // hover tooltip showing each carrier and their weekly
                 // frequency.
                 showCarrierIntensity: true,   // gate the colored intensity badge
-                concurrency:          3,      // flightsfrom is slower than AS — keep it gentle
-                staggerMs:            1200,
+                concurrency:          6,      // flightsfrom is slower than AS — keep it gentle
+                staggerMs:            600,
                 lastBulkScrapeAt:     null,
                 carriersMaxAgeDays:   30,     // 30d default; competitor moves don't need to be intra-day
                 // F slice 2 — AS-native enterprise enrichment. Fetches
@@ -495,7 +495,7 @@ class RouteAssistantSettings {
                 // render time to surface a ⇄ glyph next to interlining
                 // partners (and optionally a ✦ for alliance partners).
                 myEnterpriseIds:           [],     // user's own enterprise ids; UI accepts comma-separated entry
-                partnersConcurrency:       2,      // typically 1-2 ids — small concurrency is fine
+                partnersConcurrency:       4,      // typically 1-2 ids — small concurrency is fine
                 partnersStaggerMs:         400,
                 partnersMaxAgeDays:        30,     // less generous than meta — agreements move
                 lastPartnersSyncAt:        null,
@@ -518,8 +518,8 @@ class RouteAssistantSettings {
                 // chrome.storage.local key families (competitors / ownPricing /
                 // marketShare / historic) so each can have its own cadence.
                 showColumns:          true,    // gates Mkt Share / Cmp# / Cmp$ / Drift cols
-                concurrency:          4,
-                staggerMs:            800,
+                concurrency:          8,
+                staggerMs:            400,
                 lastBulkScrapeAt:     null,
                 competitorMaxAgeDays: null,    // null = never expire
                 shareMaxAgeDays:      7,       // weekly cadence
@@ -541,8 +541,8 @@ class RouteAssistantSettings {
                 // user-configurable class weights. Storage lives at
                 // `routeAssistant:ors:<HUB>-<DEST>.byClass.{ECONOMY,BUSINESS,FIRST,CARGO}`.
                 showColumns:          true,
-                concurrency:          2,        // ORS = expensive AS solver, be gentle
-                staggerMs:            1500,
+                concurrency:          8,        // ORS = expensive AS solver, be gentle
+                staggerMs:            500,
                 lastBulkScrapeAt:     null,
                 rankMaxAgeDays:       null,
 

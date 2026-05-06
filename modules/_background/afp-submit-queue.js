@@ -339,30 +339,43 @@ function _afpPickFlightNumberRow(rows, leg) {
   return ranked.length ? ranked[0].row : null;
 }
 
-async function _afpResolveCreatedFlight(tabId, host, leg, knownFlightIds) {
-  await _navigateTabIfNeeded(tabId, host + '/app/com/numbers', AFP_BATCH_RELOAD_TIMEOUT_MS);
-  const snap = await _sendTabMessageWhenReady(
+async function _afpResolveCreatedFlight(tabId, host, leg, req) {
+  // Instead of querying the /app/com/numbers page which may hide flights across
+  // pagination boundaries, verify creation using the aircraft's Visual Flight Plan.
+  // We navigate to the aircraft page and use aes:afp:verify-created-leg.
+
+  await _navigateTabIfNeeded(
     tabId,
-    { type: 'aes:flight-numbers:snapshot' },
-    AFP_BATCH_SNAPSHOT_TIMEOUT_MS,
+    host + _afpAircraftPath(req.aircraftId),
+    AFP_BATCH_RELOAD_TIMEOUT_MS
+  );
+
+  const resp = await _sendTabMessageWhenReady(
+    tabId,
+    { type: 'aes:afp:verify-created-leg', leg },
+    AFP_BATCH_VERIFY_TIMEOUT_MS,
     AFP_CONTENT_READY_TIMEOUT_MS
   );
-  if (!snap || !snap.ok) {
-    return { ok: false, error: (snap && snap.error) || 'flight number snapshot failed' };
-  }
-  const known = knownFlightIds && typeof knownFlightIds.has === 'function' ? knownFlightIds : null;
-  const rows = known
-    ? (snap.visibleNumbers || []).filter((row) => !known.has(String(row && row.flightId || '')))
-    : (snap.visibleNumbers || []);
-  const row = _afpPickFlightNumberRow(rows, leg || {});
-  if (!row) {
+
+  if (!resp || !resp.ok || !resp.match) {
     return {
       ok: false,
-      error: 'created flight number not visible on /app/com/numbers',
-      visibleCount: (snap.visibleNumbers || []).length
+      error: (resp && resp.error) || 'created leg not found in visual flight plan after submit',
+      visibleCount: resp && resp.scheduleCount ? resp.scheduleCount : 0
     };
   }
-  return { ok: true, flightId: String(row.flightId), row };
+
+  // The match returns the flightId parsed from the Visual Flight Plan
+  const flightId = resp.match.flightId;
+  if (!flightId) {
+    return {
+      ok: false,
+      error: 'created leg was found in VFP but flightId could not be parsed',
+      match: resp.match
+    };
+  }
+
+  return { ok: true, flightId: String(flightId), row: resp.match };
 }
 
 async function _afpSnapshotFlightNumberIds(tabId, host) {
@@ -490,7 +503,7 @@ async function _afpApplySchedulingForLeg(tabId, host, req, leg, knownFlightIds) 
   const dest = _afpNormIata(leg && leg.destination);
   if (!origin || !dest) return { ok: false, error: 'schedule apply: missing origin or destination' };
 
-  const resolved = await _afpResolveCreatedFlight(tabId, host, leg, knownFlightIds);
+  const resolved = await _afpResolveCreatedFlight(tabId, host, leg, req);
   if (!resolved.ok) return resolved;
   if (knownFlightIds && typeof knownFlightIds.add === 'function') {
     knownFlightIds.add(String(resolved.flightId));
@@ -631,6 +644,18 @@ async function _afpRunSubmit(req, sender) {
 
     if (fillResp.posting) {
       try {
+        if (fillResp.fetch) {
+          // If the form-driver used the headless fetch POST bypass, the Wicket form
+          // won't automatically reload the page. We must trigger a reload explicitly
+          // so the DOM reflects the newly created flight for _afpApplySchedulingForLeg.
+          await new Promise((resolve, reject) => {
+            chrome.tabs.reload(tab.id, {}, () => {
+              const err = chrome.runtime.lastError;
+              if (err) reject(new Error(err.message));
+              else resolve();
+            });
+          });
+        }
         await _waitForTabComplete(tab.id, AFP_SUBMIT_POST_LOAD_TIMEOUT_MS);
       } catch (e) {
         return { ok: false, error: 'post-submit reload did not complete: ' + e.message };
@@ -794,6 +819,15 @@ async function _afpRunBatchSubmit(req, sender) {
           progress({ phase: 'leg-done', legIdx: i, seq, ok: false, error: err });
         } else if (fillResp.posting) {
           try {
+            if (fillResp.fetch) {
+              await new Promise((resolve, reject) => {
+                chrome.tabs.reload(tab.id, {}, () => {
+                  const err = chrome.runtime.lastError;
+                  if (err) reject(new Error(err.message));
+                  else resolve();
+                });
+              });
+            }
             await _waitForTabComplete(tab.id, AFP_BATCH_RELOAD_TIMEOUT_MS);
             progress({ phase: 'flight-created', legIdx: i, seq });
             const scheduled = await _afpApplySchedulingForLeg(tab.id, host, req, taggedLeg, knownFlightIds);

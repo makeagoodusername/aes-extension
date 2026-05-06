@@ -76,9 +76,11 @@ class CentralHubCompetitorMonitoringTile extends window.CentralHubTile {
         // newly-detected changes from enterprise-scraper without a manual reload.
         if (window.AesDataBus && typeof window.AesDataBus.on === "function") {
             const offDiff = window.AesDataBus.on("data:competitor-intel:enterprise:diff", () => {
+                this._competitorCache = null
                 this.refresh().catch(() => {})
             })
             const offUpd = window.AesDataBus.on("data:competitor-intel:enterprise:updated", () => {
+                this._competitorCache = null
                 this.refresh().catch(() => {})
             })
             if (typeof offDiff === "function") this._busDisposers.push(offDiff)
@@ -89,20 +91,53 @@ class CentralHubCompetitorMonitoringTile extends window.CentralHubTile {
     async _loadCompetitors() {
         const server = (this.ctx && this.ctx.server) || ""
         if (!server) return []
-        // Match the legacy displayCompetitorMonitoringAirlinesTable() in
-        // content_dashboard.js:1120 — it filters by `v.server === server`
-        // and `v.tracking`. The storage key is `<server><competitorId>competitorMonitoring`
-        // where competitorId is the URL path id of the rival, not our airline.
-        const all = await chrome.storage.local.get(null)
-        const out = []
-        for (const k in all) {
-            const v = all[k]
-            if (!v || typeof v !== "object") continue
-            if (v.type !== "competitorMonitoring") continue
-            if (v.server && v.server !== server) continue
-            if (!v.tracking) continue
-            out.push(v)
+
+        if (this._competitorCache) {
+            return this._competitorCache
         }
+
+        // F-DASH-503: avoid pulling the entire storage space just to filter out
+        // the few competitor keys.
+        let out = []
+        try {
+            if (chrome.storage.local.getKeys) {
+                const keys = await chrome.storage.local.getKeys()
+                const matchKeys = keys.filter(k => k && k.endsWith("competitorMonitoring") && k.startsWith(server))
+                if (matchKeys.length) {
+                    const data = await chrome.storage.local.get(matchKeys)
+                    for (const k of matchKeys) {
+                        const v = data[k]
+                        if (v && v.type === "competitorMonitoring" && v.tracking && (!v.server || v.server === server)) {
+                            out.push(v)
+                        }
+                    }
+                }
+            } else {
+                // Fallback for older V3 runtimes without getKeys
+                const all = await chrome.storage.local.get(null)
+                for (const k in all) {
+                    if (k && k.endsWith("competitorMonitoring") && k.startsWith(server)) {
+                        const v = all[k]
+                        if (v && v.type === "competitorMonitoring" && v.tracking && (!v.server || v.server === server)) {
+                            out.push(v)
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // Unlikely error path, fallback to old complete scan if failed
+            const all = await chrome.storage.local.get(null)
+            for (const k in all) {
+                const v = all[k]
+                if (!v || typeof v !== "object") continue
+                if (v.type !== "competitorMonitoring") continue
+                if (v.server && v.server !== server) continue
+                if (!v.tracking) continue
+                out.push(v)
+            }
+        }
+
+        this._competitorCache = out
         return out
     }
 

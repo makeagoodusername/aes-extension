@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>AES — World Explorer</title>
+    <link rel="stylesheet" href="css/design-tokens.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/command-bridge.css">
+</head>
+<body>
+    <main class="aes-bridge" id="aes-world-explorer-root">
+        <header class="aes-bridge__masthead">
+            <h1 class="aes-bridge__h1">World Explorer</h1>
+            <span class="aes-bridge__tagline">interactive map · network departures</span>
+            <div class="aes-bridge__masthead-stats" id="aes-we-masthead-stats"></div>
+            <span class="aes-bridge__version" id="aes-we-version">v?</span>
+        </header>
+
+        <div class="aes-we-tabs" style="display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px;">
+            <button id="we-tab-map" class="aes-btn" style="background: #3b82f6; color: white;">Global Map View</button>
+            <button id="we-tab-network" class="aes-btn" style="background: #e2e8f0; color: #334155;">Alliances & Network Graph</button>
+        </div>
+
+        <div id="we-view-map">
+            <div style="display: flex; justify-content: center; gap: 15px; margin-bottom: 10px; padding: 10px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+                <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; color: #334155; font-weight: bold;">
+                    <input type="checkbox" id="we-filter-our-flights" checked> Show Our Flights
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; color: #334155; font-weight: bold;">
+                    <input type="checkbox" id="we-filter-competitors" checked> Show Competitors
+                </label>
+            </div>
+
+            <section class="aes-bridge__section" id="aes-we-map"></section>
+
+            <div style="display: flex; gap: 20px; width: 100%; margin-top: 20px;">
+                <section class="aes-bridge__section" id="aes-we-board" style="flex: 2; margin-top: 0;"></section>
+                <section class="aes-bridge__section" id="aes-we-details" style="flex: 1; margin-top: 0;"></section>
+            </div>
+        </div>
+
+        <div id="we-view-network" style="display: none;">
+            <section class="aes-bridge__section" id="aes-we-network-graph"></section>
+        </div>
+
+        <footer class="aes-bridge__footer">
+            <span>AirlineSim Enhancement Suite</span>
+            <a id="aes-bridge-footer-options" href="#">Open Data Manager</a>
+            <a href="https://forums.airlinesim.aero/t/introducing-airlinesim-enhancement-suite-beta/" target="_blank" rel="noreferrer noopener">Forum</a>
+            <a href="https://github.com/ZoeBijl/airlinesim-enhancement-suite" target="_blank" rel="noreferrer noopener">GitHub</a>
+        </footer>
+    </main>
+
+    <script src="modules/_shared/account-registry.js"></script>
+    <script src="modules/_shared/fleet-roster.js"></script>
+    <script src="helpers.js"></script>
+    <script src="modules/canopy/affiliations-store.js"></script>
+    <script src="modules/canopy/orgs-store.js"></script>
+    <script src="modules/aircraft-flight-plan/schedule-store.js"></script>
+    <script src="modules/strategy/portfolio.js"></script>
+    <script src="modules/world-explorer/world-110m.js"></script>
+    <script src="modules/world-explorer/map.js"></script>
+    <script src="modules/world-explorer/departures-board.js"></script>
+    <script src="modules/world-explorer/details-pane.js"></script>
+    <script src="modules/world-explorer/network-graph.js"></script>
+    <script src="modules/world-explorer/app.js"></script>
+</body>
+</html>

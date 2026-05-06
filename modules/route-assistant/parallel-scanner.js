@@ -39,7 +39,7 @@ class RouteAssistantParallelScanner {
     constructor(server, opts) {
         if (!server) throw new Error("RouteAssistantParallelScanner: server required")
         this.server = server
-        this.concurrency = (opts && opts.concurrency != null) ? opts.concurrency : 3
+        this.concurrency = (opts && opts.concurrency != null) ? opts.concurrency : 6
         this.staggerMs   = (opts && opts.staggerMs   != null) ? opts.staggerMs   : 1500
         this.resolver = new RouteAssistantCountryResolver(server)
         this.listeners = []
@@ -192,65 +192,11 @@ class RouteAssistantParallelScanner {
         }
         this._notify(state)
 
-        // Phase 1: resolve every IATA → countryId. Resolution can do an HTTP
-        // fetch per never-seen IATA, so we limit concurrency the same way
-        // CountryScraper does internally: small batches.
+        // Phase 1: resolve every IATA → countryId.
         const countryToIatas = new Map()  // countryId → [iata, ...]
-        const resolveQueue = todo.slice()
-        const resolvers = []
-        for (let i = 0; i < this.concurrency; i++) {
-            resolvers.push(this._resolveWorker(resolveQueue, countryToIatas, state))
-        }
-        await Promise.all(resolvers)
-        if (this._aborted) {
-            state.phase = "done"
-            this._notify(state)
-            return state
-        }
 
-        // Phase 2: fetch each unique country's airport list. CountryScraper
-        // already throttles its own region fetches; we sequence countries
-        // with a stagger so a slow region doesn't pile up demand against AS.
-        state.phase = "fetching"
-        this._notify(state)
-
-        const countries = Array.from(countryToIatas.keys())
-        for (let i = 0; i < countries.length; i++) {
-            if (this._aborted) break
-            const countryId = countries[i]
-            state.currentCountryId = countryId
-            this._notify(state)
-            try {
-                const airports = await CountryScraper._getAllAirportsForCountry(countryId, this.server)
-                if (airports && airports.length) {
-                    await RouteAssistantDemandStore.saveCountryAirports(countryId, airports)
-                    // Mark each requested IATA in this country as "fetched";
-                    // IATAs that the country page didn't return get flagged.
-                    const have = new Set(airports.map(a => String(a.iata || "").toUpperCase()))
-                    for (const iata of countryToIatas.get(countryId)) {
-                        if (have.has(iata)) state.fetched++
-                        else state.failedIatas.push(iata)
-                    }
-                } else {
-                    for (const iata of countryToIatas.get(countryId)) state.failedIatas.push(iata)
-                }
-            } catch (error) {
-                console.warn(`[AES routeAssistant] country ${countryId} scrape failed`, error)
-                for (const iata of countryToIatas.get(countryId)) state.failedIatas.push(iata)
-            }
-            this._notify(state)
-            if (i < countries.length - 1) await sleep(this.staggerMs)
-        }
-
-        state.phase = "done"
-        state.currentCountryId = null
-        this._notify(state)
-        return state
-    }
-
-    async _resolveWorker(queue, countryToIatas, state) {
-        while (queue.length && !this._aborted) {
-            const iata = queue.shift()
+        const resolvers = todo.map(async (iata) => {
+            if (this._aborted) return
             try {
                 const r = await this.resolver.resolve(iata)
                 if (r && r.countryId) {
@@ -265,8 +211,62 @@ class RouteAssistantParallelScanner {
                 state.failedIatas.push(iata)
             }
             this._notify(state)
+        })
+
+        await Promise.all(resolvers)
+        if (this._aborted) {
+            state.phase = "done"
+            this._notify(state)
+            return state
         }
+
+        // Phase 2: fetch each unique country's airport list. CountryScraper
+        // already throttles its own region fetches; we sequence countries
+        // with a stagger so a slow region doesn't pile up demand against AS.
+        state.phase = "fetching"
+        this._notify(state)
+
+        const countriesQueue = Array.from(countryToIatas.keys())
+        const fetchWorkerCount = Math.max(1, Math.min(this.concurrency || 1, countriesQueue.length))
+        const fetchWorkers = []
+
+        for (let w = 0; w < fetchWorkerCount; w++) {
+            fetchWorkers.push((async () => {
+                while (countriesQueue.length > 0 && !this._aborted) {
+                    const countryId = countriesQueue.shift()
+                    state.currentCountryId = countryId
+                    this._notify(state)
+                    try {
+                        const airports = await CountryScraper._getAllAirportsForCountry(countryId, this.server)
+                        if (airports && airports.length) {
+                            await RouteAssistantDemandStore.saveCountryAirports(countryId, airports)
+                            // Mark each requested IATA in this country as "fetched";
+                            // IATAs that the country page didn't return get flagged.
+                            const have = new Set(airports.map(a => String(a.iata || "").toUpperCase()))
+                            for (const iata of countryToIatas.get(countryId)) {
+                                if (have.has(iata)) state.fetched++
+                                else state.failedIatas.push(iata)
+                            }
+                        } else {
+                            for (const iata of countryToIatas.get(countryId)) state.failedIatas.push(iata)
+                        }
+                    } catch (error) {
+                        console.warn(`[AES routeAssistant] country ${countryId} scrape failed`, error)
+                        for (const iata of countryToIatas.get(countryId)) state.failedIatas.push(iata)
+                    }
+                    this._notify(state)
+                    if (countriesQueue.length > 0 && !this._aborted) await sleep(this.staggerMs)
+                }
+            })())
+        }
+        await Promise.all(fetchWorkers)
+
+        state.phase = "done"
+        state.currentCountryId = null
+        this._notify(state)
+        return state
     }
+
 }
 
 function sleep(ms) {

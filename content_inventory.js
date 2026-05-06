@@ -96,7 +96,22 @@ window.addEventListener("load", async (event) => {
         displayValidationError()
         return
     }
-    displayInventory()
+
+    let _debounceTimer = null;
+    const updateInventory = () => {
+        if (_debounceTimer) clearTimeout(_debounceTimer);
+        _debounceTimer = setTimeout(() => {
+            displayInventory();
+        }, 500);
+    };
+
+    updateInventory();
+
+    const observer = new MutationObserver(updateInventory);
+    const target = document.querySelector(".as-panel") || document.body;
+    if (target) {
+        observer.observe(target, {childList: true, subtree: true});
+    }
 })
 
 /**
@@ -461,6 +476,19 @@ async function getInventoryQuickPriceGate(scopeName) {
         && typeof window.RouteAssistantPricingPlumbing.resolveApplyGate === "function"
         ? window.RouteAssistantPricingPlumbing.resolveApplyGate(apply, scope)
         : (function() {
+
+// --- Feature Guard ---
+if (typeof window !== "undefined") {
+    try {
+        const stored = localStorage.getItem("aes-feature-toggles-sync");
+        if (stored) {
+            const toggles = JSON.parse(stored);
+            if (toggles["inventory"] === false) return;
+        }
+    } catch(e) {}
+}
+// ---------------------
+
             const liveScopes = apply.liveScopes || {}
             const scopeLiveAllowed = liveScopes[scope] !== false
             const applyEnabled = apply.enabled !== false

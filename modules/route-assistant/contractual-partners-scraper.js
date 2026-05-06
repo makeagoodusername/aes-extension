@@ -132,7 +132,7 @@ class RouteAssistantContractualPartnersScraper {
      */
     async bulkScrape(ids, opts) {
         opts = opts || {}
-        const concurrency = Math.max(1, Math.min(10, opts.concurrency || 2))
+        const concurrency = Math.max(1, Math.min(20, opts.concurrency || 4))
         const staggerMs   = Math.max(0, opts.staggerMs || 400)
         const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
 
@@ -203,12 +203,20 @@ function parsePartnersHtml(html) {
     }
     if (!doc || !doc.body) return Object.assign({}, fallback, {parserNotes: "empty document"})
 
-    const table = doc.querySelector("table.partners")
+    const tables = doc.getElementsByClassName("partners")
+    let table = null
+    for (let i = 0; i < tables.length; i++) {
+        if (tables[i].tagName.toLowerCase() === "table") {
+            table = tables[i]
+            break
+        }
+    }
     if (!table) {
         return Object.assign({}, fallback, {parserNotes: "table.partners not found — page may be tab=0 or login redirect"})
     }
 
-    const rows = table.querySelectorAll("tbody > tr")
+    const tbody = table.tBodies.length > 0 ? table.tBodies[0] : null
+    const rows = tbody ? tbody.rows : []
     if (!rows.length) {
         return {partners: [], parserNotes: "table.partners has no rows (no partners yet)"}
     }
@@ -217,11 +225,20 @@ function parsePartnersHtml(html) {
     const partners = []
     let dropped = 0
     for (const tr of rows) {
-        const tds = tr.querySelectorAll("td")
-        if (!tds.length) continue
+        const tds = tr.cells
+        if (!tds || !tds.length) continue
 
         const col1 = tds[0]
-        const link = col1 && col1.querySelector("a[href*='/enterprises/']")
+        let link = null
+        if (col1) {
+            const anchors = col1.getElementsByTagName("a")
+            for (let i = 0; i < anchors.length; i++) {
+                if ((anchors[i].getAttribute("href") || "").indexOf("/enterprises/") !== -1) {
+                    link = anchors[i]
+                    break
+                }
+            }
+        }
         if (!link) { dropped++; continue }
         const m = idRe.exec(link.getAttribute("href") || "")
         if (!m) { dropped++; continue }
@@ -247,10 +264,14 @@ function parsePartnersHtml(html) {
 
         const relations = []
         if (tds[3]) {
-            for (const span of tds[3].querySelectorAll("span.type")) {
-                const cls = (span.getAttribute("class") || "").split(/\s+/)
-                const tag = cls.find(t => t && t !== "type")
-                if (tag && relations.indexOf(tag) === -1) relations.push(tag)
+            const spans = tds[3].getElementsByTagName("span")
+            for (let i = 0; i < spans.length; i++) {
+                const span = spans[i]
+                if (span.classList && span.classList.contains("type")) {
+                    const cls = (span.getAttribute("class") || "").split(/\s+/)
+                    const tag = cls.find(t => t && t !== "type")
+                    if (tag && relations.indexOf(tag) === -1) relations.push(tag)
+                }
             }
         }
 

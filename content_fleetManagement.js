@@ -5,61 +5,89 @@ var aircraftData = [];
 var server,aircraftFleetKey,aircraftFleetStorageData,airlineName;
 ;(function fltmng_bootWhenReady(attempt){
   attempt = attempt || 0;
-  const hasJquery = typeof window !== "undefined" && typeof window.$ === "function";
+
   const hasHelpers = typeof AES !== "undefined" || (typeof window !== "undefined" && window.AES);
-  if(!hasJquery || !hasHelpers){
-    if(attempt < 120){
+  if (!hasHelpers) {
+    if (attempt < 120) {
       setTimeout(function(){ fltmng_bootWhenReady(attempt + 1); }, 50);
     } else {
-      console.warn("[AES fleetManagement] dependencies not ready; skipping mount");
+      console.warn("[AES fleetManagement] AES dependencies not ready; skipping mount");
     }
     return;
   }
-  $(function(){
-    if(fltmng_fleetManagementPageOpen()){
-      fltmng_getData();
-      //Async start
-      fltmng_getStorageData();
-    }
-  });
-})();
-function fltmng_fleetManagementPageOpen(){
-  let a = $('.as-page-fleet-management');
-  if(a.length){
-    return true;
+
+  // Remove the tight bootloop waiting for jQuery. Use vanilla JS instead.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", fltmng_init);
   } else {
-    return false;
+    fltmng_init();
   }
+})();
+
+function fltmng_init() {
+  if(fltmng_fleetManagementPageOpen()){
+    fltmng_getData();
+    //Async start
+    fltmng_getStorageData();
+  }
+}
+
+function fltmng_fleetManagementPageOpen(){
+  return document.querySelector('.as-page-fleet-management') !== null;
 }
 function fltmng_getData(){
   //Global
   server = fltmng_getServerName();
-  let date = AES.getServerDate()
+  let date = (typeof window !== "undefined" && window.AES) ? window.AES.getServerDate() : AES.getServerDate();
   //Aircraft
-  let table = $('.as-page-fleet-management > .row > .col-md-9 > .as-panel:eq(0) table');
-  let fleet = $('.as-page-fleet-management > .row > .col-md-9 > h2:eq(0)').text();
-  $('tbody tr',table).each(function(){
-    let aircraftId = fltmng_getAircraftId($('td:eq(6) > div > div:eq(1) > a:eq(0)',this).attr('href'));
+  let table = document.querySelector('.as-page-fleet-management > .row > .col-md-9 > .as-panel table');
+  let h2 = document.querySelector('.as-page-fleet-management > .row > .col-md-9 > h2');
+  let fleet = h2 ? h2.textContent.trim() : "";
+
+  if (!table) return;
+
+  let tbody = table.querySelector('tbody');
+  if (!tbody) return;
+
+  let rows = tbody.querySelectorAll('tr');
+  rows.forEach(function(row){
+    let cells = row.querySelectorAll('td');
+    if (cells.length < 8) return;
+
+    let divs = cells[6].querySelectorAll('div > div');
+    if (divs.length < 2) return;
+    let hrefEl = divs[1].querySelector('a');
+    if (!hrefEl) return;
+    let aircraftId = fltmng_getAircraftId(hrefEl.getAttribute('href'));
     if(!fltmng_isValidAircraftId(aircraftId)) return;
+
+    let registrationEl = cells[1].querySelector('span');
+    let nicknameEl = cells[1].querySelector('div');
+    let equipmentEl = cells[2].querySelector('a');
+    let ageEl = cells[4].querySelector('span');
+    let maintEl = cells[4].querySelectorAll('div > span')[1];
+    let seatsYEl = cells[5].querySelectorAll('span')[0];
+    let seatsCEl = cells[5].querySelectorAll('span')[1];
+    let seatsFEl = cells[5].querySelectorAll('span')[2];
+    let noteEl = cells[7].querySelector('span > span');
+    let locationHrefEl = row.querySelector('a[href*="/app/info/airports/"]');
+
     let data = {
-      registration: $('td:eq(1) > span:eq(0)',this).text(),
-      nickname: fltmng_getNickname($('td:eq(1) > div:eq(0)',this).text()),
-      equipment:$('td:eq(2) > a:eq(0)',this).text(),
-      typeId:fltmng_getTypeId($('td:eq(2) > a:eq(0)',this).attr('href')),
-      age:fltmng_getAge($('td:eq(4) > span:eq(0)',this).text()),
-      maintanance:fltmng_getMaintanance($('td:eq(4) > div > span:eq(1)',this).text()),
-      seatsY:fltmng_getInt($('td:eq(5) > span:eq(0)',this).text()),
-      seatsC:fltmng_getInt($('td:eq(5) > span:eq(1)',this).text()),
-      seatsF:fltmng_getInt($('td:eq(5) > span:eq(2)',this).text()),
-      aircraftId:aircraftId,
-      note:fltmng_getNickname($('td:eq(7) > span > span',this).text()),
-      // Home-base IATA from any /app/info/airports/<IATA> link in the row.
-      // Source for ScrapeOrchestratorEnumerators.enumerateHubs — without it
-      // the per-hub and per-route phases skip on a fresh install.
-      location:fltmng_getLocation($('a[href*="/app/info/airports/"]:eq(0)',this).attr('href')),
-      fleet:fleet,
-      date:date.date,
-      time:date.time
+      registration: registrationEl ? registrationEl.textContent.trim() : "",
+      nickname: nicknameEl ? fltmng_getNickname(nicknameEl.textContent.trim()) : "",
+      equipment: equipmentEl ? equipmentEl.textContent.trim() : "",
+      typeId: equipmentEl ? fltmng_getTypeId(equipmentEl.getAttribute('href')) : null,
+      age: ageEl ? fltmng_getAge(ageEl.textContent.trim()) : 0,
+      maintanance: maintEl ? fltmng_getMaintanance(maintEl.textContent.trim()) : 0,
+      seatsY: seatsYEl ? fltmng_getInt(seatsYEl.textContent.trim()) : 0,
+      seatsC: seatsCEl ? fltmng_getInt(seatsCEl.textContent.trim()) : 0,
+      seatsF: seatsFEl ? fltmng_getInt(seatsFEl.textContent.trim()) : 0,
+      aircraftId: aircraftId,
+      note: noteEl ? fltmng_getNickname(noteEl.textContent.trim()) : "",
+      location: locationHrefEl ? fltmng_getLocation(locationHrefEl.getAttribute('href')) : "",
+      fleet: fleet,
+      date: date.date,
+      time: date.time
     }
     aircraftData.push(data);
   });
@@ -229,24 +257,58 @@ function fltmng_saveData(){
 function fltmng_display(){
   fltmng_displayAircraftProfit();
 
-  let p = [];
-  p.push($('<p></p>').html(fltmng_displaySavedAircrafts()));
-  p.push($('<p></p>').html(fltmng_displayNewUpdates()));
+  let p1 = document.createElement("p");
+  p1.innerHTML = fltmng_displaySavedAircrafts();
 
-  let panel = $('<div class="as-panel"></div>').append(p);
+  let p2 = document.createElement("p");
+  p2.appendChild(fltmng_displayNewUpdates());
+
+  let panel = document.createElement("div");
+  panel.className = "as-panel";
+  panel.appendChild(p1);
+  panel.appendChild(p2);
+
   //Header
-  let h = $('<h3></h3>').text('AES Fleet Management');
-  let div = $('<div></div>').append(h,panel);
-  $('.as-page-fleet-management > h1:eq(0)').after(div);
+  let h = document.createElement("h3");
+  h.textContent = 'AES Fleet Management';
+  let div = document.createElement("div");
+  div.appendChild(h);
+  div.appendChild(panel);
+
+  let h1 = document.querySelector('.as-page-fleet-management > h1');
+  if (h1 && h1.nextSibling) {
+    h1.parentNode.insertBefore(div, h1.nextSibling);
+  } else if (h1) {
+    h1.parentNode.appendChild(div);
+  }
 }
 function fltmng_displayAircraftProfit(){
-  let table = $('.as-page-fleet-management > .row > .col-md-9 > .as-panel:eq(0) table');
+  let table = document.querySelector('.as-page-fleet-management > .row > .col-md-9 > .as-panel table');
+  if (!table) return;
   //Head
-  let th = ['<th rowspan="2" class="aes-text-right">Profit/Loss</th>','<th rowspan="2">Extract date</th>'];
-  $('thead tr:eq(0)',table).append(th);
+  let theadRow = table.querySelector('thead tr');
+  if (theadRow) {
+    let th1 = document.createElement("th");
+    th1.rowSpan = 2;
+    th1.className = "aes-text-right";
+    th1.textContent = "Profit/Loss";
+    let th2 = document.createElement("th");
+    th2.rowSpan = 2;
+    th2.textContent = "Extract date";
+    theadRow.appendChild(th1);
+    theadRow.appendChild(th2);
+  }
   //Body
-  $('tbody tr',table).each(function(){
-    let id  = fltmng_getAircraftId($('td:eq(6) > div > div:eq(1) > a:eq(0)',this).attr('href'));
+  let tbodyRows = table.querySelectorAll('tbody tr');
+  tbodyRows.forEach(function(row){
+    let cells = row.querySelectorAll('td');
+    if (cells.length < 8) return;
+    let divs = cells[6].querySelectorAll('div > div');
+    if (divs.length < 2) return;
+    let hrefEl = divs[1].querySelector('a');
+    if (!hrefEl) return;
+    let id = fltmng_getAircraftId(hrefEl.getAttribute('href'));
+
     let profit,date,time;
     aircraftData.forEach(function(value){
       if(value.aircraftId == id){
@@ -259,25 +321,32 @@ function fltmng_displayAircraftProfit(){
         }
       }
     });
-    let td = [];
-    if(date){
-      td.push(fltmng_formatMoney(profit));
-      td.push($('<td></td>').html(AES.formatDateString(date)+'<br>'+time));
-    } else {
-      td.push('<td></td>','<td></td>');
-    }
-    $(this).append(td);
 
+    if(date){
+      row.appendChild(fltmng_formatMoney(profit));
+      let td2 = document.createElement("td");
+      td2.innerHTML = ((typeof window !== "undefined" && window.AES) ? window.AES.formatDateString(date) : AES.formatDateString(date)) + '<br>' + time;
+      row.appendChild(td2);
+    } else {
+      let td1 = document.createElement("td");
+      let td2 = document.createElement("td");
+      row.appendChild(td1);
+      row.appendChild(td2);
+    }
   });
 }
 function fltmng_displaySavedAircrafts(){
   return 'Currently '+aircraftFleetStorageData.fleet.length+' aircrafts stored in memory.';
 }
 function fltmng_displayNewUpdates(){
+  let span = document.createElement("span");
   if(!aircraftData.length){
-    return $('<span class="warning"></span>').text('No aircraft rows found on this fleet page.');
+    span.className = "warning";
+    span.textContent = 'No aircraft rows found on this fleet page.';
+    return span;
   }
-  let span = $('<span class="good"></span>').text('Updated aircraft data for '+aircraftData.length+ ' from '+aircraftData[0].fleet);
+  span.className = "good";
+  span.textContent = 'Updated aircraft data for '+aircraftData.length+ ' from '+aircraftData[0].fleet;
   return span;
 }
 function fltmng_getServerName(){

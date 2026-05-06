@@ -372,6 +372,10 @@ class RouteAssistantPanel {
                     needFullRefresh = true
                     continue
                 }
+                if (key.startsWith("routeAssistant:markets:") || key.startsWith("routeAssistant:ticketPrice:")) {
+                    needFullRefresh = true
+                    continue
+                }
                 if (typeof AesAfpScheduleStore !== "undefined"
                  && key.startsWith(AesAfpScheduleStore.PREFIX)
                  && myHub) {
@@ -2287,7 +2291,7 @@ class RouteAssistantPanel {
                 })
             }
             await this.airportOverviewScraper.bulkScrape(todo, {
-                concurrency: 2,
+                concurrency: 4,
                 staggerMs:   1000
             })
         } catch (e) {
@@ -2486,6 +2490,12 @@ class RouteAssistantPanel {
                 if (m) ourEnterpriseIds.add(String(parseInt(m[1], 10)))
             }
         } catch (e) { /* ignore */ }
+
+        for (const eid of classifyMap.keys()) {
+            if (classifyMap.get(eid).kind === "self") {
+                ourEnterpriseIds.add(String(eid));
+            }
+        }
 
         const ctx = {
             classifyKind: (eid) => {
@@ -2778,7 +2788,7 @@ class RouteAssistantPanel {
         this.distanceProgress = {total: missing.length, done: 0}
         this._renderStatusBar()
 
-        const concurrency = 4
+        const concurrency = 8
         const staggerMs   = 800
         try {
             for (let i = 0; i < missing.length; i += concurrency) {
@@ -2848,7 +2858,7 @@ class RouteAssistantPanel {
         this.typeSpecsProgress = {total: need.length, done: 0}
         this._renderStatusBar()
 
-        const concurrency = 4
+        const concurrency = 8
         const staggerMs   = 800
         try {
             for (let i = 0; i < need.length; i += concurrency) {
@@ -4003,7 +4013,7 @@ class RouteAssistantPanel {
         )
         if (!ok) return
 
-        this.scanner = new RouteAssistantParallelScanner(this.server, {concurrency: 3, staggerMs: 1200})
+        this.scanner = new RouteAssistantParallelScanner(this.server, {concurrency: 6, staggerMs: 300})
         this.scanner.onProgress(state => {
             if (state.phase === "seeding") {
                 const active = Array.isArray(state.activeCountries) && state.activeCountries.length
@@ -4061,6 +4071,10 @@ class RouteAssistantPanel {
                 row.airportId = demand.airportId || null
                 row.paxScore = demand.paxScore
                 row.cargoScore = demand.cargoScore
+                row.rmTightnessY = demand.rmTightnessByClass && demand.rmTightnessByClass.Y;
+                row.rmTightnessC = demand.rmTightnessByClass && demand.rmTightnessByClass.C;
+                row.rmTightnessF = demand.rmTightnessByClass && demand.rmTightnessByClass.F;
+                row.rmTightnessCargo = demand.rmTightnessByClass && demand.rmTightnessByClass.Cargo;
                 row.demandSource = "route-assistant"
                 row.demandBasis = null
             }
@@ -4107,7 +4121,7 @@ class RouteAssistantPanel {
             this._noteToast("Already resolving demand…")
             return
         }
-        this.scanner = new RouteAssistantParallelScanner(this.server, {concurrency: 3, staggerMs: 1500})
+        this.scanner = new RouteAssistantParallelScanner(this.server, {concurrency: 6, staggerMs: 400})
         this.scanner.onProgress(state => {
             const phase = state.phase === "resolving" ? `Resolving ${state.resolved}/${state.total}…`
                         : state.phase === "fetching"  ? `Fetching demand (${state.fetched}/${state.total})…`
@@ -8191,6 +8205,17 @@ class RouteAssistantPanel {
                 this._render()
             })
             wrap.append(pick)
+
+            const simBtn = document.createElement("button")
+            simBtn.textContent = "🧪 Simulate Competitor"
+            simBtn.style.cssText = "margin-left:8px;background:#3b82f6;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;font-weight:bold;"
+            simBtn.addEventListener("click", () => {
+                if (window.RouteAssistantSandboxSimulationModal) {
+                    window.RouteAssistantSandboxSimulationModal.show(this, this._assembleOrsSandboxRoute(this._orsSandboxRoute._row))
+                }
+            })
+            wrap.append(simBtn)
+
         } else {
             const hint = document.createElement("span")
             hint.style.color = "#9ca3af"
@@ -8648,10 +8673,11 @@ class RouteAssistantPanel {
                 ? "— pick a scenario —"
                 : "(none yet)"
             sel.append(placeholder)
-            for (const it of items) {
+for (const it of items) {
                 const o = document.createElement("option")
                 o.value = it.id
-                o.textContent = it.name
+                const prefix = it._isForeign ? "[" + it._accountName + "] " : ""
+                o.textContent = prefix + it.name
                 sel.append(o)
             }
             sel.addEventListener("change", () => {
@@ -8716,9 +8742,14 @@ class RouteAssistantPanel {
                 savedRow.append(hint)
             }
         }
-        if (typeof RouteAssistantSandboxScenariosStore !== "undefined") {
-            RouteAssistantSandboxScenariosStore.list(route.hub || this.hubIata, route.dest)
-                .then(renderSaved).catch(() => renderSaved([]))
+if (typeof RouteAssistantSandboxScenariosStore !== "undefined") {
+            if (RouteAssistantSandboxScenariosStore.listFederated) {
+                RouteAssistantSandboxScenariosStore.listFederated(route.hub || this.hubIata, route.dest)
+                    .then(renderSaved).catch(() => renderSaved([]))
+            } else {
+                RouteAssistantSandboxScenariosStore.list(route.hub || this.hubIata, route.dest)
+                    .then(renderSaved).catch(() => renderSaved([]))
+            }
         } else {
             renderSaved([])
         }
@@ -10225,6 +10256,14 @@ class RouteAssistantPanel {
         const useDistFuel = !!(this.settings && this.settings.economics && this.settings.economics.fuelPriceAutoEnabled)
         const fleetMedAlpha = this._ratingAlphaFleetMedian || null
 
+        const yieldHistory = (this.yieldHistoryMap && this.yieldHistoryMap.get(
+            String(this.hubIata || "").toUpperCase() + "-" + String(row.destIata || "").toUpperCase()
+        )) || null
+        if (yieldHistory) {
+            row.yieldHistory = yieldHistory
+        }
+
+
         // Slice 6a — memoize the bundle on the row reference. The bundle
         // reads ~25 fields; rebuilding it on every recompute (60Hz during
         // a slider drag) is wasteful when row + settings + fleet haven't
@@ -10456,7 +10495,28 @@ class RouteAssistantPanel {
      * user's enterprise isn't in the leaderboard, or the freshness
      * window between marketShare and ORS data is > 7 days.
      */
-    async _calibrateOrsSandboxT(route, banner) {
+    _queueCalibrateToast(routeKey, T) {
+        if (!this._calibrateToastBatch) {
+            this._calibrateToastBatch = { count: 0, lastRoute: null, lastT: null, timeout: null }
+        }
+        const b = this._calibrateToastBatch
+        b.count++
+        b.lastRoute = routeKey
+        b.lastT = T
+        if (b.timeout) clearTimeout(b.timeout)
+        b.timeout = setTimeout(() => {
+            if (typeof RouteAssistantToast !== "undefined") {
+                if (b.count === 1) {
+                    RouteAssistantToast.success("Calibrated T = " + b.lastT + " for " + b.lastRoute, {duration: 5000})
+                } else {
+                    RouteAssistantToast.success("Calibrated T for " + b.count + " routes", {duration: 5000})
+                }
+            }
+            this._calibrateToastBatch = null
+        }, 2000)
+    }
+
+    async _calibrateOrsSandboxT(route, banner, skipRender=false) {
         const out = (msg, ok) => {
             if (!banner) return
             banner.style.color = ok ? "#34d399" : "#fbbf24"
@@ -10533,12 +10593,103 @@ class RouteAssistantPanel {
         } catch (e) { console.warn("[AES sandboxBacktest] log on calibrate failed", e) }
 
         out("Calibrated T = " + T + " (from " + (Math.round(observedShare * 1000) / 10) + "% observed share). Re-projecting…", true)
-        if (typeof RouteAssistantToast !== "undefined") {
-            const routeKey = String(this.hubIata || "").toUpperCase() + "→" + String(route.dest || "").toUpperCase()
-            RouteAssistantToast.success("Calibrated T = " + T + " for " + routeKey, {duration: 5000})
-        }
+        const routeKey = String(this.hubIata || "").toUpperCase() + "→" + String(route.dest || "").toUpperCase()
+        this._queueCalibrateToast(routeKey, T)
         this._orsSandboxResult = null
-        this._render()
+        if (!skipRender) this._render()
+    }
+
+    /**
+     * Bulk calibrate T over a list of routes. Like _calibrateOrsSandboxT, but
+     * uses the bulk persistence methods from Settings and SandboxBacktestStore
+     * to avoid race conditions and waterfall I/O overhead.
+     */
+    async _bulkCalibrateOrsSandboxT(routes) {
+        if (!routes || !routes.length) return
+        if (typeof RouteAssistantOrsModel === "undefined") return
+        const cfg = Object.assign({}, this.settings.orsSandbox || {})
+        const map = Object.assign({}, cfg.perRouteTemperature || {})
+        const tsMap = Object.assign({}, cfg.perRouteTemperatureCalibratedAt || {})
+
+        const logsToInsert = []
+        let calibratedCount = 0
+
+        for (const route of routes) {
+            const ourId = route.ourEnterpriseId
+            let result
+            try {
+                result = RouteAssistantOrsModel.calibrateRouteT({
+                    orsByClass:      route.orsByClass,
+                    marketSharePax:  route.marketSharePax,
+                    ourEnterpriseId: ourId
+                })
+            } catch (e) { continue }
+
+            if (!result || !result.ok) continue
+
+            const T = result.T
+            const observedShare = result.observedShare
+            const key = String(this.hubIata || "").toUpperCase() + "-" + String(route.dest || "").toUpperCase()
+
+            map[key] = T
+            tsMap[key] = Date.now()
+
+            let projection = null
+            try {
+                const scenario = (cfg.lastScenarioByRoute || {})[key] || RouteAssistantOrsModel._normaliseScenario({})
+                projection = RouteAssistantOrsModel.project({
+                    route:              route,
+                    scenario:           scenario,
+                    modelParams:        Object.assign({}, cfg.modelParams || {}, {perRouteT: T}),
+                    economics:          this.settings.economics || {},
+                    useRealDemandForLF: !!(this.settings.demandDepth && this.settings.demandDepth.useRealDemandForLF)
+                })
+
+                logsToInsert.push({
+                    hub: this.hubIata,
+                    dest: route.dest,
+                    entry: {
+                        ts:          Date.now(),
+                        trigger:     "calibrate",
+                        scenario:    scenario,
+                        modelParams: projection.modelParams,
+                        projected: {
+                            share:          projection.projected && projection.projected.share,
+                            paxPerWeek:     projection.projected && projection.projected.paxPerWeek,
+                            revenuePerWeek: projection.projected && projection.projected.revenuePerWeek,
+                            profitPerWeek:  projection.projected && projection.projected.profitPerWeek
+                        },
+                        observed: {
+                            share:  observedShare,
+                            period: null
+                        },
+                        backfilledAt: Date.now()
+                    }
+                })
+            } catch (e) { console.warn("[AES sandboxBacktest] project for bulk log failed", e) }
+
+            const routeKey = String(this.hubIata || "").toUpperCase() + "→" + String(route.dest || "").toUpperCase()
+            this._queueCalibrateToast(routeKey, T)
+            calibratedCount++
+        }
+
+        if (!calibratedCount) return
+
+        cfg.perRouteTemperature = map
+        cfg.perRouteTemperatureCalibratedAt = tsMap
+        this.settings.orsSandbox = cfg
+
+        const saves = []
+        saves.push(RouteAssistantSettings.save({orsSandbox: cfg}).catch(() => {}))
+
+        if (logsToInsert.length > 0 && typeof RouteAssistantSandboxBacktestStore !== "undefined" && typeof RouteAssistantSandboxBacktestStore.logMany === "function") {
+            saves.push(RouteAssistantSandboxBacktestStore.logMany(logsToInsert).catch(e => {
+                console.warn("[AES sandboxBacktest] bulk log on calibrate failed", e)
+            }))
+        }
+
+        await Promise.all(saves)
+        this._orsSandboxResult = null
     }
 
     /**
@@ -12087,7 +12238,7 @@ class RouteAssistantPanel {
      */
     _renderAutoPricingSection() {
         const cfg = this.settings.pricing = Object.assign(
-            {showPricingColumns: true, concurrency: 4, staggerMs: 800, lastBulkScrapeAt: null},
+            {showPricingColumns: true, concurrency: 8, staggerMs: 200, lastBulkScrapeAt: null},
             this.settings.pricing || {}
         )
 
@@ -14410,7 +14561,7 @@ class RouteAssistantPanel {
     async _runBulkPriceScrape() {
         if (this._priceScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.pricing || {}
-        const concurrency = cfg.concurrency || 4
+        const concurrency = cfg.concurrency || 8
         const staggerMs   = cfg.staggerMs   || 800
 
         if (!this.priceScraper) {
@@ -14852,13 +15003,13 @@ class RouteAssistantPanel {
             const hubU = String(this.hubIata || "").toUpperCase()
             const dateStr = new Date().toISOString().slice(0, 10)
             let written = 0
-            for (const c of checks) {
-                if (!c.cb.checked) continue
+            await Promise.all(checks.map(async (c) => {
+                if (!c.cb.checked) return
                 const side = c.sideSel.value
                 const sol  = (c.entry.primary.side === side) ? c.entry.primary
                            : (c.entry.alt && c.entry.alt.side === side) ? c.entry.alt
                            : null
-                if (!sol) continue
+                if (!sol) return
                 const ex = c.entry.row.override || {}
                 const noteStr = "calibrated " + dateStr + " (" + side + ")"
                 const fields = {
@@ -14879,7 +15030,7 @@ class RouteAssistantPanel {
                     this.overrideMap.set(hubU + "-" + destU, saved)
                     written++
                 }
-            }
+            }))
             close()
             if (written) {
                 this._recomputeProfit()
@@ -15228,7 +15379,7 @@ class RouteAssistantPanel {
      */
     _renderCarriersSection() {
         const cfg = this.settings.carriers = Object.assign(
-            {showCarrierIntensity: true, concurrency: 3, staggerMs: 1200, lastBulkScrapeAt: null},
+            {showCarrierIntensity: true, concurrency: 6, staggerMs: 300, lastBulkScrapeAt: null},
             this.settings.carriers || {}
         )
 
@@ -15468,7 +15619,7 @@ class RouteAssistantPanel {
     async _runBulkCarrierScrape() {
         if (this._carrierScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.carriers || {}
-        const concurrency = cfg.concurrency || 3
+        const concurrency = cfg.concurrency || 6
         const staggerMs   = cfg.staggerMs   || 1200
 
         if (!this.carrierScraper) {
@@ -15543,7 +15694,7 @@ class RouteAssistantPanel {
     async _runBulkEnterpriseMetaSync() {
         if (this._enterpriseMetaScrapeRunning || !this.rows || !this.rows.length) return
         const cfg = this.settings.carriers || {}
-        const concurrency = cfg.enterpriseMetaConcurrency || 4
+        const concurrency = cfg.enterpriseMetaConcurrency || 8
         const staggerMs   = cfg.enterpriseMetaStaggerMs   || 600
 
         // Collect every enterpriseId visible across both pax + cargo
@@ -15680,7 +15831,7 @@ class RouteAssistantPanel {
         let lastTotal = ids.length
         try {
             await this.contractualPartnersScraper.bulkScrape(ids, {
-                concurrency: cfg.partnersConcurrency || 2,
+                concurrency: cfg.partnersConcurrency || 4,
                 staggerMs:   cfg.partnersStaggerMs   || 400,
                 onProgress:  (done, total) => {
                     lastTotal = total
@@ -15759,13 +15910,20 @@ class RouteAssistantPanel {
         // numeric ID, so an ID-match is rock-solid where a name match is
         // fragile (extra spaces, periods, "Airways" suffix variants).
         // Multi-enterprise users (e.g. FLY NYON. + NYON.) collect all IDs.
-        const ourEnterpriseIds = new Set()
+        const activeEnterpriseIds = new Set()
         try {
             for (const a of document.querySelectorAll(".as-navbar-main a[href*='dashboard?select=']")) {
                 const m = /select=(\d+)/.exec(a.getAttribute("href") || "")
-                if (m) ourEnterpriseIds.add(parseInt(m[1], 10))
+                if (m) activeEnterpriseIds.add(parseInt(m[1], 10))
             }
         } catch (e) { /* ignore */ }
+
+        const canopyEnterpriseIds = new Set();
+        for (const eid of allKinMap.keys()) {
+            if (!activeEnterpriseIds.has(eid)) {
+                canopyEnterpriseIds.add(eid);
+            }
+        }
 
         for (const r of this.rows) {
             const key = RouteAssistantMarketsPageScraper._pairKey(this.hubIata, r.destIata)
@@ -15784,9 +15942,9 @@ class RouteAssistantPanel {
                 // (rock-solid), then airline name (fragile).
                 let ourPaxShare = null
                 for (const e of r.marketSharePax) {
-                    if (e.enterpriseId != null && ourEnterpriseIds.has(e.enterpriseId)) {
-                        ourPaxShare = e.sharePct
-                        break
+                    if (e.enterpriseId != null && (activeEnterpriseIds.has(e.enterpriseId) || canopyEnterpriseIds.has(e.enterpriseId))) {
+                        ourPaxShare = (ourPaxShare || 0) + e.sharePct
+                        // Combine market share for all active & canopy enterprises
                     }
                 }
                 if (ourPaxShare == null && ourNameLow) {
@@ -15844,8 +16002,9 @@ class RouteAssistantPanel {
                 const merged = new Map()  // key → {enterpriseId|name, name, paxShare, cargoShare, paxRank, cargoRank, paxChange, cargoChange}
                 const addEntry = (e, kind) => {
                     if (!e) return
-                    const isOurs = (e.enterpriseId != null && ourEnterpriseIds.has(e.enterpriseId))
+                    const isOurs = (e.enterpriseId != null && activeEnterpriseIds.has(e.enterpriseId))
                         || (e.name && e.name.toLowerCase().trim() === ourNameLow)
+                    const isCanopy = (e.enterpriseId != null && canopyEnterpriseIds.has(e.enterpriseId))
                     if (isOurs) return
                     const key = e.enterpriseId != null ? "id:" + e.enterpriseId : "name:" + (e.name || "").toLowerCase().trim()
                     if (!key || key === "name:") return
@@ -15860,7 +16019,8 @@ class RouteAssistantPanel {
                             paxRank:      null,
                             cargoRank:    null,
                             paxChange:    null,
-                            cargoChange:  null
+                            cargoChange:  null,
+                            isCanopy:     isCanopy
                         }
                         merged.set(key, slot)
                     }
@@ -15923,7 +16083,10 @@ class RouteAssistantPanel {
                 const flightPrefixes = new Map()  // prefix → grouped market inventory + unique flight count
                 const competitorFlights = []
                 for (const c of all) {
-                    if (c.isOurs) continue
+                    // isOurs flag in scrape might match active or canopy depending on scraping time
+                    const isActive = c.isOurs && (!c.enterpriseId || activeEnterpriseIds.has(c.enterpriseId) || (c.name && c.name.toLowerCase().trim() === ourNameLow));
+                    if (isActive) continue
+                    if (c.enterpriseId && activeEnterpriseIds.has(c.enterpriseId)) continue;
                     const flightDetail = this._normaliseCompetitorFlight(c)
                     if (flightDetail) competitorFlights.push(flightDetail)
                     const clsRaw = String(c.serviceClass || "").trim().toUpperCase()
@@ -16753,7 +16916,7 @@ class RouteAssistantPanel {
      */
     _renderMarketAnalysisSection() {
         const cfg = this.settings.marketAnalysis = Object.assign(
-            {showColumns: true, concurrency: 4, staggerMs: 800, lastBulkScrapeAt: null,
+            {showColumns: true, concurrency: 8, staggerMs: 200, lastBulkScrapeAt: null,
              competitorMaxAgeDays: null, shareMaxAgeDays: 7, historicMaxAgeDays: null,
              defaultPayloadChart: "ECONOMY"},
             this.settings.marketAnalysis || {}
@@ -16833,7 +16996,7 @@ class RouteAssistantPanel {
         if (this._marketScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.marketAnalysis || {}
         const ddCfg = this.settings.demandDepth || {}
-        const concurrency = cfg.concurrency || 4
+        const concurrency = cfg.concurrency || 8
         const staggerMs   = cfg.staggerMs   || 800
 
         if (!this.marketsScraper) {
@@ -17147,6 +17310,10 @@ class RouteAssistantPanel {
             r.avgPriceByClass       = derived.avgPriceByClass
             r.priceElasticityByClass = derived.priceElasticityByClass
             r.rmTightnessByClass    = derived.rmTightnessByClass
+            r.rmTightnessY          = derived.rmTightnessByClass ? derived.rmTightnessByClass.Y : null
+            r.rmTightnessC          = derived.rmTightnessByClass ? derived.rmTightnessByClass.C : null
+            r.rmTightnessF          = derived.rmTightnessByClass ? derived.rmTightnessByClass.F : null
+            r.rmTightnessCargo      = derived.rmTightnessByClass ? derived.rmTightnessByClass.Cargo : null
             r.demandDerivedAt = derived.scrapedAt
             r.demandNotes     = derived.derivationNotes
             // Slice 5b — slim PAX history series (last 12 periods) for the
@@ -17191,7 +17358,7 @@ class RouteAssistantPanel {
     async _runBulkDemandSync() {
         if (this._demandScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.demandDepth || {}
-        const concurrency = cfg.concurrency || 3
+        const concurrency = cfg.concurrency || 6
         const staggerMs   = cfg.staggerMs   || 1200
         const coverage    = cfg.classCoverage || "summary"
         const payloads    = (coverage === "full")
@@ -17281,7 +17448,7 @@ class RouteAssistantPanel {
     _renderDemandDepthSection() {
         const cfg = this.settings.demandDepth = Object.assign(
             {showDemandColumns: true, classCoverage: "summary", useRealDemandForLF: false,
-             concurrency: 3, staggerMs: 1200, historicWindowPeriods: 12,
+             concurrency: 6, staggerMs: 300, historicWindowPeriods: 12,
              lastBulkScrapeAt: null, historicMaxAgeDays: null, inventoryMaxAgeDays: 3},
             this.settings.demandDepth || {}
         )
@@ -17522,6 +17689,20 @@ class RouteAssistantPanel {
             if (this.settings.orsSandbox.enabled) this._render()
         })
         ctrlRow.append(resetDefaultsBtn)
+
+        const calAllBtn = document.createElement("button")
+        calAllBtn.textContent = "Calibrate all visible routes"
+        Object.assign(calAllBtn.style, smallBtnStyle())
+        calAllBtn.style.background = "#1e1b4b"
+        calAllBtn.style.color = "#a78bfa"
+        calAllBtn.style.borderColor = "#4c1d95"
+        calAllBtn.title = "Runs T-calibration for all routes currently visible in the table."
+        calAllBtn.addEventListener("click", async () => {
+            if (!this.scoredRows) return
+            await this._bulkCalibrateOrsSandboxT(this.scoredRows)
+            this._render()
+        })
+        ctrlRow.append(calAllBtn)
 
         wrap.append(ctrlRow)
 
@@ -18178,7 +18359,7 @@ class RouteAssistantPanel {
      */
     _renderOrsRankSection() {
         const cfg = this.settings.ors = Object.assign(
-            {showColumns: true, concurrency: 2, staggerMs: 1500, lastBulkScrapeAt: null,
+            {showColumns: true, concurrency: 4, staggerMs: 400, lastBulkScrapeAt: null,
              rankMaxAgeDays: null,
              classesToScrape: ["ECONOMY", "BUSINESS", "FIRST", "CARGO"],
              defaultDepartureH: 0, defaultArrivalH: 72,
@@ -18764,7 +18945,7 @@ class RouteAssistantPanel {
     async _runBulkOrsScrape() {
         if (this._orsScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.ors || {}
-        const concurrency = cfg.concurrency || 2
+        const concurrency = cfg.concurrency || 6
         const staggerMs   = cfg.staggerMs   || 1500
 
         if (!this.orsScraper) {
@@ -18944,7 +19125,7 @@ class RouteAssistantPanel {
                 plan = await svc.planSync(pairs, {
                     settings: this.settings,
                     includeFresh: true,
-                    concurrency: orsCfg.concurrency || 2,
+                    concurrency: orsCfg.concurrency || 4,
                     staggerMs:   orsCfg.staggerMs   || 1500
                 })
                 if (plan && plan.blocked) {
@@ -18973,7 +19154,7 @@ class RouteAssistantPanel {
         let halted = false, haltReason = null, doneCount = 0, totalCount = pairs.length
         try {
             const result = await orchestrator.bulkSync(pairs, {
-                concurrency: orsCfg.concurrency || 2,
+                concurrency: orsCfg.concurrency || 4,
                 staggerMs:   orsCfg.staggerMs   || 1500,
                 orsParams: {
                     classesToScrape: orsCfg.classesToScrape,
@@ -19342,7 +19523,7 @@ class RouteAssistantPanel {
         let halted = false, haltReason = null, doneCount = 0
         try {
             const res = await orchestrator.bulkSync(stalePairs, {
-                concurrency: orsCfg.concurrency || 2,
+                concurrency: orsCfg.concurrency || 4,
                 staggerMs:   orsCfg.staggerMs   || 1500,
                 orsParams: {
                     classesToScrape: orsCfg.classesToScrape,
@@ -19980,7 +20161,11 @@ class RouteAssistantPanel {
     _buildCarrierRowInner(entry, row) {
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;align-items:center;gap:8px;padding:3px 4px;border-radius:3px;"
-        wrap.addEventListener("mouseenter", () => { wrap.style.background = "rgba(34,197,94,0.08)" })
+        if (entry.isCanopy) {
+            wrap.style.borderLeft = "2px solid #fcd34d";
+            wrap.style.paddingLeft = "2px";
+        }
+        wrap.addEventListener("mouseenter", () => { wrap.style.background = entry.isCanopy ? "rgba(252, 211, 77, 0.08)" : "rgba(34,197,94,0.08)" })
         wrap.addEventListener("mouseleave", () => { wrap.style.background = "" })
 
         const cfgC = (this.settings && this.settings.carriers) || {}
@@ -20036,6 +20221,9 @@ class RouteAssistantPanel {
         nameLink.rel = "noreferrer noopener"
         nameLink.textContent = entry.name || "(unknown)"
         nameLink.style.cssText = "color:#93c5fd;text-decoration:none;font-weight:600;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;"
+        if (entry.isCanopy) {
+            nameLink.style.color = "#fcd34d"; // Yellow/Amber for canopy flights
+        }
         nameLink.addEventListener("mouseenter", () => { nameLink.style.textDecoration = "underline" })
         nameLink.addEventListener("mouseleave", () => { nameLink.style.textDecoration = "none" })
         nameRow.append(nameLink)
@@ -20074,6 +20262,14 @@ class RouteAssistantPanel {
             il.title = "Open for interlining at this airport (per AS Stations table)"
             il.style.cssText = "color:#94a3b8;font-size:11px;font-weight:600;flex-shrink:0;"
             nameRow.append(il)
+        }
+
+        if (entry.isCanopy) {
+            const canopyLabel = document.createElement("span");
+            canopyLabel.textContent = "Canopy";
+            canopyLabel.style.cssText = "margin-left:auto; background:#fcd34d; color:#1e293b; font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; text-transform:uppercase;";
+            canopyLabel.title = "This flight is operated by another subsidiary in your Canopy Vault.";
+            nameRow.append(canopyLabel);
         }
         middle.append(nameRow)
 
@@ -25211,7 +25407,11 @@ const RA_DIFF_TRACKED = [
     {field: "cargoDemandPool",   fmt: "compact"},
     {field: "ourPaxShare",       fmt: "pct1"},
     {field: "orsRatingGapToTop", fmt: "intSigned"},
-    {field: "rmTightness",       fmt: "pctTight"}
+    {field: "rmTightness",       fmt: "pctTight"},
+    {field: "rmTightnessY",      fmt: "pctTight"},
+    {field: "rmTightnessC",      fmt: "pctTight"},
+    {field: "rmTightnessF",      fmt: "pctTight"},
+    {field: "rmTightnessCargo",  fmt: "pctTight"}
 ]
 const RA_DIFF_FMT_BY_FIELD = (() => {
     const m = {}

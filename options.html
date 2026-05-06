@@ -232,6 +232,11 @@
             transition: var(--aes-tr-fast);
         }
         .aes-data-tools__btn:hover { background: var(--aes-oxide); color: var(--aes-bone); }
+        .aes-data-tools__btn:focus-visible,
+        .aes-data-tools__select:focus-visible {
+            outline: var(--aes-bw-2) solid var(--aes-rust);
+            outline-offset: 2px;
+        }
         .aes-data-tools__btn:disabled { opacity: 0.45; cursor: not-allowed; }
         .aes-data-tools__btn--warn,
         .aes-data-tools__btn--danger {
@@ -369,7 +374,7 @@
                 </div>
             </div>
 
-            <div class="aes-data-tools__status" id="aes-status-message"></div>
+            <div class="aes-data-tools__status" id="aes-status-message" role="status" aria-live="polite"></div>
         </section>
 
         <section class="aes-data-tools" aria-label="AES data cleanup">

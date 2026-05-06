@@ -241,46 +241,60 @@ class RouteAssistantSchedulePageScraper {
 
         // ---- Flight Numbers overview table (legend = "Flight Numbers")
         let flightTable = null
-        for (const fs of doc.querySelectorAll(".as-fieldset")) {
-            const legend = fs.querySelector(".legend")
+        const fieldsets = doc.getElementsByClassName("as-fieldset")
+        for (let i = 0; i < fieldsets.length; i++) {
+            const fs = fieldsets[i]
+            const legends = fs.getElementsByClassName("legend")
+            const legend = legends.length > 0 ? legends[0] : null
             if (legend && /flight\s*numbers?/i.test(legend.textContent || "")) {
-                flightTable = fs.querySelector("table")
+                const tables = fs.getElementsByTagName("table")
+                if (tables.length > 0) flightTable = tables[0]
                 break
             }
         }
 
         if (flightTable) {
-            for (const tr of flightTable.querySelectorAll("tbody tr")) {
-                const cells = tr.querySelectorAll("td")
-                if (cells.length < 4) continue
-                const flightNumber  = (cells[0].textContent || "").trim()
-                const departureTime = (cells[1].textContent || "").trim().replace(/\s*HT\s*$/i, "")
-                const frequencyDays = (cells[2].textContent || "").trim()
-                const acCell        = cells[3]
-                const regLink       = acCell.querySelector("a[href*='/fleets/aircraft/']")
-                const typeLink      = acCell.querySelector("a[href*='aircraftsType']")
-                const registration  = regLink  ? (regLink.textContent  || "").trim() : null
-                const typeName      = typeLink ? (typeLink.textContent || "").trim() : null
-                let typeId = null
-                if (typeLink) {
-                    const m = /aircraftsType\?id=(\d+)/.exec(typeLink.getAttribute("href") || "")
-                    if (m) typeId = parseInt(m[1], 10)
-                }
-                out.flights.push({
-                    flightNumber:   flightNumber,
-                    departureTime:  departureTime,
-                    frequencyDays:  frequencyDays,
-                    registration:   registration,
-                    typeId:         typeId,
-                    typeName:       typeName
-                })
-                // Each character at position i is the day-number digit when
-                // operated, "_" when not. Sum across all flights so multi-
-                // daily routes (FN24 + FN25 both flying every day) collapse
-                // to per-day counts like [2,2,2,2,2,2,2].
-                for (let i = 0; i < 7 && i < frequencyDays.length; i++) {
-                    const ch = frequencyDays.charAt(i)
-                    if (ch >= "1" && ch <= "7") out.dailyFlights[i] += 1
+            const tbody = flightTable.tBodies.length > 0 ? flightTable.tBodies[0] : null
+            if (tbody) {
+                for (const tr of tbody.rows) {
+                    const cells = tr.cells
+                    if (!cells || cells.length < 4) continue
+                    const flightNumber  = (cells[0].textContent || "").trim()
+                    const departureTime = (cells[1].textContent || "").trim().replace(/\s*HT\s*$/i, "")
+                    const frequencyDays = (cells[2].textContent || "").trim()
+                    const acCell        = cells[3]
+
+                    let regLink = null
+                    let typeLink = null
+                    const links = acCell.getElementsByTagName("a")
+                    for (let j = 0; j < links.length; j++) {
+                        const href = links[j].getAttribute("href") || ""
+                        if (!regLink && href.indexOf("/fleets/aircraft/") !== -1) regLink = links[j]
+                        if (!typeLink && href.indexOf("aircraftsType") !== -1) typeLink = links[j]
+                    }
+                    const registration  = regLink  ? (regLink.textContent  || "").trim() : null
+                    const typeName      = typeLink ? (typeLink.textContent || "").trim() : null
+                    let typeId = null
+                    if (typeLink) {
+                        const m = /aircraftsType\?id=(\d+)/.exec(typeLink.getAttribute("href") || "")
+                        if (m) typeId = parseInt(m[1], 10)
+                    }
+                    out.flights.push({
+                        flightNumber:   flightNumber,
+                        departureTime:  departureTime,
+                        frequencyDays:  frequencyDays,
+                        registration:   registration,
+                        typeId:         typeId,
+                        typeName:       typeName
+                    })
+                    // Each character at position i is the day-number digit when
+                    // operated, "_" when not. Sum across all flights so multi-
+                    // daily routes (FN24 + FN25 both flying every day) collapse
+                    // to per-day counts like [2,2,2,2,2,2,2].
+                    for (let i = 0; i < 7 && i < frequencyDays.length; i++) {
+                        const ch = frequencyDays.charAt(i)
+                        if (ch >= "1" && ch <= "7") out.dailyFlights[i] += 1
+                    }
                 }
             }
         }
@@ -311,15 +325,20 @@ class RouteAssistantSchedulePageScraper {
 
         // ---- Cruise speed — first numeric "NNN km/h" cell on a row whose
         // first cell label starts with "Cruise Speed" (segments matrix).
-        for (const tr of doc.querySelectorAll("table tr")) {
-            const firstCell = tr.querySelector("td.caption, th")
-            if (!firstCell) continue
-            if (!/^cruise\s*speed\b/i.test((firstCell.textContent || "").trim())) continue
-            for (const c of tr.querySelectorAll("td")) {
-                const m = /(\d+)\s*km\/?h/i.exec(c.textContent || "")
-                if (m) { out.cruiseSpeedKmh = parseInt(m[1], 10); break }
+        const tables = doc.getElementsByTagName("table")
+        outer: for (let i = 0; i < tables.length; i++) {
+            const table = tables[i]
+            for (const tr of table.rows) {
+                const firstCell = tr.cells.length > 0 ? tr.cells[0] : null
+                if (!firstCell) continue
+                // Depending on the layout the first cell could be <th> or <td class="caption">
+                if (!/^cruise\s*speed\b/i.test((firstCell.textContent || "").trim())) continue
+                for (const c of tr.cells) {
+                    const m = /(\d+)\s*km\/?h/i.exec(c.textContent || "")
+                    if (m) { out.cruiseSpeedKmh = parseInt(m[1], 10); break }
+                }
+                if (out.cruiseSpeedKmh) break outer
             }
-            if (out.cruiseSpeedKmh) break
         }
 
         if (out.flights.length) {
@@ -385,7 +404,7 @@ class RouteAssistantSchedulePageScraper {
      */
     async bulkScrape(pairs, opts) {
         opts = opts || {}
-        const concurrency = Math.max(1, Math.min(10, opts.concurrency || 4))
+        const concurrency = Math.max(1, Math.min(20, opts.concurrency || 8))
         const staggerMs   = Math.max(0, opts.staggerMs || 800)
         const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
 

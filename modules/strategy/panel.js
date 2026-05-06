@@ -35,6 +35,19 @@
  * skin CSS is active. No external CSS deps.
  */
 ;(function () {
+
+// --- Feature Guard ---
+if (typeof window !== "undefined") {
+    try {
+        const stored = localStorage.getItem("aes-feature-toggles-sync");
+        if (stored) {
+            const toggles = JSON.parse(stored);
+            if (toggles["strategy"] === false) return;
+        }
+    } catch(e) {}
+}
+// ---------------------
+
     if (typeof window === "undefined") return
     if (window.AesStrategyPanel) return
 
@@ -65,10 +78,11 @@
         slotBid:            "Slot bids",
         sister:             "Cross-Airline & Sister Coordination",
         "fleet-renewal":    "Fleet renewal",
-        marketing:          "Marketing & Brand"
+        marketing:          "Marketing & Brand",
+        hubDesigner:        "Hub Network Designer"
     }
     const DOMAIN_ORDER = ["schedule", "service", "price", "crew", "routeCreation",
-        "competitorReaction", "alliance", "slotBid", "sister", "fleet-renewal", "marketing"]
+        "competitorReaction", "alliance", "slotBid", "sister", "fleet-renewal", "marketing", "hubDesigner"]
 
     const FILTER_DEFAULT = {
         search:         "",

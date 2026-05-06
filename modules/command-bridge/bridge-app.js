@@ -77,6 +77,24 @@
             await opps.mount()
         }
 
+        const finVaultHost = document.getElementById("aes-bridge-financial-vault")
+        if (finVaultHost && window.AesBridgeSharedFinancialVault) {
+            const finVault = new window.AesBridgeSharedFinancialVault({
+                host: finVaultHost,
+                accounts: accounts
+            })
+            await finVault.mount()
+        }
+
+        const vaultHost = document.getElementById("aes-bridge-vault")
+        if (vaultHost && window.AesBridgeCanopyVault) {
+            const vault = new window.AesBridgeCanopyVault({
+                host: vaultHost,
+                accounts: accounts
+            })
+            await vault.mount()
+        }
+
         // Cross-tab listener: the registry and affiliations blob can change
         // any time another AS tab touches a page. Re-render the surfaces
         // that read them.

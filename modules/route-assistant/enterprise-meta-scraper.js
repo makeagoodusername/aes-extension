@@ -115,7 +115,7 @@ class RouteAssistantEnterpriseMetaScraper {
      */
     async bulkScrape(ids, opts) {
         opts = opts || {}
-        const concurrency = Math.max(1, Math.min(10, opts.concurrency || 4))
+        const concurrency = Math.max(1, Math.min(20, opts.concurrency || 8))
         const staggerMs   = Math.max(0, opts.staggerMs || 600)
         const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
 
@@ -222,10 +222,18 @@ function parseEnterpriseHtml(html, server, enterpriseId) {
         }
     }
     if (!iata) {
-        for (const row of doc.querySelectorAll("tr, dl > div, li")) {
-            const text = (row.textContent || "").trim()
-            const m = /\b(?:IATA|ICAO|Code)\b[^A-Z0-9]*([A-Z0-9]{2,4})\b/i.exec(text)
-            if (m) { iata = m[1].toUpperCase(); break }
+        const checkTags = ["tr", "div", "li"]
+        outerIata: for (const tag of checkTags) {
+            const elements = doc.getElementsByTagName(tag)
+            for (let i = 0; i < elements.length; i++) {
+                // only consider divs inside dls if tag is div
+                if (tag === "div" && (!elements[i].parentNode || elements[i].parentNode.tagName.toLowerCase() !== "dl")) {
+                    continue
+                }
+                const text = (elements[i].textContent || "").trim()
+                const m = /\b(?:IATA|ICAO|Code)\b[^A-Z0-9]*([A-Z0-9]{2,4})\b/i.exec(text)
+                if (m) { iata = m[1].toUpperCase(); break outerIata }
+            }
         }
     }
 
@@ -331,23 +339,29 @@ function parseEnterpriseGeneralInfo(doc) {
     const out = {name: null, iata: null}
     if (!doc) return out
 
-    for (const tr of doc.querySelectorAll("tr")) {
-        const cells = tr.querySelectorAll("th, td")
-        if (cells.length < 2) continue
-        const label = ((cells[0] && cells[0].textContent) || "")
-            .trim()
-            .replace(/\s+/g, " ")
-            .toLowerCase()
-        const value = ((cells[1] && cells[1].textContent) || "")
-            .trim()
-            .replace(/\s+/g, " ")
-        if (!value) continue
+    const tables = doc.getElementsByTagName("table")
+    for (let i = 0; i < tables.length; i++) {
+        const table = tables[i]
+        const rows = table.rows
+        if (!rows) continue
+        for (const tr of rows) {
+            const cells = tr.cells
+            if (!cells || cells.length < 2) continue
+            const label = ((cells[0] && cells[0].textContent) || "")
+                .trim()
+                .replace(/\s+/g, " ")
+                .toLowerCase()
+            const value = ((cells[1] && cells[1].textContent) || "")
+                .trim()
+                .replace(/\s+/g, " ")
+            if (!value) continue
 
-        if (label === "name" && !out.name) {
-            out.name = value
-        } else if ((label === "code" || label === "iata" || label === "icao") && !out.iata) {
-            const m = /\b([A-Z0-9]{2,4})\b/i.exec(value)
-            out.iata = m ? m[1].toUpperCase() : value.toUpperCase()
+            if (label === "name" && !out.name) {
+                out.name = value
+            } else if ((label === "code" || label === "iata" || label === "icao") && !out.iata) {
+                const m = /\b([A-Z0-9]{2,4})\b/i.exec(value)
+                out.iata = m ? m[1].toUpperCase() : value.toUpperCase()
+            }
         }
     }
 
