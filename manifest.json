@@ -126,6 +126,7 @@
                 "modules/canopy/roles-settings-page.js",
                 "modules/canopy/orgs-store.js",
                 "modules/canopy/orgs-settings-page.js",
+                "modules/canopy/admin-dashboard.js",
                 "modules/canopy/geography-base.js",
                 "modules/canopy/geography-seeder.js",
                 "modules/canopy/region-resolver.js",

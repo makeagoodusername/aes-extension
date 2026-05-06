@@ -48,6 +48,13 @@
             blurb: "Override the template per airline (leaf-level inherit/override).",
             check: function () { return !!window.AesCanopyDnaAccountEditor; },
             open:  function () { window.AesCanopyDnaAccountEditor.open(); }
+        },
+        {
+            id: "admin-dashboard",
+            title: "Canopy Admin Dashboard",
+            blurb: "Top-level overview of conglomerate financial health and combined reserves.",
+            check: function () { return !!window.AesCanopyAdminDashboard; },
+            open:  function () { window.AesCanopyAdminDashboard.open(); }
         }
     ];
 
