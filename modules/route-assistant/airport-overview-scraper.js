@@ -202,7 +202,7 @@ class RouteAssistantAirportOverviewScraper {
      */
     async bulkScrape(stationIds, opts) {
         opts = opts || {}
-        const concurrency = Math.max(1, Math.min(10, opts.concurrency || 3))
+        const concurrency = Math.max(1, Math.min(20, opts.concurrency || 6))
         const staggerMs   = Math.max(0, opts.staggerMs || 800)
         const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
 

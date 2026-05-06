@@ -132,7 +132,7 @@ class RouteAssistantContractualPartnersScraper {
      */
     async bulkScrape(ids, opts) {
         opts = opts || {}
-        const concurrency = Math.max(1, Math.min(10, opts.concurrency || 2))
+        const concurrency = Math.max(1, Math.min(20, opts.concurrency || 4))
         const staggerMs   = Math.max(0, opts.staggerMs || 400)
         const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
 

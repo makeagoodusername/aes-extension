@@ -351,7 +351,7 @@ class RouteAssistantMarketsPageScraper {
     async bulkScrapeHistoric(pairs, opts) {
         opts = opts || {}
         const payloads    = (opts.payloads && opts.payloads.length) ? opts.payloads : ["PAX", "CARGO"]
-        const concurrency = Math.max(1, Math.min(8, opts.concurrency || 3))
+        const concurrency = Math.max(1, Math.min(16, opts.concurrency || 8))
         const staggerMs   = Math.max(0, opts.staggerMs || 1200)
         const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
 
@@ -1031,7 +1031,7 @@ class RouteAssistantMarketsPageScraper {
      */
     async bulkScrape(pairs, opts) {
         opts = opts || {}
-        const concurrency = Math.max(1, Math.min(10, opts.concurrency || 4))
+        const concurrency = Math.max(1, Math.min(20, opts.concurrency || 8))
         const staggerMs   = Math.max(0, opts.staggerMs || 800)
         const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
 

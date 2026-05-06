@@ -385,7 +385,7 @@ class RouteAssistantSchedulePageScraper {
      */
     async bulkScrape(pairs, opts) {
         opts = opts || {}
-        const concurrency = Math.max(1, Math.min(10, opts.concurrency || 4))
+        const concurrency = Math.max(1, Math.min(20, opts.concurrency || 8))
         const staggerMs   = Math.max(0, opts.staggerMs || 800)
         const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
 
