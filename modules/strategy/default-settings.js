@@ -529,6 +529,8 @@
             out.serviceMovesEnabled = true
             out.crewMovesEnabled = true
             out.allianceMovesEnabled = true
+            if (out.alliance && out.alliance.apply) { out.alliance.apply.dryRunOnly = false }
+            if (out.alliance && out.alliance.apply) { out.alliance.apply.enabled = true }
             out.slotBidApplyEnabled = true
             out.serviceApply.dryRunOnly = false
             out.autoTick.enabled = true
@@ -548,8 +550,8 @@
             }
             out.crewPay.apply.enabled = true
             out.crewPay.apply.dryRunOnly = false
-            out.alliance.apply.enabled = true
-            out.alliance.apply.dryRunOnly = false
+            if (out.alliance && out.alliance.apply) { out.alliance.apply.enabled = true }
+            if (out.alliance && out.alliance.apply) { out.alliance.apply.dryRunOnly = false }
         }
         return out
     }

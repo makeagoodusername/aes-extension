@@ -39,7 +39,7 @@ class RouteAssistantParallelScanner {
     constructor(server, opts) {
         if (!server) throw new Error("RouteAssistantParallelScanner: server required")
         this.server = server
-        this.concurrency = (opts && opts.concurrency != null) ? opts.concurrency : 3
+        this.concurrency = (opts && opts.concurrency != null) ? opts.concurrency : 6
         this.staggerMs   = (opts && opts.staggerMs   != null) ? opts.staggerMs   : 1500
         this.resolver = new RouteAssistantCountryResolver(server)
         this.listeners = []

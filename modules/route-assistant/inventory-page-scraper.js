@@ -185,7 +185,7 @@ class RouteAssistantInventoryPageScraper {
      */
     async bulkScrape(pairs, opts) {
         opts = opts || {}
-        const concurrency = Math.max(1, Math.min(8, opts.concurrency || 3))
+        const concurrency = Math.max(1, Math.min(16, opts.concurrency || 6))
         const staggerMs   = Math.max(0, opts.staggerMs || 1200)
         const onProgress  = typeof opts.onProgress === "function" ? opts.onProgress : null
 

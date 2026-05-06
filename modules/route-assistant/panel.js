@@ -2709,7 +2709,7 @@ class RouteAssistantPanel {
                 })
             }
             await this.airportOverviewScraper.bulkScrape(todo, {
-                concurrency: 2,
+                concurrency: 4,
                 staggerMs:   1000
             })
         } catch (e) {
@@ -3206,7 +3206,7 @@ class RouteAssistantPanel {
         this.distanceProgress = {total: missing.length, done: 0}
         this._renderStatusBar()
 
-        const concurrency = 4
+        const concurrency = 8
         const staggerMs   = 800
         try {
             for (let i = 0; i < missing.length; i += concurrency) {
@@ -3276,7 +3276,7 @@ class RouteAssistantPanel {
         this.typeSpecsProgress = {total: need.length, done: 0}
         this._renderStatusBar()
 
-        const concurrency = 4
+        const concurrency = 8
         const staggerMs   = 800
         try {
             for (let i = 0; i < need.length; i += concurrency) {
@@ -4431,7 +4431,7 @@ class RouteAssistantPanel {
         )
         if (!ok) return
 
-        this.scanner = new RouteAssistantParallelScanner(this.server, {concurrency: 3, staggerMs: 1200})
+        this.scanner = new RouteAssistantParallelScanner(this.server, {concurrency: 6, staggerMs: 300})
         this.scanner.onProgress(state => {
             if (state.phase === "seeding") {
                 const active = Array.isArray(state.activeCountries) && state.activeCountries.length
@@ -4539,7 +4539,7 @@ class RouteAssistantPanel {
             this._noteToast("Already resolving demand…")
             return
         }
-        this.scanner = new RouteAssistantParallelScanner(this.server, {concurrency: 3, staggerMs: 1500})
+        this.scanner = new RouteAssistantParallelScanner(this.server, {concurrency: 6, staggerMs: 400})
         this.scanner.onProgress(state => {
             const phase = state.phase === "resolving" ? `Resolving ${state.resolved}/${state.total}…`
                         : state.phase === "fetching"  ? `Fetching demand (${state.fetched}/${state.total})…`
@@ -12772,7 +12772,7 @@ class RouteAssistantPanel {
      */
     _renderAutoPricingSection() {
         const cfg = this.settings.pricing = Object.assign(
-            {showPricingColumns: true, concurrency: 4, staggerMs: 800, lastBulkScrapeAt: null},
+            {showPricingColumns: true, concurrency: 8, staggerMs: 200, lastBulkScrapeAt: null},
             this.settings.pricing || {}
         )
 
@@ -15095,7 +15095,7 @@ class RouteAssistantPanel {
     async _runBulkPriceScrape() {
         if (this._priceScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.pricing || {}
-        const concurrency = cfg.concurrency || 4
+        const concurrency = cfg.concurrency || 8
         const staggerMs   = cfg.staggerMs   || 800
 
         if (!this.priceScraper) {
@@ -15913,7 +15913,7 @@ class RouteAssistantPanel {
      */
     _renderCarriersSection() {
         const cfg = this.settings.carriers = Object.assign(
-            {showCarrierIntensity: true, concurrency: 3, staggerMs: 1200, lastBulkScrapeAt: null},
+            {showCarrierIntensity: true, concurrency: 6, staggerMs: 300, lastBulkScrapeAt: null},
             this.settings.carriers || {}
         )
 
@@ -16153,7 +16153,7 @@ class RouteAssistantPanel {
     async _runBulkCarrierScrape() {
         if (this._carrierScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.carriers || {}
-        const concurrency = cfg.concurrency || 3
+        const concurrency = cfg.concurrency || 6
         const staggerMs   = cfg.staggerMs   || 1200
 
         if (!this.carrierScraper) {
@@ -16228,7 +16228,7 @@ class RouteAssistantPanel {
     async _runBulkEnterpriseMetaSync() {
         if (this._enterpriseMetaScrapeRunning || !this.rows || !this.rows.length) return
         const cfg = this.settings.carriers || {}
-        const concurrency = cfg.enterpriseMetaConcurrency || 4
+        const concurrency = cfg.enterpriseMetaConcurrency || 8
         const staggerMs   = cfg.enterpriseMetaStaggerMs   || 600
 
         // Collect every enterpriseId visible across both pax + cargo
@@ -16365,7 +16365,7 @@ class RouteAssistantPanel {
         let lastTotal = ids.length
         try {
             await this.contractualPartnersScraper.bulkScrape(ids, {
-                concurrency: cfg.partnersConcurrency || 2,
+                concurrency: cfg.partnersConcurrency || 4,
                 staggerMs:   cfg.partnersStaggerMs   || 400,
                 onProgress:  (done, total) => {
                     lastTotal = total
@@ -17450,7 +17450,7 @@ class RouteAssistantPanel {
      */
     _renderMarketAnalysisSection() {
         const cfg = this.settings.marketAnalysis = Object.assign(
-            {showColumns: true, concurrency: 4, staggerMs: 800, lastBulkScrapeAt: null,
+            {showColumns: true, concurrency: 8, staggerMs: 200, lastBulkScrapeAt: null,
              competitorMaxAgeDays: null, shareMaxAgeDays: 7, historicMaxAgeDays: null,
              defaultPayloadChart: "ECONOMY"},
             this.settings.marketAnalysis || {}
@@ -17530,7 +17530,7 @@ class RouteAssistantPanel {
         if (this._marketScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.marketAnalysis || {}
         const ddCfg = this.settings.demandDepth || {}
-        const concurrency = cfg.concurrency || 4
+        const concurrency = cfg.concurrency || 8
         const staggerMs   = cfg.staggerMs   || 800
 
         if (!this.marketsScraper) {
@@ -17892,7 +17892,7 @@ class RouteAssistantPanel {
     async _runBulkDemandSync() {
         if (this._demandScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.demandDepth || {}
-        const concurrency = cfg.concurrency || 3
+        const concurrency = cfg.concurrency || 6
         const staggerMs   = cfg.staggerMs   || 1200
         const coverage    = cfg.classCoverage || "summary"
         const payloads    = (coverage === "full")
@@ -17982,7 +17982,7 @@ class RouteAssistantPanel {
     _renderDemandDepthSection() {
         const cfg = this.settings.demandDepth = Object.assign(
             {showDemandColumns: true, classCoverage: "summary", useRealDemandForLF: false,
-             concurrency: 3, staggerMs: 1200, historicWindowPeriods: 12,
+             concurrency: 6, staggerMs: 300, historicWindowPeriods: 12,
              lastBulkScrapeAt: null, historicMaxAgeDays: null, inventoryMaxAgeDays: 3},
             this.settings.demandDepth || {}
         )
@@ -18893,7 +18893,7 @@ class RouteAssistantPanel {
      */
     _renderOrsRankSection() {
         const cfg = this.settings.ors = Object.assign(
-            {showColumns: true, concurrency: 2, staggerMs: 1500, lastBulkScrapeAt: null,
+            {showColumns: true, concurrency: 4, staggerMs: 400, lastBulkScrapeAt: null,
              rankMaxAgeDays: null,
              classesToScrape: ["ECONOMY", "BUSINESS", "FIRST", "CARGO"],
              defaultDepartureH: 0, defaultArrivalH: 72,
@@ -19479,7 +19479,7 @@ class RouteAssistantPanel {
     async _runBulkOrsScrape() {
         if (this._orsScrapeRunning || !this.hubIata || !this.rows || !this.rows.length) return
         const cfg = this.settings.ors || {}
-        const concurrency = cfg.concurrency || 2
+        const concurrency = cfg.concurrency || 6
         const staggerMs   = cfg.staggerMs   || 1500
 
         if (!this.orsScraper) {
@@ -19659,7 +19659,7 @@ class RouteAssistantPanel {
                 plan = await svc.planSync(pairs, {
                     settings: this.settings,
                     includeFresh: true,
-                    concurrency: orsCfg.concurrency || 2,
+                    concurrency: orsCfg.concurrency || 4,
                     staggerMs:   orsCfg.staggerMs   || 1500
                 })
                 if (plan && plan.blocked) {
@@ -19688,7 +19688,7 @@ class RouteAssistantPanel {
         let halted = false, haltReason = null, doneCount = 0, totalCount = pairs.length
         try {
             const result = await orchestrator.bulkSync(pairs, {
-                concurrency: orsCfg.concurrency || 2,
+                concurrency: orsCfg.concurrency || 4,
                 staggerMs:   orsCfg.staggerMs   || 1500,
                 orsParams: {
                     classesToScrape: orsCfg.classesToScrape,
@@ -20057,7 +20057,7 @@ class RouteAssistantPanel {
         let halted = false, haltReason = null, doneCount = 0
         try {
             const res = await orchestrator.bulkSync(stalePairs, {
-                concurrency: orsCfg.concurrency || 2,
+                concurrency: orsCfg.concurrency || 4,
                 staggerMs:   orsCfg.staggerMs   || 1500,
                 orsParams: {
                     classesToScrape: orsCfg.classesToScrape,
