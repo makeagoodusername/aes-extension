@@ -96,7 +96,22 @@ window.addEventListener("load", async (event) => {
         displayValidationError()
         return
     }
-    displayInventory()
+
+    let _debounceTimer = null;
+    const updateInventory = () => {
+        if (_debounceTimer) clearTimeout(_debounceTimer);
+        _debounceTimer = setTimeout(() => {
+            displayInventory();
+        }, 500);
+    };
+
+    updateInventory();
+
+    const observer = new MutationObserver(updateInventory);
+    const target = document.querySelector(".as-panel") || document.body;
+    if (target) {
+        observer.observe(target, {childList: true, subtree: true});
+    }
 })
 
 /**

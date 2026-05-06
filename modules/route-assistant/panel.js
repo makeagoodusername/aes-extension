@@ -372,6 +372,10 @@ class RouteAssistantPanel {
                     needFullRefresh = true
                     continue
                 }
+                if (key.startsWith("routeAssistant:markets:") || key.startsWith("routeAssistant:ticketPrice:")) {
+                    needFullRefresh = true
+                    continue
+                }
                 if (typeof AesAfpScheduleStore !== "undefined"
                  && key.startsWith(AesAfpScheduleStore.PREFIX)
                  && myHub) {

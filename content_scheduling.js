@@ -118,30 +118,36 @@ function captureLivePriceIfRoutePage() {
     const hub  = m[1]
     const dest = m[2]
 
-    // Wicket pages can render async — give the DOM a moment to settle so
-    // the scraper sees the populated fares/ORS rows. 1.5 s is long enough
-    // in practice without making the read feel laggy.
-    setTimeout(() => {
-        try {
-            const fields = RouteAssistantSchedulePageScraper.parseFromDoc(document)
-            // Only persist if we actually parsed something useful, else
-            // we'd overwrite a good cached record with all-nulls on a
-            // Wicket sub-page that lacks the schedule table.
-            const haveSomething = fields && (
-                (fields.flights && fields.flights.length)
-                || fields.cruiseSpeedKmh
-                || fields.ourPrice !== null
-                || fields.ourYield !== null
-                || fields.orsRank !== null
-            )
-            if (!haveSomething) return
-            RouteAssistantSchedulePageScraper.saveRecord(hub, dest, fields, "live").then(() => {
-                console.log("[AES priceScraper] live-captured", hub + "→" + dest, fields)
-            })
-        } catch (e) {
-            console.warn("[AES priceScraper] live capture failed", e)
-        }
-    }, 1500)
+    let _debounceTimer = null
+    const capture = () => {
+        if (_debounceTimer) clearTimeout(_debounceTimer)
+        _debounceTimer = setTimeout(() => {
+            try {
+                const fields = RouteAssistantSchedulePageScraper.parseFromDoc(document)
+                const haveSomething = fields && (
+                    (fields.flights && fields.flights.length)
+                    || fields.cruiseSpeedKmh
+                    || fields.ourPrice !== null
+                    || fields.ourYield !== null
+                    || fields.orsRank !== null
+                )
+                if (!haveSomething) return
+                RouteAssistantSchedulePageScraper.saveRecord(hub, dest, fields, "live").then(() => {
+                    console.log("[AES priceScraper] live-captured", hub + "→" + dest, fields)
+                })
+            } catch (e) {
+                console.warn("[AES priceScraper] live capture failed", e)
+            }
+        }, 1500)
+    }
+
+    capture()
+
+    const observer = new MutationObserver(capture)
+    const target = document.querySelector(".as-panel") || document.querySelector("form") || document.body
+    if (target) {
+        observer.observe(target, {childList: true, subtree: true})
+    }
 }
 
 ;(function aesSchedulingApplyBridge() {
