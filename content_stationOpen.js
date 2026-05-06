@@ -322,12 +322,12 @@ const ERROR_BANNER_SELECTORS = [
     ".alert", ".error",
 ]
 
+const COMBINED_ERROR_BANNER_SELECTOR = ERROR_BANNER_SELECTORS.join(', ');
+
 function findErrorBannerText() {
-    for (const sel of ERROR_BANNER_SELECTORS) {
-        for (const el of document.querySelectorAll(sel)) {
-            const text = (el.innerText || "").trim()
-            if (text && text.length < 500) return text
-        }
+    for (const el of document.querySelectorAll(COMBINED_ERROR_BANNER_SELECTOR)) {
+        const text = (el.innerText || "").trim()
+        if (text && text.length < 500) return text
     }
     return ""
 }
