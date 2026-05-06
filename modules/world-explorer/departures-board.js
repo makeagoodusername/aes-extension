@@ -21,6 +21,18 @@ class WorldExplorerDeparturesBoard {
         this.render();
     }
 
+    setFilters(filters) {
+        this.filters = filters;
+        this.render();
+    }
+
+    shouldShowRoute(route) {
+        if (!this.filters) return true;
+        if (route.isOurs && !this.filters.showOurFlights) return false;
+        if (!route.isOurs && !this.filters.showCompetitors) return false;
+        return true;
+    }
+
     onHover(callback) {
         this.onHoverCallback = callback;
     }
@@ -56,18 +68,33 @@ class WorldExplorerDeparturesBoard {
                         <tbody>
         `;
 
-        if (this.routes.length === 0) {
-            html += `<tr><td colspan="5" style="padding: 20px; text-align: center; color: #555; font-size: 1.5em; letter-spacing: 4px;">SYSTEM OFFLINE</td></tr>`;
+        const visibleRoutes = this.routes.filter(r => this.shouldShowRoute(r));
+
+        if (visibleRoutes.length === 0) {
+            html += `<tr><td colspan="5" style="padding: 20px; text-align: center; color: #555; font-size: 1.5em; letter-spacing: 4px;">NO FLIGHTS DISPLAYED</td></tr>`;
         } else {
-            this.routes.forEach(r => {
+            visibleRoutes.forEach(r => {
                 const isSelected = this.selectedRoute === r.id;
 
+                // Map affiliation kinds to colors
+                const kindColors = {
+                    "self":      "#10b981", // Kin (green)
+                    "allied":    "#a855f7", // Allied (purple)
+                    "interline": "#3b82f6", // Interline (blue)
+                    "codeshare": "#06b6d4", // Codeshare (cyan)
+                    "neutral":   "#9ca3af", // Neutral (gray)
+                    "adversary": "#ef4444"  // Adversary (red)
+                };
+
+                const kindStr = r.kind || (r.isOurs ? "self" : "neutral");
+                const statusStr = kindStr.toUpperCase();
+
                 // Colors imitating split-flap or LED arrays
-                const baseColor = r.isOurs ? "#fbbf24" : "#9ca3af";
+                const baseColor = kindColors[kindStr];
                 const bgColor = isSelected ? "#333" : "#1a1a1a";
-                const fontColor = isSelected ? "#ef4444" : baseColor;
-                const opacity = isSelected ? "1" : (r.isOurs ? "0.9" : "0.5");
-                const boxShadow = isSelected ? "box-shadow: inset 0 0 10px rgba(239, 68, 68, 0.2);" : "";
+                const fontColor = isSelected ? "#fcd34d" : baseColor;
+                const opacity = isSelected ? "1" : (r.isOurs ? "0.9" : "0.6");
+                const boxShadow = isSelected ? "box-shadow: inset 0 0 10px rgba(252, 211, 77, 0.2);" : "";
 
                 const hoverClass = isSelected ? "" : "we-board-row-hover";
 
@@ -80,7 +107,7 @@ class WorldExplorerDeparturesBoard {
                         <td style="${cellStyle} ${boxShadow}">${escapeHtml(r.airline)}</td>
                         <td style="${cellStyle} ${boxShadow}">${escapeHtml(r.hub)}</td>
                         <td style="${cellStyle} ${boxShadow}">${escapeHtml(r.dest)}</td>
-                        <td style="${cellStyle} border-right: 2px solid #333; border-top-right-radius: 4px; border-bottom-right-radius: 4px; ${boxShadow}">${r.isOurs ? 'ON TIME' : 'CODE SHARE'}</td>
+                        <td style="${cellStyle} border-right: 2px solid #333; border-top-right-radius: 4px; border-bottom-right-radius: 4px; ${boxShadow}">${statusStr}</td>
                     </tr>
                 `;
             });
