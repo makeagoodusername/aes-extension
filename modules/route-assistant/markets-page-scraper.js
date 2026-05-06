@@ -505,13 +505,19 @@ class RouteAssistantMarketsPageScraper {
     // ------------------------------------------------------------------
 
     static _parseCompetitors(doc) {
-        const table = doc.querySelector("#inventory-table")
-        if (!table) return null
+        let table = null
+        if (typeof doc.getElementById === "function") {
+            table = doc.getElementById("inventory-table")
+        }
+        if (!table && typeof doc.querySelector === "function") {
+            table = doc.querySelector("#inventory-table")
+        }
+        if (!table || !table.tBodies || table.tBodies.length === 0) return null
         const ourPrefix = RouteAssistantMarketsPageScraper._currentAirlinePrefixes()
         const list = []
-        for (const tr of table.querySelectorAll("tbody tr")) {
-            const cells = Array.from(tr.querySelectorAll("td"))
-            if (cells.length < 8) continue
+        for (const tr of table.tBodies[0].rows) {
+            const cells = tr.cells
+            if (!cells || cells.length < 8) continue
             const plan = RouteAssistantMarketsPageScraper._competitorColumnPlan(cells)
             if (!plan) continue
 
@@ -561,7 +567,8 @@ class RouteAssistantMarketsPageScraper {
             // old consumers by deriving remaining capacity when possible.
             let availability = null
             if (plan.availability != null) {
-                const availDiv = cells[plan.availability].querySelector("div")
+                const availDivs = cells[plan.availability].getElementsByTagName("div")
+                const availDiv = availDivs.length > 0 ? availDivs[0] : null
                 availability = availDiv
                     ? RouteAssistantMarketsPageScraper._parseInt(availDiv.textContent)
                     : RouteAssistantMarketsPageScraper._parseInt(cells[plan.availability].textContent)
@@ -577,7 +584,8 @@ class RouteAssistantMarketsPageScraper {
 
             // Status — span text inside .flightStatusPanel on older pages,
             // direct text on the current inventory table.
-            const statusSpan = cells[plan.status].querySelector("span")
+            const statusSpans = cells[plan.status].getElementsByTagName("span")
+            const statusSpan = statusSpans.length > 0 ? statusSpans[0] : null
             const status = statusSpan ? (statusSpan.textContent || "").trim() : (cells[plan.status].textContent || "").trim()
 
             // Flight detail link → flight ID.
@@ -607,7 +615,13 @@ class RouteAssistantMarketsPageScraper {
         if (!cells || cells.length < 8) return null
         let hasLeadingCheckbox = false
         try {
-            hasLeadingCheckbox = !!(cells[0] && cells[0].querySelector("input[type='checkbox']"))
+            const inputs = cells[0] ? cells[0].getElementsByTagName("input") : []
+            for (let j = 0; j < inputs.length; j++) {
+                if (inputs[j].type === "checkbox") {
+                    hasLeadingCheckbox = true
+                    break
+                }
+            }
         } catch (e) { hasLeadingCheckbox = false }
         const offset = hasLeadingCheckbox ? 1 : 0
         let priceIdx = -1
@@ -637,13 +651,8 @@ class RouteAssistantMarketsPageScraper {
     static _anchors(scope) {
         if (!scope) return []
         try {
-            if (scope.querySelectorAll) {
-                const found = Array.from(scope.querySelectorAll("a"))
-                if (found.length) return found
-            }
-            if (scope.querySelector) {
-                const one = scope.querySelector("a")
-                if (one) return [one]
+            if (scope.getElementsByTagName) {
+                return Array.from(scope.getElementsByTagName("a"))
             }
         } catch (e) { /* ignore */ }
         return []
@@ -669,8 +678,8 @@ class RouteAssistantMarketsPageScraper {
             if (txt) { source = txt; break }
         }
         if (!source) {
-            const span = cell.querySelector("span")
-            if (span) source = (span.textContent || "").trim()
+            const spans = cell.getElementsByTagName("span")
+            if (spans.length > 0) source = (spans[0].textContent || "").trim()
         }
         if (!source) source = (cell.textContent || "").trim()
         source = String(source || "").replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim()
@@ -833,23 +842,35 @@ class RouteAssistantMarketsPageScraper {
         const defaults = {}
         const sliderRanges = {}
 
-        const rows = pricingFs.querySelectorAll("table tbody tr")
-        for (const tr of rows) {
-            const cells = tr.querySelectorAll("td")
-            if (cells.length < 5) continue
-            // [0] class label, [1] current price, [2] new-price input,
-            // [3] slider div, [4] default price + reset link
-            const rawCls = (cells[0].textContent || "").trim()
-            const cls = RouteAssistantMarketsPageScraper._normaliseClassKey(rawCls)
-            if (!cls) continue
-            const cur = RouteAssistantMarketsPageScraper._parsePrice(cells[1].textContent, cls)
-            const newInp = cells[2].querySelector("input[type='text']")
-            const newVal = newInp ? RouteAssistantMarketsPageScraper._parsePrice(newInp.getAttribute("value"), cls) : cur
-            const defSpan = cells[4].querySelector("span")
-            const defVal = defSpan ? RouteAssistantMarketsPageScraper._parsePrice(defSpan.textContent, cls)
-                                   : RouteAssistantMarketsPageScraper._parsePrice(cells[4].textContent, cls)
-            prices[cls]   = newVal != null ? newVal : cur
-            defaults[cls] = defVal
+        const tables = pricingFs.getElementsByTagName("table")
+        if (tables.length > 0) {
+            const tbody = tables[0].tBodies.length > 0 ? tables[0].tBodies[0] : null
+            if (tbody) {
+                for (const tr of tbody.rows) {
+                    const cells = tr.cells
+                    if (!cells || cells.length < 5) continue
+                    // [0] class label, [1] current price, [2] new-price input,
+                    // [3] slider div, [4] default price + reset link
+                    const rawCls = (cells[0].textContent || "").trim()
+                    const cls = RouteAssistantMarketsPageScraper._normaliseClassKey(rawCls)
+                    if (!cls) continue
+                    const cur = RouteAssistantMarketsPageScraper._parsePrice(cells[1].textContent, cls)
+
+                    let newInp = null
+                    const inputs = cells[2].getElementsByTagName("input")
+                    for (let j = 0; j < inputs.length; j++) {
+                        if (inputs[j].type === "text") { newInp = inputs[j]; break }
+                    }
+                    const newVal = newInp ? RouteAssistantMarketsPageScraper._parsePrice(newInp.getAttribute("value"), cls) : cur
+
+                    const defSpans = cells[4].getElementsByTagName("span")
+                    const defSpan = defSpans.length > 0 ? defSpans[0] : null
+                    const defVal = defSpan ? RouteAssistantMarketsPageScraper._parsePrice(defSpan.textContent, cls)
+                                           : RouteAssistantMarketsPageScraper._parsePrice(cells[4].textContent, cls)
+                    prices[cls]   = newVal != null ? newVal : cur
+                    defaults[cls] = defVal
+                }
+            }
         }
 
         // Slider ranges live in inline <script> body — regex out the slider({…}) calls.
@@ -876,16 +897,21 @@ class RouteAssistantMarketsPageScraper {
         // General settings — four <select>s in the General Settings fieldset.
         const generalSettings = {}
         let generalFs = null
-        for (const fs of doc.querySelectorAll("fieldset")) {
-            const legend = fs.querySelector("legend")
+        const fieldsets = doc.getElementsByTagName("fieldset")
+        for (let i = 0; i < fieldsets.length; i++) {
+            const fs = fieldsets[i]
+            const legends = fs.getElementsByTagName("legend")
+            const legend = legends.length > 0 ? legends[0] : null
             if (legend && /^general\s*settings$/i.test((legend.textContent || "").trim())) {
                 generalFs = fs
                 break
             }
         }
         if (generalFs) {
+            const selects = generalFs.getElementsByTagName("select")
             const grab = (matchKey, outKey) => {
-                for (const sel of generalFs.querySelectorAll("select")) {
+                for (let i = 0; i < selects.length; i++) {
+                    const sel = selects[i]
                     const name = sel.getAttribute("name") || ""
                     if (name.toLowerCase().indexOf(matchKey) >= 0) {
                         const opt = sel.options[sel.selectedIndex]
@@ -905,7 +931,8 @@ class RouteAssistantMarketsPageScraper {
             // Service profile *id* — separate from the label so the
             // service-profile-detail scraper can fetch /serviceProfile?id=N
             // for per-class catering quality without re-scraping this page.
-            for (const sel of generalFs.querySelectorAll("select")) {
+            for (let i = 0; i < selects.length; i++) {
+                const sel = selects[i]
                 const name = sel.getAttribute("name") || ""
                 if (name.toLowerCase().indexOf("serviceprofile") < 0) continue
                 const opt = sel.options[sel.selectedIndex]
@@ -933,18 +960,27 @@ class RouteAssistantMarketsPageScraper {
         const periodEl = doc.querySelector(".periodSelection .current span")
         if (periodEl) out.period = (periodEl.textContent || "").trim() || null
 
-        for (const block of doc.querySelectorAll(".marketShareData")) {
-            const h4 = block.querySelector("h4")
+        const msBlocks = doc.getElementsByClassName("marketShareData")
+        for (let b = 0; b < msBlocks.length; b++) {
+            const block = msBlocks[b]
+            const h4s = block.getElementsByTagName("h4")
+            const h4 = h4s.length > 0 ? h4s[0] : null
             const heading = h4 ? (h4.textContent || "").trim().toLowerCase() : ""
             const rows = []
             // Each entry is two consecutive tr's — the first has rank/name/share,
             // the second has the colspan="3" progress bar (skip).
-            for (const tr of block.querySelectorAll("tbody tr")) {
-                const tds = tr.querySelectorAll("td")
-                if (tds.length < 4) continue   // skip the colspan-3 progress row
-                const rankEl = tds[0].querySelector("span")
+            const tables = block.getElementsByTagName("table")
+            const tbody = tables.length > 0 && tables[0].tBodies.length > 0 ? tables[0].tBodies[0] : null
+            if (!tbody) continue
+
+            for (const tr of tbody.rows) {
+                const tds = tr.cells
+                if (!tds || tds.length < 4) continue   // skip the colspan-3 progress row
+                const rankSpans = tds[0].getElementsByTagName("span")
+                const rankEl = rankSpans.length > 0 ? rankSpans[0] : null
                 const rank = rankEl ? RouteAssistantMarketsPageScraper._parseInt(rankEl.textContent) : null
-                const nameLink = tds[1].querySelector("a")
+                const nameLinks = tds[1].getElementsByTagName("a")
+                const nameLink = nameLinks.length > 0 ? nameLinks[0] : null
                 const name = nameLink ? (nameLink.textContent || "").trim() : (tds[1].textContent || "").trim()
                 let enterpriseId = null
                 if (nameLink) {

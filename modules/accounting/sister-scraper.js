@@ -21,7 +21,9 @@ class AccountingSisterScraper {
         if (!pane) return null
 
         const tables = []
-        for (const table of pane.querySelectorAll("table.table, table")) {
+        const allTables = pane.getElementsByTagName("table")
+        for (let i = 0; i < allTables.length; i++) {
+            const table = allTables[i]
             const captured = AccountingSisterScraper._captureTable(table)
             if (captured && (captured.rows.length || captured.headers.length)) {
                 tables.push(captured)
@@ -58,18 +60,22 @@ class AccountingSisterScraper {
         // Generic fallback: a short paragraph or div whose visible text
         // signals nothing-to-show. Conservative — only matches obvious
         // phrasings to avoid false positives on transitional loaders.
-        const candidates = pane.querySelectorAll("p, div")
-        for (const el of candidates) {
-            if (el.querySelector("table")) continue
-            const t = (el.textContent || "").trim().toLowerCase()
-            if (!t || t.length > 200) continue
-            if (/does not possess|no entries|no records|nothing to show/.test(t)) {
-                return {
-                    type,
-                    tables: [],
-                    empty: true,
-                    emptyMessage: t,
-                    scrapedAt: Date.now()
+        const checkTags = ["p", "div"]
+        for (const tag of checkTags) {
+            const candidates = pane.getElementsByTagName(tag)
+            for (let i = 0; i < candidates.length; i++) {
+                const el = candidates[i]
+                if (el.getElementsByTagName("table").length > 0) continue
+                const t = (el.textContent || "").trim().toLowerCase()
+                if (!t || t.length > 200) continue
+                if (/does not possess|no entries|no records|nothing to show/.test(t)) {
+                    return {
+                        type,
+                        tables: [],
+                        empty: true,
+                        emptyMessage: t,
+                        scrapedAt: Date.now()
+                    }
                 }
             }
         }
@@ -85,12 +91,14 @@ class AccountingSisterScraper {
 
     static _captureTable(table) {
         const caption = AccountingSisterScraper._readCaption(table)
-        const headers = Array.from(table.querySelectorAll("thead th"))
-            .map(th => (th.textContent || "").trim())
+        const head = table.tHead ? table.tHead.rows[0] : (table.rows.length > 0 ? table.rows[0] : null)
+        const headers = head && head.cells ? Array.from(head.cells).map(th => (th.textContent || "").trim()) : []
         const rows = []
 
-        for (const tbody of table.querySelectorAll("tbody")) {
-            for (const tr of tbody.children) {
+        const tbodies = table.tBodies
+        for (let i = 0; i < tbodies.length; i++) {
+            const tbody = tbodies[i]
+            for (const tr of tbody.rows) {
                 if (tr.classList.contains("figure-margin")) continue
                 const parsed = AccountingSisterScraper._parseRow(tr, headers)
                 if (parsed) rows.push(parsed)
@@ -122,8 +130,11 @@ class AccountingSisterScraper {
         const label = (labelEl.textContent || "").trim()
         if (!label) return null
 
-        const cells = Array.from(tr.children).map(td => (td.textContent || "").trim())
-        const numCells = tr.querySelectorAll("td.number")
+        const cells = Array.from(tr.cells).map(td => (td.textContent || "").trim())
+        const numCells = []
+        for (let j = 0; j < tr.cells.length; j++) {
+            if (tr.cells[j].classList.contains("number")) numCells.push(tr.cells[j])
+        }
         const numericValues = []
         for (let i = 0; i < numCells.length; i++) {
             const text = (numCells[i].textContent || "").trim()

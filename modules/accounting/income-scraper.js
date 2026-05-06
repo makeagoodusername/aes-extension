@@ -34,19 +34,32 @@ class AccountingIncomeScraper {
         const totals = {}
         let groupIndex = 0
 
-        for (const tbody of table.querySelectorAll("tbody")) {
-            for (const tr of tbody.children) {
+        const tbodies = table.tBodies
+        for (let i = 0; i < tbodies.length; i++) {
+            const tbody = tbodies[i]
+            for (const tr of tbody.rows) {
                 if (tr.classList.contains("figure-margin")) continue
 
                 const isTotal = tr.classList.contains("figure-total")
-                const labelEl = isTotal
-                    ? tr.querySelector("th span") || tr.querySelector("th")
-                    : tr.querySelector("td")
+                let labelEl = null
+                if (isTotal) {
+                    const ths = tr.getElementsByTagName("th")
+                    if (ths.length > 0) {
+                        const spans = ths[0].getElementsByTagName("span")
+                        labelEl = spans.length > 0 ? spans[0] : ths[0]
+                    }
+                } else {
+                    const tds = tr.getElementsByTagName("td")
+                    labelEl = tds.length > 0 ? tds[0] : null
+                }
                 if (!labelEl) continue
                 const label = (labelEl.textContent || "").trim()
                 if (!label) continue
 
-                const numCells = tr.querySelectorAll("td.number")
+                const numCells = []
+                for (let j = 0; j < tr.cells.length; j++) {
+                    if (tr.cells[j].classList.contains("number")) numCells.push(tr.cells[j])
+                }
                 if (numCells.length < 5) continue
 
                 const row = {
@@ -105,8 +118,16 @@ class AccountingIncomeScraper {
      * — we use the leading YYYY-MM-DD as the canonical weekId.
      */
     static _readWeekClosesAt(root) {
-        for (const p of root.querySelectorAll(".income-statement p")) {
-            const span = p.querySelector("span[title]")
+        const statements = root.getElementsByClassName("income-statement")
+        if (!statements.length) return null
+        const ps = statements[0].getElementsByTagName("p")
+        for (let i = 0; i < ps.length; i++) {
+            const p = ps[i]
+            const spans = p.getElementsByTagName("span")
+            let span = null
+            for (let j = 0; j < spans.length; j++) {
+                if (spans[j].hasAttribute("title")) { span = spans[j]; break; }
+            }
             const text = (p.textContent || "").trim()
             if (!span || !/closes on/i.test(text)) continue
             const title = (span.getAttribute("title") || "").trim()

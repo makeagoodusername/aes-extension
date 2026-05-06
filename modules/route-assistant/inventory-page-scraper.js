@@ -323,8 +323,11 @@ function parseInventoryTable(doc, notes) {
     const flightNumbers = new Map()
     let matched = 0
 
-    for (const tr of table.querySelectorAll("tbody tr")) {
-        const cells = tr.querySelectorAll("td")
+    const tbody = table.tBodies.length > 0 ? table.tBodies[0] : null
+    if (!tbody) return null
+
+    for (const tr of tbody.rows) {
+        const cells = tr.cells
         if (!cells || cells.length < 8) continue
 
         const serviceInfo = extractInventoryServiceClass(cells)
@@ -491,12 +494,13 @@ function parseLoadSummaryTable(doc, notes) {
         : Array.from(doc.querySelectorAll("table")).map(t => t.parentElement || t)
 
     for (const root of roots) {
-        const tables = root.querySelectorAll ? root.querySelectorAll("table") : []
+        const tables = root.getElementsByTagName ? root.getElementsByTagName("table") : []
         for (const table of tables) {
-            const rows = table.querySelectorAll("tbody tr, tr")
+            const rows = table.rows
+            if (!rows) continue
             for (const tr of rows) {
-                const cells = tr.querySelectorAll("td, th")
-                if (cells.length < 2) continue
+                const cells = tr.cells
+                if (!cells || cells.length < 2) continue
                 const cls = normalizeInventoryClass(cells[0].textContent)
                 if (!cls) continue
                 let sold = 0, total = 0, saw = false
@@ -563,12 +567,12 @@ function parseClassesTable(doc, notes) {
     }
     const result = {Y: null, C: null, F: null, Cargo: null}
 
-    const tables = doc.querySelectorAll("table")
+    const tables = doc.getElementsByTagName("table")
     let matched = 0
     for (const table of tables) {
         // Header column index map
-        const head = table.querySelector("thead, tr:first-child")
-        const headers = head ? Array.from(head.querySelectorAll("th, td")).map(c => (c.textContent || "").trim().toLowerCase()) : []
+        const head = table.tHead ? table.tHead.rows[0] : (table.rows.length > 0 ? table.rows[0] : null)
+        const headers = head && head.cells ? Array.from(head.cells).map(c => (c.textContent || "").trim().toLowerCase()) : []
         if (!headers.length) continue
         const colIdx = (re) => headers.findIndex(h => re.test(h))
         const totalIdx = colIdx(/\b(total|capacity|seats|allotment)\b/)
@@ -576,9 +580,11 @@ function parseClassesTable(doc, notes) {
         const fareIdx  = colIdx(/\b(fare|avg|price|yield)\b/)
         if (totalIdx < 0 && soldIdx < 0) continue
 
-        for (const tr of table.querySelectorAll("tbody tr, tr")) {
-            const cells = tr.querySelectorAll("td, th")
-            if (cells.length < 2) continue
+        const rows = table.rows
+        if (!rows) continue
+        for (const tr of rows) {
+            const cells = tr.cells
+            if (!cells || cells.length < 2) continue
             const label = (cells[0].textContent || "").trim()
             for (const cls in KEYWORDS) {
                 if (!KEYWORDS[cls].test(label)) continue
@@ -611,19 +617,22 @@ function parseClassesTable(doc, notes) {
  */
 function parseDeparturesTable(doc, notes) {
     const out = []
-    for (const table of doc.querySelectorAll("table")) {
-        const head = table.querySelector("thead, tr:first-child")
+    for (const table of doc.getElementsByTagName("table")) {
+        const head = table.tHead ? table.tHead.rows[0] : (table.rows.length > 0 ? table.rows[0] : null)
         if (!head) continue
-        const headers = Array.from(head.querySelectorAll("th, td")).map(c => (c.textContent || "").trim().toLowerCase())
+        const headers = head.cells ? Array.from(head.cells).map(c => (c.textContent || "").trim().toLowerCase()) : []
         const dateIdx = headers.findIndex(h => /\b(date|day|departure)\b/.test(h))
         const timeIdx = headers.findIndex(h => /\btime\b/.test(h))
         const totalIdx = headers.findIndex(h => /\b(total|capacity|seats)\b/.test(h))
         const soldIdx  = headers.findIndex(h => /\b(sold|booked)\b/.test(h))
         if (dateIdx < 0 && timeIdx < 0) continue
         if (totalIdx < 0 && soldIdx < 0) continue
-        for (const tr of table.querySelectorAll("tbody tr, tr")) {
-            const cells = tr.querySelectorAll("td, th")
-            if (cells.length < 2) continue
+
+        const rows = table.rows
+        if (!rows) continue
+        for (const tr of rows) {
+            const cells = tr.cells
+            if (!cells || cells.length < 2) continue
             const date  = dateIdx  >= 0 && cells[dateIdx]  ? (cells[dateIdx].textContent  || "").trim() : null
             const time  = timeIdx  >= 0 && cells[timeIdx]  ? (cells[timeIdx].textContent  || "").trim() : null
             const total = totalIdx >= 0 && cells[totalIdx] ? parseIntSafe(cells[totalIdx].textContent) : null
