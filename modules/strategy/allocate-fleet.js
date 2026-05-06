@@ -315,9 +315,18 @@
         const routeCreations = (typeof ns.proposeRouteCreations === "function")
             ? ns.proposeRouteCreations(snapshot, scoredRoutes, o.routeCreation || {})
             : []
-        const priceMoves = (typeof ns.proposePriceMoves === "function")
+        let priceMoves = (typeof ns.proposePriceMoves === "function")
             ? ns.proposePriceMoves(snapshot, o.priceMoves || {})
             : []
+
+        // Phase 3: Probabilistic Risk Fanning
+        if (window.AesStrategyProbabilistic && typeof window.AesStrategyProbabilistic.augmentPriceMovesWithRisk === "function") {
+            try {
+                priceMoves = window.AesStrategyProbabilistic.augmentPriceMovesWithRisk(priceMoves, snapshot, o.priceMoves || {})
+            } catch (e) {
+                console.warn("[AesStrategy allocateFleet] augmentPriceMovesWithRisk failed", e)
+            }
+        }
         const serviceMoves = (typeof ns.proposeServiceMoves === "function")
             ? ns.proposeServiceMoves(snapshot, o.serviceMoves || {})
             : []
