@@ -552,6 +552,19 @@ class AesAfpDashboardPanel {
             root.appendChild(banner)
             return
         }
+        if (r.build && r.build.hasHardErrors) {
+            const root = this._rootEl
+            this._lastBuild = null
+            this._lastCandidates = null
+            this._render({phase: "ready"})
+            const banner = document.createElement("div")
+            banner.style.cssText = "margin:0 12px 8px;padding:8px;"
+                + "background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.40);"
+                + "border-radius:4px;color:#fca5a5;font-size:11px;line-height:1.5;"
+            banner.textContent = r.build.errorReason || "Generate failed due to hard scheduling errors"
+            root.appendChild(banner)
+            return
+        }
         this._lastBuild      = r.build
         this._lastCandidates = r.candidates
         this._render({phase: "ready"})

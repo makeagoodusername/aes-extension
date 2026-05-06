@@ -15,19 +15,76 @@
 
     let map = null;
     let board = null;
+    let details = null;
+    let networkGraph = null;
+    let activeRoutes = [];
 
     async function boot() {
         console.log("World Explorer Booting")
 
         map = new WorldExplorerMap("aes-we-map");
         board = new WorldExplorerDeparturesBoard("aes-we-board");
+        details = new WorldExplorerDetailsPane("aes-we-details");
+        networkGraph = new WorldExplorerNetworkGraph("aes-we-network-graph");
 
         map.init();
         board.init();
+        details.init();
+        networkGraph.init();
+
+        // Setup Tabs
+        const btnMap = document.getElementById("we-tab-map");
+        const btnNetwork = document.getElementById("we-tab-network");
+        const viewMap = document.getElementById("we-view-map");
+        const viewNetwork = document.getElementById("we-view-network");
+
+        if (btnMap && btnNetwork) {
+            btnMap.addEventListener("click", () => {
+                btnMap.style.background = "#3b82f6";
+                btnMap.style.color = "white";
+                btnNetwork.style.background = "#e2e8f0";
+                btnNetwork.style.color = "#334155";
+                viewMap.style.display = "block";
+                viewNetwork.style.display = "none";
+                map.resize();
+            });
+
+            btnNetwork.addEventListener("click", () => {
+                btnNetwork.style.background = "#3b82f6";
+                btnNetwork.style.color = "white";
+                btnMap.style.background = "#e2e8f0";
+                btnMap.style.color = "#334155";
+                viewMap.style.display = "none";
+                viewNetwork.style.display = "block";
+                networkGraph.resize();
+            });
+        }
 
         // Setup syncing
+        // Setup Filters
+        const filterOurs = document.getElementById("we-filter-our-flights");
+        const filterComps = document.getElementById("we-filter-competitors");
+
+        function updateFilters() {
+            const filters = {
+                showOurFlights: filterOurs ? filterOurs.checked : true,
+                showCompetitors: filterComps ? filterComps.checked : true
+            };
+            map.setFilters(filters);
+            board.setFilters(filters);
+        }
+
+        if (filterOurs) filterOurs.addEventListener("change", updateFilters);
+        if (filterComps) filterComps.addEventListener("change", updateFilters);
+
+        // Initial filters setup
+        updateFilters();
+
         map.onSelect((id) => {
             board.selectRoute(id);
+            const route = activeRoutes.find(r => r.id === id);
+            if (route) details.setRoute(route);
+            else details.clear();
         });
 
         board.onHover((id) => {
@@ -37,6 +94,9 @@
 
         board.onSelect((id) => {
             map.selectRoute(id);
+            const route = activeRoutes.find(r => r.id === id);
+            if (route) details.setRoute(route);
+            else details.clear();
         });
 
         board.onFilterChange((visibleRoutes, performanceMode) => {

@@ -59,6 +59,18 @@ class WorldExplorerDeparturesBoard {
         this.render();
     }
 
+    setFilters(filters) {
+        this.filters = filters;
+        this.render();
+    }
+
+    shouldShowRoute(route) {
+        if (!this.filters) return true;
+        if (route.isOurs && !this.filters.showOurFlights) return false;
+        if (!route.isOurs && !this.filters.showCompetitors) return false;
+        return true;
+    }
+
     onHover(callback) {
         this.onHoverCallback = callback;
     }

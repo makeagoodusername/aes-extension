@@ -22,8 +22,21 @@ class WorldExplorerMap {
         this.lastDragX = 0;
         this.lastDragY = 0;
 
-        // Mode flags
-        this.performanceMode = false;
+        // Map backgrounds
+        this.bgMode = "dark"; // "dark", "light", "none"
+        this.bgImgDark = new Image();
+        this.bgImgDark.src = "images/vintage-map-dark.svg";
+        this.bgImgDark.onload = () => this.draw();
+
+        this.bgImgLight = new Image();
+        this.bgImgLight.src = "images/vintage-map.jpg";
+        this.bgImgLight.onload = () => this.draw();
+
+        // Filters
+        this.filters = {
+            ours: true,
+            alliance: true,
+            competitors: true
     }
 
     init() {
@@ -31,12 +44,31 @@ class WorldExplorerMap {
         if (!container) return;
 
         container.innerHTML = `
-            <div class="aes-bridge__card" style="height: 100%; position: relative;">
-                <div class="aes-bridge__card-header">
+            <div class="aes-bridge__card" style="height: 100%; position: relative; display: flex; flex-direction: column;">
+                <div class="aes-bridge__card-header" style="display: flex; justify-content: space-between; align-items: center;">
                     <h2>Route Map</h2>
+                    <div class="we-map-controls" style="display: flex; gap: 10px; align-items: center; font-size: 14px;">
+                        <label><input type="checkbox" id="we-filter-ours" checked> Our Routes</label>
+                        <label><input type="checkbox" id="we-filter-alliance" checked> Alliance</label>
+                        <label><input type="checkbox" id="we-filter-comp" checked> Competitors</label>
+                        <select id="we-bg-select">
+                            <option value="dark">Dark Map</option>
+                            <option value="light">Light Map</option>
+                            <option value="none">No Background</option>
+                        </select>
+                    </div>
                 </div>
-                <div class="aes-bridge__card-body" style="height: 400px; padding: 0; background-color: #1a1a1a; overflow: hidden; position: relative;">
+ feat/world-explorer-map-interactions-889865835095403658
+                <div class="aes-bridge__card-body" style="flex: 1; min-height: 400px; padding: 0; background-color: #1a1a1a; overflow: hidden; position: relative;">
+                    <canvas id="we-map-canvas" width="800" height="400" style="width: 100%; height: 100%; display: block; cursor: grab;"></canvas>
+                    <div style="position: absolute; bottom: 10px; right: 10px; display: flex; flex-direction: column; gap: 5px;">
+                        <button id="we-btn-zoomin" style="width: 30px; height: 30px; font-weight: bold;">+</button>
+                        <button id="we-btn-zoomout" style="width: 30px; height: 30px; font-weight: bold;">-</button>
+                    </div>
+=======
+                <div class="aes-bridge__card-body" style="height: 400px; padding: 0; background-color: #f8fafc; overflow: hidden; position: relative;">
                     <canvas id="we-map-canvas" width="800" height="400" style="width: 100%; height: 100%; display: block;"></canvas>
+ main
                 </div>
             </div>
         `;
@@ -47,12 +79,66 @@ class WorldExplorerMap {
         this.resize();
         window.addEventListener("resize", () => this.resize());
 
-        // Mouse interaction for pan/zoom and picking
+        this.setupEventListeners();
+    }
+
+    setupEventListeners() {
+        this.canvas.addEventListener("wheel", (e) => this.handleWheel(e), { passive: false });
         this.canvas.addEventListener("mousedown", (e) => this.handleMouseDown(e));
-        window.addEventListener("mousemove", (e) => this.handleMouseMove(e));
-        window.addEventListener("mouseup", (e) => this.handleMouseUp(e));
-        this.canvas.addEventListener("wheel", (e) => this.handleWheel(e), {passive: false});
+        this.canvas.addEventListener("mousemove", (e) => this.handleMouseMove(e));
+        this.canvas.addEventListener("mouseup", (e) => this.handleMouseUp(e));
+        this.canvas.addEventListener("mouseleave", (e) => this.handleMouseUp(e));
         this.canvas.addEventListener("click", (e) => this.handleClick(e));
+ feat/world-explorer-map-interactions-889865835095403658
+
+        document.getElementById("we-btn-zoomin").addEventListener("click", () => this.zoom(1.2, this.width / 2, this.height / 2));
+        document.getElementById("we-btn-zoomout").addEventListener("click", () => this.zoom(1 / 1.2, this.width / 2, this.height / 2));
+
+        document.getElementById("we-filter-ours").addEventListener("change", (e) => { this.filters.ours = e.target.checked; this.draw(); });
+        document.getElementById("we-filter-alliance").addEventListener("change", (e) => { this.filters.alliance = e.target.checked; this.draw(); });
+        document.getElementById("we-filter-comp").addEventListener("change", (e) => { this.filters.competitors = e.target.checked; this.draw(); });
+
+        document.getElementById("we-bg-select").addEventListener("change", (e) => { this.bgMode = e.target.value; this.draw(); });
+    }
+
+    zoom(factor, cx, cy) {
+        // Compute new scale
+        const newScale = Math.max(0.5, Math.min(this.scale * factor, 10)); // Limit scale from 0.5x to 10x
+        if (newScale === this.scale) return;
+
+        // Adjust offset to zoom centered on cx, cy
+        this.offsetX = cx - (cx - this.offsetX) * (newScale / this.scale);
+        this.offsetY = cy - (cy - this.offsetY) * (newScale / this.scale);
+
+        this.scale = newScale;
+        this.draw();
+    }
+
+    handleWheel(e) {
+        e.preventDefault();
+        const rect = this.canvas.getBoundingClientRect();
+        const cx = e.clientX - rect.left;
+        const cy = e.clientY - rect.top;
+
+        const zoomFactor = e.deltaY < 0 ? 1.1 : (1 / 1.1);
+        this.zoom(zoomFactor, cx, cy);
+    }
+
+    handleMouseDown(e) {
+        // Differentiate drag vs click (roughly)
+        this.isDragging = true;
+        this.dragMoved = false;
+        const rect = this.canvas.getBoundingClientRect();
+        this.lastDragX = e.clientX - rect.left;
+        this.lastDragY = e.clientY - rect.top;
+        this.canvas.style.cursor = "grabbing";
+    }
+
+    handleMouseUp(e) {
+        if (this.isDragging) {
+            this.isDragging = false;
+            this.canvas.style.cursor = "grab";
+        }
     }
 
     resize() {
@@ -87,9 +173,20 @@ class WorldExplorerMap {
 
     // Very basic lat/lon to X/Y projection (Equirectangular) -> returns world coordinates
     project(lat, lon) {
-        const x = (lon + 180) * (this.width / 360);
-        const y = (this.height / 2) - (lat * (this.height / 180));
-        return { x, y };
+ feat/world-explorer-map-interactions-889865835095403658
+        // Base mapping to the unscaled canvas
+        const baseWidth = this.width;
+        const baseHeight = this.height; // Using canvas width/height as base map size
+
+        const x = (lon + 180) * (baseWidth / 360);
+        const y = (baseHeight / 2) - (lat * (baseHeight / 180));
+
+        // Apply scale and offset
+        return {
+            x: x * this.scale + this.offsetX,
+            y: y * this.scale + this.offsetY
+        };
+
     }
 
     // Transform screen coordinates to world coordinates
@@ -103,33 +200,79 @@ class WorldExplorerMap {
     draw() {
         if (!this.ctx) return;
 
-        // Clear background
-        this.ctx.fillStyle = "#1a1a1a";
+ feat/world-explorer-map-interactions-889865835095403658
+        // Clear canvas
+        this.ctx.fillStyle = this.bgMode === "light" ? "#f4ece0" : "#1a1a1a";
         this.ctx.fillRect(0, 0, this.width, this.height);
 
-        this.ctx.save();
+        // Draw Background
+        const img = this.bgMode === "light" ? this.bgImgLight : (this.bgMode === "dark" ? this.bgImgDark : null);
+        if (img && img.complete && img.naturalWidth > 0) {
+            // Fill background with image stretched to base map size, then scaled/offset
+            const destW = this.width * this.scale;
+            const destH = this.height * this.scale;
+            this.ctx.drawImage(img, this.offsetX, this.offsetY, destW, destH);
+        } else {
+            // Fallback grid
+            this.ctx.strokeStyle = this.bgMode === "light" ? "#ccc" : "#333";
+            this.ctx.lineWidth = 1;
+            this.ctx.beginPath();
 
-        // Apply view transform
-        this.ctx.translate(this.offsetX, this.offsetY);
-        this.ctx.scale(this.scale, this.scale);
+            const eqY = (this.height / 2) * this.scale + this.offsetY;
+            this.ctx.moveTo(0, eqY);
+            this.ctx.lineTo(this.width, eqY);
 
-        // Draw basic equator/meridian for reference
-        this.ctx.strokeStyle = "#333";
-        this.ctx.lineWidth = 1 / this.scale;
-        this.ctx.beginPath();
-        this.ctx.moveTo(0, this.height / 2);
-        this.ctx.lineTo(this.width, this.height / 2);
-        this.ctx.moveTo(this.width / 2, 0);
-        this.ctx.lineTo(this.width / 2, this.height);
-        this.ctx.stroke();
+            const merX = (this.width / 2) * this.scale + this.offsetX;
+            this.ctx.moveTo(merX, 0);
+            this.ctx.lineTo(merX, this.height);
+
+            this.ctx.stroke();
+        }
 
         // Draw routes
         for (const route of this.routes) {
-            // Very simple culling for extreme zoom could go here
-            this.drawRoute(route);
+            if (this.shouldShowRoute(route)) {
+                this.drawRoute(route);
+            }
         }
 
         this.ctx.restore();
+    }
+
+    shouldShowRoute(route) {
+        if (!this.filters) return true;
+        if (route.isOurs && !this.filters.showOurFlights) return false;
+        if (!route.isOurs && !this.filters.showCompetitors) return false;
+        return true;
+    }
+
+    setFilters(filters) {
+        this.filters = filters;
+        this.draw();
+    }
+
+    drawPolygon(coordinates) {
+        if (!coordinates || coordinates.length === 0) return;
+
+        this.ctx.beginPath();
+        const start = this.project(coordinates[0][1], coordinates[0][0]);
+        this.ctx.moveTo(start.x, start.y);
+
+        for (let i = 1; i < coordinates.length; i++) {
+            const pt = this.project(coordinates[i][1], coordinates[i][0]);
+            this.ctx.lineTo(pt.x, pt.y);
+        }
+
+        this.ctx.closePath();
+        this.ctx.fill();
+        this.ctx.stroke();
+    }
+
+    shouldDrawRoute(route) {
+        if (route.isOurs && this.filters.ours) return true;
+        if (route.isAlliance && this.filters.alliance) return true;
+        if (!route.isOurs && !route.isAlliance && this.filters.competitors) return true;
+        return false;
     }
 
     drawRoute(route) {
@@ -201,6 +344,7 @@ class WorldExplorerMap {
         this.ctx.stroke();
 
         // Draw endpoints
+        const radius = Math.max(2, 3 * this.scale);
         this.ctx.fillStyle = color;
         this.ctx.beginPath();
         const nodeRadius = 3 / Math.max(1, this.scale * 0.5);
@@ -219,6 +363,8 @@ class WorldExplorerMap {
         const threshold = 10 / this.scale;
 
         for (const route of this.routes) {
+            if (!this.shouldDrawRoute(route)) continue;
+
             const p1 = this.project(route.hubLat, route.hubLon);
             const p2 = this.project(route.destLat, route.destLon);
 
@@ -253,9 +399,34 @@ class WorldExplorerMap {
 
     handleMouseDown(e) {
         this.isDragging = true;
-        this.lastDragX = e.clientX;
-        this.lastDragY = e.clientY;
-        this.canvas.style.cursor = 'grabbing';
+        this.dragStart = { x: e.clientX, y: e.clientY };
+    }
+
+    handleMouseUp(e) {
+        if (!this.isDragging) return;
+        this.isDragging = false;
+        // Optional: you can detect if it was just a click vs a drag here
+    }
+
+    handleWheel(e) {
+        e.preventDefault();
+
+        const rect = this.canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // Determine zoom factor
+        const zoomDelta = e.deltaY > 0 ? 0.9 : 1.1;
+
+        // Calculate new scale, clamped to reasonable bounds
+        const newK = Math.max(0.5, Math.min(10, this.transform.k * zoomDelta));
+
+        // Adjust translation so we zoom in/out at the mouse cursor
+        this.transform.x = mouseX - (mouseX - this.transform.x) * (newK / this.transform.k);
+        this.transform.y = mouseY - (mouseY - this.transform.y) * (newK / this.transform.k);
+        this.transform.k = newK;
+
+        this.draw();
     }
 
     handleMouseMove(e) {
@@ -278,8 +449,18 @@ class WorldExplorerMap {
         // Ensure we are hovering over the canvas
         if (screenX < 0 || screenX > rect.width || screenY < 0 || screenY > rect.height) return;
 
-        const worldPos = this.screenToWorld(screenX, screenY);
-        const hit = this.getHitRoute(worldPos.x, worldPos.y);
+        if (this.isDragging) {
+            const dx = e.clientX - this.dragStart.x;
+            const dy = e.clientY - this.dragStart.y;
+            this.transform.x += dx;
+            this.transform.y += dy;
+            this.dragStart = { x: e.clientX, y: e.clientY };
+            this.draw();
+            this.canvas.style.cursor = "grabbing";
+            return;
+        }
+
+        const hit = this.getHitRoute(x, y);
         const hitId = hit ? hit.id : null;
 
         if (this.hoveredRoute !== hitId) {
@@ -288,6 +469,8 @@ class WorldExplorerMap {
                 this.canvas.style.cursor = hit ? "pointer" : "grab";
             }
             this.draw();
+        } else {
+            this.canvas.style.cursor = hit ? "pointer" : "grab";
         }
     }
 
