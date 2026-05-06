@@ -23,6 +23,7 @@
     const STYLE_ID = HOST_ID + "-style";
 
     const TABS = [
+        { id: "features",      label: "Features" },
         { id: "customisation", label: "Customisation" },
         { id: "modules",       label: "Modules" },
         { id: "account",       label: "Account" },
@@ -36,7 +37,7 @@
     let canvasEl = null;
     let railEl = null;
     let isOpen = false;
-    let activeTabId = "customisation";
+    let activeTabId = "features";
     let activeModuleId = null;
 
     function ensureStyle() {
