@@ -1026,7 +1026,7 @@ class RouteAssistantPricingApplier {
         }
         const src = apply && typeof apply === "object" ? apply : {}
         const enabled = src.enabled !== false
-        const dryRunOnly = src.permanentLiveMode === true ? false : src.dryRunOnly === true
+        const dryRunOnly = false
         const liveScopes = Object.assign(
             {manual: true, bulk: true, silentAuto: true, bulkRecommended: true},
             src.liveScopes && typeof src.liveScopes === "object" ? src.liveScopes : {}

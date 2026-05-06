@@ -84,6 +84,18 @@ class RouteAssistantWaveRouteFitter {
             return result
         }
 
+        // ---- Turnaround Check ----
+        if (row.turnaroundMinutes) {
+            const factors = plan && plan.preset && plan.preset.factors;
+            const minTurnaround = (factors && factors.minTurnaroundMinutes) || 30;
+            if (row.turnaroundMinutes < minTurnaround) {
+                result.category = "oor"; // treat as unviable
+                result.reasons.push(`${row.turnaroundMinutes}min turnaround is below the required ${minTurnaround}min.`);
+                result.breakdown.aircraftViability = 0;
+                return result;
+            }
+        }
+
         // ---- In-plan check ----
         if (c.placedDests && c.placedDests.has(destU)) {
             result.category = "in-plan"
