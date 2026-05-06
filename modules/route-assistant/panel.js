@@ -8627,6 +8627,17 @@ class RouteAssistantPanel {
                 this._render()
             })
             wrap.append(pick)
+
+            const simBtn = document.createElement("button")
+            simBtn.textContent = "🧪 Simulate Competitor"
+            simBtn.style.cssText = "margin-left:8px;background:#3b82f6;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;font-weight:bold;"
+            simBtn.addEventListener("click", () => {
+                if (window.RouteAssistantSandboxSimulationModal) {
+                    window.RouteAssistantSandboxSimulationModal.show(this, this._assembleOrsSandboxRoute(this._orsSandboxRoute._row))
+                }
+            })
+            wrap.append(simBtn)
+
         } else {
             const hint = document.createElement("span")
             hint.style.color = "#9ca3af"
@@ -9084,10 +9095,11 @@ class RouteAssistantPanel {
                 ? "— pick a scenario —"
                 : "(none yet)"
             sel.append(placeholder)
-            for (const it of items) {
+for (const it of items) {
                 const o = document.createElement("option")
                 o.value = it.id
-                o.textContent = it.name
+                const prefix = it._isForeign ? "[" + it._accountName + "] " : ""
+                o.textContent = prefix + it.name
                 sel.append(o)
             }
             sel.addEventListener("change", () => {
@@ -9152,9 +9164,14 @@ class RouteAssistantPanel {
                 savedRow.append(hint)
             }
         }
-        if (typeof RouteAssistantSandboxScenariosStore !== "undefined") {
-            RouteAssistantSandboxScenariosStore.list(route.hub || this.hubIata, route.dest)
-                .then(renderSaved).catch(() => renderSaved([]))
+if (typeof RouteAssistantSandboxScenariosStore !== "undefined") {
+            if (RouteAssistantSandboxScenariosStore.listFederated) {
+                RouteAssistantSandboxScenariosStore.listFederated(route.hub || this.hubIata, route.dest)
+                    .then(renderSaved).catch(() => renderSaved([]))
+            } else {
+                RouteAssistantSandboxScenariosStore.list(route.hub || this.hubIata, route.dest)
+                    .then(renderSaved).catch(() => renderSaved([]))
+            }
         } else {
             renderSaved([])
         }
@@ -10660,6 +10677,14 @@ class RouteAssistantPanel {
         const falloffPct = (this.settings && this.settings.aircraft && this.settings.aircraft.falloffPct) || 10
         const useDistFuel = !!(this.settings && this.settings.economics && this.settings.economics.fuelPriceAutoEnabled)
         const fleetMedAlpha = this._ratingAlphaFleetMedian || null
+
+        const yieldHistory = (this.yieldHistoryMap && this.yieldHistoryMap.get(
+            String(this.hubIata || "").toUpperCase() + "-" + String(row.destIata || "").toUpperCase()
+        )) || null
+        if (yieldHistory) {
+            row.yieldHistory = yieldHistory
+        }
+
 
         // Slice 6a — memoize the bundle on the row reference. The bundle
         // reads ~25 fields; rebuilding it on every recompute (60Hz during
