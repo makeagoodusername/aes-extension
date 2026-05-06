@@ -84,6 +84,7 @@ class CanopyExpansionPlanner {
             details.innerHTML = `
                 <div><strong>Group:</strong> ${plan.groupType === 'custom' ? plan.customIatas : plan.groupType}</div>
                 <div><strong>Goals:</strong> Target ${plan.targetSeats} Weekly Seats | Target ${plan.targetShare}% Market Share</div>
+                <div><strong>Target Role:</strong> ${plan.targetRole || "ANY"}</div>
                 <div><strong>Fleet Allocation:</strong> ${plan.allocatedAircraftCount}x ${plan.allocatedAircraftType}</div>
                 <div style="margin-top:8px; font-weight:bold; color:#059669;">Status: Orchestrator is actively managing this region.</div>
             `;
@@ -136,6 +137,7 @@ class CanopyExpansionPlanner {
         const targetSeats = prompt("Enter Target Weekly Seats (e.g. 10000):", "10000");
         const targetShare = prompt("Enter Target Market Share % (e.g. 20):", "20");
 
+        const targetRole = prompt("Enter Target Airline Role (e.g. regional-feeder, flag-carrier, ANY):", "ANY");
         const allocatedAircraftType = prompt("Enter Fleet Type to Allocate (e.g. A320):", "A320");
         const allocatedAircraftCount = prompt("Enter Number of Aircraft to Allocate (e.g. 5):", "5");
 
@@ -145,6 +147,7 @@ class CanopyExpansionPlanner {
             customIatas: "BOG, LIM, SCL, GRU", // dummy data for scaffold
             targetSeats: parseInt(targetSeats, 10) || 0,
             targetShare: parseInt(targetShare, 10) || 0,
+            targetRole: targetRole || "ANY",
             allocatedAircraftType: allocatedAircraftType || "None",
             allocatedAircraftCount: parseInt(allocatedAircraftCount, 10) || 0,
             createdAt: Date.now()
