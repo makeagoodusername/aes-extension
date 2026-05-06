@@ -37,6 +37,7 @@ class FleetHubCommandCenter {
         {id: "overview",  label: "Overview",       glyph: "◆"},
         {id: "schedules", label: "Schedules",      glyph: "≡"},
         {id: "waves",     label: "Waves",          glyph: "↟"},
+        {id: "canopy",    label: "Canopy",         glyph: "◓"},
         {id: "aircraft",  label: "Aircraft Plans", glyph: "✈"}
     ]
 
@@ -1595,7 +1596,43 @@ class FleetHubCommandCenter {
         if (this._activeTab === "overview")  return this._renderOverview()
         if (this._activeTab === "schedules") return this._renderSchedules()
         if (this._activeTab === "waves")     return this._renderWaves()
+        if (this._activeTab === "canopy")    return this._renderCanopy()
         if (this._activeTab === "aircraft")  return this._renderAircraft()
+    }
+
+    _renderCanopy() {
+        // Find the first operational hub or just default to something
+        let hub = null;
+        if (this._rows && this._rows.length > 0) {
+             const unhidden = this._rows.filter(h => h.hub && !h.unassigned)
+             if (unhidden.length > 0) hub = unhidden[0].hub
+        }
+
+        const wrapper = document.createElement("div")
+        wrapper.style.cssText = "display: flex; flex-direction: column; flex: 1;"
+
+        if (!hub) {
+             wrapper.appendChild(this._emptyState("No hubs available for Canopy Wave Editor."))
+             this.bodyEl.appendChild(wrapper)
+             return
+        }
+
+        const canopyHost = document.createElement("div")
+        canopyHost.style.cssText = "flex: 1; min-height: 500px;"
+
+        // Instantiate the Canopy Wave Editor directly into this tab
+        if (typeof window.CanopyWaveEditor !== "undefined") {
+            new window.CanopyWaveEditor(canopyHost, {
+                hubIata: hub,
+                server: this.server,
+                airlineCode: this.airlineCode
+            })
+        } else {
+            canopyHost.appendChild(this._emptyState("CanopyWaveEditor module not loaded."))
+        }
+
+        wrapper.appendChild(canopyHost)
+        this.bodyEl.appendChild(wrapper)
     }
 
     /**
@@ -1604,7 +1641,7 @@ class FleetHubCommandCenter {
      * already serves as that tab's header.
      */
     _renderTabHeader(tabId) {
-        if (tabId === "overview") return null
+        if (tabId === "overview" || tabId === "canopy") return null
         const T = window.AESTokens
         const wrap = document.createElement("div")
         wrap.style.cssText = "display:flex;align-items:baseline;gap:10px;"

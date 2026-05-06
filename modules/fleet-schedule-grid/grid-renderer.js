@@ -386,6 +386,13 @@ class FleetScheduleGridRenderer {
             el.style.border = "1px solid " + (T ? T.color.amber : "#B8861F")
             label = ""
             titleParts = ["Turnaround", Math.round(b.durationMin) + " min"]
+
+            // Highlight insufficient turnaround times if warning provided by flight classifiers
+            if (b.classifiers && b.classifiers.shortTurnaround) {
+                el.style.background = T ? T.color.rustSoft : "rgba(184,71,42,0.14)"
+                el.style.border = "1px solid " + (T ? T.color.rust : "#B8472A")
+                titleParts.push("Warning: Turnaround is shorter than min transfer limit")
+            }
         } else if (b.kind === "ready") {
             el.style.background = T ? T.color.mossSoft : "rgba(47,95,63,0.14)"
             el.style.border = "1px dashed " + (T ? T.color.moss : "#2F5F3F")
