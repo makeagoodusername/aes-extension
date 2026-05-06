@@ -540,6 +540,7 @@
         if (!plan && !advisory.length && !(allianceMoves && allianceMoves.length)) {
             return {summary: _summary(null, [], currentSchedules), decisions: []}
         }
+        const standingOrdersDecisions = opts && Array.isArray(opts.standingOrdersDecisions) ? opts.standingOrdersDecisions : []
         const decisions = []
             .concat(_scheduleDecisions(plan, currentSchedules, scheduleDiffOptions))
             .concat(_serviceDecisions(plan))
@@ -548,6 +549,7 @@
             .concat(_routeCreationDecisions(plan))
             .concat(_competitorReactionDecisions(plan))
             .concat(_allianceDecisions(allianceMoves))
+            .concat(standingOrdersDecisions)
             .concat(_advisoryDecisions(advisory))
         // Stable order — apply-pipeline order, then by id within domain.
         // Competitor reactions / alliance / slot / sister-coordination /
@@ -556,7 +558,7 @@
         const domainOrder = {
             schedule: 0, service: 1, price: 2, crew: 3, routeCreation: 4,
             competitorReaction: 5, alliance: 6,
-            slotBid: 7, sister: 8, "fleet-renewal": 9, marketing: 10, hubDesigner: 11
+            slotBid: 7, sister: 8, "fleet-renewal": 9, marketing: 10, hubDesigner: 11, standingOrder: 12
         }
         decisions.sort((a, b) => {
             const da = domainOrder[a.domain] ?? 99
