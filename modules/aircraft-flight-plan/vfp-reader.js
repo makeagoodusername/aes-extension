@@ -79,7 +79,8 @@
             dimmed:        has("dimmed"),
             locked:        has("locked"),
             spansIntoNext: started && !ended,
-            spansFromPrev: ended   && !started
+            spansFromPrev: ended   && !started,
+            shortTurnaround: has("short") && has("turnaround")
         }
     }
 
