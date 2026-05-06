@@ -1407,7 +1407,19 @@
         {
             "resources": [
                 "/images/*",
-                "/fonts/*"
+                "/fonts/*",
+                "world-explorer.html",
+                "css/command-bridge.css",
+                "css/design-tokens.css",
+                "css/components.css",
+                "helpers.js",
+                "modules/world-explorer/*",
+                "modules/_shared/account-registry.js",
+                "modules/_shared/fleet-roster.js",
+                "modules/canopy/affiliations-store.js",
+                "modules/canopy/orgs-store.js",
+                "modules/aircraft-flight-plan/schedule-store.js",
+                "modules/strategy/portfolio.js"
             ],
             "matches": [
                 "https://*.airlinesim.aero/*"
