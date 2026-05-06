@@ -461,6 +461,19 @@ async function getInventoryQuickPriceGate(scopeName) {
         && typeof window.RouteAssistantPricingPlumbing.resolveApplyGate === "function"
         ? window.RouteAssistantPricingPlumbing.resolveApplyGate(apply, scope)
         : (function() {
+
+// --- Feature Guard ---
+if (typeof window !== "undefined") {
+    try {
+        const stored = localStorage.getItem("aes-feature-toggles-sync");
+        if (stored) {
+            const toggles = JSON.parse(stored);
+            if (toggles["inventory"] === false) return;
+        }
+    } catch(e) {}
+}
+// ---------------------
+
             const liveScopes = apply.liveScopes || {}
             const scopeLiveAllowed = liveScopes[scope] !== false
             const applyEnabled = apply.enabled !== false

@@ -166,6 +166,7 @@
                 "modules/unified-settings/tab-coverage.js",
                 "modules/unified-settings/tab-about.js",
                 "modules/unified-settings/shell.js",
+                "modules/unified-settings/tab-features.js",
                 "modules/unified-settings/host.js",
                 "modules/unified-settings/adapters/_helpers.js",
                 "modules/unified-settings/adapters/strategy.js",
