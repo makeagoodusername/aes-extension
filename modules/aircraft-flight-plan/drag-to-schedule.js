@@ -43,6 +43,7 @@
             governedBy: {
                 settingPath:    "settings.aircraftFlightPlan.dragSubmitMode",
                 requiredValue:  "manual",
+                fallbackAllowedValues: ["auto", "confirmed"],
                 tier:           "apply-on-confirm"
             },
             feedback: {
