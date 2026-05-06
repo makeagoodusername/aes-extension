@@ -82,9 +82,39 @@ class CanopyCombinedView {
         this.hostEl.appendChild(this.root);
 
         // Simulate async data loading
-        setTimeout(() => {
-            this._generateRecommendations();
-        }, 800);
+
+        setTimeout(async () => {
+            // Fetch real financial data
+            const finData = await this._getFinancialData();
+
+            let finHtml = `<div style="display:flex; flex-direction:column; gap:8px;">`;
+            finHtml += `<div style="font-size: 20px; font-weight: bold; color: #059669;">Total Reserve: ${this._formatCurrency(finData.totalCash)}</div>`;
+
+            if (finData.items.length > 0) {
+                finHtml += `<div style="display:flex; height:12px; width:100%; border-radius:6px; overflow:hidden; margin-top:4px;">`;
+                const colors = ["#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#6b7280"];
+
+                finData.items.forEach((item, i) => {
+                    const pct = finData.totalCash > 0 ? Math.max(1, (item.cash / finData.totalCash) * 100) : (100 / finData.items.length);
+                    finHtml += `<div style="width:${pct}%; background:${colors[i % colors.length]}; border-right:${i < finData.items.length - 1 ? '1px solid #fff' : 'none'};" title="${item.name}: ${this._formatCurrency(item.cash)}"></div>`;
+                });
+                finHtml += `</div>`;
+
+                finHtml += `<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; font-size:12px; color:#555;">`;
+                finData.items.forEach((item, i) => {
+                    finHtml += `<div style="display:flex; align-items:center; gap:4px;"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${colors[i % colors.length]};"></span> ${item.name} (${this._formatCurrency(item.cash)})</div>`;
+                });
+                finHtml += `</div>`;
+            }
+            finHtml += `</div>`;
+
+            financialsCard.updateHtml(finHtml);
+
+            fleetCard.update("Aggregation pending cross-account fetch.");
+            networkCard.update("Aggregation pending cross-account fetch.");
+            await this._generateRecommendations();
+        }, 100);
+
     }
 
     _renderBreakdownTable() {
@@ -150,19 +180,77 @@ class CanopyCombinedView {
             tbody.appendChild(emptyRow);
         }
 
-        table.appendChild(tbody);
-        this.root.appendChild(table);
+        return { el, update: (val) => valEl.textContent = val, updateHtml: (html) => valEl.innerHTML = html };
     }
 
-    _generateRecommendations() {
-        this.recTableContainer.innerHTML = "";
 
-        const recs = [
-            { type: "synergy", description: "Cross-Airline Synergy: Interlining suggested between Airline A and Airline B at Hub FRA to boost regional expansion.", priority: "High" },
-            { type: "health", description: "Cash Alert: Airline C cash runway is below 2 weeks. Consider pausing expansion.", priority: "High" },
-            { type: "health", description: "Profit Decay: Route JFK-LAX across canopy showing 12% profit drop this week.", priority: "Medium" },
-            { type: "expansion", description: "Regional Goal: Europe expansion target (10,000 seats) is 85% complete. 2 narrowbodies needed.", priority: "Medium" }
-        ];
+    async _getFinancialData() {
+        if (!this.accounts || this.accounts.length === 0) return { totalCash: 0, items: [] };
+
+        const accountsWithCash = [];
+        let totalCash = 0;
+
+        for (const acct of this.accounts) {
+            const indexKey = acct.server + acct.airlineIdentity + "accounting:index";
+            const blob = await new Promise(r => chrome.storage.local.get(indexKey, r));
+            const index = Array.isArray(blob[indexKey]) ? blob[indexKey] : [];
+            if (!index.length) {
+                accountsWithCash.push({ name: acct.displayName, cash: 0 });
+                continue;
+            }
+            const newest = index[0];
+            const week = newest.weekId || newest.weekClosesAt || "";
+            const bankKey = acct.server + acct.airlineIdentity + "accounting:bank:" + week;
+            const bankBlob = await new Promise(r => chrome.storage.local.get(bankKey, r));
+            const bankRec = bankBlob[bankKey];
+            const bank = bankRec && bankRec.payload;
+            const cash = bank && Number.isFinite(bank.cashBalance) ? bank.cashBalance : 0;
+
+            totalCash += cash;
+            accountsWithCash.push({ name: acct.displayName, cash: cash, server: acct.server });
+        }
+
+        // Sort by cash descending
+        accountsWithCash.sort((a, b) => b.cash - a.cash);
+
+        return { totalCash, items: accountsWithCash };
+    }
+
+    _formatCurrency(val) {
+        // Basic fallback
+        return Math.floor(val).toLocaleString() + " AS$";
+    }
+
+    async _generateRecommendations() {
+        this.recList.innerHTML = "";
+        const recs = [];
+
+        // Try to fetch active routines from AesConductorRoutineStore if available
+        if (window.AesConductorRoutineStore) {
+            for (const acct of this.accounts) {
+                const host = { server: acct.server, airline: acct.airlineIdentity };
+                const activeRoutines = await window.AesConductorRoutineStore.active(host);
+
+                for (const r of activeRoutines) {
+                    if (r.state === "proposing") {
+                        const lastEntry = r.history && r.history.length > 0 ? r.history[r.history.length - 1] : null;
+                        const reason = lastEntry ? lastEntry.reason : "Action recommended";
+
+                        recs.push({
+                            type: "routine",
+                            text: `[${acct.displayName}] ${r.label || r.routineDefId} on ${r.target}: ${reason}`,
+                            priority: "medium"
+                        });
+                    }
+                }
+            }
+        }
+
+        // Fallback or static recommendations
+        if (recs.length === 0) {
+            recs.push({ type: "synergy", text: "Cross-Airline Synergy: Interlining suggested between Airline A and Airline B at Hub FRA to boost regional expansion.", priority: "high" });
+            recs.push({ type: "expansion", text: "Regional Goal: Europe expansion target (10,000 seats) is 85% complete. 2 narrowbodies needed.", priority: "medium" });
+        }
 
         const table = document.createElement("table");
         table.className = "table table-hover";

@@ -220,7 +220,31 @@ class RouteAssistantOrsModel {
         // when all three are). So pool elasticity reads the Y multiplier only.
         const yMult    = Number(scenario.priceMultipliers && scenario.priceMultipliers.Y) || 1
         const basePool = _safeNumber(route.paxDemandPool)
-        const elast    = _safeNumber(route.paxElasticity)
+
+        let elast = _safeNumber(route.paxElasticity)
+
+        // --- Historical Yield Elasticity Adjustment
+        // If we have yield history snapshots, compute a variance-based adjustment to elasticity
+        const yieldHistory = route.yieldHistory || (route._row && route._row.yieldHistory) || null
+        if (yieldHistory && Array.isArray(yieldHistory.snapshots) && yieldHistory.snapshots.length > 1) {
+            const snaps = yieldHistory.snapshots.slice().sort((a,b) => a.timestamp - b.timestamp)
+            const first = snaps[0]
+            const last = snaps[snaps.length - 1]
+            if (first.yieldPerKm && last.yieldPerKm && first.yieldPerKm !== last.yieldPerKm) {
+                const yieldChange = (last.yieldPerKm - first.yieldPerKm) / first.yieldPerKm
+                const profitChange = (last.profitPerFlight - first.profitPerFlight) / Math.abs(first.profitPerFlight || 1)
+
+                // If profit moved in the opposite direction of yield, demand is more elastic.
+                // This is a simplified dynamic historical elasticity adjustment factor.
+                const dynamicFactor = (yieldChange !== 0) ? (profitChange / yieldChange) : 0
+
+                // Dampen the dynamic factor so it doesn't swing too wildly
+                const adjustment = Math.max(-1.5, Math.min(1.5, dynamicFactor * 0.1))
+                elast = (elast || -1.2) + adjustment
+                notes.push("pax elasticity dynamically adjusted by " + (adjustment > 0 ? "+" : "") + adjustment.toFixed(3) + " based on historical yield variance")
+            }
+        }
+
         let projPool = basePool
         if (basePool != null && observedY != null && yMult !== 1
             && elast != null && elast < 0) {
