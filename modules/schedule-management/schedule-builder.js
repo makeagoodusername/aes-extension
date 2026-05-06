@@ -101,10 +101,28 @@ class ScheduleBuilder {
         const buckets = this.preset.factors.rangeBuckets
         const byBucket = {}
         for (const key in buckets) byBucket[key] = []
+        const unplaced = []
 
         for (const route of routes) {
+            if (route.aircraftRangeNm && !ScheduleFactors.aircraftCanFly(route.aircraftRangeNm, route.distanceNm)) {
+                route.unplacedReason = `${route.distanceNm}nm exceeds aircraft range ${route.aircraftRangeNm}nm (5% margin)`;
+                unplaced.push(route);
+                continue;
+            }
+            if (route.turnaroundMinutes) {
+                const minTurnaround = (this.preset && this.preset.factors && this.preset.factors.minTurnaroundMinutes) || 30;
+                if (route.turnaroundMinutes < minTurnaround) {
+                    route.unplacedReason = `${route.turnaroundMinutes}min turnaround is below the required ${minTurnaround}min`;
+                    unplaced.push(route);
+                    continue;
+                }
+            }
             const bucket = ScheduleFactors.bucketize(route.distanceNm, buckets)
-            if (!bucket) continue
+            if (!bucket) {
+                route.unplacedReason = "Distance not in any range bucket.";
+                unplaced.push(route);
+                continue;
+            }
             byBucket[bucket].push(route)
         }
         for (const key in byBucket) {
@@ -112,7 +130,6 @@ class ScheduleBuilder {
         }
 
         const placements = []
-        const unplaced = []
         const remaining = {}
         const forcedDests = []   // dest IATAs that took the override path
 
@@ -158,7 +175,7 @@ class ScheduleBuilder {
         }
 
         for (const key in byBucket) {
-            for (const route of byBucket[key]) unplaced.push(route)
+            for (const route of byBucket[key]) unplaced.push({ ...route, unplacedReason: "No wave with matching bucket capacity" })
         }
 
         return {placements, unplaced, shortfall: remaining, forcedDests}
@@ -223,13 +240,33 @@ class ScheduleBuilder {
         const bucketKeys = Object.keys(buckets)
         const waves = this.preset.waves || []
 
+        const placements = []
+        const unplaced = []
+        const forcedDests = []
         // Bucket the input routes; sort within bucket by distanceNm
         // descending to mirror the greedy ordering.
         const queues = {}
         for (const k of bucketKeys) queues[k] = []
         for (const route of routes || []) {
+            if (route.aircraftRangeNm && !ScheduleFactors.aircraftCanFly(route.aircraftRangeNm, route.distanceNm)) {
+                route.unplacedReason = `${route.distanceNm}nm exceeds aircraft range ${route.aircraftRangeNm}nm (5% margin)`;
+                unplaced.push(route);
+                continue;
+            }
+            if (route.turnaroundMinutes) {
+                const minTurnaround = (this.preset && this.preset.factors && this.preset.factors.minTurnaroundMinutes) || 30;
+                if (route.turnaroundMinutes < minTurnaround) {
+                    route.unplacedReason = `${route.turnaroundMinutes}min turnaround is below the required ${minTurnaround}min`;
+                    unplaced.push(route);
+                    continue;
+                }
+            }
             const b = ScheduleFactors.bucketize(route.distanceNm, buckets)
             if (b) queues[b].push(route)
+            else {
+                route.unplacedReason = "Distance not in any range bucket.";
+                unplaced.push(route);
+            }
         }
         for (const k in queues) queues[k].sort((a, b) => b.distanceNm - a.distanceNm)
 
@@ -239,8 +276,7 @@ class ScheduleBuilder {
             for (const k of bucketKeys) counts[wave.id][k] = 0
         }
 
-        const placements = []
-        const forcedDests = []
+
 
         // Forced overrides — pinned, not movable by the hill-climb.
         const overrideEntries = ScheduleBuilder._coerceOverrides(o.overrides)
@@ -376,8 +412,7 @@ class ScheduleBuilder {
             placements.push({waveId, route, direction: "inbound"})
         }
 
-        const unplaced = []
-        for (const k of bucketKeys) for (const r of queues[k]) unplaced.push(r)
+        for (const k of bucketKeys) for (const r of queues[k]) unplaced.push({ ...r, unplacedReason: "No wave with matching bucket capacity" })
 
         // Shortfall — only flag waves whose bucket couldn't be filled
         // because the QUEUE WAS EXHAUSTED, not because the optimiser
@@ -448,8 +483,34 @@ class ScheduleBuilder {
         const minScore = (typeof o.minScore === "number") ? o.minScore : 25
 
         const placements = []
+        const unplaced = []
         const forcedDests = []
         const placedDests = new Set()
+
+        const validRoutes = []
+        for (const route of (routes || [])) {
+            if (route.aircraftRangeNm && !ScheduleFactors.aircraftCanFly(route.aircraftRangeNm, route.distanceNm)) {
+                route.unplacedReason = `${route.distanceNm}nm exceeds aircraft range ${route.aircraftRangeNm}nm (5% margin)`;
+                unplaced.push(route);
+                continue;
+            }
+            if (route.turnaroundMinutes) {
+                const minTurnaround = (this.preset && this.preset.factors && this.preset.factors.minTurnaroundMinutes) || 30;
+                if (route.turnaroundMinutes < minTurnaround) {
+                    route.unplacedReason = `${route.turnaroundMinutes}min turnaround is below the required ${minTurnaround}min`;
+                    unplaced.push(route);
+                    continue;
+                }
+            }
+            const b = ScheduleFactors.bucketize(route.distanceNm, buckets)
+            if (!b) {
+                route.unplacedReason = "Distance not in any range bucket.";
+                unplaced.push(route);
+                continue;
+            }
+            validRoutes.push(route);
+        }
+        routes = validRoutes;
 
         const scoringCtx = RouteAssistantWaveSlotScorer.buildScoringContext(
             this.preset, routes, {
@@ -524,10 +585,9 @@ class ScheduleBuilder {
         // Unplaced — every input route that didn't make it onto the
         // placement list (either no viable wave or all viable waves were
         // saturated by higher-scoring routes).
-        const unplaced = []
         for (const route of (routes || [])) {
             const destU = String(route.destination || "").toUpperCase()
-            if (!placedDests.has(destU)) unplaced.push(route)
+            if (!placedDests.has(destU)) unplaced.push({ ...route, unplacedReason: "No wave with matching bucket capacity" })
         }
 
         // Shortfall — gap between desired composition and what we placed.
@@ -731,7 +791,7 @@ class ScheduleBuilder {
         for (const route of unplaced) {
             record.warnings.push({
                 seq: 0, type: "routeUnplaced",
-                message: `${route.destination} (${route.distanceNm}nm) — no wave with matching bucket capacity`
+                message: `${route.destination} (${route.distanceNm}nm) — ${route.unplacedReason || "no wave with matching bucket capacity"}`
             })
         }
         for (const key in shortfall) {

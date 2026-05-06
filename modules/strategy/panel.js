@@ -35,6 +35,19 @@
  * skin CSS is active. No external CSS deps.
  */
 ;(function () {
+
+// --- Feature Guard ---
+if (typeof window !== "undefined") {
+    try {
+        const stored = localStorage.getItem("aes-feature-toggles-sync");
+        if (stored) {
+            const toggles = JSON.parse(stored);
+            if (toggles["strategy"] === false) return;
+        }
+    } catch(e) {}
+}
+// ---------------------
+
     if (typeof window === "undefined") return
     if (window.AesStrategyPanel) return
 

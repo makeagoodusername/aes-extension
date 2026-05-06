@@ -116,6 +116,22 @@ function resolveDashboardIdentity() {
 }
 
 $(function() {
+
+// --- Feature Guard ---
+if (typeof window !== "undefined") {
+    try {
+        const stored = localStorage.getItem("aes-feature-toggles-sync");
+        if (stored) {
+            const toggles = JSON.parse(stored);
+            if (toggles["dashboard-legacy"] === false) {
+                console.info("[AES] Legacy Dashboard feature is disabled via settings.");
+                return;
+            }
+        }
+    } catch(e) {}
+}
+// ---------------------
+
     if (!document.querySelector("#enterprise-dashboard")) {
         console.warn("[AES dashboard] #enterprise-dashboard missing; skipping legacy dashboard mount");
         return;

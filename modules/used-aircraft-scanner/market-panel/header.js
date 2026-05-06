@@ -298,7 +298,10 @@ class MarketPanelHeader {
         const b = document.createElement("button")
         b.type = "button"
         b.textContent = glyph
-        b.title = tooltip || ""
+        if (tooltip) {
+            b.title = tooltip
+            b.setAttribute("aria-label", tooltip)
+        }
         b.className = "aes-btn aes-btn--ghost aes-btn--icon"
         if (typeof onClick === "function") b.addEventListener("click", onClick)
         return b

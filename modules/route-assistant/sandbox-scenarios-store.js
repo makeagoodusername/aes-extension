@@ -73,6 +73,55 @@ class RouteAssistantSandboxScenariosStore {
      * List saved scenarios for a route, most-recently-updated first.
      * Returns [] when no record exists.
      */
+
+    static async getRecordForAccount(accountId, hub, dest) {
+        const key = RouteAssistantSandboxScenariosStore._keyForAccount(accountId, hub, dest)
+        const out = await chrome.storage.local.get([key])
+        return out[key] || null
+    }
+
+    /**
+     * List saved scenarios for a route across ALL known accounts (Federated View).
+     */
+    static async listFederated(hub, dest) {
+        const hubU = String(hub || "").toUpperCase()
+        const destU = String(dest || "").toUpperCase()
+        let accounts = []
+        if (typeof window !== "undefined" && window.AesAccountRegistry && typeof window.AesAccountRegistry.list === "function") {
+            accounts = await window.AesAccountRegistry.list()
+        }
+
+        let allScenarios = []
+        for (const account of accounts) {
+            const rec = await RouteAssistantSandboxScenariosStore.getRecordForAccount(account.id, hubU, destU)
+            if (rec && Array.isArray(rec.scenarios)) {
+                for (const s of rec.scenarios) {
+                    allScenarios.push(Object.assign({}, s, {
+                        _accountId: account.id,
+                        _accountName: account.displayName || account.airlineIdentity || "Unknown Airline",
+                        _isForeign: account.id !== ((typeof window !== 'undefined' && window.__aesAccountId) ? window.__aesAccountId : null)
+                    }))
+                }
+            }
+        }
+
+        // Include legacy/current account if not already covered
+        const currentRec = await RouteAssistantSandboxScenariosStore.getRecord(hubU, destU)
+        if (currentRec && Array.isArray(currentRec.scenarios)) {
+            for (const s of currentRec.scenarios) {
+                if (!allScenarios.find(ex => ex.id === s.id)) {
+                    allScenarios.push(Object.assign({}, s, {
+                        _accountId: ((typeof window !== 'undefined' && window.__aesAccountId) ? window.__aesAccountId : null),
+                        _accountName: "Current Account",
+                        _isForeign: false
+                    }))
+                }
+            }
+        }
+
+        return allScenarios.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    }
+
     static async list(hub, dest) {
         const rec = await RouteAssistantSandboxScenariosStore.getRecord(hub, dest)
         if (!rec || !Array.isArray(rec.scenarios)) return []
@@ -87,7 +136,7 @@ class RouteAssistantSandboxScenariosStore {
      */
     static async save(hub, dest, fields) {
         return RouteAssistantSandboxScenariosStore.saveAt(
-            currentAccountIdSync(), hub, dest, fields
+            ((typeof window !== 'undefined' && window.__aesAccountId) ? window.__aesAccountId : null), hub, dest, fields
         )
     }
 
@@ -136,7 +185,7 @@ class RouteAssistantSandboxScenariosStore {
      */
     static async remove(hub, dest, id) {
         return RouteAssistantSandboxScenariosStore.removeAt(
-            currentAccountIdSync(), hub, dest, id
+            ((typeof window !== 'undefined' && window.__aesAccountId) ? window.__aesAccountId : null), hub, dest, id
         )
     }
 
@@ -164,7 +213,7 @@ class RouteAssistantSandboxScenariosStore {
 
     static async clear(hub, dest) {
         return RouteAssistantSandboxScenariosStore.clearAt(
-            currentAccountIdSync(), hub, dest
+            ((typeof window !== 'undefined' && window.__aesAccountId) ? window.__aesAccountId : null), hub, dest
         )
     }
 

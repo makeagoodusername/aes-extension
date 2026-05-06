@@ -12,17 +12,15 @@
 # Error details
 
 ```
-Error: expect(locator).toBeVisible() failed
-
-Locator: locator('.aes-menu__trigger').filter({ hasText: 'AES' }).first()
-Expected: visible
-Timeout: 10000ms
-Error: element(s) not found
-
-Call log:
-  - Expect "toBeVisible" with timeout 10000ms
-  - waiting for locator('.aes-menu__trigger').filter({ hasText: 'AES' }).first()
-
+Error: browserType.launchPersistentContext: Executable doesn't exist at /home/jules/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell
+╔════════════════════════════════════════════════════════════╗
+║ Looks like Playwright was just installed or updated.       ║
+║ Please run the following command to download new browsers: ║
+║                                                            ║
+║     npx playwright install                                 ║
+║                                                            ║
+║ <3 Playwright Team                                         ║
+╚════════════════════════════════════════════════════════════╝
 ```
 
 # Test source
@@ -52,7 +50,8 @@ Call log:
   22 |     const dashboardUrl = process.env.AES_TEST_DASHBOARD_URL
   23 |         || "https://free1.airlinesim.aero/app/enterprise/dashboard?aes-fixture=1"
   24 |
-  25 |     const ctx = await chromium.launchPersistentContext(profileDir, {
+> 25 |     const ctx = await chromium.launchPersistentContext(profileDir, {
+     |                 ^ Error: browserType.launchPersistentContext: Executable doesn't exist at /home/jules/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell
   26 |         headless: true,
   27 |         args: [
   28 |             `--disable-extensions-except=${extPath}`,
@@ -71,8 +70,7 @@ Call log:
   41 |         // Top-menu surface is the cheapest "extension is alive" signal.
   42 |         // Mounted by modules/aes-menu.js after the AES content scripts run.
   43 |         await expect(page.locator(".aes-menu__trigger", {hasText: "AES"}).first())
-> 44 |             .toBeVisible({timeout: 10000})
-     |              ^ Error: expect(locator).toBeVisible() failed
+  44 |             .toBeVisible({timeout: 10000})
   45 |
   46 |         // Central Hub shell mounts on the dashboard. Confirms the substrate
   47 |         // load order survived.

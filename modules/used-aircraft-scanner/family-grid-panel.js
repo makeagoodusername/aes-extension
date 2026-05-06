@@ -265,6 +265,7 @@ class MarketScanFamilyGrid {
         x.type = "button"
         x.innerText = "×"
         x.title = "Remove " + type
+        x.setAttribute("aria-label", "Remove " + type)
         Object.assign(x.style, {
             border:     "none",
             background: "transparent",
