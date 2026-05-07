@@ -385,6 +385,90 @@ class RouteAssistantPanel {
     }
 
     /**
+     * Slice 2 — Save confirmation modal.
+     * Shows the number of flights and warnings about to be saved to ScheduleStore.
+     */
+    _showWaveSaveConfirm() {
+        if (!this._waveBuild || !this._waveBuild.flights || !this._waveBuild.flights.length) return
+
+        const overlay = document.createElement("div")
+        overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);"
+            + "z-index:10001;display:flex;align-items:center;justify-content:center;"
+        const modal = document.createElement("div")
+        modal.style.cssText = "background:#1f2937;color:#f3f4f6;border:1px solid #374151;"
+            + "border-radius:6px;padding:16px 20px;min-width:400px;max-width:80vw;"
+            + "max-height:80vh;display:flex;flex-direction:column;font:13px/1.4 sans-serif;"
+
+        const h = document.createElement("strong")
+        h.textContent = "Save wave schedule?"
+        h.style.cssText = "font-size:16px;margin-bottom:12px;color:#34d399;"
+
+        const body = document.createElement("div")
+        body.style.cssText = "margin-bottom:16px;"
+
+        const summary = document.createElement("div")
+        summary.textContent = `You are about to save this wave structure as an active draft. It contains `
+            + `${this._waveBuild.flights.length} flight(s).`
+        body.append(summary)
+
+        if (this._waveBuild.warnings && this._waveBuild.warnings.length) {
+            const warns = document.createElement("div")
+            warns.style.cssText = "margin-top:10px;padding:8px 10px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:4px;color:#fde68a;"
+            warns.innerHTML = `<strong>⚠️ ${this._waveBuild.warnings.length} warning(s)</strong> found in this build (e.g. range exceeded, unplaced routes). Saving will keep these warnings.`
+            body.append(warns)
+        }
+
+        const footer = document.createElement("div")
+        footer.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:auto;"
+
+        const cancelBtn = document.createElement("button")
+        cancelBtn.textContent = "Cancel"
+        Object.assign(cancelBtn.style, smallBtnStyle())
+        cancelBtn.style.background = "#374151"
+        cancelBtn.onclick = () => overlay.remove()
+
+        const applyBtn = document.createElement("button")
+        applyBtn.textContent = "Save Schedule"
+        Object.assign(applyBtn.style, smallBtnStyle())
+        applyBtn.style.background = "#059669"
+        applyBtn.onclick = async () => {
+            applyBtn.disabled = true
+            applyBtn.textContent = "Saving..."
+
+            try {
+                // Ensure ScheduleStore is available via explicit check
+                if (typeof ScheduleStore === "undefined") {
+                    throw new Error("ScheduleStore is not loaded")
+                }
+
+                await ScheduleStore.save(this._waveBuild)
+
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.show(`Schedule draft saved successfully.`, {type: "success"})
+                }
+                overlay.remove()
+            } catch (err) {
+                console.error("[AES wave-overlay] Save failed:", err)
+                if (typeof RouteAssistantToast !== "undefined") {
+                    RouteAssistantToast.show("Failed to save schedule: " + err.message, {type: "error"})
+                }
+                applyBtn.disabled = false
+                applyBtn.textContent = "Save Schedule"
+            }
+        }
+
+        footer.append(cancelBtn, applyBtn)
+        modal.append(h, body, footer)
+        overlay.append(modal)
+
+        overlay.addEventListener("click", (e) => {
+            if (e.target === overlay) overlay.remove()
+        })
+
+        document.body.append(overlay)
+    }
+
+    /**
      * Floating modal listing every changed leaf path in the import diff.
      * Apply writes both blobs back via their stores; Cancel discards.
      * No-changes case still shows the modal so the user knows the file
@@ -4486,6 +4570,26 @@ class RouteAssistantPanel {
             this._renderRows()
         })
         wrap.append(connBtn)
+
+        // Save Schedule CTA
+        const saveBtn = document.createElement("button")
+        saveBtn.textContent = "💾 Save schedule to drafts"
+        saveBtn.title = "Save this wave structure as an active draft for this airline"
+        Object.assign(saveBtn.style, smallBtnStyle())
+        saveBtn.style.background = "#059669"
+
+        // Only enable if we have a valid build with placed flights
+        if (!this._waveBuild || !this._waveBuild.flights || !this._waveBuild.flights.length) {
+            saveBtn.disabled = true
+            saveBtn.style.opacity = "0.5"
+            saveBtn.style.cursor = "not-allowed"
+        }
+
+        saveBtn.addEventListener("click", () => {
+            if (saveBtn.disabled) return
+            this._showWaveSaveConfirm()
+        })
+        wrap.append(saveBtn)
 
         const editLink = document.createElement("a")
         editLink.href = "/app/enterprise/dashboard"
