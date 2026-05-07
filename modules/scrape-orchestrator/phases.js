@@ -52,8 +52,8 @@ class ScrapeOrchestratorPhases {
         {path: "/app/finance/capital",              key: "accounting:capital"},
         {path: "/app/finance/assets",               key: "accounting:assets"},
         {path: "/app/alliance",                     key: "alliance:overview"},
-        {path: "/action/enterprise/staffPilots",    key: "crewMgmt:pilots"},
-        {path: "/action/enterprise/staffOverview",  key: "crewMgmt:staffOverview:latest"}
+        {path: "/action/enterprise/staffPilots",    key: "pilots"},
+        {path: "/action/enterprise/staffOverview",  key: "staffOverview:latest"}
     ]
 
     static all() {
@@ -130,7 +130,7 @@ class ScrapeOrchestratorPhases {
                     jobId:                  "per-hub-" + hub,
                     phaseId:                "per-hub",
                     url:                    host.origin + "/app/com/scheduling/" + encodeURIComponent(hub),
-                    expectStorageKeyPrefix: "topRoutes:" + String(hub).toUpperCase(),
+                    expectStorageKeyPrefix: "routeAssistant:topRoutes:" + String(hub).toUpperCase(),
                     settleMs:               2000,
                     // RA panel runs the scoring pipeline on mount; the
                     // topRoutes publish typically lands within 10–20s.
